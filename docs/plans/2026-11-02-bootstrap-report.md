@@ -93,7 +93,7 @@ Each entry gives what was decided, why, and the cost if it's wrong. Decisions 1â
 1. **Node** now resolves to Homebrew v26.13.0 (the nvm v22 folder on PATH no longer exists). It meets every minimum, and the build passed. *Cost if wrong:* a Node 26 incompatibility, which lint and build would have caught.
 2. **The Vercel CLI was upgraded with `pnpm add -g`**, because that's how it was installed. `npm i -g` would have added a second binary that shadows it on PATH. *Cost if wrong:* none; `which -a vercel` shows a single binary.
 3. **There's no `postcss.config.mjs`.** The 16.4.4 template wires Tailwind through `@tailwindcss/turbopack` in `next.config.ts`. *Cost if wrong:* none; the allowlist permits paths but doesn't require them.
-4. **`docs/voip_ms_262980_jowray-subaccount-settings.md` was kept out of the initial commit.** The concurrent VoIP.ms agent wrote it during the run. It contains no password, but it's someone else's work in progress. It's still untracked on Rob's machine. *Cost if wrong:* a one-file follow-up PR (remaining task 9).
+4. **`docs/voip_ms_262980_jowray-subaccount-settings.md` was kept out of the initial commit.** The concurrent VoIP.ms agent wrote it during the run. It contains no password, but it's someone else's work in progress. *Cost if wrong:* a one-file follow-up. Rob then asked for it to be added, and this PR does that (remaining task 9).
 5. **The `.env` merge used an exact allowlist** of the 16 integration keys, instead of the plan's `VERCEL_*` skip. That skip wouldn't have caught other system variables such as `VERCEL`, `TURBO_*`, and `NX_DAEMON`. *Cost if wrong:* none; it's strictly narrower than the plan.
 6. **`npm audit fix --force` was not run.** Its only "fix" downgrades to eslint@4, and the advisory is dev-only. *Cost if wrong:* a moderate ReDoS stays in lint tooling that only runs on trusted input (remaining task 8).
 7. **The secret-value scan for this PR excludes `NEON_PROJECT_ID` and `NEXT_PUBLIC_SENTRY_DSN`**, because both are public identifiers. Every other `.env` value is still scanned. *Cost if wrong:* none; neither grants access.
@@ -104,11 +104,16 @@ Each entry gives what was decided, why, and the cost if it's wrong. Decisions 1â
 2. Sentry SDK setup (`@sentry/nextjs` via the wizard), plus an **organization** auth token (`org:ci`) in Vercel for source-map uploads.
 3. Protect `main` by requiring PRs and status checks.
 4. A GitHub Actions CI workflow: lint, typecheck, build.
-5. Rename the `CLOUDFLARE_ACCOUNTT_ID` typo (Rob's call).
-6. Update the design doc's Twilio references to VoIP.ms (Rob's doc).
+5. ~~Rename the `CLOUDFLARE_ACCOUNTT_ID` typo.~~ **Done in this PR, at Rob's request.**
+   - The local `.env` key is now `CLOUDFLARE_ACCOUNT_ID`. The rename was atomic: the value hash and every other line are unchanged, the mode is still 600, there are still 37 keys and no duplicates.
+   - `docs/environment.md` is updated.
+   - The Vercel project never had this key. Nothing else under `~/Documents/active_work` references the old name, apart from the frozen P7 snapshot, which keeps it as history.
+6. ~~Update the design doc's Twilio references to VoIP.ms.~~ **Done in this PR, at Rob's request.**
+   - The voice-line, SMS-sequence, and tech-stack diagrams now name VoIP.ms: the SMS/MMS URL callback, `sendSMS`/`sendMMS`, and voicemail fetch.
+   - A new "VoIP.ms" tech-stack note covers callback variables, the `ok` retry contract, voicemail retrieval, and one open question: API calls from Vercel versus the account's IP whitelist.
 7. Optional upstream issue: the Next.js docs list `--turbopack`/`--webpack` for create-next-app, but 16.4.4 doesn't have them.
 8. Track the dev-only `minimatch` advisory ([GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249)) through an upstream `eslint-config-next`/`typescript-eslint` bump, or an `overrides` pin once that's compatible.
-9. Commit `docs/voip_ms_262980_jowray-subaccount-settings.md` through its own PR, once the VoIP.ms agent and Rob are happy with it.
+9. ~~Commit `docs/voip_ms_262980_jowray-subaccount-settings.md` through its own PR.~~ **Done in this PR, at Rob's request.** The file is added unchanged (sha256 `1e2dcad7â€¦`, no password), and `docs/environment.md` links to it from `DID_JOWRAY`.
 10. Clean up Neon preview branches when PRs close: add a GitHub Action using `neondatabase/delete-branch-action` on `pull_request: closed`, as [Neon's cleanup guide](https://neon.com/docs/guides/vercel-branch-cleanup) recommends. Otherwise, delete a PR's preview deployments after merge. Until then, `preview/docs/bootstrap-report` will persist.
 11. Rob reviews and merges this PR.
 
@@ -117,4 +122,4 @@ Each entry gives what was decided, why, and the cost if it's wrong. Decisions 1â
 1. **Hand-listing files to stage in the initial commit.** A list of generated files breaks when the generator changes. A top-level allowlist plus index and secret checks gives the same protection.
 2. **`--turbopack`/`--webpack` flags.** They don't exist in create-next-app 16.4.4, and unknown flags are silently ignored. Turbopack is the default, and the build output confirms it.
 3. **An `npm ci` policy.** There were no later installs in the bootstrap. Vercel installs from the committed lockfile.
-4. **Editing or relabeling Rob's design doc** (for example, its Twilio references). It's Rob's "initial thinking" doc. `docs/environment.md` records the VoIP.ms reality.
+4. **Rewriting Rob's design doc beyond what he asks for.** It's Rob's "initial thinking" doc. He asked for the Twilio â†’ VoIP.ms update, and that was made in this PR (remaining task 6). Nothing else in it was changed.
