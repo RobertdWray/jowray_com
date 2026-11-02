@@ -51,7 +51,7 @@ flowchart TB
     end
 
     subgraph INTAKE["Intake"]
-        IVR["Voice line (Twilio or similar)records a voice messageprompts for name and date"]
+        IVR["Voice line (VoIP.ms DID)voicemail records the messagegreeting prompts for name and date"]
         Agent["SMS agentNext.js webhook + Geminiasks: who is in it, when was it,what is your name"]
         Form["Upload formvoice · video · photorecord audio in browser"]
     end
@@ -102,26 +102,26 @@ The agent only asks for what is missing. Gemini reads the text and looks at the 
 ```
 sequenceDiagram
     actor C as Contributor
-    participant T as SMS provider
+    participant T as VoIP.ms (SMS/MMS)
     participant N as Next.js webhook
     participant G as Gemini
     participant S as Object storage
     participant DB as Neon
 
     C->>T: Photo + "Grandpa at the lake, early 80s"
-    T->>N: Inbound webhook (from, body, media URL)
+    T->>N: SMS/MMS URL callback (GET: id, from, to, message, media)
     N->>S: Save original photo + checksum
     N->>DB: Find or create SMS_CONVERSATION by phonecreate MEMORY (status pending) + MEDIA + SMS_MESSAGE
     N->>G: Parse text, look at photo:what do we know, what is missing?
     G-->>N: approx_date "early 1980s", place "lake"missing: contributor name, who else is pictured
-    N->>T: "Thank you. Who else is in this photo, and what is your name?"
+    N->>T: sendSMS: "Thank you. Who else is in this photo, and what is your name?"
     T->>C: SMS
     C->>T: "That is my mom and me. I'm his nephew, Sam."
-    T->>N: Inbound webhook
+    T->>N: SMS URL callback
     N->>G: Parse reply against the open memory
     G-->>N: contributor name, relationship,people mentioned
     N->>DB: Update CONTRIBUTOR, MEMORY,PERSON mentions, SMS_MESSAGE
-    N->>T: "Saved. Text another anytime, or edit this one: (claim link)"
+    N->>T: sendSMS: "Saved. Text another anytime, or edit this one: (claim link)"
     T->>C: SMS
 ```
 
@@ -391,11 +391,11 @@ Tech stack
 flowchart LR
     subgraph CHANNELS["Channels"]
         Browser["Browserupload form · memorial site"]
-        Twilio["SMS + voice provider(Twilio or similar)"]
+        VoIPms["SMS + voice providerVoIP.ms · DID_JOWRAY"]
     end
 
     subgraph VERCEL["Vercel"]
-        Next["Next.js apppages · upload APISMS + voice webhooksclaim links"]
+        Next["Next.js apppages · upload APIVoIP.ms SMS callback · voicemail fetchclaim links"]
         Cron["Vercel Cronphase 2 analysis job"]
         Auth["Auth.js (NextAuth)phase 3: magic-link loginfamily content management"]
     end
@@ -413,7 +413,8 @@ flowchart LR
     Sentry["Sentryerrors · performancewebhook failures"]
 
     Browser --> Next
-    Twilio --> Next
+    VoIPms -->|"SMS/MMS URL callback"| Next
+    Next -->|"API: sendSMS / sendMMS,fetch voicemail files"| VoIPms
     Next --> Neon
     Next --> Blob
     Next -->|"phase 1: SMS agent"| Gemini
@@ -428,7 +429,16 @@ flowchart LR
 
 Next.js on Vercel
 
-App Router, route handlers for the upload API and the SMS/voice webhooks, server actions for the forms.
+App Router, route handlers for the upload API and the VoIP.ms SMS/MMS callback, server actions for the forms.
+
+VoIP.ms
+
+The memorial number is a VoIP.ms DID (`DID_JOWRAY`).
+- **Texts and photos:** these arrive through the DID's SMS/MMS URL callback. It's a GET request to our route handler carrying `{ID}`, `{TIMESTAMP}`, `{FROM}`, `{TO}`, `{MESSAGE}`, and `{MEDIA}` (a comma-separated list of media files).
+- **Retries:** with URL Callback Retry on, VoIP.ms expects the response body `ok`. Otherwise it resends the same message every 30 minutes, so the handler must be idempotent on the message ID.
+- **Replies:** these go out through the API (`sendSMS`, `sendMMS`).
+- **Voice messages:** these land in VoIP.ms voicemail. The app fetches them through the API (`getVoicemailMessages`, `getVoicemailMessageFile`), or they arrive as voicemail-to-email attachments. Either way, the original audio is copied into object storage.
+- **Open question:** the account's API access is set up with an IP whitelist (`voipms_whitelisted_ip`), so API calls from Vercel functions need a stable egress IP or a relay. Resolve this before building the SMS agent.
 
 Neon Postgres
 
@@ -448,7 +458,7 @@ Speech-to-text for voice messages and video audio tracks. Store the raw transcri
 
 Sentry
 
-Errors and performance for the app and the cron job. Alert on any failed inbound webhook, since a lost text or call is a lost memory.
+Errors and performance for the app and the cron job. Alert on any failed SMS/MMS callback or voicemail fetch, since a lost text or call is a lost memory.
 
 Auth.js
 

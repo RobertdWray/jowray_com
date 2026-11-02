@@ -14,10 +14,10 @@ This file lists key **names** and what they're for. It never contains values. Th
 
 | Key | Purpose |
 |---|---|
-| `CLOUDFLARE_ACCOUNTT_ID` | Cloudflare account ID for DNS. *(sic: the double "T" is the real key name today; a rename is tracked as a follow-up.)* |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID for DNS. *(Renamed on 2026-11-02 from the misspelled `CLOUDFLARE_ACCOUNTT_ID`.)* |
 | `CLOUDFLARE_DNS_ONLY_API_TOKEN` | Cloudflare API token scoped to DNS edits. |
 | `SENDGRID_API_KEY` | Outbound email (notifications, and later magic links). |
-| `DID_JOWRAY` | The memorial phone number (a VoIP.ms DID) that people call or text to leave memories. |
+| `DID_JOWRAY` | The memorial phone number (a VoIP.ms DID) that people call or text to leave memories. Sub-account settings are in [voip_ms_262980_jowray-subaccount-settings.md](voip_ms_262980_jowray-subaccount-settings.md). |
 | `voipms_username`, `voipms_password`, `voipms_Bearer_Token`, `voipms_whitelisted_ip` | VoIP.ms API access: the phone and SMS provider. A separate agent sets these up. |
 | `VOIPMS_SUB_ACCOUNT`, `VOIPMS_SUB_PASSWORD`, `VOIPMS_POP` | The VoIP.ms SIP sub-account and point of presence for the DID. |
 | `VOIPMS_PHONEBOOK_GROUP`, `VOIPMS_TIME_CONDITION`, `VOIPMS_CALLERID_FILTER`, `VOIPMS_FRIENDS_GROUP`, `VOIPMS_FRIENDS_FILTER` | VoIP.ms call-routing objects: a phonebook group, a time condition, and caller-ID filters. |
@@ -33,7 +33,7 @@ The Vercel-managed Neon integration sets these for the `jowray.com` project in P
 | `DATABASE_URL_UNPOOLED` | Direct connection string, for migrations and session-level features. |
 | `PGHOST`, `PGHOST_UNPOOLED`, `PGUSER`, `PGDATABASE`, `PGPASSWORD` | The raw pieces, for building custom connection strings. |
 | `POSTGRES_*` | Legacy Vercel Postgres names, kept for backward compatibility. Don't use them in new code. |
-| `NEON_PROJECT_ID` *(if present)* | The Neon project identifier. |
+| `NEON_PROJECT_ID` | The Neon project identifier (`icy-scene-20351172`). Not a secret. |
 
 The integration was provisioned with Neon Auth and Realtime **off**, so `NEON_AUTH_*` and `NEON_REALTIME_*` aren't set. Preview deployments get their own `preview/<git-branch>` database branch, with its own values.
 
