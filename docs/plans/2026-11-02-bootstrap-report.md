@@ -55,7 +55,11 @@ node v26.13.0 · npm 11.20.0 · vercel 65.9.0 (pnpm global; upgraded from 65.2.0
 
 ## Preview branching
 
-**State: setting enabled, not yet verified.** A second commit on this PR updates this after the functional check.
+**State: verified.** Neon's documented test was run on this PR: push a feature branch, then check the Vercel deployments and the Neon branches.
+
+- PR #1's push of `docs/bootstrap-report` triggered Vercel Preview deployment `dpl_5LUDrXQyJwZEh8DY6LxuRqQiiccG` (https://jowray-t00nujlvl-rob-wrays-projects.vercel.app, alias `jowraycom-git-docs-bootstrap-report-rob-wrays-projects.vercel.app`). It was created at 15:17:47 and is **Ready**. The GitHub "Vercel" check passed.
+- Neon created branch **`preview/docs/bootstrap-report`** (`br-orange-rice-bbil7ivy`) in `icy-scene-20351172` at 15:17:48, with `creation_source: vercel`, parent `main` (`br-restless-king-bbmkh5zd`), state `ready`.
+- Lifecycle: preview branches are cleaned up according to Vercel's deployment retention policy (Neon guide). They can also be deleted by hand once a PR merges.
 
 - **How it was enabled:** at 15:15, through the Vercel dashboard (Claude-in-Chrome automation, approved by Rob). Path: Storage → `jowray_com` store → Projects → ⋮ `jowray.com` → **Update Project Connection** → "Create Database Branch For Deployment" → **Preview** ticked, **Production** unticked.
 - **Why not the CLI or API:** no CLI or REST path can change deployment actions on an existing connection. `vercel integration resource connect` only takes `--environment`/`--prefix`. `POST /v1/integrations/installations/{id}/resources/{id}/connections` only accepts `projectId`, `envVarEnvironments`, and `makeEnvVarsSensitive`, and using it would be a reconnect. The Neon CLI has no Vercel commands.
@@ -81,6 +85,7 @@ node v26.13.0 · npm 11.20.0 · vercel 65.9.0 (pnpm global; upgraded from 65.2.0
 | P15 `.env` merge | 14:44–14:46 | Verified, `.env` released |
 | P16 push and deploy | 14:46–14:47 | Ready, 200 |
 | P13 preview branching | 14:44–15:15 | Enabled in the dashboard (Preview only) |
+| P17 report PR and preview test | 15:17–15:27 | PR #1. Preview Ready, Neon branch `preview/docs/bootstrap-report` created |
 
 ## Decisions made during execution
 
