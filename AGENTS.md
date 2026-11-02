@@ -15,4 +15,4 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - Never hide an error to keep moving. Fix the root cause with best-practice code. Use a band-aid only if Rob insists; if you're stuck, ask Rob how to find the root cause.
 - Never apply "unsafe" automatic fixes (for example `ruff --unsafe-fixes`) without asking Rob first.
 - Never commit secrets. `.env*` files are gitignored; key names and purposes are in `docs/environment.md`.
-- Bootstrap history and decisions: `docs/plans/2026-11-02-bootstrap.md`.
+- Bootstrap history and decisions: `docs/plans/2026-11-02-bootstrap-report.md` is the final, authoritative record (resources, IDs, decisions, open follow-ups). `docs/plans/2026-11-02-bootstrap.md` is the runbook snapshot taken before the initial commit; its STATUS is frozen.
