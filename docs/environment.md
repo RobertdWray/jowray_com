@@ -1,0 +1,53 @@
+# Environment variables
+
+This file lists key **names** and what they're for. It never contains values. The secrets themselves live in the gitignored `.env` (mode 600) on Rob's machine and in the Vercel project's environment settings.
+
+## How env works here
+
+- Next.js loads `.env*` files into `process.env`. Load order: `process.env` → `.env.$(NODE_ENV).local` → `.env.local` → `.env.$(NODE_ENV)` → `.env`. The first match wins, so **`.env.local` overrides `.env`**. ([Next.js docs](https://nextjs.org/docs/app/guides/environment-variables#environment-variable-load-order))
+- **Every project key lives in `.env`.** The one exception is `VERCEL_OIDC_TOKEN`: `vercel link` writes it to `.env.local`, and it stays only there. ([Vercel changelog](https://vercel.com/changelog/preserve-local-environment-variables-when-linking-with-the-vercel-cli))
+- The Neon values come from the Vercel project. To see the current values, run `vercel env pull <tmpfile> --environment=development` and merge in only the keys that are missing. Don't let the tool overwrite `.env`, because other tooling edits that file too. ([Vercel CLI docs](https://vercel.com/docs/cli/env#exporting-development-environment-variables))
+- **Never commit `.env*`.** The scaffold `.gitignore` already ignores `.env*` and `.vercel`.
+- Only variables prefixed `NEXT_PUBLIC_` reach the browser bundle. Everything else is server-only.
+
+## Pre-existing keys (managed by Rob)
+
+| Key | Purpose |
+|---|---|
+| `CLOUDFLARE_ACCOUNTT_ID` | Cloudflare account ID for DNS. *(sic: the double "T" is the real key name today; a rename is tracked as a follow-up.)* |
+| `CLOUDFLARE_DNS_ONLY_API_TOKEN` | Cloudflare API token scoped to DNS edits. |
+| `SENDGRID_API_KEY` | Outbound email (notifications, and later magic links). |
+| `DID_JOWRAY` | The memorial phone number (a VoIP.ms DID) that people call or text to leave memories. |
+| `voipms_username`, `voipms_password`, `voipms_Bearer_Token`, `voipms_whitelisted_ip` | VoIP.ms API access: the phone and SMS provider. A separate agent sets these up. |
+| `VOIPMS_SUB_ACCOUNT`, `VOIPMS_SUB_PASSWORD`, `VOIPMS_POP` | The VoIP.ms SIP sub-account and point of presence for the DID. |
+| `VOIPMS_PHONEBOOK_GROUP`, `VOIPMS_TIME_CONDITION`, `VOIPMS_CALLERID_FILTER`, `VOIPMS_FRIENDS_GROUP`, `VOIPMS_FRIENDS_FILTER` | VoIP.ms call-routing objects: a phonebook group, a time condition, and caller-ID filters. |
+| `ELEVENLABS_API_KEY` | ElevenLabs speech-to-text for transcribing voice memories (phase 2). ([ElevenLabs docs](https://elevenlabs.io/docs/eleven-api/quickstart#create-an-api-key)) |
+
+## Neon Postgres (set by the Vercel–Neon integration)
+
+The Vercel-managed Neon integration sets these for the `jowray.com` project in Production, Preview, and Development. ([Neon docs](https://neon.com/docs/guides/vercel-managed-integration#environment-variables-set-by-the-integration))
+
+| Key | Purpose |
+|---|---|
+| `DATABASE_URL` | **Pooled** connection string (PgBouncer). The app uses this one. |
+| `DATABASE_URL_UNPOOLED` | Direct connection string, for migrations and session-level features. |
+| `PGHOST`, `PGHOST_UNPOOLED`, `PGUSER`, `PGDATABASE`, `PGPASSWORD` | The raw pieces, for building custom connection strings. |
+| `POSTGRES_*` | Legacy Vercel Postgres names, kept for backward compatibility. Don't use them in new code. |
+| `NEON_PROJECT_ID` *(if present)* | The Neon project identifier. |
+
+The integration was provisioned with Neon Auth and Realtime **off**, so `NEON_AUTH_*` and `NEON_REALTIME_*` aren't set. Preview deployments get their own `preview/<git-branch>` database branch, with its own values.
+
+## Sentry
+
+| Key | Purpose |
+|---|---|
+| `NEXT_PUBLIC_SENTRY_DSN` | The DSN for Sentry project `med3ai/jowray_com` (API host `https://us.sentry.io`). It holds a **real value**: DSNs aren't secrets. ([Sentry docs](https://docs.sentry.io/security-legal-pii/security/token-formats/#excluding-dsns), [Next.js SDK](https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/#initialize-sentry-sdks)) |
+| `SENTRY_AUTH_TOKEN` | **Placeholder (empty).** Reserved for a future **organization** token (`org:ci`) that uploads source maps from CI or Vercel builds. ([Sentry docs](https://docs.sentry.io/platforms/javascript/guides/nextjs/#add-readable-stack-traces-with-source-maps)) |
+
+## Placeholders still to fill
+
+| Key | Purpose |
+|---|---|
+| `GEMINI_API_KEY` | Google Gemini for photo and video analysis (phase 2). Set this **or** `GOOGLE_API_KEY`, not both. If both are set, `GOOGLE_API_KEY` wins. ([Gemini docs](https://ai.google.dev/gemini-api/docs/api-key#set-api-env-var)) |
+| `SENTRY_AUTH_TOKEN` | See the Sentry section above. |
+| `AUTH_SECRET` | Auth.js v5 secret for magic-link sign-in (phase 3). Generate it with `npx auth secret`. ([Auth.js docs](https://authjs.dev/getting-started/migrating-to-v5#environment-variables)) |
