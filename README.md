@@ -39,3 +39,4 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 - [Design notes](docs/Memorial%20Memories%20Site%20initial%20thinking.md)
 - [Environment variables](docs/environment.md)
 - [Bootstrap runbook and decisions](docs/plans/2026-11-02-bootstrap.md)
+- [Bootstrap completion report](docs/plans/2026-11-02-bootstrap-report.md)
