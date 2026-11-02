@@ -116,6 +116,7 @@ Each entry gives what was decided, why, and the cost if it's wrong. Decisions 1â
 9. ~~Commit `docs/voip_ms_262980_jowray-subaccount-settings.md` through its own PR.~~ **Done in this PR, at Rob's request.** The file is added unchanged (sha256 `1e2dcad7â€¦`, no password), and `docs/environment.md` links to it from `DID_JOWRAY`.
 10. Clean up Neon preview branches when PRs close: add a GitHub Action using `neondatabase/delete-branch-action` on `pull_request: closed`, as [Neon's cleanup guide](https://neon.com/docs/guides/vercel-branch-cleanup) recommends. Otherwise, delete a PR's preview deployments after merge. Until then, `preview/docs/bootstrap-report` will persist.
 11. Rob reviews and merges this PR.
+12. Decide how VoIP.ms API calls from Vercel functions get past the account's IP whitelist (`voipms_whitelisted_ip`): a stable egress IP or a relay. This is the open question in the design doc's VoIP.ms note, and it needs an answer before building the SMS agent.
 
 ## What we're not doing, and why (Bucket 3)
 
