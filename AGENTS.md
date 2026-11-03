@@ -35,6 +35,7 @@ lib/            helpers with no layer above them: logger, validations, claim tok
 ```
 
 - `app/ → features/ → services/ → integrations/`. A layer imports only from layers below it plus `lib/` and `server/`. Nothing imports from `app/`. Pages and Server Functions call `features/`; route handlers under `app/api/` may also call `services/` directly (they are the HTTP adapter layer); nothing in `app/` imports `integrations/`. `eslint.config.mjs` enforces this with `no-restricted-imports`. One exception: `integrations/*` may import **types** from `services/*/types` (they implement those interfaces); value imports stay forbidden.
+- `app/_components/` holds shared visitor-facing UI (header, footer, hearts, buttons, field classes). It is a Next.js private folder (not a route), imported only from `app/**` with relative paths, and it never imports `@/server`, `@/integrations` or `server-only` because Client Components use it; `eslint.config.mjs` applies the client-component import rule to it.
 - `integrations/*`, `server/*` and anything that reads secrets start with `import "server-only"`. Tests import them through the Vitest alias to `__tests__/stubs/server-only.ts`.
 - Client Components (by convention `*-form.tsx`, `*-client.tsx`, `recorder.ts`, `app/global-error.tsx`, `instrumentation-client.ts`) never import `@/server` or `@/integrations`; they call Server Functions.
 - Server code logs with Pino (`lib/logger`), never `console.log`. The logger redacts `email`, `recipientEmail`, `name`, `phone` at the top level and up to two levels down (Pino wildcards are one level each), plus cookies and authorization headers. Log ids (`memoryId`, `mediaId`), never Prisma rows or people.
@@ -52,7 +53,7 @@ Next.js 16 with `cacheComponents: true` prerenders whatever it can at build time
 
 ### Checks
 
-`npm run validate` (= `next typegen && tsc --noEmit`, then `eslint`), `npm run test:run`, `npm run build`. All three pass with `DATABASE_URL` unset and the network disabled; the build downloads nothing (fonts come from the `geist` package).
+`npm run validate` (= `next typegen && tsc --noEmit`, then `eslint`), `npm run test:run`, `npm run build:offline` (the build behind `scripts/no-network.mjs`, which refuses non-loopback sockets and DNS lookups on the main thread of every Node process in the build; worker threads and native code are outside it, so it is a strong check, not a proof — `__tests__/scripts/no-network.test.ts` pins its behaviour). All three pass with `DATABASE_URL` unset and no `.env*` file; fonts come from the Fontsource packages.
 
 ### Rules every agent follows
 

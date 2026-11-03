@@ -1,11 +1,24 @@
 "use client";
 
 import { upload } from "@vercel/blob/client";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
 import { CONTACT_OPT_IN_LABEL, IMPLICIT_CONSENT_NOTE } from "@/lib/consent";
+import { formatDuration } from "@/lib/format-duration";
 import { ACCEPT_ATTRIBUTE } from "@/lib/media-types";
 
+import { PrimaryButton, SecondaryButton, TertiaryButton, secondaryButtonClass } from "../_components/buttons";
+import {
+  errorClass,
+  fileInputClass,
+  helperClass,
+  inputClass,
+  labelClass,
+  linkClass,
+  selectClass,
+  textareaClass,
+} from "../_components/field-classes";
+import { SolidHeart } from "../_components/hearts";
 import { createMemory, finalizeUpload } from "./actions";
 import { AudioRecorder, pickRecordingType, type Recording } from "./recorder";
 
@@ -19,44 +32,87 @@ function subscribeNever(): () => void {
   return () => {};
 }
 
-export function ShareForm() {
+export function ShareForm({ intro }: { intro: ReactNode }) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
-  const [recording, setRecording] = useState<Recording | null>(null);
+  const [clip, setClip] = useState<{ recording: Recording; url: string } | null>(null);
+  const clipUrlRef = useRef<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
+  const [recorderError, setRecorderError] = useState<string | null>(null);
   const recorderRef = useRef<AudioRecorder | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
   // Server snapshot is false, client snapshot asks the browser: same markup on
   // both sides at hydration, then the record button appears where supported.
   const canRecord = useSyncExternalStore(subscribeNever, () => pickRecordingType() !== null, () => false);
 
-  // Release the microphone if the contributor navigates away mid-recording.
-  useEffect(() => () => recorderRef.current?.cancel(), []);
+  function replaceClip(next: { recording: Recording; url: string } | null) {
+    if (clipUrlRef.current) {
+      URL.revokeObjectURL(clipUrlRef.current);
+    }
+    clipUrlRef.current = next?.url ?? null;
+    setClip(next);
+  }
+
+  // Release the microphone and playback URL when the contributor navigates away.
+  useEffect(() => () => {
+    recorderRef.current?.cancel();
+    recorderRef.current = null;
+    if (clipUrlRef.current) {
+      URL.revokeObjectURL(clipUrlRef.current);
+      clipUrlRef.current = null;
+    }
+  }, []);
 
   async function toggleRecording() {
+    setRecorderError(null);
     try {
       if (!recorderRef.current) {
         recorderRef.current = new AudioRecorder();
       }
       if (isRecording) {
         const result = await recorderRef.current.stop();
-        setRecording(result);
+        replaceClip({ recording: result, url: URL.createObjectURL(result.blob) });
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
         setIsRecording(false);
       } else {
-        setRecording(null);
-        await recorderRef.current.start();
-        setIsRecording(true);
+        if (isStarting) {
+          return;
+        }
+        setIsStarting(true);
+        try {
+          await recorderRef.current.start();
+          replaceClip(null);
+          if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+          }
+          setIsRecording(true);
+        } finally {
+          setIsStarting(false);
+        }
       }
     } catch (error) {
       setIsRecording(false);
-      setPhase({ kind: "error", message: error instanceof Error ? error.message : "Recording failed" });
+      setRecorderError(error instanceof Error ? error.message : "Recording failed");
     }
+  }
+
+  function resetForm() {
+    recorderRef.current?.cancel();
+    recorderRef.current = null;
+    setIsRecording(false);
+    setRecorderError(null);
+    replaceClip(null);
+    setPhase({ kind: "idle" });
   }
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const picked = form.get("file");
-    const file = recording?.file ?? (picked instanceof File && picked.size > 0 ? picked : null);
+    const file = clip?.recording.file ?? (picked instanceof File && picked.size > 0 ? picked : null);
     setPhase({ kind: "saving" });
 
     let created: Awaited<ReturnType<typeof createMemory>>;
@@ -113,98 +169,172 @@ export function ShareForm() {
   }
 
   if (phase.kind === "done") {
+    const origin = window.location.origin;
+    const mailto = `mailto:?subject=${encodeURIComponent("Tell a Jo story")}&body=${encodeURIComponent(`Jo's family is collecting memories of her. If you knew Jo, tell yours here: ${origin}/`)}`;
+
+    function share(event: React.MouseEvent<HTMLAnchorElement>) {
+      if (typeof navigator.share === "function") {
+        event.preventDefault();
+        void navigator.share({
+          title: "Tell us a Jo story",
+          text: "Jo's family is collecting memories of her.",
+          url: `${origin}/`,
+        }).catch((error: unknown) => {
+          if (error instanceof Error && error.name === "AbortError") {
+            return;
+          }
+          window.location.assign(mailto);
+        });
+      }
+    }
+
     return (
-      <section className="space-y-3">
-        <h2 className="text-xl font-semibold">Saved. Thank you.</h2>
-        {phase.fileStatus === "FAILED" && (
-          <p>The file could not be accepted (wrong type or too large), but your words were saved.</p>
-        )}
-        {phase.fileStatus === "PENDING" && <p>Your file is still being checked; it will appear on your page shortly.</p>}
-        <p>
-          Your private link to see, correct or add to this memory:
-          <br />
-          <a className="underline break-all" href={phase.claimLink}>
-            {phase.claimLink}
-          </a>
-        </p>
-        {phase.emailed && <p>We have also emailed you this link.</p>}
-        <p className="text-sm">Keep this link private: anyone who has it can edit this memory.</p>
+      <section className="flex flex-1 flex-col items-center justify-center px-[max(16px,5%)] pb-20 pt-10">
+        <div className="flex w-full max-w-[760px] flex-col items-center gap-7 text-center">
+          <div className="patchwork rounded-full p-[14px] shadow-[0_12px_26px_rgb(46_36_32/0.18)]">
+            <div className="flex size-[150px] items-center justify-center rounded-full bg-paper">
+              <SolidHeart size={96} stitchColor="#fffdf8" label="A stitched red heart" />
+            </div>
+          </div>
+          <h1 className="font-display text-display-sm font-extrabold sm:text-thanks">Jo would have loved this.</h1>
+          <p className="max-w-[30em] text-lead">
+            Thank you. Your memory is on its way to Richard, Rob and Tracy. We read every single one, usually more than once.
+          </p>
+          <div className="flex flex-wrap justify-center gap-4">
+            <PrimaryButton onClick={resetForm}>Tell another one</PrimaryButton>
+            <a href={mailto} onClick={share} className={secondaryButtonClass}>
+              Send this page to someone who knew Jo
+            </a>
+          </div>
+          <div className="flex flex-col gap-3 text-body">
+            <p>
+              Your private link to see, correct or add to this memory:
+              <br />
+              <a className={`${linkClass} break-all`} href={phase.claimLink}>
+                {phase.claimLink}
+              </a>
+            </p>
+            {phase.emailed && <p>We have also emailed you this link.</p>}
+            {phase.fileStatus === "PENDING" && <p>Your file is still being checked; it will appear on your page shortly.</p>}
+            {phase.fileStatus === "FAILED" && (
+              <p>The file could not be accepted (wrong type or too large), but your words were saved.</p>
+            )}
+            <p className="text-small text-walnut-soft">Keep this link private: anyone who has it can edit this memory.</p>
+          </div>
+          <p className="font-display text-body italic text-walnut-soft">Spelling, as promised, did not count.</p>
+        </div>
       </section>
     );
   }
 
   const busy = phase.kind === "saving";
   return (
-    <form ref={formRef} onSubmit={onSubmit} className="space-y-4" aria-busy={busy}>
-      <label className="block">
-        <span>Your name</span>
-        <input name="name" maxLength={120} className="mt-1 block w-full rounded border p-2" autoComplete="name" />
-      </label>
-      <label className="block">
-        <span>Your relationship (friend, cousin, colleague…)</span>
-        <input name="relationship" maxLength={120} className="mt-1 block w-full rounded border p-2" />
-      </label>
-      <label className="block">
-        <span>Email (optional; we will send you a private link to your memory)</span>
-        <input name="email" type="email" maxLength={254} className="mt-1 block w-full rounded border p-2" autoComplete="email" />
-      </label>
-      <label className="block">
-        <span>Roughly when was this? (for example “Summer 1998”)</span>
-        <input name="approxDateText" maxLength={120} className="mt-1 block w-full rounded border p-2" />
-      </label>
-      <label className="block">
-        <span>Where? (optional)</span>
-        <input name="place" maxLength={200} className="mt-1 block w-full rounded border p-2" />
-      </label>
-      <label className="block">
-        <span>Your memory, in your own words</span>
-        <textarea name="note" rows={6} maxLength={10_000} className="mt-1 block w-full rounded border p-2" />
-      </label>
-
-      <fieldset className="space-y-2">
-        <legend>Add a photo, video or voice recording (optional)</legend>
-        <input name="file" type="file" accept={ACCEPT_ATTRIBUTE} disabled={busy || recording !== null} />
-        {canRecord && (
-          <div className="flex items-center gap-3">
-            <button type="button" onClick={toggleRecording} disabled={busy} className="rounded border px-3 py-1">
-              {isRecording ? "Stop recording" : recording ? "Record again" : "Record a voice memory"}
-            </button>
-            {recording && <span>Recorded {Math.round(recording.durationMs / 1000)} s</span>}
-          </div>
-        )}
-      </fieldset>
-
-      <label className="block">
-        <span>Who can see this?</span>
-        <select name="visibility" defaultValue="FAMILY" className="mt-1 block rounded border p-2">
-          <option value="FAMILY">The family</option>
-          <option value="PUBLIC">Everyone who visits the memorial</option>
-          <option value="PRIVATE">Only me and the family admins</option>
-        </select>
-      </label>
-
-      <label className="flex gap-2">
-        <input name="contactOptIn" type="checkbox" />
-        <span>{CONTACT_OPT_IN_LABEL}</span>
-      </label>
-
-      {phase.kind === "error" && (
-        <p role="alert" className="text-red-700">
-          {phase.message}
-          {phase.claimLink && (
+    <section id="form" className="mx-auto flex w-full max-w-[1200px] flex-wrap items-start gap-x-16 gap-y-10 px-[max(16px,5%)] py-[72px]">
+      <div className="flex min-w-0 flex-[1_1_300px] flex-col gap-[18px]">
+        {intro}
+        <div id="record" className="flex flex-col gap-[10px] rounded-2xl border-[3px] border-dashed border-periwinkle bg-paper px-[22px] py-5">
+          <span className="font-display text-lead font-bold">Rather say it than type it?</span>
+          {canRecord ? (
             <>
-              {" "}
-              <a className="underline break-all" href={phase.claimLink}>
-                {phase.claimLink}
-              </a>
+              <TertiaryButton onClick={toggleRecording} disabled={busy || isStarting}>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" aria-hidden="true" className="flex-none">
+                  <rect x="9" y="3" width="6" height="11" rx="3" />
+                  <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+                </svg>
+                {isStarting ? "Starting…" : isRecording ? "Stop recording" : clip ? "Record again" : "Start recording"}
+              </TertiaryButton>
+              {recorderError && (
+                <p role="alert" className={errorClass}>{recorderError}</p>
+              )}
+              {clip && (
+                <>
+                  <audio controls src={clip.url} className="w-full min-w-0" />
+                  <span className="text-small text-walnut-soft">Recorded {formatDuration(clip.recording.durationMs)}</span>
+                  <SecondaryButton onClick={() => replaceClip(null)} disabled={busy || isRecording || isStarting}>
+                    Remove recording
+                  </SecondaryButton>
+                </>
+              )}
+              <span className="text-small text-walnut-soft">Take your time. You can listen back before you send it.</span>
             </>
+          ) : (
+            <span className="text-small text-walnut-soft">
+              Recording isn&apos;t available in this browser. You can attach a voice memo with the file field instead.
+            </span>
           )}
+        </div>
+      </div>
+      <form
+        ref={formRef}
+        onSubmit={onSubmit}
+        className="flex min-w-0 flex-[1_1_440px] flex-col gap-[22px] rounded-form border-[3px] border-wood-light bg-paper p-8 shadow-form"
+        aria-busy={busy}
+      >
+        <div className="flex flex-wrap gap-5">
+          <label className={`${labelClass} flex-[1_1_200px]`}>
+            <span>Your name</span>
+            <input name="name" maxLength={120} className={inputClass} autoComplete="name" placeholder="Kay Bartholomew" />
+          </label>
+          <label className={`${labelClass} flex-[1_1_200px]`}>
+            <span>Email <span className={helperClass}>(optional · so we can say thank you and send your private link)</span></span>
+            <input name="email" type="email" maxLength={254} className={inputClass} autoComplete="email" placeholder="So we can say thank you" />
+          </label>
+        </div>
+        <label className={labelClass}>
+          <span>How you knew Jo</span>
+          <input name="relationship" maxLength={120} className={inputClass} placeholder="former student · church friend · neighbor · family" />
+        </label>
+        <label className={labelClass}>
+          <span>When is this memory from? <span className={helperClass}>(roughly is fine)</span></span>
+          <input name="approxDateText" maxLength={120} className={inputClass} placeholder="Summer 1985 · Lake George, late 90s · her classroom" />
+        </label>
+        <label className={labelClass}>
+          <span>Where? <span className={helperClass}>(optional)</span></span>
+          <input name="place" maxLength={200} className={inputClass} placeholder="her classroom · Lake George · Broadmead" />
+        </label>
+        <label className={labelClass}>
+          <span>Your memory of Jo</span>
+          <textarea name="note" rows={7} maxLength={10_000} className={textareaClass} placeholder="She once…" />
+        </label>
+        <label className={labelClass}>
+          <span>Add a photo, video or voice recording <span className={helperClass}>(optional)</span></span>
+          <input ref={fileInputRef} name="file" type="file" accept={ACCEPT_ATTRIBUTE} className={fileInputClass} disabled={busy || isRecording || isStarting || clip !== null} />
+        </label>
+        <label className={labelClass}>
+          <span>Who can see this?</span>
+          <select name="visibility" defaultValue="FAMILY" className={selectClass}>
+            <option value="FAMILY">The family</option>
+            <option value="PUBLIC">Everyone who visits the memorial</option>
+            <option value="PRIVATE">Only me and the family admins</option>
+          </select>
+        </label>
+
+        {phase.kind === "error" && (
+          <p role="alert" className={errorClass}>
+            {phase.message}
+            {phase.claimLink && (
+              <>
+                {" "}
+                <a className={`${linkClass} break-all`} href={phase.claimLink}>
+                  {phase.claimLink}
+                </a>
+              </>
+            )}
+          </p>
+        )}
+        <PrimaryButton type="submit" disabled={busy || isRecording || isStarting}>
+          <SolidHeart size={24} fill="#fff" stitch={false} />
+          {busy ? (phase.progress ? `Uploading… ${phase.progress}%` : "Sending…") : "Send this to Jo's family"}
+        </PrimaryButton>
+        <p className="text-small text-walnut-soft">
+          Memories go to Richard, Rob and Tracy first. Later, with your okay, they&apos;ll join a shared collection the whole family can read.
         </p>
-      )}
-      <button type="submit" disabled={busy || isRecording} className="rounded bg-black px-4 py-2 text-white">
-        {busy ? (phase.progress ? `Uploading… ${phase.progress}%` : "Saving…") : "Share this memory"}
-      </button>
-      <p className="text-sm">{IMPLICIT_CONSENT_NOTE}</p>
-    </form>
+        <label className="flex items-start gap-3 text-small">
+          <input name="contactOptIn" type="checkbox" className="mt-1 size-6 accent-jo-red" />
+          <span>{CONTACT_OPT_IN_LABEL}</span>
+        </label>
+        <p className="text-small text-walnut-soft">{IMPLICIT_CONSENT_NOTE}</p>
+      </form>
+    </section>
   );
 }

@@ -4,12 +4,22 @@ import { ShareForm } from "./share-form";
 // finalizeUpload() and the inline checksum in after().
 export const maxDuration = 120;
 
+function Intro() {
+  return (
+    <>
+      <h1 className="font-display text-h2-sm font-bold sm:text-h2">Write it down here.</h1>
+      <p className="text-body">
+        Tell us who you are and roughly when the memory is from — &quot;her classroom, 1970s&quot; or
+        {" "}&quot;Christmas 2019&quot; is plenty. Then tell the story the way you&apos;d tell it at her kitchen table.
+      </p>
+    </>
+  );
+}
+
 export default function SharePage() {
   return (
-    <main className="mx-auto max-w-xl p-6 space-y-6">
-      <h1 className="text-2xl font-semibold">Share a memory</h1>
-      <p>A voice recording, a video, a photo, or a few words. Everything is kept exactly as you send it.</p>
-      <ShareForm />
+    <main className="flex flex-1 flex-col">
+      <ShareForm intro={<Intro />} />
     </main>
   );
 }

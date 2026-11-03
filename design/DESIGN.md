@@ -12,7 +12,7 @@ What's in this folder:
 | `tokens.css` | Tailwind 4 `@theme` block + base rules, ready for `app/globals.css` |
 | `reference/home.html` | The home page comp (desktop 1280, fluid to 390). Open it in a browser. |
 | `reference/thank-you.html` | The post-submit state |
-| `reference/jo-santa.jpg` | The one Phase 1 photo (hero) |
+| `reference/jo-santa.jpg` | moved to `public/photos/jo-santa.jpg` (served by the app; the comp references it there) |
 | `reference/heart-stitched.svg` | The mark: running-stitch outline heart |
 | `reference/heart-solid.svg` | Solid calico heart (favicon / avatar / thank-you) |
 

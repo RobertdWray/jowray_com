@@ -1,26 +1,105 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@theme {
+  /* Palette — see DESIGN.md § Color for where each one is allowed */
+  --color-jo-red: #c8102e;        /* primary; hearts are always this */
+  --color-jo-red-deep: #a50d26;   /* text-size red (links, icons) — passes 4.5:1 on muslin */
+  --color-jo-red-shadow: #7d0a1e; /* the "stitched" drop shadow under red buttons */
+  --color-periwinkle: #5b7db1;    /* decor only: gingham, patchwork, dashed borders */
+  --color-periwinkle-deep: #3f5f94; /* periwinkle at text/button size */
+  --color-periwinkle-shadow: #26406a;
+  --color-goldenrod: #e8a317;     /* accent (pill, patchwork); never text on muslin; not the focus ring (contrast) */
+  --color-sunhat-pink: #e0457b;   /* rare accent */
+  --color-plum: #6b3a5b;          /* rare accent; usable as text */
+  --color-lake-green: #3f7d4e;    /* section ground (white text on it); not text on muslin */
+  --color-muslin: #f6efe3;        /* page ground */
+  --color-paper: #fffdf8;         /* cards, form, photo mounts */
+  --color-wood: #8a7259;          /* input borders, dashed outlines */
+  --color-wood-light: #e9d9c0;    /* card borders and card drop shadows */
+  --color-walnut: #2e2420;        /* all body text; never pure black */
+  --color-walnut-soft: #5a4a3e;   /* secondary text (passes 7:1 on muslin) */
+
+  /* Type — self-host, see DESIGN.md § Fonts */
+  --font-display: "Fraunces Variable", "Fraunces", Georgia, serif;
+  --font-body: "Atkinson Hyperlegible", system-ui, sans-serif;
+
+  /* Type scale (desktop; phone scales the two biggest down) */
+  --text-display: 68px;
+  --text-display--line-height: 1.02;
+  --text-display--letter-spacing: -0.02em;
+  --text-h2: 44px;
+  --text-h2--line-height: 1.1;
+  --text-h2--letter-spacing: -0.015em;
+  --text-card-title: 28px;
+  --text-card-title--line-height: 1.1;
+  --text-lead: 22px;
+  --text-lead--line-height: 1.5;
+  --text-body: 20px;
+  --text-body--line-height: 1.5;
+  --text-label: 19px;
+  --text-small: 17px;             /* the floor; nothing smaller anywhere */
+  --text-small--line-height: 1.45;
+
+  /* Radii */
+  --radius-button: 14px;
+  --radius-card: 18px;
+  --radius-input: 12px;
+  --radius-form: 20px;
+
+  /* Shadows: a flat "stitched-on" offset, never a blur, except the photo mount */
+  --shadow-button-red: 0 5px 0 #7d0a1e;
+  --shadow-button-periwinkle: 0 5px 0 #26406a;
+  --shadow-card-red: 0 6px 0 #7d0a1e;
+  --shadow-card: 0 6px 0 #e9d9c0;
+  --shadow-form: 0 8px 0 #e9d9c0;
+  --shadow-photo: 0 14px 30px rgb(46 36 32 / 0.18);
+
+  /* Touch targets */
+  --spacing-tap: 56px;            /* inputs, secondary buttons */
+  --spacing-tap-lg: 64px;         /* primary buttons */
+
+  --text-display-sm: 44px;
+  --text-display-sm--line-height: 1.02;
+  --text-display-sm--letter-spacing: -0.02em;
+  --text-h2-sm: 34px;
+  --text-h2-sm--line-height: 1.1;
+  --text-h2-sm--letter-spacing: -0.015em;
+  --text-thanks: 60px;              /* thank-you h1, desktop */
+  --text-thanks--line-height: 1.05;
+  --text-thanks--letter-spacing: -0.02em;
+  --shadow-card-hover: 0 10px 0 #e9d9c0;
+  --shadow-card-red-hover: 0 10px 0 #7d0a1e;
+  --shadow-pill: 0 3px 0 #7d0a1e;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  body {
+    background-color: var(--color-muslin);
+    background-image:
+      linear-gradient(rgb(91 125 177 / 0.08) 50%, transparent 50%),
+      linear-gradient(90deg, rgb(91 125 177 / 0.08) 50%, transparent 50%);
+    background-size: 36px 36px;
+    color: var(--color-walnut);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
+    line-height: var(--text-body--line-height);
+  }
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--color-wood);
+  }
+  :is(input, textarea, select, button, a):focus-visible {
+    outline: 3px solid var(--color-walnut);
+    outline-offset: 2px;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Patchwork frame (hero photo, thank-you ring) */
+@utility patchwork {
+  background-color: var(--color-jo-red);
+  background-image:
+    linear-gradient(45deg, #5b7db1 25%, transparent 25%, transparent 75%, #5b7db1 75%),
+    linear-gradient(45deg, #e8a317 25%, transparent 25%, transparent 75%, #e8a317 75%);
+  background-size: 32px 32px;
+  background-position: 0 0, 16px 16px;
 }
