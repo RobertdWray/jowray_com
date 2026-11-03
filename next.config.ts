@@ -1,3 +1,4 @@
+import { withSentryConfig } from "@sentry/nextjs/config";
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
@@ -23,4 +24,15 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withSentryConfig(nextConfig, {
+  org: "med3ai",
+  project: "jowray_com",
+  // Route browser events through this app so ad blockers do not drop them.
+  tunnelRoute: "/monitoring",
+  telemetry: false,
+  // Only CI and Vercel builds print upload logs.
+  silent: !process.env.CI,
+  // Without SENTRY_AUTH_TOKEN (local and worker builds) no source maps are
+  // uploaded and the build stays quiet and deterministic.
+  sourcemaps: { disable: !process.env.SENTRY_AUTH_TOKEN },
+});

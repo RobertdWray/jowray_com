@@ -60,14 +60,17 @@ Authoritative record of what has already happened. Read every copy (main, open P
 - Checks passed: `npm run validate`, `npm run test:run` (12/12), `npm run build` with `DATABASE_URL` unset and remote network blocked (Node-level `dns.lookup`/`net.connect` blocker via `NODE_OPTIONS`; `sandbox-exec` is unusable because Turbopack's loader IPC port binding fails under any profile). Only blocked hosts during the build: `registry.npmjs.org` (npm update check) and `telemetry.nextjs.org`, both non-fatal. `AGENTS.md` updated from `docs/code-layout.md`.
 
 ## Task 3 — Database
-- Status: [ ]   Owner: orchestrator   Branch/PR: B
-- External IDs: migration phase1_init; Vercel env MEMORIAL_NAME / MEMORIAL_SLUG / CONSENT_VERSION (production, preview)
-- Checks passed: —
+- Status: [~]   Owner: orchestrator   Branch/PR: B `feat/phase1-data-observability` (stacked on A)
+- External IDs: migration `20261103022414_phase1_init` applied to Neon `dev` (`br-holy-rice-bbz4t50l`) on 2026-11-03; Vercel env MEMORIAL_NAME / MEMORIAL_SLUG / CONSENT_VERSION: **pending Rob's values** (not yet added; `vercel.json` is therefore not yet committed, per Task 3 step 7).
+- Checks passed (2026-11-03): `npx prisma migrate deploy` twice → "No pending migrations to apply."; seed three times with placeholder values (`Seed Test` / `seed-test`) → one Memorial + one Person, a manual `born` edit survives the third run; 10 tables in `public`; `npm run validate`, `npm run test:run` (12/12), `npm run build` with `DATABASE_URL` unset and remote network blocked; `npm run lint` passes with `generated/` present. The placeholder Memorial and Person rows were deleted afterwards (0 rows of each on `dev`; the migration stays applied).
+- Plan deviation: the plan's single-line enum blocks (`enum X { A B }`) are not valid Prisma; written one value per line (same values).
 
 ## Task 4 — Sentry 11
-- Status: [ ]   Owner: orchestrator + Rob   Branch/PR: B
-- External IDs: Sentry org token (name) …; Vercel env SENTRY_AUTH_TOKEN (production, preview)
-- Checks passed: —
+- Status: [~]   Owner: orchestrator + Rob   Branch/PR: B
+- Done 2026-11-03: manual install (no wizard): `instrumentation.ts` (init inside `register()` for `nodejs` only, `prismaIntegration` + `pinoIntegration`, explicit `dataCollection`, URL scrubbing hooks, `onRequestError`), `instrumentation-client.ts` (same `dataCollection` and scrubbing, no Replay, `onRouterTransitionStart`), `app/global-error.tsx`, `next.config.ts` wrapped with `withSentryConfig` from `@sentry/nextjs/config` (`tunnelRoute: "/monitoring"`, `telemetry: false`, `silent: !CI`, `sourcemaps.disable` without `SENTRY_AUTH_TOKEN`), `lib/sentry/scrub.ts` + `lib/sentry/data-collection.ts` with tests.
+- Plan deviations: SDK v11 has no `enableLogs` option (logs are on by default; the v10 option was removed), so it is not set. `dataCollection` keys used: `userInfo`, `cookies`, `urlQueryParams`, `databaseQueryData`, `httpBodies`, `httpHeaders`, `genAI`, `stackFrameVariables` (all present in the installed `@sentry/core@11.10.0` types).
+- Waiting on Rob: Sentry **organization** token (`org:ci`) → orchestrator adds `SENTRY_AUTH_TOKEN` to Vercel Production + Preview; step 6 UI checks (test error without query string/cookies, Pino warn in Logs, source maps in the build log).
+- Checks passed: `npm ls @sentry/nextjs` → 11.10.0; `git ls-files | grep -c sentry-build-plugin` → 0; validate, 17/17 tests, offline build without `SENTRY_AUTH_TOKEN` is quiet. Pending: `vercel env ls` shows `SENTRY_AUTH_TOKEN`; step 6 confirmations.
 
 ## Task 5 — Storage + email services
 - Status: [ ]   Owner: split   Branch/PR: C   Worktree: …   Head: …

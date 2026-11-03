@@ -45,3 +45,6 @@ next-env.d.ts
 
 # reference code copied into worker worktrees (never committed)
 /.reference/
+
+# agent scratch workspace (superpowers plan ledgers, logs)
+/.superpowers/
