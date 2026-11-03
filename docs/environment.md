@@ -42,7 +42,7 @@ The integration was provisioned with Neon Auth and Realtime **off**, so `NEON_AU
 | Key | Purpose |
 |---|---|
 | `NEXT_PUBLIC_SENTRY_DSN` | The DSN for Sentry project `med3ai/jowray_com` (API host `https://us.sentry.io`). It holds a **real value**: DSNs aren't secrets. ([Sentry docs](https://docs.sentry.io/security-legal-pii/security/token-formats/#excluding-dsns), [Next.js SDK](https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/#initialize-sentry-sdks)) |
-| `SENTRY_AUTH_TOKEN` | **Placeholder (empty).** Reserved for a future **organization** token (`org:ci`) that uploads source maps from CI or Vercel builds. ([Sentry docs](https://docs.sentry.io/platforms/javascript/guides/nextjs/#add-readable-stack-traces-with-source-maps)) |
+| `SENTRY_AUTH_TOKEN` | **Placeholder (empty) locally; set in Vercel only.** A Sentry **organization** token (`org:ci`) that lets Vercel builds upload source maps. It is never copied into local `.env`, so local and worker builds skip the upload (`sourcemaps.disable` in `next.config.ts`). ([Sentry docs](https://docs.sentry.io/platforms/javascript/guides/nextjs/#add-readable-stack-traces-with-source-maps)) |
 
 ## Phase 1: orchestrator and CI keys
 

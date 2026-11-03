@@ -66,9 +66,11 @@ Authoritative record of what has already happened. Read every copy (main, open P
 - Plan deviation: the plan's single-line enum blocks (`enum X { A B }`) are not valid Prisma; written one value per line (same values).
 
 ## Task 4 — Sentry 11
-- Status: [ ]   Owner: orchestrator + Rob   Branch/PR: B
-- External IDs: Sentry org token (name) …; Vercel env SENTRY_AUTH_TOKEN (production, preview)
-- Checks passed: —
+- Status: [~]   Owner: orchestrator + Rob   Branch/PR: B
+- Done 2026-11-03: manual install (no wizard): `instrumentation.ts` (init inside `register()` for `nodejs` only, `prismaIntegration` + `pinoIntegration`, explicit `dataCollection`, URL scrubbing hooks, `onRequestError`), `instrumentation-client.ts` (same `dataCollection` and scrubbing, no Replay, `onRouterTransitionStart`), `app/global-error.tsx`, `next.config.ts` wrapped with `withSentryConfig` from `@sentry/nextjs/config` (`tunnelRoute: "/monitoring"`, `telemetry: false`, `silent: !CI`, `sourcemaps.disable` without `SENTRY_AUTH_TOKEN`), `lib/sentry/scrub.ts` + `lib/sentry/data-collection.ts` with tests.
+- Plan deviations: SDK v11 has no `enableLogs` option (logs are on by default; the v10 option was removed), so it is not set. `dataCollection` keys used: `userInfo`, `cookies`, `urlQueryParams`, `databaseQueryData`, `httpBodies`, `httpHeaders`, `genAI`, `stackFrameVariables` (all present in the installed `@sentry/core@11.10.0` types).
+- Waiting on Rob: Sentry **organization** token (`org:ci`) → orchestrator adds `SENTRY_AUTH_TOKEN` to Vercel Production + Preview; step 6 UI checks (test error without query string/cookies, Pino warn in Logs, source maps in the build log).
+- Checks passed: `npm ls @sentry/nextjs` → 11.10.0; `git ls-files | grep -c sentry-build-plugin` → 0; validate, 17/17 tests, offline build without `SENTRY_AUTH_TOKEN` is quiet. Pending: `vercel env ls` shows `SENTRY_AUTH_TOKEN`; step 6 confirmations.
 
 ## Task 5 — Storage + email services
 - Status: [ ]   Owner: split   Branch/PR: C   Worktree: …   Head: …
