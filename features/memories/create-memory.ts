@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { confirmQuietly } from "@/features/memories/ingest-upload";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
-import { extensionFor, maxBytesFor, memoryTypeFor, normalizeMime } from "@/lib/media-types";
+import { extensionFor, MAX_FILES_PER_MEMORY, maxBytesFor, memoryTypeFor, normalizeMime } from "@/lib/media-types";
 import { storagePrefix } from "@/lib/site-url";
 import { mintUploadTicket, type UploadTicket } from "@/lib/upload-ticket";
 import { createMemoryInputSchema, type FileInput, uploadTicketRequestSchema } from "@/lib/validations/memory";
@@ -14,7 +14,8 @@ import { getDb } from "@/server/db/client";
 
 const log = createLogger({ category: "upload" });
 
-export const MAX_FILES_PER_MEMORY = 10;
+/** Re-exported for existing callers; the constant lives in lib/media-types so validation can import it. */
+export { MAX_FILES_PER_MEMORY };
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Neon computes can take a couple of seconds to wake; Prisma's defaults (2 s / 5 s) are too tight. */
 const TX_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;

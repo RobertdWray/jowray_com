@@ -5,9 +5,11 @@ import {
   extensionFor,
   isAllowedMime,
   isRenderableIn,
+  MAX_FILES_PER_MEMORY,
   maxBytesFor,
   memoryTypeFor,
   normalizeMime,
+  summarizeMemoryType,
 } from "@/lib/media-types";
 
 describe("normalizeMime", () => {
@@ -85,5 +87,26 @@ describe("prototype-safe lookups", () => {
     expect(normalizeMime("constructor", "x")).toBeNull();
     expect(isAllowedMime("__proto__")).toBe(false);
     expect(() => maxBytesFor("constructor")).toThrow(/Unsupported/);
+  });
+});
+
+describe("summarizeMemoryType", () => {
+  it("exports the per-memory file cap for validation to import without reaching into features/", () => {
+    expect(MAX_FILES_PER_MEMORY).toBe(10);
+  });
+
+  it("ranks live media VIDEO over VOICE over PHOTO", () => {
+    expect(summarizeMemoryType([{ mimeType: "image/jpeg" }, { mimeType: "audio/mp4" }], false)).toBe("VOICE");
+    expect(summarizeMemoryType([{ mimeType: "audio/mp4" }, { mimeType: "video/quicktime" }, { mimeType: "image/heic" }], true)).toBe("VIDEO");
+    expect(summarizeMemoryType([{ mimeType: "image/png" }], false)).toBe("PHOTO");
+  });
+
+  it("is TEXT when no live media remains but words do, and null when neither does", () => {
+    expect(summarizeMemoryType([], true)).toBe("TEXT");
+    expect(summarizeMemoryType([], false)).toBeNull();
+  });
+
+  it("ignores media whose type is not on the allowlist", () => {
+    expect(summarizeMemoryType([{ mimeType: "text/html" }], true)).toBe("TEXT");
   });
 });
