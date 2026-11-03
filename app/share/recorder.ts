@@ -45,6 +45,9 @@ export class AudioRecorder {
       this.finished = new Promise<Recording>((resolve, reject) => {
         this.settle = { resolve, reject };
       });
+      // A rejection (cancel, OS error) is observed by whoever calls stop();
+      // keep an unobserved one from surfacing as an unhandled rejection.
+      this.finished.catch(() => {});
       recorder.ondataavailable = (event: BlobEvent) => {
         if (event.data.size > 0) {
           this.chunks.push(event.data);
@@ -60,17 +63,20 @@ export class AudioRecorder {
     }
   }
 
-  /** Resolves with the recording; works whether we or the OS stopped it. */
+  /**
+   * Resolves with the recording. If the OS already stopped the recorder
+   * (`onstop` ran), the clip is waiting in `finished`; if it is still
+   * recording, `stop()` lets the final `dataavailable` + `stop` events
+   * finish it. A second tap just returns the same promise (never truncates).
+   */
   stop(): Promise<Recording> {
-    const recorder = this.recorder;
     const finished = this.finished;
-    if (!recorder || !finished) {
+    if (!finished) {
       return Promise.reject(new Error("Not recording"));
     }
-    if (recorder.state !== "inactive") {
+    const recorder = this.recorder;
+    if (recorder && recorder.state !== "inactive") {
       recorder.stop();
-    } else {
-      this.finish();
     }
     return finished;
   }
@@ -92,6 +98,11 @@ export class AudioRecorder {
     return this.recorder?.state === "recording";
   }
 
+  /** True once the OS or an error stopped the recorder before `stop()` was called. */
+  get hasFinishedClip(): boolean {
+    return this.finished !== null && this.recorder === null;
+  }
+
   private finish(error?: Error): void {
     const recorder = this.recorder;
     const settle = this.settle;
@@ -102,7 +113,7 @@ export class AudioRecorder {
     const blob = new Blob(this.chunks, { type: mimeType });
     const durationMs = Date.now() - this.startedAt;
     this.release();
-    this.settle = null;
+    this.settle = null; // `finished` stays until the next start()/cancel()
     if (error || blob.size === 0) {
       settle.reject(error ?? new Error("Nothing was recorded"));
       return;

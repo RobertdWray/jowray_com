@@ -102,3 +102,11 @@ describe("scrubLog", () => {
     expect(log.attributes?.count).toBe(2);
   });
 });
+
+describe("scrubUrl leaves ordinary text alone", () => {
+  it("does not strip punctuation from messages without tokens", () => {
+    expect(scrubUrl("Is the upload done?")).toBe("Is the upload done?");
+    expect(scrubUrl("Tom & Jerry")).toBe("Tom & Jerry");
+    expect(scrubUrl("/share?utm=1&st=2")).toBe("/share?utm=1&st=2");
+  });
+});

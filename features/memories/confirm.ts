@@ -2,7 +2,7 @@ import "server-only";
 
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { consentTextFor } from "@/lib/consent";
-import { createLogger, logError } from "@/lib/logger";
+import { createLogger } from "@/lib/logger";
 import { getSiteUrl } from "@/lib/site-url";
 import { getMemorialEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
@@ -21,8 +21,9 @@ export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "
  * callers (createMemory, finalizeUpload) pass it in. The reconcile cron has
  * only the hash, so when `claimToken` is omitted the token is rotated: a
  * fresh one is minted, the email carries the new link, and its hash replaces
- * the old one only after the send succeeded. An emailed link therefore
- * supersedes the on-screen one, and a skipped or failed send changes nothing.
+ * the old one in the same transaction that records SENT. An emailed link
+ * therefore supersedes the on-screen one (ledger ruling), and a skipped or
+ * failed send changes nothing.
  */
 export async function confirmMemory({ memoryId, claimToken }: { memoryId: string; claimToken?: string }): Promise<ConfirmResult> {
   const db = getDb();
@@ -55,6 +56,9 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
   const token = claimToken ?? newClaimToken();
 
   const { CONSENT_VERSION } = getMemorialEnv();
+  // Cron path: the service writes the new hash together with SENT in one
+  // transaction, so a skipped or failed send changes nothing and a delivered
+  // email never points at an unsaved hash.
   const result = await sendMemoryConfirmation({
     memoryId,
     to: email,
@@ -62,25 +66,10 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
     received: { type: memory.type, fileCount: readyCount },
     claimLink: `${getSiteUrl()}/m/${token}`,
     usageSentence: consentTextFor(CONSENT_VERSION).usage,
+    ...(rotating && { rotateToClaimTokenHash: hashClaimToken(token) }),
   });
-
-  // Cron path: the new token is persisted only once the email actually went
-  // out, so a skipped or failed send never invalidates the link the
-  // contributor already has on screen.
   if (rotating && result.sent) {
-    try {
-      await db.memory.update({ where: { id: memoryId }, data: { claimTokenHash: hashClaimToken(token) } });
-      log.info({ action: "token_rotated", memoryId }, "claim token rotated for an emailed link");
-    } catch (error) {
-      // The email carries a token whose hash was not saved: put the row back
-      // to FAILED so the cron sends a fresh link instead of leaving a dead one.
-      await db.emailLog.updateMany({
-        where: { memoryId, emailType: "MEMORY_CONFIRMATION", status: "SENT" },
-        data: { status: "FAILED", attempts: { increment: 1 }, nextAttemptAt: new Date(Date.now() + 15 * 60 * 1000), errorMessage: "rotated claim token could not be persisted" },
-      });
-      logError("rotated claim token not persisted after send", error, { category: "email", memoryId });
-      return { sent: false, skipped: "failed", error: "rotated claim token could not be persisted" };
-    }
+    log.info({ action: "token_rotated", memoryId }, "claim token rotated for an emailed link");
   }
   return result;
 }

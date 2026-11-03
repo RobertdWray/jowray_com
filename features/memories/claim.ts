@@ -25,7 +25,12 @@ export const claimChangesSchema = z.object({
   relationship: optional(120),
   approxDateText: optional(120),
   place: optional(200),
-  note: z.string().max(10_000).nullable().optional(),
+  note: z
+    .string()
+    .max(10_000)
+    .transform((v) => (v.trim().length === 0 ? null : v))
+    .nullable()
+    .optional(),
   visibility: z.enum(["PUBLIC", "FAMILY", "PRIVATE"]).optional(),
 });
 export type ClaimChanges = z.infer<typeof claimChangesSchema>;

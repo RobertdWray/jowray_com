@@ -23,7 +23,10 @@ interface Row {
   updatedAt: Date;
 }
 const rows: Row[] = [];
+const memoryUpdateMock = vi.fn(async (_arg: unknown) => ({}));
 const dbStub = {
+  $transaction: vi.fn(async (ops: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) => (typeof ops === "function" ? ops(dbStub) : Promise.all(ops))),
+  memory: { update: (arg: unknown) => memoryUpdateMock(arg) },
   emailLog: {
     findUnique: vi.fn(async ({ where }: { where: { memoryId_emailType: { memoryId: string } } }) =>
       rows.find((r) => r.memoryId === where.memoryId_emailType.memoryId) ?? null
@@ -31,6 +34,14 @@ const dbStub = {
     count: vi.fn(async ({ where }: { where: { recipientEmail: string; createdAt?: { gte: Date }; updatedAt?: { gte: Date }; status?: { in: Row["status"][] } } }) =>
       rows.filter((r) => r.recipientEmail === where.recipientEmail && (where.updatedAt ?? where.createdAt)!.gte <= r.updatedAt && (!where.status || where.status.in.includes(r.status))).length
     ),
+    create: vi.fn(async ({ data }: { data: Pick<Row, "memoryId" | "recipientEmail" | "emailType" | "status"> & { errorMessage?: string } }) => {
+      if (rows.some((r) => r.memoryId === data.memoryId)) {
+        throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+      }
+      const row: Row = { id: `log_${rows.length + 1}`, createdAt: new Date(), updatedAt: new Date(), attempts: 0, nextAttemptAt: null, errorMessage: null, sendgridMessageId: null, sentAt: null, ...data };
+      rows.push(row);
+      return row;
+    }),
     upsert: vi.fn(async ({ where, create }: { where: { memoryId_emailType: { memoryId: string } }; create: Pick<Row, "memoryId" | "recipientEmail" | "emailType" | "status"> }) => {
       const existing = rows.find((r) => r.memoryId === where.memoryId_emailType.memoryId);
       if (existing) {
@@ -241,5 +252,23 @@ describe("stranded and racing rows", () => {
     const result = await sendMemoryConfirmation({ ...base, memoryId: "mem_x", to: "stranger@example.net" });
     expect(result.sent).toBe(false);
     expect(rows[0]?.status).toBe("SENDING");
+  });
+});
+
+describe("rotated token bookkeeping", () => {
+  it("writes SENT and the new claim hash in one transaction when a rotated hash is supplied", async () => {
+    memoryUpdateMock.mockClear();
+    const result = await sendMemoryConfirmation({ ...base, rotateToClaimTokenHash: "f".repeat(64) });
+    expect(result.sent).toBe(true);
+    expect(dbStub.$transaction).toHaveBeenCalled();
+    expect(memoryUpdateMock).toHaveBeenCalledWith(expect.objectContaining({ data: { claimTokenHash: "f".repeat(64) } }));
+    expect(rows[0]?.status).toBe("SENT");
+  });
+
+  it("retries the SENT bookkeeping before giving up", async () => {
+    dbStub.emailLog.update.mockRejectedValueOnce(new Error("blip 1")).mockRejectedValueOnce(new Error("blip 2"));
+    const result = await sendMemoryConfirmation(base);
+    expect(result.sent).toBe(true);
+    expect(rows[0]?.status).toBe("SENT");
   });
 });

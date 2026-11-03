@@ -60,11 +60,9 @@ export async function sendMemoryConfirmation(input: MemoryConfirmationInput): Pr
     // Create the terminal row if there is none; otherwise only move rows that
     // nobody is sending (never SENDING or SENT, which a concurrent caller may
     // have reached since `existing` was read).
-    await db.emailLog.upsert({
-      where: key,
-      create: { memoryId: input.memoryId, recipientEmail: recipient, emailType: EMAIL_TYPE, status: "SKIPPED", errorMessage: reason },
-      update: {},
-    });
+    if (!existing) {
+      await createOrLoad(input.memoryId, recipient);
+    }
     await db.emailLog.updateMany({
       where: { memoryId: input.memoryId, emailType: EMAIL_TYPE, status: { in: ["PENDING", "FAILED", "SKIPPED"] } },
       data: { status: "SKIPPED", errorMessage: reason },
@@ -90,11 +88,9 @@ export async function sendMemoryConfirmation(input: MemoryConfirmationInput): Pr
     return skip("recipient_capped");
   }
 
-  const row = await db.emailLog.upsert({
-    where: key,
-    create: { memoryId: input.memoryId, recipientEmail: recipient, emailType: EMAIL_TYPE, status: "PENDING" },
-    update: {},
-  });
+  // Create the row only when there is none: an upsert with an empty update
+  // could still touch `updatedAt`, which the stale-claim rule below relies on.
+  const row = existing ?? (await createOrLoad(input.memoryId, recipient));
   const claimed = await db.emailLog.updateMany({
     where: {
       id: row.id,
@@ -130,15 +126,48 @@ export async function sendMemoryConfirmation(input: MemoryConfirmationInput): Pr
     return { sent: false, skipped: "failed", error: message };
   }
 
-  // The email is out. Bookkeeping problems are reported, never turned into a resend.
+  // The email is out. Record SENT (and the rotated claim hash, atomically);
+  // retry the bookkeeping a few times before leaving the row SENDING, which
+  // the stale-claim rule would otherwise re-send after 15 minutes.
+  const sentData = { status: "SENT" as const, sentAt: new Date(), sendgridMessageId: messageId ?? null, errorMessage: null };
+  let recorded = false;
+  for (let attempt = 1; attempt <= 3 && !recorded; attempt += 1) {
+    try {
+      if (input.rotateToClaimTokenHash) {
+        await db.$transaction([
+          db.emailLog.update({ where: { id: row.id }, data: sentData }),
+          db.memory.update({ where: { id: input.memoryId }, data: { claimTokenHash: input.rotateToClaimTokenHash } }),
+        ]);
+      } else {
+        await db.emailLog.update({ where: { id: row.id }, data: sentData });
+      }
+      recorded = true;
+    } catch (error) {
+      if (attempt === 3) {
+        logError("confirmation sent but could not be recorded as SENT", error, { category: "email", memoryId: input.memoryId });
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
+      }
+    }
+  }
+  log.info({ action: "sent", memoryId: input.memoryId, recorded }, "confirmation sent");
+  return { sent: true, messageId };
+}
+
+/** The row for this memory, creating it when absent; a concurrent creator's row is loaded instead. */
+async function createOrLoad(memoryId: string, recipient: string) {
+  const db = getDb();
   try {
-    await db.emailLog.update({
-      where: { id: row.id },
-      data: { status: "SENT", sentAt: new Date(), sendgridMessageId: messageId ?? null, errorMessage: null },
+    return await db.emailLog.create({
+      data: { memoryId, recipientEmail: recipient, emailType: EMAIL_TYPE, status: "PENDING" },
     });
   } catch (error) {
-    logError("confirmation sent but could not be recorded as SENT", error, { category: "email", memoryId: input.memoryId });
+    if (typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "P2002") {
+      const row = await db.emailLog.findUnique({ where: { memoryId_emailType: { memoryId, emailType: EMAIL_TYPE } } });
+      if (row) {
+        return row;
+      }
+    }
+    throw error;
   }
-  log.info({ action: "sent", memoryId: input.memoryId }, "confirmation sent");
-  return { sent: true, messageId };
 }

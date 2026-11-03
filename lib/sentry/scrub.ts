@@ -24,9 +24,12 @@ const CLAIM_PATH = /\/m\/[A-Za-z0-9_-]{16,}/g;
 const TOKEN_QUERY = /(^|[?&])t=[^&#\s]*(?=[&#\s]|$)/g;
 
 export function scrubUrl(url: string): string {
-  return url
-    .replace(CLAIM_PATH, "/m/[claimToken]")
-    .replace(TOKEN_QUERY, "$1")
+  const withoutPath = url.replace(CLAIM_PATH, "/m/[claimToken]");
+  const withoutToken = withoutPath.replace(TOKEN_QUERY, "$1");
+  if (withoutToken === withoutPath) {
+    return withoutToken; // nothing removed: leave punctuation in ordinary text alone
+  }
+  return withoutToken
     .replace(/\?&+/g, "?")
     .replace(/&&+/g, "&")
     .replace(/[?&](?=[#\s]|$)/g, "")

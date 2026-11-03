@@ -59,6 +59,11 @@ describe("updateMemoryFromClaim", () => {
     expect(revisions[0]!.after).toMatchObject({ approxDateText: "Autumn 1998", contributorNote: "new note", name: "Jo Friend", consentVersion: "2026-11-v1" });
   });
 
+  it("stores an emptied note as null so nothing selects on an empty string", async () => {
+    await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "   " } });
+    expect(memory!.contributorNote).toBeNull();
+  });
+
   it("rejects a wrong token, a deleted memory and invalid input without writing", async () => {
     expect(await updateMemoryFromClaim({ claimToken: "x".repeat(43), changes: { note: "x" } })).toEqual({ ok: false, code: "not_found" });
     expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { visibility: "EVERYONE" } })).toEqual({ ok: false, code: "invalid" });

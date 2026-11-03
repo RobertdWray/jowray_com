@@ -11,15 +11,33 @@ permissions:
 
 jobs:
   delete-preview-branch:
-    # Forks have no NEON_API_KEY; docs-only PRs may never have had a preview branch.
+    # Forks have no NEON_API_KEY.
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    env:
+      NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      BRANCH_NAME: preview/${{ github.head_ref }}
     steps:
-      - uses: neondatabase/delete-branch-action@v3
-        # The action exits non-zero when the branch is already gone (Neon's own
-        # cleanup or a PR without a deployment); that is not a failure here.
-        continue-on-error: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - name: Does the preview branch exist?
+        id: lookup
+        # Auth or project errors fail here (visibly); only a genuinely absent
+        # branch skips the delete step.
+        run: |
+          set -euo pipefail
+          npx --yes neonctl@2 branches list --project-id "$NEON_PROJECT_ID" --api-key "$NEON_API_KEY" --output json > branches.json
+          if node -e 'const b=require("./branches.json"); process.exit(b.some(x=>x.name===process.env.BRANCH_NAME)?0:1)'; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "No Neon branch named $BRANCH_NAME; nothing to delete."
+          fi
+      - if: steps.lookup.outputs.exists == 'true'
+        uses: neondatabase/delete-branch-action@v3
         with:
           project_id: ${{ vars.NEON_PROJECT_ID }}
-          branch: preview/${{ github.head_ref }}
+          branch: ${{ env.BRANCH_NAME }}
           api_key: ${{ secrets.NEON_API_KEY }}
