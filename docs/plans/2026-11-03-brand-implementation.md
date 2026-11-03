@@ -449,11 +449,11 @@ Record each V result (date, pass/fail, note) in Progress.
 
 ## Progress
 
-- [ ] Step 0: branch asserted, merged PR 14 branch, `npm ci`, baselines recorded (tests: __, validate: __, build: __), plan copied to `docs/plans/`, commit __
-- [ ] Step 1: fonts, global-error, offline guard; checkpoint green; commit __
+- [x] Step 0 (2026-11-03): branch `claude/zealous-allen-pxrdpu` from `main` at `71007dd` (main had moved past `3f5cbf4` by PR 13, docs only); merged `origin/design/phase1-brand-handoff` (`bc90805`) as `45ec56b`, no conflicts; `npm ci`; baselines with no `.env*`: tests 115 passed in 15 files, validate green, build green; plan copied, commit `c43a82c`
+- [x] Step 1 (2026-11-03), partial: 1a packages (`@fontsource-variable/fraunces` 5.3.0, `@fontsource/atkinson-hyperlegible` 5.3.0 exact; `geist` gone from `package-lock.json`), 1b `app/layout.tsx` font imports, 1d offline guard, README sentence, Checks sentence in `AGENTS.md` / `docs/code-layout.md`; checkpoint green (validate, 115 tests, `build:offline`); negative control prints `blocked:`; commit `a6603b7`. Deviation: the guard is `scripts/no-network.mjs` loaded with `NODE_OPTIONS=--import=…` because the repo ESLint config forbids `require()` (`@typescript-eslint/no-require-imports`) and a suppression is not allowed; `--import` is the ESM equivalent of `--require` and the negative control passes through `NODE_OPTIONS` too. 1c `app/global-error.tsx` is done with Step 5a (it imports the button class from `app/_components/buttons.tsx`)
 - [ ] Step 2: tokens; checkpoint green; commit __ (fallback used for font imports? yes/no)
-- [ ] Step 3: metadata, icon, favicon; checkpoint green; commit __
-- [ ] Step 4: photo moved (dimensions: __); commit __
+- [x] Step 3 (2026-11-03): metadata, `app/icon.svg`, `app/favicon.ico` (3 PNG entries 16/32/48, `file` reports "MS Windows icon resource - 3 icons"); checkpoint green; the built `index.html` links `/favicon.ico?favicon.…ico` (sizes 48x48) and `/icon.svg?icon.…svg` (sizes any, image/svg+xml): Next 16.4 names the route `/icon.svg`, not `/icon` as V5 and [C10] say; commit `75c01f9`
+- [x] Step 4 (2026-11-03): photo moved (1840×1380, 452 KB, measured with ImageMagick `identify`); `design/DESIGN.md` row and `home.html` src updated; validate green; commit `6633692`
 - [ ] Step 5: components, layout, home; checkpoint green; V2 home screenshots; commit __
 - [ ] Step 6: share page; checkpoint green; V2 share screenshots; V3; commit __
 - [ ] Step 7: thank-you; checkpoint green; commit __
