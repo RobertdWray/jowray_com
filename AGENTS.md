@@ -45,7 +45,7 @@ lib/            helpers with no layer above them: logger, validations, claim tok
 Next.js 16 with `cacheComponents: true` prerenders whatever it can at build time. A build runs with no database and no `.env`, so:
 
 - Never export `dynamic`, `runtime`, `revalidate` or `fetchCache` from a route file.
-- The **first** thing a dynamic page component or `GET` handler does is a request-time read: `await params`, `await searchParams`, `cookies()`, `headers()`, `request.headers`, `request.nextUrl`, or `await connection()`. Only then touch Prisma or env.
+- The **first** thing a dynamic page component does is `await connection()` (then `params`/`searchParams`/`headers()` as needed); a `GET` handler reads `request.headers` or `request.nextUrl` first. Only then touch Prisma or env. `await params` by itself is not enough: a runtime prefetch prerender knows the URL, and the Neon driver's `randomBytes` on connect then fails the prerender (seen on `/m/[claimToken]`, 2026-11-03).
 - `maxDuration` is allowed; for Server Functions it is set on the page that hosts them.
 - Never construct a `PrismaClient` or parse env at module scope. Use `getDb()` and the lazy `getXEnv()` accessors in `server/config/env.ts`, each of which parses on first call.
 - Each task adds only its own env sub-schema to `server/config/env.ts`; booleans parse strictly (`"true"` / `"false"`), lists are split, trimmed and lower-cased.

@@ -1,6 +1,7 @@
 import { headers } from "next/headers";
 import Image from "next/image";
 import { notFound } from "next/navigation";
+import { connection } from "next/server";
 import { Suspense } from "react";
 
 import { getMemoryForClaim } from "@/features/memories/claim";
@@ -26,6 +27,10 @@ export default function ClaimPage(props: PageProps<"/m/[claimToken]">) {
 }
 
 async function ClaimContent({ params }: { params: PageProps<"/m/[claimToken]">["params"] }) {
+  // `params` alone does not stop a runtime prefetch prerender (the URL is
+  // known), and the Neon driver uses randomBytes on connect; connection()
+  // makes everything below request-time.
+  await connection();
   const { claimToken } = await params;
   const userAgent = (await headers()).get("user-agent");
   const memory = await getMemoryForClaim(claimToken);
