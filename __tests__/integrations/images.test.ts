@@ -1,0 +1,107 @@
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+
+import sharp from "sharp";
+import { describe, expect, it } from "vitest";
+
+import { ImageDeriveError } from "@/lib/image-derive-error";
+import { createImageService, DERIVE_DEFAULTS } from "@/services/images";
+
+const fixture = (name: string) => readFile(resolve(__dirname, "../fixtures", name));
+const service = createImageService();
+const opts = (sourceMime: string, over: Partial<typeof DERIVE_DEFAULTS> = {}) => ({ ...DERIVE_DEFAULTS, ...over, sourceMime, deadlineMs: 20_000 });
+
+async function meta(buf: Buffer) {
+  return sharp(buf).metadata();
+}
+
+describe("ImageService.derive", () => {
+  it("makes a web copy and a thumbnail from one JPEG, upright, bounded, with every byte of metadata stripped", async () => {
+    // 3000×1500 with EXIF orientation 6 (rotate 90° cw on display) → upright 1500×3000.
+    const input = await sharp({ create: { width: 3000, height: 1500, channels: 3, background: "#336699" } }).jpeg().withMetadata({ orientation: 6 }).toBuffer();
+    const out = await service.derive(input, opts("image/jpeg"));
+    // "source" dimensions are upright: what the contributor saw.
+    expect([out.sourceWidth, out.sourceHeight]).toEqual([1500, 3000]);
+    expect(out.web.mimeType).toBe("image/jpeg");
+    expect([out.web.width, out.web.height]).toEqual([1024, 2048]);
+    expect("failed" in out.thumb).toBe(false);
+    if ("failed" in out.thumb) { return; }
+    expect(out.thumb.mimeType).toBe("image/jpeg");
+    expect([out.thumb.width, out.thumb.height]).toEqual([500, 1000]);
+    expect(out.thumb.data.byteLength).toBeLessThanOrEqual(350_000);
+    for (const encoded of [out.web, out.thumb]) {
+      const m = await meta(encoded.data);
+      expect(m.exif).toBeUndefined();
+      expect(m.orientation).toBeUndefined();
+      expect([m.width, m.height]).toEqual([encoded.width, encoded.height]);
+    }
+  });
+
+  it("keeps PNG as PNG for the web copy and flattens the thumbnail onto the paper colour", async () => {
+    const input = await sharp({ create: { width: 400, height: 200, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toBuffer();
+    const out = await service.derive(input, opts("image/png"));
+    expect(out.web.mimeType).toBe("image/png");
+    expect(out.web.extension).toBe("png");
+    expect((await meta(out.web.data)).hasAlpha).toBe(true);
+    if ("failed" in out.thumb) { throw new Error("thumb failed"); }
+    const { data, info } = await sharp(out.thumb.data).raw().toBuffer({ resolveWithObject: true });
+    expect(info.channels).toBe(3);
+    // #fffdf8 → (255, 253, 248), JPEG may drift by a couple of units
+    expect(Math.abs(data[0]! - 255)).toBeLessThanOrEqual(3);
+    expect(Math.abs(data[1]! - 253)).toBeLessThanOrEqual(3);
+    expect(Math.abs(data[2]! - 248)).toBeLessThanOrEqual(3);
+  });
+
+  it("keeps an animated GIF animated for the web copy and uses one frame for the thumbnail", async () => {
+    const out = await service.derive(await fixture("anim.gif"), opts("image/gif"));
+    expect(out.web.mimeType).toBe("image/gif");
+    expect((await meta(out.web.data)).pages).toBe(2);
+    if ("failed" in out.thumb) { throw new Error("thumb failed"); }
+    expect(out.thumb.mimeType).toBe("image/jpeg");
+    expect((await meta(out.thumb.data)).pages ?? 1).toBe(1);
+  });
+
+  it("does not enlarge small images", async () => {
+    const out = await service.derive(await sharp({ create: { width: 300, height: 200, channels: 3, background: "#abcdef" } }).webp().toBuffer(), opts("image/webp"));
+    expect([out.web.width, out.web.height]).toEqual([300, 200]);
+    expect(out.web.mimeType).toBe("image/webp");
+  });
+
+  it("decodes HEIC through the worker and applies the HEIF rotation", async () => {
+    const out = await service.derive(await fixture("rotated.heic"), opts("image/heic"));
+    expect([out.sourceWidth, out.sourceHeight]).toEqual([48, 64]);
+    expect(out.web.mimeType).toBe("image/jpeg");
+    expect([out.web.width, out.web.height]).toEqual([48, 64]);
+  });
+
+  it("refuses images over the pixel ceiling with the ceiling recorded", async () => {
+    const big = await sharp({ create: { width: 400, height: 400, channels: 3, background: "#000" } }).png().toBuffer();
+    await expect(service.derive(big, opts("image/png", { maxPixels: 100_000 }))).rejects.toMatchObject({ code: "too_many_pixels", limit: 100_000 });
+    await expect(service.derive(await fixture("tiny.heic"), opts("image/heic", { maxPixels: 100 }))).rejects.toMatchObject({ code: "too_many_pixels", limit: 100 });
+  });
+
+  it("marks only the thumbnail too_large when even the fallback quality exceeds the byte budget, keeping the web copy", async () => {
+    const out = await service.derive(await fixture("noise.png"), opts("image/png", { thumb: { ...DERIVE_DEFAULTS.thumb, maxBytes: 50_000 } }));
+    expect(out.web.mimeType).toBe("image/png");
+    expect(out.thumb).toEqual({ failed: "too_large" });
+    // and within the real budget the same noise still yields a thumbnail
+    const ok = await service.derive(await fixture("noise.png"), opts("image/png"));
+    expect("failed" in ok.thumb).toBe(false);
+  });
+
+  it("rejects unsupported types and corrupt bytes with typed errors", async () => {
+    await expect(service.derive(Buffer.from("x"), opts("image/svg+xml"))).rejects.toMatchObject({ code: "unsupported_type" });
+    await expect(service.derive(Buffer.from("not a jpeg"), opts("image/jpeg"))).rejects.toBeInstanceOf(ImageDeriveError);
+    await expect(service.derive(Buffer.from("not a jpeg"), opts("image/jpeg"))).rejects.toMatchObject({ code: "decode_failed" });
+  });
+
+  it("runs one derivation at a time per process", async () => {
+    const input = await sharp({ create: { width: 64, height: 64, channels: 3, background: "#123456" } }).jpeg().toBuffer();
+    const order: string[] = [];
+    const a = service.derive(input, opts("image/jpeg")).then(() => order.push("a"));
+    const b = service.derive(input, opts("image/jpeg")).then(() => order.push("b"));
+    await Promise.all([a, b]);
+    expect(order).toEqual(["a", "b"]);
+    expect(service.inFlight()).toBe(0);
+  });
+});
