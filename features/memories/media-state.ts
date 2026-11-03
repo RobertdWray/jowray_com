@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { Tx } from "@/features/memories/lock";
+import type { Prisma } from "@/generated/prisma/client";
 import { summarizeMemoryType } from "@/lib/media-types";
 
 export type MemoryType = "VOICE" | "VIDEO" | "PHOTO" | "TEXT";
@@ -34,4 +35,24 @@ export async function recomputeMemoryType(tx: Tx, memoryId: string, note: string
     await tx.memory.update({ where: { id: memoryId }, data: { type } });
   }
   return type;
+}
+
+/**
+ * Append a CLAIM_LINK revision. The first revision of a memory, whatever kind
+ * of edit it is, also records the consent version in force; every writer goes
+ * through here so a removal or a swap can never hide that record.
+ */
+export async function appendClaimRevision(
+  tx: Tx,
+  { memoryId, before, after, consentVersion }: { memoryId: string; before: Record<string, unknown>; after: Record<string, unknown>; consentVersion: string }
+): Promise<void> {
+  const isFirst = (await tx.memoryRevision.count({ where: { memoryId } })) === 0;
+  await tx.memoryRevision.create({
+    data: {
+      memoryId,
+      changedVia: "CLAIM_LINK",
+      before: before as Prisma.InputJsonValue,
+      after: (isFirst ? { ...after, consentVersion } : after) as Prisma.InputJsonValue,
+    },
+  });
 }

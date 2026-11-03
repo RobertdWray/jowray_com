@@ -58,7 +58,7 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
       }
       await uploadWithTicket(ticketed.upload, file);
       const finalized = await finalizeAddedFile({ ticket: ticketed.upload.ticket, claimToken });
-      setMessage(finalized.status === "READY" ? "File added." : "The file could not be accepted.");
+      setMessage(finalized.status === "READY" ? "File added." : finalized.status === "PENDING" ? "The file is still being checked; it will appear shortly." : "The file could not be accepted.");
       router.refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Upload failed");

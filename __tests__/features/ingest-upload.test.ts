@@ -32,7 +32,7 @@ function matches(row: MediaRow, where: Record<string, unknown>): boolean {
 }
 let media: MediaRow[] = [];
 let p2002Once = false;
-const memories = [{ id: "mem_1", claimTokenHash: hashClaimToken(CLAIM), deletedAt: null as Date | null, contributorNote: null as string | null }];
+const memories = [{ id: "mem_1", claimTokenHash: hashClaimToken(CLAIM), deletedAt: null as Date | null, contributorNote: null as string | null, consentVersion: "2026-11-v2" }];
 const afterCalls: Array<() => Promise<void>> = [];
 vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
 const dbStub = {
@@ -43,7 +43,7 @@ const dbStub = {
     findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { const m = memories.find((x) => x.id === where.id); if (!m) { throw Object.assign(new Error("not found"), { code: "P2025" }); } return m; }),
     update: vi.fn(async ({ where, data }: { where: { id: string }; data: { type: string } }) => { memoryTypes[where.id] = data.type; return { id: where.id, ...data }; }),
   },
-  memoryRevision: { create: vi.fn(async ({ data }: { data: { memoryId: string; before: Record<string, unknown>; after: Record<string, unknown> } }) => { revisions.push(data); return data; }) },
+  memoryRevision: { count: vi.fn(async () => revisions.length), create: vi.fn(async ({ data }: { data: { memoryId: string; before: Record<string, unknown>; after: Record<string, unknown> } }) => { revisions.push(data); return data; }) },
   media: {
     findUnique: vi.fn(async ({ where }: { where: { id: string } }) => media.find((m) => m.id === where.id) ?? null),
     findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => media.filter((m) => matches(m, where))),
@@ -179,7 +179,7 @@ describe("recordMedia", () => {
       row({ id: "med_old", status: "READY", storageKey: "originals/mem_1/old.jpg", deletedAt: new Date("2026-11-03T12:00:00Z") }),
       row({ id: "med_1", replacesMediaId: "med_old" }),
     ];
-    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("READY");
+    expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "retired" });
     expect(media.find((m) => m.id === "med_1")!.deletedAt).toBeInstanceOf(Date);
     expect(revisions).toHaveLength(0);
   });
@@ -189,7 +189,7 @@ describe("recordMedia", () => {
       row({ id: "med_old", status: "READY", storageKey: "originals/mem_1/old.jpg", sizeBytes: 5, blobUrl: "u" }),
       row({ id: "med_1", replacesMediaId: "med_old", deletedAt: new Date("2026-11-03T12:00:00Z") }),
     ];
-    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("READY");
+    expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "retired" });
     expect(media.find((m) => m.id === "med_old")!.deletedAt).toBeNull();
     const cancelled = media.find((m) => m.id === "med_1")!;
     expect(cancelled.status).toBe("READY");
@@ -205,6 +205,40 @@ describe("recordMedia", () => {
     media = [row()];
     expect((await recordMedia({ mediaId: "med_1" })).status).toBe("FAILED");
     expect(memoryTypes.mem_1).toBe("TEXT");
+  });
+
+  it("retires a replacement that fails validation so it never blocks its target", async () => {
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 10, contentType: "text/html", uploadedAt: new Date() });
+    media = [
+      row({ id: "med_old", status: "READY", storageKey: "originals/mem_1/old.jpg", sizeBytes: 5, blobUrl: "u" }),
+      row({ id: "med_1", replacesMediaId: "med_old" }),
+    ];
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("FAILED");
+    expect(media.find((m) => m.id === "med_1")).toMatchObject({ status: "FAILED" });
+    expect(media.find((m) => m.id === "med_1")!.deletedAt).toBeInstanceOf(Date);
+    expect(media.find((m) => m.id === "med_old")!.deletedAt).toBeNull();
+  });
+
+  it("reports a cancelled or orphaned replacement as FAILED (retired) instead of READY", async () => {
+    media = [
+      row({ id: "med_old", status: "READY", storageKey: "originals/mem_1/old.jpg", deletedAt: new Date("2026-11-03T12:00:00Z") }),
+      row({ id: "med_1", replacesMediaId: "med_old" }),
+    ];
+    expect(await recordMedia({ mediaId: "med_1" })).toEqual({ status: "FAILED", mediaId: "med_1", memoryId: "mem_1", reason: "retired" });
+    media = [
+      row({ id: "med_old", status: "READY", storageKey: "originals/mem_1/old.jpg", sizeBytes: 5, blobUrl: "u" }),
+      row({ id: "med_1", replacesMediaId: "med_old", deletedAt: new Date("2026-11-03T12:00:00Z") }),
+    ];
+    expect(await recordMedia({ mediaId: "med_1" })).toEqual({ status: "FAILED", mediaId: "med_1", memoryId: "mem_1", reason: "retired" });
+  });
+
+  it("the first revision written by a swap records the consent version in force", async () => {
+    media = [
+      row({ id: "med_old", status: "READY", storageKey: "originals/mem_1/old.jpg", sizeBytes: 5, blobUrl: "u" }),
+      row({ id: "med_1", replacesMediaId: "med_old" }),
+    ];
+    await recordMedia({ mediaId: "med_1" });
+    expect(revisions[0]!.after).toMatchObject({ consentVersion: "2026-11-v2" });
   });
 
   it("ignores soft-deleted memories and unknown ids", async () => {
@@ -250,6 +284,17 @@ describe("finalizeUpload", () => {
     confirmMock.mockRejectedValueOnce(new Error("SENDGRID_FROM_EMAIL is required"));
     const result = await finalizeUpload({ ticket: mintUploadTicket(claims), claimToken: CLAIM });
     expect(result).toEqual({ status: "READY", claimLink: `https://www.jowray.com/m/${CLAIM}`, emailed: false });
+  });
+
+  it("does not confirm or hash a replacement that was cancelled while uploading", async () => {
+    media = [
+      row({ id: "med_old", status: "READY", storageKey: "originals/mem_1/old.jpg", sizeBytes: 5, blobUrl: "u" }),
+      row({ id: "med_1", replacesMediaId: "med_old", deletedAt: new Date("2026-11-03T12:00:00Z") }),
+    ];
+    const result = await finalizeUpload({ ticket: mintUploadTicket(claims), claimToken: CLAIM });
+    expect(result.status).toBe("FAILED");
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(afterCalls).toHaveLength(0);
   });
 
   it("does not schedule an inline checksum for a file over 50 MB", async () => {

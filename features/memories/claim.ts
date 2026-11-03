@@ -3,11 +3,10 @@ import "server-only";
 import { z } from "zod";
 
 import { lockMemory } from "@/features/memories/lock";
-import { hasWords, LIVE_MEDIA_ORDER, recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
+import { appendClaimRevision, hasWords, LIVE_MEDIA_ORDER, recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { claimMediaRefSchema } from "@/lib/validations/media";
-import type { Prisma } from "@/generated/prisma/client";
 import { getDb } from "@/server/db/client";
 
 const log = createLogger({ category: "api" });
@@ -127,11 +126,14 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
     // Re-read under the lock: the invariants below must see what a concurrent editor committed first.
     const fresh = await tx.memory.findUniqueOrThrow({
       where: { id: memory.id },
-      select: { approxDateText: true, place: true, contributorNote: true, visibility: true },
+      select: { deletedAt: true, approxDateText: true, place: true, contributorNote: true, visibility: true, contributor: { select: { id: true, name: true, relationship: true } } },
     });
+    if (fresh.deletedAt !== null) {
+      return "not_found" as const;
+    }
     const before = {
-      name: memory.contributor?.name ?? null,
-      relationship: memory.contributor?.relationship ?? null,
+      name: fresh.contributor?.name ?? null,
+      relationship: fresh.contributor?.relationship ?? null,
       approxDateText: fresh.approxDateText,
       place: fresh.place,
       contributorNote: fresh.contributorNote,
@@ -155,21 +157,13 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
       where: { id: memory.id },
       data: { approxDateText: after.approxDateText, place: after.place, contributorNote: after.contributorNote, visibility: after.visibility },
     });
-    if (memory.contributor && (after.name !== before.name || after.relationship !== before.relationship)) {
-      await tx.contributor.update({ where: { id: memory.contributor.id }, data: { name: after.name, relationship: after.relationship } });
+    if (fresh.contributor && (after.name !== before.name || after.relationship !== before.relationship)) {
+      await tx.contributor.update({ where: { id: fresh.contributor.id }, data: { name: after.name, relationship: after.relationship } });
     }
     if (hasWords(before.contributorNote) !== hasWords(after.contributorNote)) {
       await recomputeMemoryType(tx, memory.id, after.contributorNote);
     }
-    const isFirst = (await tx.memoryRevision.count({ where: { memoryId: memory.id } })) === 0;
-    await tx.memoryRevision.create({
-      data: {
-        memoryId: memory.id,
-        changedVia: "CLAIM_LINK",
-        before: before as Prisma.InputJsonValue,
-        after: (isFirst ? { ...after, consentVersion: memory.consentVersion } : after) as Prisma.InputJsonValue,
-      },
-    });
+    await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: memory.consentVersion });
     return "ok" as const;
   }, TX_OPTIONS);
 
@@ -204,7 +198,10 @@ async function retireMedia(raw: unknown, statuses: MediaStatus[], action: "remov
     }
     await lockMemory(tx, memory.id);
     // Re-read under the lock: a note cleared by a concurrent editor must count here.
-    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { contributorNote: true, type: true } });
+    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { deletedAt: true, contributorNote: true, type: true, consentVersion: true } });
+    if (fresh.deletedAt !== null) {
+      return "not_found" as const;
+    }
     const target = await tx.media.findFirst({ where: { id: mediaId, memoryId: memory.id, deletedAt: null, status: { in: statuses } } });
     if (!target) {
       return "not_found" as const;
@@ -220,15 +217,13 @@ async function retireMedia(raw: unknown, statuses: MediaStatus[], action: "remov
     await tx.media.update({ where: { id: target.id }, data: { deletedAt: now } });
     await tx.media.updateMany({ where: { memoryId: memory.id, replacesMediaId: target.id, deletedAt: null, status: "PENDING" }, data: { deletedAt: now } });
     const type = (await recomputeMemoryType(tx, memory.id, fresh.contributorNote)) ?? fresh.type;
-    const after = { mediaIds: await visibleMediaIds(tx, memory.id), type };
-    await tx.memoryRevision.create({
-      data: {
-        memoryId: memory.id,
-        changedVia: "CLAIM_LINK",
-        before: before as Prisma.InputJsonValue,
-        after: after as Prisma.InputJsonValue,
-      },
-    });
+    const after = {
+      mediaIds: await visibleMediaIds(tx, memory.id),
+      type,
+      // A cancelled replacement is invisible in mediaIds on both sides; name it so the revision is not a no-op.
+      ...(target.replacesMediaId !== null && { cancelledReplacementOf: target.replacesMediaId }),
+    };
+    await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: fresh.consentVersion });
     return { memoryId: memory.id };
   }, TX_OPTIONS);
 

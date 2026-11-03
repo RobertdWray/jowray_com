@@ -4,14 +4,13 @@ import { createHash } from "node:crypto";
 
 import { confirmMemory } from "@/features/memories/confirm";
 import { lockMemory } from "@/features/memories/lock";
-import { recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
+import { appendClaimRevision, recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger, logError, logErrorAndFlush } from "@/lib/logger";
 import { isAllowedMime } from "@/lib/media-types";
 import { afterWithFlush } from "@/lib/sentry/after-flush";
 import { getSiteUrl } from "@/lib/site-url";
 import { type UploadTicket, verifyUploadTicket } from "@/lib/upload-ticket";
-import type { Prisma } from "@/generated/prisma/client";
 import { getDb } from "@/server/db/client";
 import { createStorageService } from "@/services/storage";
 
@@ -25,7 +24,7 @@ export const INLINE_HASH_MAX_BYTES = 50 * 1024 * 1024;
 export type RecordMediaResult =
   | { status: "READY"; mediaId: string; memoryId: string; sizeBytes: number }
   | { status: "PENDING"; mediaId: string; memoryId: string }
-  | { status: "FAILED"; mediaId: string; memoryId: string; reason: "too_large" | "wrong_type" }
+  | { status: "FAILED"; mediaId: string; memoryId: string; reason: "too_large" | "wrong_type" | "retired" }
   | { status: "NOT_FOUND"; mediaId: string };
 
 function isPrismaCode(error: unknown, code: string): boolean {
@@ -72,6 +71,11 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
   }
 
   const updated = await transition(row, { status: "READY", sizeBytes: head.size, blobUrl: head.url });
+  if (updated === "retired") {
+    // The bytes are recorded (purge deletes them) but the file was cancelled or its target removed: not a live file.
+    log.info({ action: "retired", mediaId, memoryId: row.memoryId }, "upload recorded for a retired replacement");
+    return { status: "FAILED", mediaId, memoryId: row.memoryId, reason: "retired" };
+  }
   if (updated === "lost_race") {
     // Another writer transitioned the row first; report what it decided.
     const current = await db.media.findUnique({ where: { id: mediaId } });
@@ -95,34 +99,43 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
 async function transition(
   row: { id: string; memoryId: string; replacesMediaId: string | null },
   data: { status: "READY"; sizeBytes: number; blobUrl: string } | { status: "FAILED" }
-): Promise<"done" | "lost_race"> {
+): Promise<"done" | "lost_race" | "retired"> {
   try {
-    await getDb().$transaction(async (tx) => {
+    return await getDb().$transaction(async (tx) => {
       await lockMemory(tx, row.memoryId);
       // Everything the swap and the type depend on is read after the lock, never from the pre-lock row.
-      const current = await tx.media.update({ where: { id: row.id, status: "PENDING" }, data });
-      const memory = await tx.memory.findUniqueOrThrow({ where: { id: row.memoryId }, select: { contributorNote: true } });
-      // A replacement cancelled while its upload was in flight is recorded (so purge can delete the blob) but never swaps in.
-      if (data.status === "READY" && row.replacesMediaId !== null && current.deletedAt === null) {
-        const before = { mediaIds: await visibleMediaIds(tx, row.memoryId) };
-        const now = new Date();
-        const retired = await tx.media.updateMany({ where: { id: row.replacesMediaId, deletedAt: null }, data: { deletedAt: now } });
-        if (retired.count === 1) {
-          // The replacement takes the target's place; clearing the pointer makes it a visible file.
-          await tx.media.update({ where: { id: row.id }, data: { replacesMediaId: null } });
-          const after = { mediaIds: await visibleMediaIds(tx, row.memoryId) };
-          await tx.memoryRevision.create({
-            data: { memoryId: row.memoryId, changedVia: "CLAIM_LINK", before: before as Prisma.InputJsonValue, after: after as Prisma.InputJsonValue },
-          });
+      // A replacement that fails validation is retired at once so it never lingers on its target's card.
+      const retireFailedReplacement = data.status === "FAILED" && row.replacesMediaId !== null;
+      const current = await tx.media.update({
+        where: { id: row.id, status: "PENDING" },
+        data: retireFailedReplacement ? { ...data, deletedAt: new Date() } : data,
+      });
+      const memory = await tx.memory.findUniqueOrThrow({ where: { id: row.memoryId }, select: { contributorNote: true, consentVersion: true } });
+      let outcome: "done" | "retired" = "done";
+      if (data.status === "READY" && row.replacesMediaId !== null) {
+        if (current.deletedAt !== null) {
+          // Cancelled while the upload was in flight: recorded (so purge can delete the blob) but never swapped in.
+          outcome = "retired";
         } else {
-          // The target was removed while this upload ran: the replacement must not resurrect it.
-          await tx.media.update({ where: { id: row.id }, data: { deletedAt: now } });
-          log.info({ action: "replacement_cancelled", mediaId: row.id, memoryId: row.memoryId }, "replacement target already removed");
+          const before = { mediaIds: await visibleMediaIds(tx, row.memoryId) };
+          const now = new Date();
+          const retired = await tx.media.updateMany({ where: { id: row.replacesMediaId, deletedAt: null }, data: { deletedAt: now } });
+          if (retired.count === 1) {
+            // The replacement takes the target's place; clearing the pointer makes it a visible file.
+            await tx.media.update({ where: { id: row.id }, data: { replacesMediaId: null } });
+            const after = { mediaIds: await visibleMediaIds(tx, row.memoryId) };
+            await appendClaimRevision(tx, { memoryId: row.memoryId, before, after, consentVersion: memory.consentVersion });
+          } else {
+            // The target was removed while this upload ran: the replacement must not resurrect it.
+            await tx.media.update({ where: { id: row.id }, data: { deletedAt: now } });
+            log.info({ action: "replacement_cancelled", mediaId: row.id, memoryId: row.memoryId }, "replacement target already removed");
+            outcome = "retired";
+          }
         }
       }
       await recomputeMemoryType(tx, row.memoryId, memory.contributorNote);
+      return outcome;
     }, TX_OPTIONS);
-    return "done";
   } catch (error) {
     if (isPrismaCode(error, "P2025")) {
       return "lost_race";

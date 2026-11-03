@@ -7,6 +7,16 @@ ALTER TABLE "Media" ADD COLUMN     "deletedAt" TIMESTAMP(3),
 ADD COLUMN     "replacesMediaId" TEXT,
 ADD COLUMN     "sortOrder" INTEGER NOT NULL DEFAULT 0;
 
+-- Backfill: existing files keep their upload order as distinct sort slots, so a
+-- replacement (which copies its target's slot) stays where the original was.
+UPDATE "Media" AS m
+SET "sortOrder" = ranked.rn - 1
+FROM (
+  SELECT "id", row_number() OVER (PARTITION BY "memoryId" ORDER BY "createdAt", "id") AS rn
+  FROM "Media"
+) AS ranked
+WHERE m."id" = ranked."id";
+
 -- CreateIndex
 CREATE INDEX "Media_memoryId_deletedAt_idx" ON "Media"("memoryId", "deletedAt");
 

@@ -205,7 +205,11 @@ export async function GET(request: NextRequest): Promise<Response> {
   // still recorded are selected, so a purged row is never re-selected.
   const orphanedBlobs = await db.media.findMany({
     where: {
-      OR: [{ memory: { deletedAt: { not: null } } }, { deletedAt: { not: null } }],
+      // A cancelled file's Blob token may still be valid; wait for it to expire so the freed pathname cannot be refilled.
+      OR: [
+        { memory: { deletedAt: { not: null } } },
+        { deletedAt: { not: null }, createdAt: { lt: new Date(now - CANCELLED_RESERVATION_GRACE_MS) } },
+      ],
       blobUrl: { not: null },
       storageKey: { startsWith: storagePrefix() },
     },

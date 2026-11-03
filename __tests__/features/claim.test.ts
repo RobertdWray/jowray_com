@@ -34,7 +34,7 @@ const tx = {
         return { ...memory, media: mediaRows.filter((r) => r.memoryId === memory!.id && matchesMedia(r, w)).sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.getTime() - b.createdAt.getTime()) };
       }
       // A snapshot, like a real pre-lock read: later mutations are only visible through findUniqueOrThrow.
-      return { ...memory };
+      return { ...memory, contributor: memory.contributor ? { ...(memory.contributor as object) } : null };
     }),
     update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { Object.assign(memory!, data); return memory; }),
   },
@@ -184,5 +184,32 @@ describe("invariants are evaluated after the lock", () => {
     tx.$queryRaw.mockImplementationOnce(async (strings: TemplateStringsArray, ...values: unknown[]) => { memory!.contributorNote = null; lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; });
     expect(await removeMediaFromClaim(VALID)).toEqual({ ok: false, code: "last_file" });
     expect(mediaRows.find((r) => r.id === VALID.mediaId)!.deletedAt).toBeNull();
+  });
+});
+
+describe("revision bookkeeping", () => {
+  const VALID = { claimToken: TOKEN, mediaId: "00000000-0000-4000-8000-000000000001" };
+
+  it("records the consent version on the first revision even when that revision is a removal", async () => {
+    mediaRows[0]!.id = VALID.mediaId;
+    memory!.contributorNote = "words";
+    await removeMediaFromClaim(VALID);
+    expect(revisions[0]!.after).toMatchObject({ consentVersion: "2026-11-v1" });
+    await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Baltimore" } });
+    expect(revisions[1]!.after).not.toHaveProperty("consentVersion");
+  });
+
+  it("names the cancelled replacement in its revision instead of writing identical snapshots", async () => {
+    const REP = "00000000-0000-4000-8000-000000000009";
+    mediaRows.push({ id: REP, memoryId: "mem_1", status: "PENDING", mimeType: "image/jpeg", originalFilename: "new.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: "med_1", createdAt: new Date(), durationSeconds: null });
+    expect(await cancelReservation({ claimToken: TOKEN, mediaId: REP })).toEqual({ ok: true });
+    expect(revisions[0]!.after).toMatchObject({ cancelledReplacementOf: "med_1" });
+  });
+
+  it("takes contributor name and relationship from the post-lock read", async () => {
+    tx.$queryRaw.mockImplementationOnce(async (strings: TemplateStringsArray, ...values: unknown[]) => { (memory!.contributor as { name: string }).name = "Renamed meanwhile"; lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; });
+    await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Baltimore" } });
+    expect(revisions[0]!.before).toMatchObject({ name: "Renamed meanwhile" });
+    expect((memory!.contributor as { name: string }).name).toBe("Renamed meanwhile");
   });
 });

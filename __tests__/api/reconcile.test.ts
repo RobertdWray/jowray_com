@@ -79,6 +79,8 @@ beforeEach(() => {
     // Removed through the claim page: never re-recorded or hashed; its blob is purged from this environment.
     { id: "med_cancelled", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: old, storageKey: "dev/originals/mem_1/g", blobUrl: null, deletedAt: old, memory: { deletedAt: null } },
     { id: "med_removed", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: old, storageKey: "dev/originals/mem_1/h", blobUrl: "u", deletedAt: old, memory: { deletedAt: null } },
+    // Cancelled minutes ago: its Blob token is still valid, so the pathname is left alone until the grace period passes.
+    { id: "med_cancelled_fresh", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: new Date(), storageKey: "dev/originals/mem_1/i", blobUrl: "u", deletedAt: new Date(), memory: { deletedAt: null } },
   ];
   events = [{ id: "evt_1", processedAt: null, attempts: 1, error: "boom", payload: { tokenPayload: JSON.stringify({ mediaId: "med_stale" }) } }];
   emails = [
@@ -134,6 +136,7 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(media.find((m) => m.id === "med_removed")?.blobUrl).toBeNull();
     // a cancelled reservation older than the Blob token lifetime: its pathname is deleted (idempotent) and the row leaves PENDING
     expect(delMock).toHaveBeenCalledWith("dev/originals/mem_1/g");
+    expect(delMock).not.toHaveBeenCalledWith("dev/originals/mem_1/i");
     expect(media.find((m) => m.id === "med_cancelled")?.status).toBe("FAILED");
     expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 1, confirmationsSent: 1, deletedBlobsRemoved: 3 });
   });

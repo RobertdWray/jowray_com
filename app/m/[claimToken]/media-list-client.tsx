@@ -52,12 +52,13 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
     setBusyId(mediaId);
     try {
       setMessage(await work());
-      router.refresh();
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Something went wrong. Please try again.");
+    } catch {
+      setMessage("We could not reach the server. Please check your connection and try again.");
     } finally {
       setBusyId(null);
       setConfirmingId(null);
+      // Always re-read the server's view: a failed step may still have changed a row.
+      router.refresh();
     }
   }
 
@@ -103,9 +104,21 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
           return "That file cannot be used as a replacement right now.";
         }
         setMessage("Uploading the replacement…");
-        await uploadWithTicket(ticketed.upload, file);
+        try {
+          await uploadWithTicket(ticketed.upload, file);
+        } catch {
+          // The reservation exists on the server; free it so the next try is not refused as "already on its way".
+          await cancelReservation({ claimToken, mediaId: ticketed.upload.ticket.mediaId }).catch(() => undefined);
+          return "The upload did not finish; nothing was changed. Please try again.";
+        }
         const finalized = await finalizeAddedFile({ ticket: ticketed.upload.ticket, claimToken });
-        return finalized.status === "READY" ? "Replaced." : "The replacement could not be accepted; the original is still here.";
+        if (finalized.status === "READY") {
+          return "Replaced.";
+        }
+        if (finalized.status === "PENDING") {
+          return "The replacement is still being checked; it will take the original's place shortly.";
+        }
+        return "The replacement could not be accepted; the original is still here.";
       } finally {
         input.value = "";
       }
@@ -170,7 +183,7 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
                 <SecondaryButton onClick={() => setConfirmingId(item.id)} disabled={busy}>Remove</SecondaryButton>
                 <label className={`${labelClass} flex-1 basis-[240px]`}>
                   <span>Replace with another file</span>
-                  <input type="file" accept={ACCEPT_ATTRIBUTE} onChange={(event) => onReplace(item, event)} disabled={busy || pending !== undefined} className={fileInputClass} />
+                  <input type="file" accept={ACCEPT_ATTRIBUTE} onChange={(event) => onReplace(item, event)} disabled={busy || pending?.status === "PENDING"} className={fileInputClass} />
                 </label>
               </div>
             )}
