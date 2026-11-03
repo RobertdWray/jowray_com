@@ -74,6 +74,8 @@ body {
   background-size: 36px 36px;
   color: var(--color-walnut);
   font-family: var(--font-body);
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
 }
 
 /* Patchwork frame (around the hero photo and the thank-you heart) */

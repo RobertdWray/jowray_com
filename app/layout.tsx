@@ -4,6 +4,8 @@ import "@fontsource-variable/fraunces/standard-italic.css"; // the italic closer
 import "@fontsource/atkinson-hyperlegible/400.css";
 import "@fontsource/atkinson-hyperlegible/700.css";
 import "./globals.css";
+import { SiteHeader } from "./_components/site-header";
+import { SiteFooter } from "./_components/site-footer";
 
 export const metadata: Metadata = {
   title: "Jo Wray — Leave a memory",
@@ -14,7 +16,11 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className="h-full antialiased">
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <SiteHeader />
+        {children}
+        <SiteFooter />
+      </body>
     </html>
   );
 }
