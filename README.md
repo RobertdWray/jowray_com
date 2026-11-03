@@ -36,6 +36,7 @@ The easiest way to deploy your Next.js app is to use the [Vercel Platform](https
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
 
 ## Project docs
+- Production: **https://www.jowray.com** (`jowray.com` redirects there). [Domain and DNS setup](docs/domain.md)
 - [Design notes](docs/Memorial%20Memories%20Site%20initial%20thinking.md)
 - [Environment variables](docs/environment.md)
 - [Bootstrap runbook and decisions](docs/plans/2026-11-02-bootstrap.md)
