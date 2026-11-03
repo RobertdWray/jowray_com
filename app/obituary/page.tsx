@@ -62,7 +62,7 @@ export default function ObituaryPage() {
         </p>
         <p>
           Celebration of life arrangements are pending. In lieu of flowers, please send donations to{" "}
-          <a href="https://www.tifumc.com/" className={linkClass} rel="noopener">
+          <a href="https://www.tifumc.com/" className={linkClass}>
             First United Methodist Church of Ticonderoga
           </a>
           .

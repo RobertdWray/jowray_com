@@ -176,7 +176,7 @@ export default function HomePage() {
             <p className="text-body">
               <Link
                 href="/obituary"
-                className="text-paper underline underline-offset-4 hover:text-[#e7f0e3]"
+                className="text-paper underline underline-offset-4 hover:decoration-2"
               >
                 Read Jo&apos;s full obituary
               </Link>

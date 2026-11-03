@@ -193,10 +193,12 @@ italic closer "Spelling, as promised, did not count."
 ### 5.9 Obituary page (`/obituary`, added 2026-11-03)
 Rob asked for the obituary on the site but not prominent. One quiet column,
 760px max, the stitched heart (40px) above an uppercase "Obituary" eyebrow and
-the h1 "Velma Josephine "Jo" Wray", then the family's text verbatim at body size
+the h1 'Velma Josephine "Jo" Wray', then the family's text verbatim at body size
 (the church in the donations line links to tifumc.com). One dashed secondary
 "Leave a memory of Jo" below. Reached only from a plain text link at the end
-of the story band and the footer line "Jo's obituary"; no nav entry, no red.
+of the story band and the footer line "Jo's obituary"; no nav entry, no red
+button. Links keep their resting color on hover (hover thickens the underline);
+#E7F0E3 on lake green is 4.22:1 and fails AA for 20px regular text (see E17).
 
 ## 6. Layout
 - Content max-width 1200px, 5% side padding (≥16px on phones).
