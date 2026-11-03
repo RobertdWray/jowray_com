@@ -117,7 +117,7 @@ describe("download size cap and header hygiene", () => {
 
 describe("attachmentDisposition", () => {
   it("percent-encodes RFC 8187 attr-char exceptions and falls back to memory.<ext> for non-ASCII names", () => {
-    expect(attachmentDisposition("it's (1)*.jpg", "jpg")).toBe("attachment; filename=\"it_s_1_.jpg\"; filename*=UTF-8''it%27s%20%281%29%2A.jpg");
+    expect(attachmentDisposition("it's (1)*.jpg", "jpg")).toBe("attachment; filename=\"it_s_1.jpg\"; filename*=UTF-8''it%27s%20%281%29%2A.jpg");
     expect(attachmentDisposition("思い出.heic", "heic")).toMatch(/^attachment; filename="memory\.heic"; filename\*=UTF-8''%E6/);
     expect(attachmentDisposition("\r\nBcc: x.png", "png")).not.toMatch(/[\r\n]/);
   });

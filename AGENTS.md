@@ -34,7 +34,7 @@ server/         db client, env sub-schemas (server-only leaves)
 lib/            pure helpers: logger, validations, claim tokens, media types, site URL
 ```
 
-- `app/ → features/ → services/ → integrations/`. A layer imports only from layers below it plus `lib/` and `server/`. Nothing imports from `app/`. `eslint.config.mjs` enforces this with `no-restricted-imports`. One exception: `integrations/*` may import **types** from `services/*/types` (they implement those interfaces); value imports stay forbidden.
+- `app/ → features/ → services/ → integrations/`. A layer imports only from layers below it plus `lib/` and `server/`. Nothing imports from `app/`. Pages and Server Functions call `features/`; route handlers under `app/api/` may also call `services/` directly (they are the HTTP adapter layer); nothing in `app/` imports `integrations/`. `eslint.config.mjs` enforces this with `no-restricted-imports`. One exception: `integrations/*` may import **types** from `services/*/types` (they implement those interfaces); value imports stay forbidden.
 - `integrations/*`, `server/*` and anything that reads secrets start with `import "server-only"`. Tests import them through the Vitest alias to `__tests__/stubs/server-only.ts`.
 - Client Components (by convention `*-form.tsx`, `*-client.tsx`, `recorder.ts`, `app/global-error.tsx`, `instrumentation-client.ts`) never import `@/server` or `@/integrations`; they call Server Functions.
 - Server code logs with Pino (`lib/logger`), never `console.log`. The logger redacts `email`, `recipientEmail`, `name`, `phone`, cookies and authorization headers at any depth. Log ids (`memoryId`, `mediaId`), never people.

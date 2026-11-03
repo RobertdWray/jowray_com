@@ -117,10 +117,18 @@ const eslintConfig = defineConfig([
     },
   },
   {
-    files: ["app/**/*.{ts,tsx}"],
-    ignores: ["app/**/*-form.tsx", "app/**/*-client.tsx", "app/**/recorder.ts", "app/**/error.tsx", "app/global-error.tsx"],
+    // Route handlers are the HTTP adapter layer: features/ and services/ are
+    // both fine there, integrations/ never.
+    files: ["app/api/**/*.{ts,tsx}"],
     rules: {
-      // app/ calls features/ (and lib/, server/); never services/ or integrations/ directly.
+      "no-restricted-imports": ["error", { patterns: [noIntegrationsFromFeatures] }],
+    },
+  },
+  {
+    files: ["app/**/*.{ts,tsx}"],
+    ignores: ["app/api/**", "app/**/*-form.tsx", "app/**/*-client.tsx", "app/**/recorder.ts", "app/**/error.tsx", "app/global-error.tsx"],
+    rules: {
+      // Pages and Server Functions call features/ (and lib/, server/); never services/ or integrations/ directly.
       "no-restricted-imports": ["error", { patterns: [noIntegrationsFromFeatures, noServiceImports] }],
     },
   },
