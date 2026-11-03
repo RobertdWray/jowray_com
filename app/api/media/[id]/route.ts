@@ -45,6 +45,7 @@ export async function GET(request: NextRequest, context: RouteContext<"/api/medi
   if (
     !media ||
     media.status !== "READY" ||
+    media.deletedAt !== null ||
     media.memory.deletedAt !== null ||
     !isAllowedMime(media.mimeType) ||
     !safeEqualHex(hashClaimToken(token), media.memory.claimTokenHash)

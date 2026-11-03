@@ -9,7 +9,7 @@ import { resetEnvCache } from "@/server/config/env";
 
 const RW_TOKEN = "vercel_blob_rw_storeid_secretsecretsecret";
 
-interface MediaRow { id: string; status: "PENDING" | "READY"; memory: { deletedAt: Date | null } }
+interface MediaRow { id: string; status: "PENDING" | "READY"; deletedAt: Date | null; memory: { deletedAt: Date | null } }
 let media: MediaRow[] = [];
 const events: Record<string, unknown>[] = [];
 const dbStub = {
@@ -38,7 +38,7 @@ function tokenRequest(ticketOverride?: Record<string, unknown>, pathname = claim
 }
 
 beforeEach(() => {
-  media = [{ id: "med_1", status: "PENDING", memory: { deletedAt: null } }];
+  media = [{ id: "med_1", status: "PENDING", deletedAt: null, memory: { deletedAt: null } }];
   events.length = 0; afterCalls.length = 0; recordMediaMock.mockClear();
   process.env.BLOB_READ_WRITE_TOKEN = RW_TOKEN;
   process.env.UPLOAD_TICKET_SECRET = "s".repeat(32);
@@ -115,5 +115,14 @@ describe("POST /api/upload (upload completed callback)", () => {
     const res = await post({ type: "blob.upload-completed", payload: { blob: { url: "u", downloadUrl: "d", pathname: claims.pathname, contentType: "audio/mp4", contentDisposition: "inline" }, tokenPayload: JSON.stringify({ mediaId: "med_1" }) } });
     expect(res.status).toBeGreaterThanOrEqual(400);
     expect(events).toHaveLength(0);
+  });
+});
+
+describe("cancelled reservations", () => {
+  it("refuses a token for a PENDING row the contributor cancelled", async () => {
+    media = [{ id: "med_1", status: "PENDING", deletedAt: new Date(), memory: { deletedAt: null } }];
+    const res = await tokenRequest();
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("not_pending");
   });
 });

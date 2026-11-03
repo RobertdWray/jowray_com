@@ -43,6 +43,7 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
     include: {
       contributor: { select: { name: true, email: true, relationship: true } },
       media: {
+        where: { deletedAt: null },
         select: { id: true, status: true, mimeType: true, originalFilename: true, durationSeconds: true },
         orderBy: { createdAt: "asc" },
       },

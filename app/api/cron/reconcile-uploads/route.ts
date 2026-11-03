@@ -65,7 +65,7 @@ export async function GET(request: NextRequest): Promise<Response> {
   // (a) PENDING media older than an hour: re-record; after 24 h with no blob, give up.
   const outOfTime = (): boolean => Date.now() - now > RUN_DEADLINE_MS;
   const stale = await db.media.findMany({
-    where: { status: "PENDING", createdAt: { lt: new Date(now - HOUR_MS) }, memory: { deletedAt: null } },
+    where: { status: "PENDING", deletedAt: null, createdAt: { lt: new Date(now - HOUR_MS) }, memory: { deletedAt: null } },
     orderBy: { createdAt: "asc" },
     take: 100,
   });
@@ -155,7 +155,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       createdAt: { lt: new Date(now - CONFIRM_MIN_AGE_MS) },
       contributor: { email: { not: null } },
       emails: { none: {} },
-      OR: [{ type: "TEXT" }, { contributorNote: { not: null } }, { media: { some: { status: "READY" } } }],
+      OR: [{ type: "TEXT" }, { contributorNote: { not: null } }, { media: { some: { status: "READY", deletedAt: null } } }],
     },
     orderBy: { createdAt: "asc" },
     take: 50,
@@ -179,7 +179,7 @@ export async function GET(request: NextRequest): Promise<Response> {
   // the deadline; it runs after the email steps so a backlog of large files
   // never starves them.
   const unhashed = await db.media.findMany({
-    where: { status: "READY", checksumSha256: null, memory: { deletedAt: null } },
+    where: { status: "READY", deletedAt: null, checksumSha256: null, memory: { deletedAt: null } },
     orderBy: { createdAt: "asc" },
     take: CHECKSUM_BATCH,
   });
@@ -197,10 +197,17 @@ export async function GET(request: NextRequest): Promise<Response> {
     }
   }
 
-  // (f) Blobs of soft-deleted memories, only those this environment uploaded:
-  // preview/dev Neon branches hold copies of production rows and share the store.
+  // (f) Purge: blobs of soft-deleted memories and of files removed through the
+  // claim page, only those this environment uploaded (preview/dev Neon branches
+  // hold copies of production rows and share the store). Only rows with a blob
+  // still recorded are selected, so a purged row is never re-selected.
   const orphanedBlobs = await db.media.findMany({
-    where: { memory: { deletedAt: { not: null } }, blobUrl: { not: null }, storageKey: { startsWith: storagePrefix() } },
+    where: {
+      OR: [{ memory: { deletedAt: { not: null } } }, { deletedAt: { not: null } }],
+      blobUrl: { not: null },
+      storageKey: { startsWith: storagePrefix() },
+    },
+    orderBy: { id: "asc" },
     take: 50,
   });
   const storage = createStorageService();

@@ -4,7 +4,7 @@ import { hashClaimToken } from "@/lib/claim-token";
 import { resetEnvCache } from "@/server/config/env";
 
 const TOKEN = "t".repeat(43);
-interface MediaRow { id: string; status: "PENDING" | "READY" | "FAILED"; mimeType: string; originalFilename: string | null; durationSeconds: number | null }
+interface MediaRow { id: string; status: "PENDING" | "READY" | "FAILED"; mimeType: string; originalFilename: string | null; durationSeconds: number | null; deletedAt?: Date | null }
 interface MemoryRow {
   id: string;
   type: "VOICE" | "VIDEO" | "PHOTO" | "TEXT";
@@ -20,7 +20,8 @@ let memory: MemoryRow | null = null;
 const emailUpdateMock = vi.fn(async (_arg: unknown) => ({ count: 1 }));
 const dbStub = {
   memory: {
-    findUnique: vi.fn(async () => memory),
+    findUnique: vi.fn(async ({ include }: { include?: { media?: { where?: { deletedAt?: null } } } } = {}) =>
+      memory && include?.media?.where && "deletedAt" in include.media.where ? { ...memory, media: memory.media.filter((m) => (m.deletedAt ?? null) === null) } : memory),
     update: vi.fn(async ({ data }: { data: { claimTokenHash: string } }) => { memory!.claimTokenHash = data.claimTokenHash; return memory; }),
   },
   emailLog: { updateMany: (arg: unknown) => emailUpdateMock(arg) },
@@ -156,5 +157,16 @@ describe("rotation bookkeeping and note-only eligibility", () => {
     memory!.contributorNote = "the words were saved";
     expect((await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).sent).toBe(true);
     expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({ media: [], note: "the words were saved" }));
+  });
+});
+
+describe("removed files", () => {
+  it("does not count a removed READY file as something to confirm", async () => {
+    memory!.media = [readyPhoto({ deletedAt: new Date() })];
+    expect(await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).toEqual({ sent: false, skipped: "not_ready" });
+    memory!.media = [readyPhoto({ id: "med_gone", deletedAt: new Date() }), readyPhoto({ id: "med_live", deletedAt: null })];
+    expect((await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).sent).toBe(true);
+    const arg = sendMock.mock.calls.at(-1)?.[0] as unknown as { media: unknown[] };
+    expect(arg.media).toHaveLength(1);
   });
 });
