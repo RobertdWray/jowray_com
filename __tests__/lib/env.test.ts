@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { getSiteUrl, storagePrefix } from "@/lib/site-url";
+import { derivedPrefix, getSiteUrl, storagePrefix } from "@/lib/site-url";
 import {
   csvList,
   getDbEnv,
@@ -133,5 +133,16 @@ describe("storagePrefix", () => {
     resetEnvCache();
     delete process.env.VERCEL_ENV;
     expect(storagePrefix()).toBe("dev/originals/");
+  });
+});
+
+describe("derivedPrefix", () => {
+  it("mirrors storagePrefix under derived/ so purge stays environment-scoped", () => {
+    process.env.VERCEL_ENV = "production"; resetEnvCache();
+    expect(derivedPrefix()).toBe("derived/");
+    process.env.VERCEL_ENV = "preview"; resetEnvCache();
+    expect(derivedPrefix()).toBe("preview/derived/");
+    delete process.env.VERCEL_ENV; resetEnvCache();
+    expect(derivedPrefix()).toBe("dev/derived/");
   });
 });

@@ -44,6 +44,18 @@ enum ChangedVia {
   CLAIM_LINK
   ADMIN
 }
+enum DerivedKind {
+  WEB_IMAGE // 2048 px long edge, same container family as the original; what inline pages show
+  THUMBNAIL // 1000 px long edge JPEG ≤ 350 KB on #fffdf8; what emails attach inline
+  POSTER    // reserved: video poster from a browser-captured staging upload (email plan § 3.4)
+}
+
+enum DerivedStatus {
+  PENDING // claimed by a worker; stale after 10 min
+  READY
+  FAILED  // error holds too_many_pixels:<limit> | decode_failed | timeout | too_large | unsupported_type
+}
+
 enum MediaStatus {
   PENDING
   READY
@@ -156,12 +168,37 @@ model Media {
   memory           Memory      @relation(fields: [memoryId], references: [id])
   replaces         Media?      @relation("Replacement", fields: [replacesMediaId], references: [id])
   replacements     Media[]     @relation("Replacement")
+  derivatives      DerivedMedia[]
   @@index([memoryId])
   @@index([memoryId, deletedAt])
   @@index([replacesMediaId])
   @@index([checksumSha256])
   @@index([status, createdAt])
   @@index([createdAt])
+}
+
+/// Server-made copies of an original (web copy, email thumbnail, later poster).
+/// One row per kind per media; a row exists from the moment a worker claims the
+/// work, with its candidate blob pathname, so a lost race or a crash never
+/// leaves an untracked blob. Rows are caches: purge deletes them with the blob.
+model DerivedMedia {
+  id         String        @id @default(uuid())
+  mediaId    String
+  kind       DerivedKind
+  status     DerivedStatus @default(PENDING)
+  storageKey String        @unique      // <env derived prefix><memoryId>/<uuid>.<ext>; the blob exists only once READY
+  mimeType   String?                    // image/jpeg | image/png | image/webp | image/gif
+  sizeBytes  Int?
+  width      Int?
+  height     Int?
+  error      String?                    // see DerivedStatus.FAILED
+  attempts   Int           @default(0)
+  claimedAt  DateTime?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  media      Media         @relation(fields: [mediaId], references: [id])
+  @@unique([mediaId, kind])
+  @@index([status, updatedAt])
 }
 
 model Person {

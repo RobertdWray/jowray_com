@@ -4,6 +4,11 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
+  // The HEIC decoder is libheif compiled to WebAssembly (embedded in a JS
+  // bundle); it uses Node features and runs inside a worker thread, so it is
+  // required from node_modules instead of being bundled. `sharp` is already on
+  // Next's built-in external list.
+  serverExternalPackages: ["heic-decode", "libheif-js"],
   turbopack: {
     rules: {
       "*.css": {

@@ -43,3 +43,20 @@ export function storagePrefix(): string {
   }
   return "dev/originals/";
 }
+
+/**
+ * Blob pathname prefix for server-made copies (web images, email thumbnails,
+ * posters) from this environment: `derived/`, `preview/derived/`, `dev/derived/`.
+ * Mirrors `storagePrefix()` so the purge stays environment-scoped (Phase 2
+ * design: "derived files live under a separate prefix").
+ */
+export function derivedPrefix(): string {
+  const env = getSiteEnv().VERCEL_ENV;
+  if (env === "production") {
+    return "derived/";
+  }
+  if (env === "preview") {
+    return "preview/derived/";
+  }
+  return "dev/derived/";
+}
