@@ -18,10 +18,10 @@ This file lists key **names** and what they're for. It never contains values. Th
 | `CLOUDFLARE_DNS_ONLY_API_TOKEN` | Account-owned Cloudflare API token for DNS edits in every zone in the account. Verify it with `/accounts/{id}/tokens/verify`, not `/user/tokens/verify`. It manages the `jowray.com` records; see [domain.md](domain.md). |
 | `SENDGRID_API_KEY` | Outbound email (notifications, and later magic links). |
 | `DID_JOWRAY` | The memorial phone number (a VoIP.ms DID) that people call or text to leave memories. Sub-account settings are in [voip_ms_262980_jowray-subaccount-settings.md](voip_ms_262980_jowray-subaccount-settings.md). |
-| `voipms_username`, `voipms_password`, `voipms_Bearer_Token`, `voipms_whitelisted_ip` | VoIP.ms API access: the phone and SMS provider. A separate agent sets these up. |
+| `voipms_username`, `voipms_password`, `voipms_Bearer_Token`, `voipms_whitelisted_ip` | VoIP.ms API access: the phone and SMS provider. **Deferred: unused in Phase 1** (SMS/MMS and the phone line are a later phase; the sub-account and keys are kept). |
 | `VOIPMS_SUB_ACCOUNT`, `VOIPMS_SUB_PASSWORD`, `VOIPMS_POP` | The VoIP.ms SIP sub-account and point of presence for the DID. |
 | `VOIPMS_PHONEBOOK_GROUP`, `VOIPMS_TIME_CONDITION`, `VOIPMS_CALLERID_FILTER`, `VOIPMS_FRIENDS_GROUP`, `VOIPMS_FRIENDS_FILTER` | VoIP.ms call-routing objects: a phonebook group, a time condition, and caller-ID filters. |
-| `ELEVENLABS_API_KEY` | ElevenLabs speech-to-text for transcribing voice memories (phase 2). ([ElevenLabs docs](https://elevenlabs.io/docs/eleven-api/quickstart#create-an-api-key)) |
+| `ELEVENLABS_API_KEY` | **Unused; to be retired.** Phase 2 transcribes with Gemini instead of ElevenLabs speech-to-text. Remove the key when Phase 2 starts. ([ElevenLabs docs](https://elevenlabs.io/docs/eleven-api/quickstart#create-an-api-key)) |
 
 ## Neon Postgres (set by the Vercel–Neon integration)
 
@@ -48,6 +48,6 @@ The integration was provisioned with Neon Auth and Realtime **off**, so `NEON_AU
 
 | Key | Purpose |
 |---|---|
-| `GEMINI_API_KEY` | Google Gemini for photo and video analysis (phase 2). Set this **or** `GOOGLE_API_KEY`, not both. If both are set, `GOOGLE_API_KEY` wins. ([Gemini docs](https://ai.google.dev/gemini-api/docs/api-key#set-api-env-var)) |
+| `GEMINI_API_KEY` | Google Gemini for transcription and photo/video analysis (Phase 2; **unused in Phase 1**). The key must come from a Google Cloud project with **active billing**: keys without billing are "Unpaid Services" and Google may use prompts and files to improve its products. Set this **or** `GOOGLE_API_KEY`, not both. If both are set, `GOOGLE_API_KEY` wins. ([Gemini docs](https://ai.google.dev/gemini-api/docs/api-key#set-api-env-var), [Gemini API Additional Terms](https://ai.google.dev/gemini-api/terms)) |
 | `SENTRY_AUTH_TOKEN` | See the Sentry section above. |
 | `AUTH_SECRET` | Auth.js v5 secret for magic-link sign-in (phase 3). Generate it with `npx auth secret`. ([Auth.js docs](https://authjs.dev/getting-started/migrating-to-v5#environment-variables)) |
