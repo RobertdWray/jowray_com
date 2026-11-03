@@ -1,3 +1,5 @@
+import type { Platform } from "@/lib/recorder-help";
+
 export interface AudioInputInfo {
   deviceId: string;
   label: string;
@@ -17,8 +19,15 @@ export function audioInputsFor(
   }).map(({ deviceId, label, groupId }) => ({ deviceId, label, groupId }));
 }
 
-/** Hide the picker unless the contributor has a real choice of inputs. */
-export function shouldShowPicker(inputs: ReadonlyArray<AudioInputInfo>): boolean {
+/**
+ * Offer the picker only where it helps: a desktop with a real choice of
+ * inputs. Phones and iPads expose a single microphone (iOS lists exactly one)
+ * and the OS, not the page, decides between it and a headset.
+ */
+export function shouldShowPicker(inputs: ReadonlyArray<AudioInputInfo>, platform: Platform): boolean {
+  if (platform === "ios" || platform === "android") {
+    return false;
+  }
   return inputs.length >= 2;
 }
 

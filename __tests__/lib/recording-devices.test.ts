@@ -53,12 +53,24 @@ describe("audioInputsFor", () => {
 });
 
 describe("shouldShowPicker", () => {
+  it("never shows the picker on phones and tablets, whatever the list", () => {
+    const inputs = [
+      { deviceId: "a", label: "Built-in", groupId: "g1" },
+      { deviceId: "b", label: "Headset", groupId: "g2" },
+    ];
+    expect(shouldShowPicker(inputs, "ios")).toBe(false);
+    expect(shouldShowPicker(inputs, "android")).toBe(false);
+    expect(shouldShowPicker(inputs, "mac-chrome")).toBe(true);
+    expect(shouldShowPicker(inputs, "windows-edge")).toBe(true);
+    expect(shouldShowPicker(inputs, "other")).toBe(true);
+  });
+
   it.each([
     { inputs: [], expected: false },
     { inputs: [builtIn], expected: false },
     { inputs: [builtIn, headset], expected: true },
   ])("shows a picker for $inputs.length inputs: $expected", ({ inputs, expected }) => {
-    expect(shouldShowPicker(inputs)).toBe(expected);
+    expect(shouldShowPicker(inputs, "mac-chrome")).toBe(expected);
   });
 });
 
