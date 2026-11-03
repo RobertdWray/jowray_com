@@ -2,10 +2,11 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import { confirmQuietly } from "@/features/memories/ingest-upload";
+import { confirmQuietly, notifyAdminsQuietly } from "@/features/memories/ingest-upload";
 import { lockMemory, type Tx } from "@/features/memories/lock";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
+import { afterWithFlush } from "@/lib/sentry/after-flush";
 import { extensionFor, MAX_FILES_PER_MEMORY, maxBytesFor, memoryTypeFor, normalizeMime } from "@/lib/media-types";
 import { storagePrefix } from "@/lib/site-url";
 import { mintUploadTicket, type UploadTicket } from "@/lib/upload-ticket";
@@ -184,6 +185,12 @@ export async function createMemory(raw: unknown): Promise<CreateMemoryResult> {
   log.info({ action: "memory_created", memoryId: created.memoryId, hasFile: created.upload !== null }, "memory created");
   // A text-only memory is complete now; one with a file is confirmed by finalizeUpload().
   const emailed = created.upload === null ? await confirmQuietly(created.memoryId, claimToken) : false;
+  if (created.upload === null) {
+    // The admin alert needs nothing from the contributor, so it runs after the response.
+    afterWithFlush(async () => {
+      await notifyAdminsQuietly(created.memoryId);
+    });
+  }
   return { ok: true, memoryId: created.memoryId, claimToken, upload: created.upload, emailed };
 }
 

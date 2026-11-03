@@ -74,6 +74,8 @@ vi.mock("@/services/storage", () => ({
 
 const confirmMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m1" }));
 vi.mock("@/features/memories/confirm", () => ({ confirmMemory: (arg: unknown) => confirmMock(arg) }));
+const notifyMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m2" }));
+vi.mock("@/features/memories/notify-admins", () => ({ notifyAdminsOfMemory: (arg: unknown) => notifyMock(arg) }));
 
 import { finalizeUpload, recordMedia } from "@/features/memories/ingest-upload";
 
@@ -99,6 +101,7 @@ beforeEach(() => {
   process.env.UPLOAD_TICKET_SECRET = "s".repeat(32);
   process.env.NEXT_PUBLIC_SITE_URL = "https://www.jowray.com";
   afterCalls.length = 0;
+  notifyMock.mockClear();
   media = [row()];
   memories[0]!.contributorNote = null;
   memoryTypes.mem_1 = "PHOTO";
@@ -264,7 +267,18 @@ describe("finalizeUpload", () => {
     expect(result).toEqual({ status: "READY", claimLink: `https://www.jowray.com/m/${CLAIM}`, emailed: true });
     expect(confirmMock).toHaveBeenCalledWith({ memoryId: "mem_1", claimToken: CLAIM });
     expect(media[0]?.status).toBe("READY");
-    expect(afterCalls).toHaveLength(1); // inline checksum scheduled for a small file
+    expect(afterCalls).toHaveLength(2); // admin alert, then the inline checksum for a small file
+  });
+
+  it("alerts the admins after the response (before the checksum), and a throwing alert never changes the result", async () => {
+    const result = await finalizeUpload({ ticket: mintUploadTicket(claims), claimToken: CLAIM });
+    expect(result).toMatchObject({ status: "READY", emailed: true });
+    expect(notifyMock).not.toHaveBeenCalled(); // nothing runs before the response
+    await afterCalls[0]!();
+    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_1" });
+    expect(media[0]?.checksumSha256).toBeNull(); // the checksum is the second callback
+    notifyMock.mockRejectedValueOnce(new Error("SENDGRID_API_KEY is required"));
+    await expect(afterCalls[0]!()).resolves.toBeUndefined();
   });
 
   it("rejects a tampered ticket, a mismatched claim token, and does not touch the row", async () => {
@@ -297,11 +311,14 @@ describe("finalizeUpload", () => {
     expect(afterCalls).toHaveLength(0);
   });
 
-  it("does not schedule an inline checksum for a file over 50 MB", async () => {
+  it("does not schedule an inline checksum for a file over 50 MB (the admin alert is still scheduled)", async () => {
     headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 60 * 1024 * 1024, contentType: "video/mp4", uploadedAt: new Date() });
     media = [row({ mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 })];
     const result = await finalizeUpload({ ticket: mintUploadTicket({ ...claims, mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 }), claimToken: CLAIM });
     expect(result.status).toBe("READY");
-    expect(afterCalls).toHaveLength(0);
+    expect(afterCalls).toHaveLength(1); // the admin alert only; the cron hashes large files
+    await afterCalls[0]!();
+    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_1" });
+    expect(media[0]?.checksumSha256).toBeNull();
   });
 });
