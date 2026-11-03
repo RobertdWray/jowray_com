@@ -211,6 +211,31 @@ describe("sendMemoryConfirmation", () => {
   });
 });
 
+describe("transport attachments", () => {
+  it("sends inline attachments with a content id and keeps tracking off", async () => {
+    const { SendGridTransport } = await import("@/integrations/sendgrid");
+    await new SendGridTransport().send({
+      to: base.to,
+      from: "memories@jowray.com",
+      subject: "s",
+      text: "t",
+      html: '<img src="cid:brand-heart">',
+      attachments: [{ filename: "heart.png", contentType: "image/png", contentBase64: "aGVhcnQ=", contentId: "brand-heart" }],
+    });
+    const msg = sendMock.mock.calls[0]?.[0] as { attachments?: unknown[]; trackingSettings: { openTracking: { enable: boolean }; clickTracking: { enable: boolean } } };
+    expect(msg.attachments).toEqual([{ content: "aGVhcnQ=", filename: "heart.png", type: "image/png", disposition: "inline", contentId: "brand-heart" }]);
+    expect(msg.trackingSettings.openTracking.enable).toBe(false);
+    expect(msg.trackingSettings.clickTracking.enable).toBe(false);
+  });
+
+  it("omits the attachments field when a message has none", async () => {
+    const { SendGridTransport } = await import("@/integrations/sendgrid");
+    await new SendGridTransport().send({ to: base.to, from: "memories@jowray.com", subject: "s", text: "t", html: "<p>t</p>" });
+    const msg = sendMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect("attachments" in msg).toBe(false);
+  });
+});
+
 describe("transport error hygiene", () => {
   it("records a status-coded message and never logs the SendGrid response body", async () => {
     const err = Object.assign(new Error("Bad Request"), { code: 400, response: { body: { errors: [{ message: "The recipient person@example.com is invalid" }] } } });

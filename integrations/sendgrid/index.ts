@@ -71,6 +71,18 @@ export class SendGridTransport implements EmailTransport {
           subject: message.subject,
           text: message.text,
           html: message.html,
+          // Inline images by Content-ID; the helper library serialises `contentId` as `content_id`.
+          ...(message.attachments && message.attachments.length > 0
+            ? {
+                attachments: message.attachments.map((a) => ({
+                  content: a.contentBase64,
+                  filename: a.filename,
+                  type: a.contentType,
+                  disposition: "inline",
+                  contentId: a.contentId,
+                })),
+              }
+            : {}),
           trackingSettings: {
             clickTracking: { enable: false, enableText: false },
             openTracking: { enable: false },

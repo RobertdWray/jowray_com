@@ -27,6 +27,20 @@ export type SendResult =
   | { sent: true; messageId?: string }
   | { sent: false; skipped: SkipReason; error?: string };
 
+/**
+ * An image carried inside the message (MIME `Content-ID`), referenced from
+ * the HTML as `cid:<contentId>`. Nothing in an email is ever fetched from a
+ * URL: previews and brand marks travel this way so no token or tracking
+ * request leaves the reader's client.
+ */
+export interface EmailAttachment {
+  filename: string;
+  contentType: "image/jpeg" | "image/png";
+  contentBase64: string;
+  /** `[a-z0-9-]+`, built from server ids only. */
+  contentId: string;
+}
+
 /** A fully rendered message, ready for a transport. */
 export interface OutboundEmail {
   to: string;
@@ -34,6 +48,7 @@ export interface OutboundEmail {
   subject: string;
   text: string;
   html: string;
+  attachments?: EmailAttachment[];
 }
 
 /** Vendor transport (SendGrid today). Retries inline; throws the last error. */
