@@ -4,6 +4,7 @@ import { confirmMemory } from "@/features/memories/confirm";
 import { deriveMedia, MAX_DECODE_ATTEMPTS, MAX_PIXELS, STALE_CLAIM_MS } from "@/features/memories/derive-media";
 import { computeChecksum, recordMedia } from "@/features/memories/ingest-upload";
 import { safeEqualHex } from "@/lib/claim-token";
+import { posterStagingKeyFor } from "@/lib/derived-keys";
 import { createLogger, logError } from "@/lib/logger";
 import { storagePrefix } from "@/lib/site-url";
 import { getCronEnv } from "@/server/config/env";
@@ -247,6 +248,10 @@ export async function GET(request: NextRequest): Promise<Response> {
   // claim page, only those this environment uploaded (preview/dev Neon branches
   // hold copies of production rows and share the store). Only rows with a blob
   // still recorded are selected, so a purged row is never re-selected.
+  // Only rows with outstanding work are selected (a recorded blob, or derived
+  // copies that are not a fresh in-flight claim), so a purged row is never
+  // re-selected and a worker is never raced for a key it is still writing.
+  const staleClaimBefore = new Date(now - STALE_CLAIM_MS);
   const orphanedBlobs = await db.media.findMany({
     where: {
       // A cancelled file's Blob token may still be valid; wait for it to expire so the freed pathname cannot be refilled.
@@ -254,9 +259,18 @@ export async function GET(request: NextRequest): Promise<Response> {
         { memory: { deletedAt: { not: null } } },
         { deletedAt: { not: null }, createdAt: { lt: new Date(now - CANCELLED_RESERVATION_GRACE_MS) } },
       ],
-      blobUrl: { not: null },
+      AND: [
+        {
+          OR: [
+            { blobUrl: { not: null } },
+            { derivatives: { some: { status: { not: "PENDING" } } } },
+            { derivatives: { some: { status: "PENDING", claimedAt: { lt: staleClaimBefore } } } },
+          ],
+        },
+      ],
       storageKey: { startsWith: storagePrefix() },
     },
+    include: { derivatives: { select: { id: true, status: true, claimedAt: true, storageKey: true } } },
     orderBy: { id: "asc" },
     take: 50,
   });
@@ -266,7 +280,18 @@ export async function GET(request: NextRequest): Promise<Response> {
       break;
     }
     try {
-      await storage.del(row.storageKey);
+      if (row.blobUrl !== null) {
+        await storage.del(row.storageKey);
+      }
+      // Derived copies (not a fresh claim: that worker deletes its own candidate) and the poster staging pathname.
+      const copies = row.derivatives.filter((d) => d.status !== "PENDING" || d.claimedAt === null || d.claimedAt < staleClaimBefore);
+      for (const copy of copies) {
+        await storage.del(copy.storageKey);
+      }
+      await storage.del(posterStagingKeyFor(row.storageKey));
+      if (copies.length > 0) {
+        await db.derivedMedia.deleteMany({ where: { mediaId: row.id, storageKey: { in: copies.map((c) => c.storageKey) } } });
+      }
       await db.media.update({ where: { id: row.id }, data: { blobUrl: null } });
       counts.deletedBlobsRemoved += 1;
     } catch (error) {
