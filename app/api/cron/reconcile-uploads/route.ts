@@ -206,48 +206,6 @@ export async function GET(request: NextRequest): Promise<Response> {
     }
   }
 
-  // (g) Derived copies (web image + email thumbnail) for READY photos of this
-  // environment that have none, a stale claim, or a retryable failure. This is
-  // the backfill for photos stored before the pipeline existed and the retry
-  // path for finalize/callback runs that died. Same eligibility as deriveMedia.
-  const candidates = await db.media.findMany({
-    where: {
-      status: "READY",
-      deletedAt: null,
-      mimeType: { startsWith: "image/" },
-      storageKey: { startsWith: storagePrefix() },
-      memory: { deletedAt: null },
-      OR: [
-        { derivatives: { none: { kind: "WEB_IMAGE" } } },
-        { derivatives: { none: { kind: "THUMBNAIL" } } },
-        // Stale claims (a null claimedAt is treated as stale; exhausted ones are retired by deriveMedia).
-        { derivatives: { some: { kind: { in: [...DERIVED_KINDS] }, status: "PENDING", OR: [{ claimedAt: null }, { claimedAt: { lt: new Date(now - STALE_CLAIM_MS) } }] } } },
-        { derivatives: { some: { kind: { in: [...DERIVED_KINDS] }, status: "FAILED", error: { in: ["decode_failed", "timeout"] }, attempts: { lt: MAX_DECODE_ATTEMPTS } } } },
-        // A refusal made under a ceiling other than today's: one retry converges the row.
-        { derivatives: { some: { kind: { in: [...DERIVED_KINDS] }, status: "FAILED", error: { startsWith: "too_many_pixels:", not: `too_many_pixels:${MAX_PIXELS}` } } } },
-      ],
-    },
-    orderBy: { createdAt: "asc" },
-    take: DERIVE_BATCH,
-  });
-  const deriveStart = Date.now();
-  for (const row of candidates) {
-    // Each candidate gets only what is left of the step and of the run, never a fresh budget.
-    const remainingMs = Math.min(DERIVE_DEADLINE_MS - (Date.now() - deriveStart), RUN_DEADLINE_MS - (Date.now() - now));
-    if (remainingMs <= 0) {
-      break;
-    }
-    try {
-      const outcome = await deriveMedia({ mediaId: row.id, deadlineMs: remainingMs });
-      if (Object.values(outcome).includes("derived")) {
-        counts.derived += 1;
-      }
-    } catch (error) {
-      counts.errors += 1;
-      logError("reconcile: derive failed", error, { category: "cron", mediaId: row.id });
-    }
-  }
-
   // (f) Purge: blobs of soft-deleted memories and of files removed through the
   // claim page, only those this environment uploaded (preview/dev Neon branches
   // hold copies of production rows and share the store). Only rows with a blob
@@ -330,6 +288,48 @@ export async function GET(request: NextRequest): Promise<Response> {
     } catch (error) {
       counts.errors += 1;
       logError("reconcile: cancelled reservation purge failed", error, { category: "cron", mediaId: row.id });
+    }
+  }
+
+  // (g) Derived copies (web image + email thumbnail) for READY photos of this
+  // environment that have none, a stale claim, or a retryable failure. This is
+  // the backfill for photos stored before the pipeline existed and the retry
+  // path for finalize/callback runs that died. Same eligibility as deriveMedia.
+  const candidates = await db.media.findMany({
+    where: {
+      status: "READY",
+      deletedAt: null,
+      mimeType: { startsWith: "image/" },
+      storageKey: { startsWith: storagePrefix() },
+      memory: { deletedAt: null },
+      OR: [
+        { derivatives: { none: { kind: "WEB_IMAGE" } } },
+        { derivatives: { none: { kind: "THUMBNAIL" } } },
+        // Stale claims (a null claimedAt is treated as stale; exhausted ones are retired by deriveMedia).
+        { derivatives: { some: { kind: { in: [...DERIVED_KINDS] }, status: "PENDING", OR: [{ claimedAt: null }, { claimedAt: { lt: new Date(now - STALE_CLAIM_MS) } }] } } },
+        { derivatives: { some: { kind: { in: [...DERIVED_KINDS] }, status: "FAILED", error: { in: ["decode_failed", "timeout"] }, attempts: { lt: MAX_DECODE_ATTEMPTS } } } },
+        // A refusal made under a ceiling other than today's: one retry converges the row.
+        { derivatives: { some: { kind: { in: [...DERIVED_KINDS] }, status: "FAILED", error: { startsWith: "too_many_pixels:", not: `too_many_pixels:${MAX_PIXELS}` } } } },
+      ],
+    },
+    orderBy: { createdAt: "asc" },
+    take: DERIVE_BATCH,
+  });
+  const deriveStart = Date.now();
+  for (const row of candidates) {
+    // Each candidate gets only what is left of the step and of the run, never a fresh budget.
+    const remainingMs = Math.min(DERIVE_DEADLINE_MS - (Date.now() - deriveStart), RUN_DEADLINE_MS - (Date.now() - now));
+    if (remainingMs <= 0) {
+      break;
+    }
+    try {
+      const outcome = await deriveMedia({ mediaId: row.id, deadlineMs: remainingMs });
+      if (Object.values(outcome).includes("derived")) {
+        counts.derived += 1;
+      }
+    } catch (error) {
+      counts.errors += 1;
+      logError("reconcile: derive failed", error, { category: "cron", mediaId: row.id });
     }
   }
 
