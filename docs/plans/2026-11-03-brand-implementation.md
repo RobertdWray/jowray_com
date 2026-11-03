@@ -2,13 +2,14 @@
 
 ## 0. Cold start: read this first
 
-- **Canonical copy of this plan:** `docs/plans/2026-11-03-brand-implementation.md` on branch `claude/zealous-allen-pxrdpu` (created in Step 0 from this file). After Step 0 the repo copy is the source of truth; this file under `/root/.claude/plans/` is only the draft Rob approved.
-- **Progress ledger:** the `## Progress` checklist at the end of the repo copy. Every step ends with a commit that updates the checklist with the commit id and the check results. On resume: `git log --oneline -15`, open the repo copy, find the first unchecked step, and continue from its first unchecked box. Never redo a step whose box is checked; verify its commit exists instead.
-- **Repository:** `RobertdWray/jowray_com`. Branch: `claude/zealous-allen-pxrdpu`. Design source: PR 14 (`design/phase1-brand-handoff`, commit `bc90805`). Base of this work: `main` at `3f5cbf4`.
-- **Decisions already made by Rob (2026-11-03)** are in § 2. Do not re-ask them.
-- **House rules** are in `AGENTS.md` (branch + PR, no `eslint-disable`, no band-aids, no secrets, TDD on critical paths, `npm run validate` / `test:run` / `build` green with no `.env` and no network).
-- **Tools this plan relies on:** Node 22+ (CI uses 26), npm, git. For the favicon script (Step 3): Playwright with a Chromium binary (preinstalled in the cloud container; elsewhere `npx playwright install chromium` first). No Python, no ImageMagick.
-- **Working-tree hygiene:** `next dev` rewrites the first block of `AGENTS.md`; never commit that hunk (see the note at the top of `AGENTS.md`).
+- **State of this work (2026-11-03):** implemented, reviewed once by Team Code Review, repaired, and merged (or being merged) to `main` through draft PR #15 https://github.com/RobertdWray/jowray_com/pull/15, which stacks on PR #14 (design handoff). If PR #15 is still open: `gh pr view 15 --repo RobertdWray/jowray_com` tells you its state; the `## Progress` checklist at the end of this file is the ledger. Never redo a step whose box is checked; verify its commit exists instead (`git log --oneline -20`).
+- **Branches:** `claude/zealous-allen-pxrdpu` holds Steps 0–4 (orchestrator commits). The PR branch is the Astra integration branch `astra-work/20261103T162111Z-ca92182b/integration`, which contains that branch plus the worker commits (Steps 1c, 2, 5–9 and the review repairs). Preview Neon branch: `preview/astra-work/20261103T162111Z-ca92182b/integration` (deleted when the PR closes).
+- **How it was built:** `/astra-work` (Codex workers under Claude orchestration). Run directory `~/.local/state/astra-work/888f1417a12a/20261103T162111Z-ca92182b` (tasks `w1-foundation`, `w2-home-claim`, `w3-share`, `w4-docs`, `r1-ui-repairs`, `r2-guard-repairs`, `r3-docs`; each has `brief.md`, the worker report, `inspection.diff`, independent check logs and the acceptance record; `review-*/` holds the Team Code Review evidence). To continue that run: `/astra-work resume` and read `status` before any action. To continue without it: branch from `main` after the merge; the plan sections below still describe every decision.
+- **Decisions already made by Rob (2026-11-03)** are in § 2 and § 4.5. Do not re-ask them. § 3 lists every intentional difference from the comps; § 4.3 lists what is deliberately not done and why; § 4.4 lists follow-ups. Reviewers of a later cycle: read § 3, § 4.3 and § 4.5 first so already-decided items are not raised again.
+- **House rules** are in `AGENTS.md` (branch + PR, no `eslint-disable`, no band-aids, no secrets, TDD on critical paths, `npm run validate` / `test:run` / `build:offline` green with no `.env*` and no network).
+- **Tools:** Node 22+ (CI uses 26), npm, git, `gh`. Playwright with Chromium for the favicon script (Step 3) and the browser checks (V2/V3/V4–V6; scripts kept outside the repo, see F6 and F1). ImageMagick `identify` was used only to read photo dimensions.
+- **Working-tree hygiene:** `next dev` rewrites the first block of `AGENTS.md`; never commit that hunk. Codex workers cannot run `next build` (their sandbox refuses loopback IPC); the orchestrator runs every check outside the sandbox.
+- **Design source:** PR #14 (`design/phase1-brand-handoff`, commit `bc90805`), merged into this branch as `45ec56b`. Base of this work: `main` at `71007dd`.
 
 ## 1. Context
 
@@ -45,6 +46,9 @@ This change applies `DESIGN.md` § 2 steps 1–8 so every visitor-facing page ma
 | E14 | No private link on the thank-you page | Claim-link block kept (link, "we have also emailed…", PENDING / FAILED notes, "Keep this link private") | Phase 1 recovery path |
 | E15 | No claim page / error page comps | Same tokens, header, footer, buttons, field classes | `DESIGN.md` § 2 step 8 |
 | E16 | Hero photo at `design/reference/jo-santa.jpg` | Moved to `public/photos/jo-santa.jpg`; `design/` references updated | `DESIGN.md` § 2 step 4 says move |
+| E17 | Story-band subtitle in `#e7f0e3` | `text-paper` (`#fffdf8`) | 4.22:1 on lake green fails AA for 20px text; paper gives 4.86:1 (review cycle 1, #9) |
+| E18 | Goldenrod focus ring (`DESIGN.md` § Color, `tokens.css`) | 3px walnut outline, 2px offset, in `globals.css` and `tokens.css` | goldenrod is 2.13:1 on paper and 1.90:1 on muslin, under the 3:1 non-text minimum; walnut is 13:1 (review cycle 1, #8) |
+| E19 | Error page without site chrome (Step 1c as written) | `SiteHeader` and `SiteFooter` rendered inside `global-error.tsx` | E15 promised them; the components are static and safe to render from the error boundary (review cycle 1, #11) |
 
 ## 4. Review triage (Rob's friend's review, 2026-11-03, George 1–14 and Oscar 15–37)
 
@@ -98,6 +102,10 @@ Each finding was checked against the source it cites. Numbers refer to the revie
 9. **Dark mode.** Removed on purpose: `DESIGN.md` § 2 step 2, one warm theme.
 10. **Restyling emails or `/api` responses.** Not visitor-facing pages; out of `DESIGN.md` § 2.
 11. **A Storybook or dev-only toggle to render the thank-you state without a database.** The preview deployment renders the real thing; a fake toggle would be a band-aid in production code.
+12. **An in-page "sharing failed" message on the thank-you screen (review cycle 1, #10).** When `navigator.share` rejects for any reason other than the user cancelling, the page now navigates to the `mailto:` link instead; that is the fallback the contributor would have had without Web Share, and it needs no new state or copy.
+13. **A smaller "Remove recording" button (plan Step 6c's `min-h-tap text-label` override).** The override lost in the Tailwind cascade (review cycle 1, #5); the button now uses the standard secondary size rather than a size variant on `SecondaryButton`.
+14. **OS-level network isolation for `build:offline` inside this PR (review cycle 1, #1/#7).** Node runs no `--import` preload in worker threads (verified, also with `execArgv`), and native code is outside any JavaScript guard, so the guard is a strong check, not a proof; the documentation now says so and F8 carries the isolation work. The guard itself was repaired (connect signatures, `dns.promises.lookup`) and pinned by `__tests__/scripts/no-network.test.ts`.
+15. **Keeping `secondaryOnGreenClass`.** Dead since the obituary button was dropped (E8); removed (review cycle 1, #6).
 
 ### 4.4 Bucket 4, real but out of scope (copy into the PR body under "Follow-ups"; file as issues after merge)
 
@@ -110,6 +118,26 @@ Each finding was checked against the source it cites. Numbers refer to the revie
 | F5 | Low | **README is still the create-next-app starter.** Rewrite to describe the memorial site, the checks and the docs index. | Only the font sentence is fixed in this PR. |
 | F6 | Low | **Favicon regeneration needs Playwright.** If the mark changes again, add `playwright` as a devDependency and commit the Step 3 script as `scripts/make-favicon.mjs`. | Script text is in Step 3 of the repo copy of this plan. |
 | F7 | Medium | **iPhone checks still open (ledger Task 10):** HEIC, `.mov`, Safari recording. The new player and "Remove recording" belong in that pass. | `docs/plans/phase1-ledger.md` Task 10. |
+| F8 | Medium | **Network-isolated build in CI.** Run `npm run build` under an OS-level sandbox that allows only loopback (Linux: `unshare -n` plus a loopback interface, or a container with `--network none`), so the "downloads nothing" claim covers worker threads and native code. Keep `build:offline` as the local, fast check. | `.github/workflows/ci.yml`; `scripts/no-network.mjs` and its tests; macOS `sandbox-exec` breaks Turbopack (memory note), so this is a CI-only job. |
+| F9 | Low | **`build:offline` depends on the working directory.** `NODE_OPTIONS=--import=./scripts/no-network.mjs` resolves against the cwd; a child process started in another directory fails with `ERR_MODULE_NOT_FOUND` (fail-closed, but noisy). If that ever bites, switch the script to an absolute `file://` URL computed in a tiny wrapper. | `package.json` `build:offline`; `scripts/no-network.mjs`. |
+
+### 4.5 Review cycle 1 (Team Code Review on PR #15, 2026-11-03; George = Gemini gemini-4-argon, Oscar = Codex)
+
+Eleven findings, all verified against the source before triage; Rob accepted buckets 1 and 2 in full. Evidence: Astra run `review-a8da7a6dd009`, log `~/Downloads/team-review-20261103-114552-jowray_com-pr15-42ab557.md`.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 / 7 | `scripts/no-network.mjs`: `connect(port, cb)` misparsed as a remote host; `dns.promises.lookup` unpatched; worker threads and native code outside the guard | Fixed (connect signatures, promise lookup, tests) and documented; isolation → F8; cwd note → F9 |
+| 2 | Record again discarded the previous clip before the microphone prompt resolved; no guard against a second tap while `start()` was pending | Fixed: `isStarting` state disables the controls, the old clip is replaced only after `start()` succeeds |
+| 3 / 10 | `navigator.share().catch(() => {})` swallowed every failure after cancelling the `mailto:` navigation | Fixed: only `AbortError` is ignored; any other rejection navigates to the `mailto:` link (§ 4.3 #12) |
+| 4 | Recorder errors rendered at the bottom of the form, far from `#record` on phones | Fixed: `recorderError` state rendered inside the box with `role="alert"` |
+| 5 | `break-all` on prose links; `min-h-tap` override lost in the cascade; disabled file input had no visual state | Fixed: `break-words` default with `break-all` only on raw claim URLs; override removed (§ 4.3 #13); `disabled:` styles on the file input |
+| 6 | Error-page `h1` not bold; unused `secondaryOnGreenClass`; hard-coded tertiary shadow | Fixed: `font-bold`; export removed; `--shadow-button-periwinkle` token |
+| 8 | Goldenrod focus ring 2.13:1 / 1.90:1 | Fixed: walnut outline (E18) |
+| 9 | Story subtitle 4.22:1 on lake green | Fixed: `text-paper` (E17) |
+| 11 | Error page lacked the header and footer promised by E15 | Fixed (E19) |
+
+Bucket 3 this cycle: none. After the repairs, a Claude regression check replaced a second Team Code Review cycle (Rob's call, 2026-11-03), and the PR was merged once CI passed.
 
 ## 5. Steps
 
@@ -459,6 +487,7 @@ Record each V result (date, pass/fail, note) in Progress.
 - [x] Step 7 (2026-11-03): thank-you state with Web Share / mailto, resetForm; same commit a2c885c; checkpoint green
 - [x] Step 8 (2026-11-03): claim page and claim form restyled, meta referrer now no-referrer; Astra commit d566d54 (task w2-home-claim); checkpoint green
 - [x] Step 9 (2026-11-03): ledger Task 11 appended, this checklist final, draft PR https://github.com/RobertdWray/jowray_com/pull/15 opened from the Astra integration branch; V-results below
+- [x] Review cycle 1 (2026-11-03): findings 1–11 repaired in Astra commits 3ca27fa (`r1-ui-repairs`: share form, field classes, buttons, tokens, home subtitle, error page) and be99a63 (`r2-guard-repairs`: guard, `__tests__/scripts/no-network.test.ts`, Checks sentence); combined checks green on the repaired head (133 tests); PR #15 updated; regression check by Claude, then merge
 
 ### Execution notes
 
