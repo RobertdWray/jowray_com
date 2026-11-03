@@ -55,7 +55,14 @@ const emailSchema = z.object({
   CONSENT_VERSION: z.string().min(1, "CONSENT_VERSION is required"),
 });
 
+const uploadSchema = z.object({
+  UPLOAD_TICKET_SECRET: z.string().min(32, "UPLOAD_TICKET_SECRET must be at least 32 characters"),
+  DAILY_MEMORY_BUDGET: z.coerce.number().int().positive().default(200),
+  DAILY_BYTE_BUDGET: z.coerce.number().int().positive().default(20 * 1024 ** 3),
+});
+
 export type DbEnv = z.infer<typeof dbSchema>;
+export type UploadEnv = z.infer<typeof uploadSchema>;
 export type BlobEnv = z.infer<typeof blobSchema>;
 export type EmailEnv = z.infer<typeof emailSchema>;
 export type SentryEnv = z.infer<typeof sentrySchema>;
@@ -86,6 +93,7 @@ export const getSentryEnv = memoized("sentry", sentrySchema);
 export const getSiteEnv = memoized("site", siteSchema);
 export const getBlobEnv = memoized("blob", blobSchema);
 export const getEmailEnv = memoized("email", emailSchema);
+export const getUploadEnv = memoized("upload", uploadSchema);
 
 /** Test helper: forget every parsed sub-schema so the next call re-reads `process.env`. */
 export function resetEnvCache(): void {

@@ -47,7 +47,10 @@ export class SendGridTransport implements EmailTransport {
           subject: message.subject,
           text: message.text,
           html: message.html,
-          trackingSettings: { clickTracking: { enable: false, enableText: false } },
+          trackingSettings: {
+            clickTracking: { enable: false, enableText: false },
+            openTracking: { enable: false },
+          },
         });
         return { messageId: messageIdOf(response.headers) };
       } catch (error) {
