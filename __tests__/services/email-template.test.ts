@@ -195,3 +195,69 @@ describe("buildMemoryConfirmation: size", () => {
     expect(Buffer.byteLength(html, "utf8")).toBeLessThan(100 * 1024);
   });
 });
+
+describe("buildMemoryConfirmation: review round 1 (PR #20)", () => {
+  it("caps the note at 10,000 characters in both parts", () => {
+    const { html, text } = build({ note: "n".repeat(12_000) });
+    expect(text).not.toContain("n".repeat(10_001));
+    expect(html).not.toContain("n".repeat(10_001));
+    expect(text).toContain("n".repeat(10_000));
+  });
+
+  it("tells photo readers to see, not play, and keeps play for audio and video", () => {
+    const { html } = build({ media: [photo(), photo({ kind: "VOICE" }), photo({ kind: "VIDEO" })] });
+    expect(html).toContain("Tap to see it on your private page");
+    expect((html.match(/Tap to play on your private page/g) ?? []).length).toBe(2);
+  });
+
+  it("breaks stacked lines for Outlook: a <br> between title and subtitle, no unitless line-height under mso-line-height-rule:exactly", () => {
+    const { html } = build({ media: [photo({ kind: "VOICE", originalFilename: "voice.m4a", durationSeconds: 5 })] });
+    expect(html).toMatch(/Voice recording · 0:05<\/span><br>/);
+    expect(html).not.toMatch(/<span style="display:block[^"]*"><\/span>/);
+    for (const style of html.matchAll(/style="([^"]*mso-line-height-rule:exactly[^"]*)"/g)) {
+      expect(style[1]).toMatch(/line-height:\d+px/);
+    }
+    // Detail rows stack with block elements Outlook honours.
+    expect(html).toMatch(/<div[^>]*>Your name<\/div>\s*<div[^>]*>Kay<\/div>/);
+  });
+
+  it("lets long filenames and details wrap instead of widening the email", () => {
+    const { html } = build({ media: [photo({ originalFilename: "x".repeat(255) })], place: "y".repeat(200) });
+    const titleCell = html.match(/<td[^>]*>\s*<a[^>]*><span[^>]*>Photo · x+/)?.[0] ?? "";
+    expect(titleCell).toMatch(/word-break:break-word/);
+    expect(html).toMatch(new RegExp(`<div[^>]*word-break:break-word[^>]*>${"y".repeat(200)}</div>`));
+  });
+
+  it("rejects duplicate preview content ids and ids reserved for brand marks", () => {
+    expect(() => build({ media: [photo({ preview: preview("same") }), photo({ preview: preview("same") })] })).toThrow(/duplicate/i);
+    expect(() => build({ media: [photo({ preview: { contentId: EMAIL_ASSETS.heart.contentId, contentBase64: JPEG_1PX, width: 10, height: 10 } })] })).toThrow(/reserved/i);
+  });
+
+  it("does not wrap the decorative badge in its own link", () => {
+    const { html } = build({ media: [photo({ kind: "VOICE" })] });
+    expect(html).not.toMatch(/<a [^>]*><img src="cid:brand-badge-audio"/);
+    expect(html).toMatch(/<img src="cid:brand-badge-audio"[^>]*alt=""/);
+  });
+
+  it("falls back to a badge card when a preview has bad dimensions or is too large", () => {
+    const big = Buffer.alloc(351 * 1024, 1).toString("base64");
+    const { html, attachments } = build({
+      media: [
+        photo({ originalFilename: "nan.jpg", preview: { contentId: "preview-a", contentBase64: JPEG_1PX, width: Number.NaN, height: 10 } }),
+        photo({ originalFilename: "zero.jpg", preview: { contentId: "preview-b", contentBase64: JPEG_1PX, width: 0, height: 10 } }),
+        photo({ originalFilename: "big.jpg", preview: { contentId: "preview-c", contentBase64: big, width: 100, height: 100 } }),
+      ],
+    });
+    expect(attachments.filter((a) => a.contentId.startsWith("preview-"))).toHaveLength(0);
+    expect(html).toContain("Photo · nan.jpg");
+    expect(html).toContain("Photo · big.jpg");
+  });
+
+  it("stays under 100 KB with the maximum of ten files (four previews, six badge cards) and the longest note", () => {
+    const chunk = "Spelling <doesn't> count & “never” did — 😊 ligne\n";
+    const note = chunk.repeat(Math.ceil(10_000 / chunk.length)).slice(0, 10_000);
+    const media = Array.from({ length: 10 }, (_, i) => photo({ kind: i % 3 === 0 ? "VOICE" : i % 3 === 1 ? "VIDEO" : "PHOTO", originalFilename: `${"f".repeat(250)}${i}.bin`, durationSeconds: 86400, preview: i < 6 && i % 3 !== 0 ? preview(`m${i}`) : null }));
+    const { html } = build({ name: "N".repeat(60), relationship: "R".repeat(120), approxDateText: "D".repeat(120), place: "P".repeat(200), note, media });
+    expect(Buffer.byteLength(html, "utf8")).toBeLessThan(100 * 1024);
+  });
+});

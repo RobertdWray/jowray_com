@@ -229,6 +229,14 @@ describe("transport attachments", () => {
     expect(msg.trackingSettings.clickTracking.enable).toBe(false);
   });
 
+  it("refuses an attachment whose content id or filename breaks the MIME contract", async () => {
+    const { SendGridTransport } = await import("@/integrations/sendgrid");
+    const message = { to: base.to, from: "memories@jowray.com", subject: "s", text: "t", html: "" };
+    await expect(new SendGridTransport().send({ ...message, attachments: [{ filename: "heart.png", contentType: "image/png", contentBase64: "aGVhcnQ=", contentId: "bad id<" }] })).rejects.toThrow(/content id/i);
+    await expect(new SendGridTransport().send({ ...message, attachments: [{ filename: "../heart.png\r\n", contentType: "image/png", contentBase64: "aGVhcnQ=", contentId: "ok" }] })).rejects.toThrow(/filename/i);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
   it("omits the attachments field when a message has none", async () => {
     const { SendGridTransport } = await import("@/integrations/sendgrid");
     await new SendGridTransport().send({ to: base.to, from: "memories@jowray.com", subject: "s", text: "t", html: "<p>t</p>" });

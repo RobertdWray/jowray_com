@@ -20,7 +20,11 @@ import type { EmailAttachment, MediaKind, MemoryConfirmationContent, MemoryMedia
 export const MEMORY_CONFIRMATION_SUBJECT = "Thank you for sharing a memory";
 
 const NAME_MAX = 60;
+/** The form and the claim page cap the note here (lib/validations); the template bounds it again so the 100 KB size test is a property of this module. */
+const NOTE_MAX = 10_000;
 const MAX_PREVIEWS = 4;
+/** D4: a preview larger than this is shown as a badge card instead; four of these plus the brand marks stay well under 1.5 MB. */
+const PREVIEW_MAX_BYTES = 350 * 1024;
 /** Previews are rendered into a 520 px wide slot (600 px card minus padding). */
 const PREVIEW_SLOT_PX = 520;
 const CONTENT_ID = /^[a-z0-9-]+$/;
@@ -71,6 +75,7 @@ export function cleanNote(value: string): string {
     .replaceAll("\r", "\n")
     .replaceAll(/[^\P{Cc}\n]/gu, " ")
     .replaceAll(/\n{3,}/g, "\n\n")
+    .slice(0, NOTE_MAX)
     .trim();
 }
 
@@ -88,11 +93,29 @@ export function formatSeconds(total: number): string {
   return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-const NOUN: Record<MediaKind, { one: string; many: string; title: string; alt: string }> = {
-  PHOTO: { one: "a photo", many: "photos", title: "Photo", alt: "Your photo" },
-  VIDEO: { one: "a video", many: "videos", title: "Video", alt: "Your video" },
-  VOICE: { one: "a voice recording", many: "voice recordings", title: "Voice recording", alt: "Your voice recording" },
+const NOUN: Record<MediaKind, { one: string; many: string; title: string; alt: string; tap: string }> = {
+  PHOTO: { one: "a photo", many: "photos", title: "Photo", alt: "Your photo", tap: "Tap to see it on your private page" },
+  VIDEO: { one: "a video", many: "videos", title: "Video", alt: "Your video", tap: "Tap to play on your private page" },
+  VOICE: { one: "a voice recording", many: "voice recordings", title: "Voice recording", alt: "Your voice recording", tap: "Tap to play on your private page" },
 };
+
+const RESERVED_CONTENT_IDS = new Set<string>(Object.values(EMAIL_ASSETS).map((asset) => asset.contentId));
+
+/** Decoded size of a base64 string without allocating the bytes. */
+function base64Bytes(value: string): number {
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return Math.floor((value.length * 3) / 4) - padding;
+}
+
+function usablePreview(preview: NonNullable<MemoryMediaSummary["preview"]>): boolean {
+  return (
+    Number.isFinite(preview.width) &&
+    Number.isFinite(preview.height) &&
+    preview.width > 0 &&
+    preview.height > 0 &&
+    base64Bytes(preview.contentBase64) <= PREVIEW_MAX_BYTES
+  );
+}
 
 /** "your words and a photo", "2 videos", "a voice recording and a photo". */
 function describeReceived(media: MemoryMediaSummary[], hasWords: boolean): string {
@@ -137,15 +160,26 @@ function buildMediaCards(media: MemoryMediaSummary[]): { cards: Card[]; attachme
   const cards: Card[] = [];
   const attachments: EmailAttachment[] = [];
   const badges = new Set<MediaKind>();
+  const seen = new Set<string>();
   let previews = 0;
   media.forEach((item, index) => {
     const filename = cleanOptional(item.originalFilename, 255);
     const duration = item.durationSeconds !== null && Number.isFinite(item.durationSeconds) ? formatSeconds(item.durationSeconds) : null;
-    const usable = item.preview !== null && item.kind !== "VOICE" && previews < MAX_PREVIEWS;
-    if (usable && item.preview) {
+    if (item.preview) {
+      // Ids come from server ids; a bad one is a programming error, not contributor input.
       if (!CONTENT_ID.test(item.preview.contentId)) {
         throw new Error(`preview content id is not cid-safe: ${JSON.stringify(item.preview.contentId)}`);
       }
+      if (RESERVED_CONTENT_IDS.has(item.preview.contentId)) {
+        throw new Error(`preview content id is reserved for a brand mark: ${item.preview.contentId}`);
+      }
+      if (seen.has(item.preview.contentId)) {
+        throw new Error(`duplicate preview content id: ${item.preview.contentId}`);
+      }
+      seen.add(item.preview.contentId);
+    }
+    const usable = item.preview !== null && item.kind !== "VOICE" && previews < MAX_PREVIEWS && usablePreview(item.preview);
+    if (usable && item.preview) {
       previews += 1;
       const previewFilename = `${item.kind === "VIDEO" ? "video" : "photo"}-${index + 1}.jpg`;
       attachments.push({ filename: previewFilename, contentType: "image/jpeg", contentBase64: item.preview.contentBase64, contentId: item.preview.contentId });
@@ -186,10 +220,12 @@ function renderCardHtml(card: Card, link: string): string {
   return [
     `<tr><td style="padding:18px 0 0 0;">`,
     `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:3px solid ${WOOD_LIGHT};border-radius:12px;"><tr>`,
-    `<td width="56" valign="middle" style="padding:14px 0 14px 14px;"><a ${linkAttr}>${assetImg(badge, 56, "")}</a></td>`,
-    `<td valign="middle" style="padding:14px;font-family:${BODY_FONT};color:${WALNUT};">`,
-    `<a ${linkAttr}><span style="display:block;font-size:20px;line-height:1.3;font-weight:700;mso-line-height-rule:exactly;">${escapeHtml(cardTitle(card))}</span>`,
-    `<span style="display:block;font-size:17px;line-height:1.4;color:${WALNUT_SOFT};mso-line-height-rule:exactly;">Tap to play on your private page</span></a>`,
+    // The badge is decorative (alt=""), so it carries no link of its own: an image-only link would have no accessible name.
+    `<td width="56" valign="middle" style="padding:14px 0 14px 14px;">${assetImg(badge, 56, "")}</td>`,
+    `<td valign="middle" style="padding:14px;font-family:${BODY_FONT};color:${WALNUT};word-break:break-word;overflow-wrap:anywhere;">`,
+    // Inline spans with one <br>: Outlook's Word engine ignores display:block, and a block span plus <br> doubles the gap elsewhere.
+    `<a ${linkAttr}><span style="font-size:20px;line-height:26px;font-weight:700;mso-line-height-rule:exactly;">${escapeHtml(cardTitle(card))}</span><br>`,
+    `<span style="font-size:17px;line-height:24px;color:${WALNUT_SOFT};mso-line-height-rule:exactly;">${escapeHtml(NOUN[card.kind].tap)}</span></a>`,
     `</td></tr></table>`,
     `</td></tr>`,
   ].join("");
@@ -205,8 +241,8 @@ function renderCardText(card: Card): string {
 function detailRow(label: string, value: string): string {
   return [
     `<tr><td style="padding:0 0 12px 0;font-family:${BODY_FONT};">`,
-    `<span style="display:block;font-size:17px;line-height:1.4;color:${WALNUT_SOFT};">${escapeHtml(label)}</span>`,
-    `<span style="display:block;font-size:20px;line-height:1.5;color:${WALNUT};">${escapeHtml(value)}</span>`,
+    `<div style="font-size:17px;line-height:1.4;color:${WALNUT_SOFT};">${escapeHtml(label)}</div>`,
+    `<div style="font-size:20px;line-height:1.5;color:${WALNUT};word-break:break-word;overflow-wrap:anywhere;">${escapeHtml(value)}</div>`,
     `</td></tr>`,
   ].join("");
 }
@@ -292,7 +328,7 @@ body{margin:0;padding:0;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%}
 table{border-collapse:collapse;mso-table-lspace:0;mso-table-rspace:0}
 img{-ms-interpolation-mode:bicubic}
 @media only screen and (max-width:620px){
-.jw-h1{font-size:30px!important;line-height:1.08!important}
+.jw-h1{font-size:30px!important;line-height:32px!important}
 .jw-pad{padding-left:16px!important;padding-right:16px!important}
 }
 </style>
@@ -307,11 +343,11 @@ img{-ms-interpolation-mode:bicubic}
 <tr><td style="padding:0 0 28px 0;">
 <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
 <td valign="middle" style="padding:0 12px 0 0;">${assetImg(EMAIL_ASSETS.heart, 44, "")}</td>
-<td valign="middle" style="font-family:${DISPLAY_FONT};font-size:28px;line-height:1.1;font-weight:700;letter-spacing:-0.01em;color:${WALNUT};mso-line-height-rule:exactly;">Jo Wray</td>
+<td valign="middle" style="font-family:${DISPLAY_FONT};font-size:28px;line-height:31px;font-weight:700;letter-spacing:-0.01em;color:${WALNUT};mso-line-height-rule:exactly;">Jo Wray</td>
 </tr></table>
 </td></tr>
 
-<tr><td class="jw-h1" style="padding:0 0 16px 0;font-family:${DISPLAY_FONT};font-size:36px;line-height:1.05;font-weight:800;letter-spacing:-0.02em;color:${WALNUT};mso-line-height-rule:exactly;">${escapeHtml(HEADLINE)}</td></tr>
+<tr><td class="jw-h1" style="padding:0 0 16px 0;font-family:${DISPLAY_FONT};font-size:36px;line-height:38px;font-weight:800;letter-spacing:-0.02em;color:${WALNUT};mso-line-height-rule:exactly;">${escapeHtml(HEADLINE)}</td></tr>
 <tr><td style="padding:0 0 28px 0;font-family:${BODY_FONT};font-size:20px;line-height:1.5;color:${WALNUT};">${escapeHtml(greeting)} ${escapeHtml(LEAD_REST)}</td></tr>
 
 <tr><td bgcolor="${WOOD_LIGHT}" style="background-color:${WOOD_LIGHT};border-radius:18px;padding:0 0 6px 0;">
@@ -322,7 +358,7 @@ img{-ms-interpolation-mode:bicubic}
 <tr><td style="padding:0 0 18px 0;font-family:${BODY_FONT};font-size:17px;line-height:1.4;color:${WALNUT_SOFT};">${escapeHtml(received.charAt(0).toUpperCase() + received.slice(1))}.</td></tr>
 ${detailRows}
 ${hasWords ? `<tr><td style="padding:4px 0 0 0;font-family:${BODY_FONT};">
-<span style="display:block;padding:0 0 6px 0;font-size:17px;line-height:1.4;color:${WALNUT_SOFT};">Your memory of Jo</span>
+<div style="padding:0 0 6px 0;font-size:17px;line-height:1.4;color:${WALNUT_SOFT};">Your memory of Jo</div>
 <div style="font-size:20px;line-height:1.5;color:${WALNUT};white-space:pre-wrap;word-break:break-word;">${noteHtml}</div>
 </td></tr>` : ""}
 ${cards.map((card) => renderCardHtml(card, link)).join("\n")}

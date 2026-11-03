@@ -38,3 +38,10 @@ describe("email brand assets", () => {
     expect(total).toBeLessThan(40 * 1024);
   });
 });
+
+describe("composite play badge id", () => {
+  it("is cid-safe and distinct from the attached marks", () => {
+    expect(PLAY_BADGE_COMPOSITE.contentId).toMatch(/^[a-z0-9-]+$/);
+    expect(Object.values(EMAIL_ASSETS).map((a) => a.contentId)).not.toContain(PLAY_BADGE_COMPOSITE.contentId);
+  });
+});
