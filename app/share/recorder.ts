@@ -423,6 +423,10 @@ export class AudioRecorder {
     if (!recorder || !settle) {
       return;
     }
+    // An OS-triggered stop arrives without a stop()/ended transition.
+    if (this.snapshot.status.kind === "recording") {
+      this.dispatch({ type: "ended" });
+    }
     const mimeType = recorder.mimeType || "audio/webm";
     const blob = new Blob(this.chunks, { type: mimeType });
     const durationMs = Math.max(0, Math.round(this.deps.now() - this.startedAt));
@@ -430,18 +434,21 @@ export class AudioRecorder {
     const error = this.error;
     const session = this.session;
     this.release();
-    this.settle = null; // `finished` stays until discard()/cancel()/next start()
     if (blob.size === 0) {
       const problem: RecorderProblem = error ? problemFromError(error) : "unknown";
+      this.settle = null; // `finished` stays until discard()/cancel()/next start()
       this.dispatch({ type: "failed", problem });
       settle.reject(error ?? new Error("Nothing was recorded"));
       return;
     }
+    // `settle` stays set while finalising so a cancel() in the meantime can
+    // still reject the pending stop() promise.
     void this.finalize(blob, mimeType, durationMs, verdict, error !== null).then(
       (recording) => {
         if (session !== this.session) {
           return;
         }
+        this.settle = null;
         this.dispatch({ type: "finished", durationMs, verdict, partial: recording.partial });
         settle.resolve(recording);
       },
@@ -449,6 +456,7 @@ export class AudioRecorder {
         if (session !== this.session) {
           return;
         }
+        this.settle = null;
         this.dispatch({ type: "failed", problem: "unknown" });
         settle.reject(reason instanceof Error ? reason : new Error("Recording failed"));
       },

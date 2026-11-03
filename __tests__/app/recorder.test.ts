@@ -225,10 +225,9 @@ describe("AudioRecorder lifecycle", () => {
     expect(recording.durationMs).toBe(3100);
   });
 
-  // Expected: an OS stop enters finishing before publishing the completed clip.
-  // onstop currently calls finish() without a stop/ended transition, so the
-  // reducer ignores finished while the status is still recording.
-  it.fails("an OS stop publishes finishing then clip and retains the same recording", async () => {
+  // An OS stop (screen lock, phone call) arrives as onstop with no stop()/ended
+  // transition; finish() dispatches `ended` itself so the clip is published.
+  it("an OS stop publishes finishing then clip and retains the same recording", async () => {
     const { engine, recorder } = setup();
     await engine.start();
     const statuses = observeStatuses(engine);
@@ -340,10 +339,9 @@ describe("AudioRecorder lifecycle", () => {
     expect(onLevel).toHaveBeenCalledTimes(5);
   });
 
-  // Expected: cancel rejects stop() with "Recording cancelled", even mid-finalize.
-  // finish() clears this.settle before finalization; cancel cannot reject the
-  // promise, and the session guard then drops finalization's resolution.
-  it.fails("cancel releases resources, returns to idle and rejects a pending stop", async () => {
+  // cancel() rejects a pending stop() with "Recording cancelled" even while the
+  // clip is still being finalised: the settle callback lives until then.
+  it("cancel releases resources, returns to idle and rejects a pending stop", async () => {
     const active = setup();
     await active.engine.start();
     expect(active.engine.status.kind).toBe("recording");

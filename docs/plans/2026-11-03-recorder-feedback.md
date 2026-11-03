@@ -452,7 +452,9 @@ Each finding was checked against source before ruling. Baseline correction: `mai
 | Headless smoke, hearing | a6839f2 + smoke script | PASS | `node scripts/recorder-smoke.mjs --url http://localhost:3101/share --expect hearing` → status "Hearing you", timer 0:05, "Using: Fake Default Audio Input", player duration 5.137 s (WebM header patched), no verdict line |
 | Headless smoke, silent mic (the incident) | same | PASS | `… --expect silent --audio-file scripts/fixtures/silence-1s.wav` → "We're not hearing anything" at 3 s, clip kept with "This recording sounds silent", help steps rendered, player duration 5.062 s |
 | Astra W1 / W2 independent checks | run 20261103T195132Z-c4f37024 | PASS | vitest 308 / 151, type-check, eslint — see `tasks/*/checks-*/validation.json` |
-| Engine lifecycle tests (W3) | run 20261103T200307Z-c8a76180 | pending | |
+| Engine lifecycle tests (W3) | run 20261103T200307Z-c8a76180, integrated as 959f07e | PASS | 20/20 after two engine fixes the tests exposed (OS stop dispatches `ended`; `settle` kept during finalisation so `cancel()` rejects a pending `stop()`); full suite 456 tests |
 | Device matrix (Mac Chrome denied mic, headset picker, Mac Safari, iPhone Safari, Android, Firefox, Windows) | — | NOT RUN | needs Rob's devices; the smoke covers only Chromium with fake inputs |
 
 Smoke prerequisites: Google Chrome at `/Applications/Google Chrome.app` (tested 156.0.8078.80), `npx next dev -p 3101` in a checkout, Node 22 (global `WebSocket`). Flags used: `--headless=new --use-fake-ui-for-media-stream --use-fake-device-for-media-stream --autoplay-policy=no-user-gesture-required [--use-file-for-fake-audio-capture=<16-bit PCM WAV>]`; `--screenshot-dir` writes `<expect>-recording.png` / `<expect>-clip.png`.
+
+Publication note: the orchestrator's engine/UI commits live on `feat/recorder-feedback`, so the PR is opened from that branch with `gh`; the Astra runs hold the worker evidence (briefs, reports, inspection diffs, check logs, acceptances) and their integration branches were cherry-picked here (64603da, a3e121b, 959f07e).
