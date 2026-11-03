@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# prisma client output (`prisma generate`)
+/generated/
+
+# reference code copied into worker worktrees (never committed)
+/.reference/

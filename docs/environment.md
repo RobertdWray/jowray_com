@@ -44,6 +44,15 @@ The integration was provisioned with Neon Auth and Realtime **off**, so `NEON_AU
 | `NEXT_PUBLIC_SENTRY_DSN` | The DSN for Sentry project `med3ai/jowray_com` (API host `https://us.sentry.io`). It holds a **real value**: DSNs aren't secrets. ([Sentry docs](https://docs.sentry.io/security-legal-pii/security/token-formats/#excluding-dsns), [Next.js SDK](https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/#initialize-sentry-sdks)) |
 | `SENTRY_AUTH_TOKEN` | **Placeholder (empty).** Reserved for a future **organization** token (`org:ci`) that uploads source maps from CI or Vercel builds. ([Sentry docs](https://docs.sentry.io/platforms/javascript/guides/nextjs/#add-readable-stack-traces-with-source-maps)) |
 
+## Phase 1: orchestrator and CI keys
+
+These are used by the agent running the Phase 1 plan and by GitHub Actions, never by the app.
+
+| Key | Purpose |
+|---|---|
+| `NEON_API_KEY` | Neon API key for the Vercel-managed org, used by the `neon` CLI (`--api-key`) when `neonctl auth` is not available and by `.github/workflows/neon-cleanup.yml` as the GitHub secret `NEON_API_KEY`. Create it from the Neon console (Vercel → Storage → `jowray_com` → Open in Neon → Account settings → API keys). ([Neon docs](https://neon.com/docs/manage/api-keys)) |
+| `VERCEL_AUTOMATION_BYPASS_SECRET` | Protection Bypass for Automation secret from the Vercel project's Deployment Protection settings. Sent as the `x-vercel-protection-bypass` header so scripted checks can reach preview deployments. `.env` only; never in Vercel env. ([Vercel docs](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation)) |
+
 ## Placeholders still to fill
 
 | Key | Purpose |
