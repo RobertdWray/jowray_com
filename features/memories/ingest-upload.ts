@@ -2,8 +2,12 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 
+import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger, logError } from "@/lib/logger";
 import { isAllowedMime } from "@/lib/media-types";
+import { afterWithFlush } from "@/lib/sentry/after-flush";
+import { getSiteUrl } from "@/lib/site-url";
+import { type UploadTicket, verifyUploadTicket } from "@/lib/upload-ticket";
 import { getDb } from "@/server/db/client";
 import { createStorageService } from "@/services/storage";
 
@@ -110,4 +114,42 @@ export async function computeChecksum({ mediaId }: { mediaId: string }): Promise
     logError("checksum could not be stored", error, { category: "upload", mediaId });
   }
   return digest;
+}
+
+export type FinalizeResult =
+  | { status: "READY" | "PENDING" | "FAILED"; claimLink: string; emailed: boolean }
+  | { status: "REJECTED"; reason: "malformed" | "bad_signature" | "expired" | "not_found" };
+
+/**
+ * Called by the browser after `upload()` resolves. Verifies the ticket and
+ * that the claim token belongs to the ticket's memory, records the media
+ * from `head()`, and, for files small enough to hash inside the page's
+ * `maxDuration`, computes the checksum in `after()`. Larger files are hashed
+ * by the reconcile cron. Task 8 adds the confirmation email here.
+ */
+export async function finalizeUpload({
+  ticket,
+  claimToken,
+}: {
+  ticket: UploadTicket;
+  claimToken: string;
+}): Promise<FinalizeResult> {
+  const verified = verifyUploadTicket(ticket);
+  if (!verified.ok) {
+    return { status: "REJECTED", reason: verified.reason };
+  }
+  const memory = await getDb().memory.findUnique({ where: { claimTokenHash: hashClaimToken(claimToken) } });
+  if (!memory || memory.deletedAt !== null || memory.id !== verified.claims.memoryId) {
+    return { status: "REJECTED", reason: "not_found" };
+  }
+  const outcome = await recordMedia({ mediaId: verified.claims.mediaId });
+  if (outcome.status === "NOT_FOUND") {
+    return { status: "REJECTED", reason: "not_found" };
+  }
+  if (outcome.status === "READY" && outcome.sizeBytes <= INLINE_HASH_MAX_BYTES) {
+    afterWithFlush(async () => {
+      await computeChecksum({ mediaId: outcome.mediaId });
+    });
+  }
+  return { status: outcome.status, claimLink: `${getSiteUrl()}/m/${claimToken}`, emailed: false };
 }

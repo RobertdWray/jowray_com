@@ -61,7 +61,13 @@ const uploadSchema = z.object({
   DAILY_BYTE_BUDGET: z.coerce.number().int().positive().default(20 * 1024 ** 3),
 });
 
+const memorialSchema = z.object({
+  MEMORIAL_SLUG: z.string().min(1, "MEMORIAL_SLUG is required"),
+  CONSENT_VERSION: z.string().min(1, "CONSENT_VERSION is required"),
+});
+
 export type DbEnv = z.infer<typeof dbSchema>;
+export type MemorialEnv = z.infer<typeof memorialSchema>;
 export type UploadEnv = z.infer<typeof uploadSchema>;
 export type BlobEnv = z.infer<typeof blobSchema>;
 export type EmailEnv = z.infer<typeof emailSchema>;
@@ -94,6 +100,7 @@ export const getSiteEnv = memoized("site", siteSchema);
 export const getBlobEnv = memoized("blob", blobSchema);
 export const getEmailEnv = memoized("email", emailSchema);
 export const getUploadEnv = memoized("upload", uploadSchema);
+export const getMemorialEnv = memoized("memorial", memorialSchema);
 
 /** Test helper: forget every parsed sub-schema so the next call re-reads `process.env`. */
 export function resetEnvCache(): void {

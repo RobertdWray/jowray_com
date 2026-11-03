@@ -17,8 +17,8 @@ const dbStub = {
   webhookEvent: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { events.push(data); return { id: "evt_1", ...data }; }), update: vi.fn(async () => ({})) },
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
-const recordMediaMock = vi.fn(async () => ({ status: "READY", mediaId: "med_1", memoryId: "mem_1", sizeBytes: 5 }));
-vi.mock("@/features/memories/ingest-upload", () => ({ recordMedia: (...a: unknown[]) => recordMediaMock(...a) }));
+const recordMediaMock = vi.fn(async (_arg: { mediaId: string }) => ({ status: "READY", mediaId: "med_1", memoryId: "mem_1", sizeBytes: 5 }));
+vi.mock("@/features/memories/ingest-upload", () => ({ recordMedia: (arg: { mediaId: string }) => recordMediaMock(arg) }));
 const afterCalls: Array<() => Promise<void>> = [];
 vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
 

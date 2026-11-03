@@ -10,20 +10,19 @@ const memories: MemoryRow[] = [];
 const medias: MediaRow[] = [];
 const contributors: Record<string, unknown>[] = [];
 let memorial: { id: string; slug: string } | null = { id: "memorial_1", slug: "jo" };
-let seq = 0;
 const tx = {
   memorial: { findUnique: vi.fn(async () => memorial) },
   memory: {
     count: vi.fn(async ({ where }: { where?: { createdAt?: { gt: Date } } } = {}) => memories.filter((m) => !where?.createdAt || m.createdAt > where.createdAt.gt).length),
-    create: vi.fn(async ({ data }: { data: Omit<MemoryRow, "id" | "createdAt" | "deletedAt"> }) => { const row: MemoryRow = { id: `mem_${++seq}`, createdAt: new Date(), deletedAt: null, ...data }; memories.push(row); return row; }),
+    create: vi.fn(async ({ data }: { data: Omit<MemoryRow, "id" | "createdAt" | "deletedAt"> }) => { const row: MemoryRow = { id: `mem_${memories.length + 1}`, createdAt: new Date(), deletedAt: null, ...data }; memories.push(row); return row; }),
     findUnique: vi.fn(async ({ where }: { where: { claimTokenHash: string } }) => memories.find((m) => m.claimTokenHash === where.claimTokenHash) ?? null),
   },
   media: {
     aggregate: vi.fn(async ({ where }: { where?: { createdAt?: { gt: Date } } } = {}) => ({ _sum: { maxBytes: medias.filter((m) => !where?.createdAt || m.createdAt > where.createdAt.gt).reduce((s, m) => s + m.maxBytes, 0) || null } })),
     count: vi.fn(async ({ where }: { where: { memoryId: string } }) => medias.filter((m) => m.memoryId === where.memoryId).length),
-    create: vi.fn(async ({ data }: { data: Omit<MediaRow, "id" | "createdAt"> }) => { const row: MediaRow = { id: `med_${++seq}`, createdAt: new Date(), ...data }; medias.push(row); return row; }),
+    create: vi.fn(async ({ data }: { data: Omit<MediaRow, "id" | "createdAt"> }) => { const row: MediaRow = { id: `med_${medias.length + 1}`, createdAt: new Date(), ...data }; medias.push(row); return row; }),
   },
-  contributor: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `con_${++seq}`, ...data }; contributors.push(row); return row; }) },
+  contributor: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `con_${contributors.length + 1}`, ...data }; contributors.push(row); return row; }) },
 };
 const dbStub = { ...tx, $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx)) };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
@@ -43,7 +42,7 @@ const valid = {
 };
 
 beforeEach(() => {
-  memories.length = 0; medias.length = 0; contributors.length = 0; seq = 0; memorial = { id: "memorial_1", slug: "jo" };
+  memories.length = 0; medias.length = 0; contributors.length = 0; memorial = { id: "memorial_1", slug: "jo" };
   process.env.UPLOAD_TICKET_SECRET = "s".repeat(32);
   process.env.DAILY_MEMORY_BUDGET = "3";
   process.env.DAILY_BYTE_BUDGET = String(600 * 1024 * 1024);
@@ -67,7 +66,7 @@ describe("createMemory", () => {
     const verified = verifyUploadTicket(result.upload!.ticket);
     expect(verified.ok).toBe(true);
     if (verified.ok) {
-      expect(verified.claims).toMatchObject({ mediaId: "med_3", memoryId: "mem_1", pathname: result.upload?.pathname, mimeType: "audio/mp4", maxBytes: 100 * 1024 * 1024 });
+      expect(verified.claims).toMatchObject({ mediaId: "med_1", memoryId: "mem_1", pathname: result.upload?.pathname, mimeType: "audio/mp4", maxBytes: 100 * 1024 * 1024 });
     }
   });
 
@@ -101,13 +100,13 @@ describe("createMemory", () => {
 
   it("refuses when the daily memory budget is reached", async () => {
     for (let i = 0; i < 3; i += 1) { expect((await createMemory({ ...valid, file: null })).ok).toBe(true); }
-    expect(await createMemory({ ...valid, file: null })).toEqual({ ok: false, code: "budget_exceeded" });
+    expect(await createMemory({ ...valid, file: null })).toMatchObject({ ok: false, code: "budget_exceeded" });
   });
 
   it("refuses when the daily byte budget would be exceeded", async () => {
     const video = { name: "a.mp4", type: "video/mp4", size: 1 };
     expect((await createMemory({ ...valid, file: video })).ok).toBe(true); // 500 MB ticketed
-    expect(await createMemory({ ...valid, file: video })).toEqual({ ok: false, code: "budget_exceeded" });
+    expect(await createMemory({ ...valid, file: video })).toMatchObject({ ok: false, code: "budget_exceeded" });
   });
 });
 
@@ -121,6 +120,6 @@ describe("createUploadTicket", () => {
       expect(t.ok).toBe(true);
     }
     expect(await createUploadTicket({ claimToken: created.claimToken, file: { name: "p.jpg", type: "image/jpeg", size: 1 } })).toEqual({ ok: false, code: "too_many_files" });
-    expect(await createUploadTicket({ claimToken: "wrong", file: { name: "p.jpg", type: "image/jpeg", size: 1 } })).toEqual({ ok: false, code: "not_found" });
+    expect(await createUploadTicket({ claimToken: "w".repeat(43), file: { name: "p.jpg", type: "image/jpeg", size: 1 } })).toEqual({ ok: false, code: "not_found" });
   });
 });

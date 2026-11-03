@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { hashClaimToken } from "@/lib/claim-token";
+import { mintUploadTicket } from "@/lib/upload-ticket";
 import { resetEnvCache } from "@/server/config/env";
+
+const CLAIM = "c".repeat(43);
 
 interface MediaRow {
   id: string;
@@ -16,7 +20,11 @@ interface MediaRow {
 }
 let media: MediaRow[] = [];
 let p2002Once = false;
+const memories = [{ id: "mem_1", claimTokenHash: hashClaimToken(CLAIM), deletedAt: null as Date | null }];
+const afterCalls: Array<() => Promise<void>> = [];
+vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
 const dbStub = {
+  memory: { findUnique: vi.fn(async ({ where }: { where: { claimTokenHash: string } }) => memories.find((m) => m.claimTokenHash === where.claimTokenHash) ?? null) },
   media: {
     findUnique: vi.fn(async ({ where }: { where: { id: string } }) => media.find((m) => m.id === where.id) ?? null),
     update: vi.fn(async ({ where, data }: { where: { id: string; status?: "PENDING" }; data: Partial<MediaRow> }) => {
@@ -42,7 +50,7 @@ vi.mock("@/services/storage", () => ({
   createStorageService: () => ({ head: headMock, del: delMock, get: vi.fn(), put: vi.fn(), presignGet: vi.fn() }),
 }));
 
-import { recordMedia } from "@/features/memories/ingest-upload";
+import { finalizeUpload, recordMedia } from "@/features/memories/ingest-upload";
 
 function row(over: Partial<MediaRow> = {}): MediaRow {
   return {
@@ -61,6 +69,9 @@ function row(over: Partial<MediaRow> = {}): MediaRow {
 }
 
 beforeEach(() => {
+  process.env.UPLOAD_TICKET_SECRET = "s".repeat(32);
+  process.env.NEXT_PUBLIC_SITE_URL = "https://www.jowray.com";
+  afterCalls.length = 0;
   media = [row()];
   p2002Once = false;
   headMock.mockReset();
@@ -117,5 +128,32 @@ describe("recordMedia", () => {
     const results = await Promise.all([recordMedia({ mediaId: "med_1" }), recordMedia({ mediaId: "med_1" })]);
     expect(results.map((r) => r.status).sort()).toEqual(["READY", "READY"]);
     expect(media).toHaveLength(1);
+  });
+});
+
+describe("finalizeUpload", () => {
+  const claims = { mediaId: "med_1", memoryId: "mem_1", pathname: "originals/mem_1/abc.jpg", mimeType: "image/jpeg", maxBytes: 25 * 1024 * 1024 };
+
+  it("verifies the ticket and the claim token, records the media and returns the claim link", async () => {
+    const result = await finalizeUpload({ ticket: mintUploadTicket(claims), claimToken: CLAIM });
+    expect(result).toEqual({ status: "READY", claimLink: `https://www.jowray.com/m/${CLAIM}`, emailed: false });
+    expect(media[0]?.status).toBe("READY");
+    expect(afterCalls).toHaveLength(1); // inline checksum scheduled for a small file
+  });
+
+  it("rejects a tampered ticket, a mismatched claim token, and does not touch the row", async () => {
+    const ticket = mintUploadTicket(claims);
+    expect(await finalizeUpload({ ticket: { ...ticket, maxBytes: 1 }, claimToken: CLAIM })).toEqual({ status: "REJECTED", reason: "bad_signature" });
+    expect(await finalizeUpload({ ticket, claimToken: "x".repeat(43) })).toEqual({ status: "REJECTED", reason: "not_found" });
+    expect(media[0]?.status).toBe("PENDING");
+    expect(headMock).not.toHaveBeenCalled();
+  });
+
+  it("does not schedule an inline checksum for a file over 50 MB", async () => {
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 60 * 1024 * 1024, contentType: "video/mp4", uploadedAt: new Date() });
+    media = [row({ mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 })];
+    const result = await finalizeUpload({ ticket: mintUploadTicket({ ...claims, mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 }), claimToken: CLAIM });
+    expect(result.status).toBe("READY");
+    expect(afterCalls).toHaveLength(0);
   });
 });
