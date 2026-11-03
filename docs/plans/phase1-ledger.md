@@ -73,9 +73,10 @@ Authoritative record of what has already happened. Read every copy (main, open P
 - Checks passed: `npm ls @sentry/nextjs` → 11.10.0; `git ls-files | grep -c sentry-build-plugin` → 0; validate, 17/17 tests, offline build without `SENTRY_AUTH_TOKEN` is quiet. Pending: `vercel env ls` shows `SENTRY_AUTH_TOKEN`; step 6 confirmations.
 
 ## Task 5 — Storage + email services
-- Status: [ ]   Owner: split   Branch/PR: C   Worktree: …   Head: …
-- External IDs: BLOB_STORE_ID …; Vercel env SENDGRID_FROM_EMAIL, OUTBOUND_ENABLED (production), OUTBOUND_ALLOWLIST, NEXT_PUBLIC_SITE_URL (production)
-- Checks passed: —
+- Status: [~]   Owner: split   Branch/PR: C `feat/phase1-storage-email-dns` (stacked on B)   Worktree: inline   Head: …
+- External IDs: private Blob store **jowray-media** = `` (created 2026-11-03 with `vercel blob create-store jowray-media --access private --yes`, connected to Production, Preview, Development; `BLOB_READ_WRITE_TOKEN` set by Vercel in all three and merged into local `.env` with `BLOB_STORE_ID`). Vercel env SENDGRID_FROM_EMAIL, OUTBOUND_ENABLED (production), OUTBOUND_ALLOWLIST, NEXT_PUBLIC_SITE_URL (production): **pending Rob's values**.
+- Incident: `vercel blob create-store --yes` ran its own `vercel env pull` into `.env.local`, replacing the Neon `dev`-branch override with the Development environment's values (see the findings file). `.env.local` was restored to `VERCEL_OIDC_TOKEN` + the two `dev`-branch URLs; verified host `ep-solitary-tree-bbnwysvl`.
+- Checks passed: `vercel blob list --limit 1` works; no `.env.vercel.tmp`; `.env.local` host is the `dev` branch. Pending: `vercel env ls` shows the four keys.
 
 ## Task 6 — DNS for SendGrid
 - Status: [ ]   Owner: orchestrator + Rob   Branch/PR: C
