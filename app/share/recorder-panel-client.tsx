@@ -4,6 +4,7 @@ import { useId, useState } from "react";
 
 import { formatDuration } from "@/lib/format-duration";
 import type { RecorderHelp } from "@/lib/recorder-help";
+import { friendlyInputLabel } from "@/lib/recording-devices";
 
 import { SecondaryButton, TertiaryButton } from "../_components/buttons";
 import { errorClass, helperClass, selectClass } from "../_components/field-classes";
@@ -124,14 +125,14 @@ export function RecorderPanel({ rec, canRecord, disabled }: { rec: UseRecorder; 
                 <option value="">Let the browser choose</option>
                 {rec.inputs.map((input) => (
                   <option key={input.deviceId} value={input.deviceId}>
-                    {input.label}
+                    {friendlyInputLabel(input.label) || input.label}
                   </option>
                 ))}
               </select>
+              {rec.activeInputLabel && (
+                <span className={`text-small ${helperClass}`}>Using: {rec.activeInputLabel}</span>
+              )}
             </label>
-          )}
-          {rec.activeInputLabel && (
-            <span className="text-small text-walnut-soft">Using: {rec.activeInputLabel}</span>
           )}
           {rec.deviceNotice && (
             <p role="status" className="text-small text-walnut">{rec.deviceNotice}</p>
