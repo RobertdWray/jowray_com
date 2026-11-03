@@ -43,28 +43,34 @@ Authoritative record of what has already happened. Read every copy (main, open P
 - Waiting on Rob: `MEMORIAL_NAME`, `MEMORIAL_SLUG`, `SENDGRID_FROM_EMAIL`, consent sentences + `CONSENT_VERSION`, `OUTBOUND_ALLOWLIST` emails, Vercel Protection Bypass secret, Neon auth.
 
 ## Task 1 — Infra follow-ups
-- Status: [ ]   Owner: orchestrator + Rob   Branch/PR: A
-- External IDs: Neon dev branch …; GitHub variable NEON_PROJECT_ID; GitHub secret NEON_API_KEY; ruleset (see one-off actions)
-- Checks passed: —
+- Status: [~]   Owner: orchestrator + Rob   Branch/PR: A `feat/phase1-foundation` (PR #4, draft, stacked on #3)
+- Done 2026-11-02: `.github/workflows/ci.yml` (job `ci`: lint, type-check, test:run, build on PRs and main), `.github/workflows/neon-cleanup.yml`, `.gitignore` (`/generated/`, `/.reference/`), `docs/environment.md` rows for `NEON_API_KEY` and `VERCEL_AUTOMATION_BYPASS_SECRET`; GitHub variable `NEON_PROJECT_ID=icy-scene-20351172` set (2026-11-03T01:54Z).
+- External IDs: Neon `dev` branch **`br-holy-rice-bbz4t50l`** (parent `main` `br-restless-king-bbmkh5zd`, created 2026-11-03T02:05Z through the Neon MCP connector because the `neon` CLI is not authenticated); GitHub variable `NEON_PROJECT_ID`.
+- Waiting on Rob: `NEON_API_KEY` (GitHub secret for the cleanup action; `.env` for the CLI); approval to delete the stale `preview/docs/bootstrap-report` (`br-orange-rice-bbil7ivy`) and `preview/docs/custom-domain` (`br-weathered-queen-bb8o0zd5`) branches (both PRs are closed; the cleanup action did not exist yet); `main` ruleset after PR A merges and `ci` is green on main once.
+- Checks passed: `gh variable list` shows `NEON_PROJECT_ID`. Pending: `neon branches list`, `.env.local` checks, CI green on main, ruleset, `gh secret list`.
 
 ## Task 2a — Pre-flight
-- Status: [ ]   Owner: orchestrator   Branch/PR: A   Base commit for 2b: …
-- Checks passed: offline build on the base: —
+- Status: [x] 2026-11-02   Owner: orchestrator   Branch/PR: A   Base commit for 2b: `24974eb`
+- Installed (one lockfile change): zod, pino, pino-pretty, server-only, geist, @sentry/nextjs 11.10.0, @vercel/blob 2.8.2, @sendgrid/mail 8.1.6; dev: vitest 5.1.0, @types/node 26. (Task 2b added @opentelemetry/api and @opentelemetry/core as explicit deps for `afterWithFlush`, same PR.) `npm audit`: transitive advisories only (deepmerge via @sendgrid/mail; glob/minimatch via @sentry/bundler-plugins); the offered fixes are breaking downgrades and were not applied.
+- Checks passed: `npm ls` resolves all; `grep -c typegen package.json` → 1; `npm run validate` and `npm run build` green on the base (network on). Offline proof on the base: `npm ci --offline` ok in a scratch worktree; the pre-font-swap build fails on `fonts.googleapis.com` as expected (recorded in the findings file).
 
 ## Task 2b — Conventions, logging, tests
-- Status: [ ]   Owner: worker   Branch/PR: A   Worktree: …   wip branch: wip/task-2b   Head: …
-- Hand-back received: —   Merged into A at: —
-- Checks passed: —
+- Status: [x] 2026-11-02   Owner: worker (executed inline by the orchestrator session)   Branch/PR: A   Worktree: `../jowray_wt_task-2b` (removed after merge)   wip branch: wip/task-2b   Head: `bc4bd05`
+- Hand-back received: inline   Merged into A at: `c13784c`
+- Checks passed: `npm run validate`, `npm run test:run` (12/12), `npm run build` with `DATABASE_URL` unset and remote network blocked (Node-level `dns.lookup`/`net.connect` blocker via `NODE_OPTIONS`; `sandbox-exec` is unusable because Turbopack's loader IPC port binding fails under any profile). Only blocked hosts during the build: `registry.npmjs.org` (npm update check) and `telemetry.nextjs.org`, both non-fatal. `AGENTS.md` updated from `docs/code-layout.md`.
 
 ## Task 3 — Database
-- Status: [ ]   Owner: orchestrator   Branch/PR: B
-- External IDs: migration phase1_init; Vercel env MEMORIAL_NAME / MEMORIAL_SLUG / CONSENT_VERSION (production, preview)
-- Checks passed: —
+- Status: [~]   Owner: orchestrator   Branch/PR: B `feat/phase1-data-observability` (stacked on A)
+- External IDs: migration `20261103022414_phase1_init` applied to Neon `dev` (`br-holy-rice-bbz4t50l`) on 2026-11-03; Vercel env MEMORIAL_NAME / MEMORIAL_SLUG / CONSENT_VERSION: **pending Rob's values** (not yet added; `vercel.json` is therefore not yet committed, per Task 3 step 7).
+- Checks passed (2026-11-03): `npx prisma migrate deploy` twice → "No pending migrations to apply."; seed three times with placeholder values (`Seed Test` / `seed-test`) → one Memorial + one Person, a manual `born` edit survives the third run; 10 tables in `public`; `npm run validate`, `npm run test:run` (12/12), `npm run build` with `DATABASE_URL` unset and remote network blocked; `npm run lint` passes with `generated/` present. The placeholder Memorial and Person rows were deleted afterwards (0 rows of each on `dev`; the migration stays applied).
+- Plan deviation: the plan's single-line enum blocks (`enum X { A B }`) are not valid Prisma; written one value per line (same values).
 
 ## Task 4 — Sentry 11
-- Status: [ ]   Owner: orchestrator + Rob   Branch/PR: B
-- External IDs: Sentry org token (name) …; Vercel env SENTRY_AUTH_TOKEN (production, preview)
-- Checks passed: —
+- Status: [~]   Owner: orchestrator + Rob   Branch/PR: B
+- Done 2026-11-03: manual install (no wizard): `instrumentation.ts` (init inside `register()` for `nodejs` only, `prismaIntegration` + `pinoIntegration`, explicit `dataCollection`, URL scrubbing hooks, `onRequestError`), `instrumentation-client.ts` (same `dataCollection` and scrubbing, no Replay, `onRouterTransitionStart`), `app/global-error.tsx`, `next.config.ts` wrapped with `withSentryConfig` from `@sentry/nextjs/config` (`tunnelRoute: "/monitoring"`, `telemetry: false`, `silent: !CI`, `sourcemaps.disable` without `SENTRY_AUTH_TOKEN`), `lib/sentry/scrub.ts` + `lib/sentry/data-collection.ts` with tests.
+- Plan deviations: SDK v11 has no `enableLogs` option (logs are on by default; the v10 option was removed), so it is not set. `dataCollection` keys used: `userInfo`, `cookies`, `urlQueryParams`, `databaseQueryData`, `httpBodies`, `httpHeaders`, `genAI`, `stackFrameVariables` (all present in the installed `@sentry/core@11.10.0` types).
+- Waiting on Rob: Sentry **organization** token (`org:ci`) → orchestrator adds `SENTRY_AUTH_TOKEN` to Vercel Production + Preview; step 6 UI checks (test error without query string/cookies, Pino warn in Logs, source maps in the build log).
+- Checks passed: `npm ls @sentry/nextjs` → 11.10.0; `git ls-files | grep -c sentry-build-plugin` → 0; validate, 17/17 tests, offline build without `SENTRY_AUTH_TOKEN` is quiet. Pending: `vercel env ls` shows `SENTRY_AUTH_TOKEN`; step 6 confirmations.
 
 ## Task 5 — Storage + email services
 - Status: [ ]   Owner: split   Branch/PR: C   Worktree: …   Head: …

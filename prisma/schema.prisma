@@ -1,0 +1,209 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Visibility {
+  PUBLIC
+  FAMILY
+  PRIVATE
+}
+enum UserRole {
+  FAMILY_ADMIN
+  CONTRIBUTOR
+}
+enum MemoryType {
+  VOICE
+  VIDEO
+  PHOTO
+  TEXT
+}
+enum MemorySource {  // all design-doc values kept; only WEB_UPLOAD is written in Phase 1
+  PHONE_CALL
+  SMS
+  WEB_UPLOAD
+}
+enum MemoryStatus {
+  PENDING
+  APPROVED
+  HIDDEN
+}
+enum AnalysisStatus {
+  NOT_STARTED
+  QUEUED
+  DONE
+  FAILED
+}
+enum ChangedVia {
+  WEB
+  SMS
+  CLAIM_LINK
+  ADMIN
+}
+enum MediaStatus {
+  PENDING
+  READY
+  FAILED
+}
+enum EmailType {
+  MEMORY_CONFIRMATION
+}
+enum EmailStatus {
+  PENDING
+  SENT
+  FAILED
+}
+model Memorial {
+  id                String      @id @default(uuid())
+  name              String
+  slug              String      @unique
+  born              DateTime?   @db.Date
+  died              DateTime?   @db.Date
+  defaultVisibility Visibility  @default(FAMILY)
+  createdAt         DateTime    @default(now())
+  contributors      Contributor[]
+  memories          Memory[]
+  people            Person[]
+}
+
+model User {                              // Phase 3 fills this in (magic-link login) [C1]
+  id          String   @id @default(uuid())
+  email       String?  @unique
+  phone       String?  @unique
+  role        UserRole @default(CONTRIBUTOR)
+  createdAt   DateTime @default(now())
+  contributor Contributor?
+  revisions   MemoryRevision[]
+}
+
+model Contributor {                       // one row per submission in Phase 1; merging by verified email is Phase 3
+  id            String    @id @default(uuid())
+  memorialId    String
+  userId        String?   @unique
+  name          String?
+  phone         String?                    // column kept for the design doc; not collected by the Phase 1 form
+  email         String?                    // unverified; used only to send the confirmation
+  relationship  String?
+  contactOptIn  Boolean   @default(false)  // the OPTIONAL "you may contact me" checkbox, not the storage consent
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  memorial      Memorial  @relation(fields: [memorialId], references: [id])
+  user          User?     @relation(fields: [userId], references: [id])
+  memories      Memory[]
+  @@index([memorialId, email])
+}
+
+model Memory {
+  id              String         @id @default(uuid())
+  memorialId      String
+  contributorId   String?
+  type            MemoryType
+  source          MemorySource
+  approxDateText  String?        // as given: "Summer 1998"
+  approxYear      Int?
+  approxMonth     Int?
+  place           String?
+  contributorNote String?        // exactly as typed; never rewritten
+  language        String         @default("en")
+  visibility      Visibility     @default(FAMILY)
+  consentVersion  String
+  consentedAt     DateTime       // required: web submissions always carry it
+  status          MemoryStatus   @default(PENDING)
+  analysisStatus  AnalysisStatus @default(NOT_STARTED)
+  claimTokenHash  String         @unique     // sha256 of the 32-byte base64url token; the raw token is never stored [C1]
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  deletedAt       DateTime?
+  memorial        Memorial       @relation(fields: [memorialId], references: [id])
+  contributor     Contributor?   @relation(fields: [contributorId], references: [id])
+  media           Media[]
+  revisions       MemoryRevision[]
+  emails          EmailLog[]
+  @@index([memorialId, status, createdAt])
+  @@index([contributorId])
+  @@index([createdAt])                       // daily budget count
+}
+
+model Media {
+  id               String      @id @default(uuid())
+  memoryId         String
+  storageKey       String      @unique      // Blob pathname: originals/<memoryId>/<uuid>.<ext>; write-once [C1, C9]
+  blobUrl          String?                  // set from head() at READY; served only through /api/media/[id]
+  status           MediaStatus @default(PENDING)
+  originalFilename String?
+  checksumSha256   String?                  // null until the background hash or the cron runs
+  mimeType         String                   // normalized, no parameters (lib/media-types.ts)
+  maxBytes         Int                      // ticketed limit; summed for the daily byte budget
+  sizeBytes        Int?
+  durationSeconds  Int?
+  width            Int?
+  height           Int?
+  capturedAt       DateTime?                // from EXIF when present
+  exif             Json?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  memory           Memory      @relation(fields: [memoryId], references: [id])
+  @@index([memoryId])
+  @@index([checksumSha256])
+  @@index([status, createdAt])
+  @@index([createdAt])
+}
+
+model Person {
+  id                     String   @id @default(uuid())
+  memorialId             String
+  name                   String
+  relationshipToDeceased String?
+  isTheDeceased          Boolean  @default(false)
+  createdAt              DateTime @default(now())
+  memorial               Memorial @relation(fields: [memorialId], references: [id])
+  @@unique([memorialId, name])
+}
+
+model MemoryRevision {
+  id              String     @id @default(uuid())
+  memoryId        String
+  changedByUserId String?
+  changedVia      ChangedVia
+  before          Json
+  after           Json
+  createdAt       DateTime   @default(now())
+  memory          Memory     @relation(fields: [memoryId], references: [id])
+  changedBy       User?      @relation(fields: [changedByUserId], references: [id])
+  @@index([memoryId])
+}
+
+model WebhookEvent {                        // raw audit; insert first, process after [C28]
+  id          String    @id @default(uuid())
+  provider    String    // "vercel-blob"
+  kind        String    // "upload_completed"
+  payload     Json
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+  attempts    Int       @default(0)
+  error       String?
+  @@index([processedAt, receivedAt])
+}
+
+model EmailLog {                            // mirrors EmpathIQ, keyed per memory and type [C8]
+  id                String      @id @default(uuid())
+  memoryId          String
+  recipientEmail    String
+  emailType         EmailType
+  status            EmailStatus @default(PENDING)
+  sendgridMessageId String?     @unique
+  errorMessage      String?
+  attempts          Int         @default(0)
+  nextAttemptAt     DateTime?                // set by the cron for retries
+  sentAt            DateTime?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  memory            Memory      @relation(fields: [memoryId], references: [id])
+  @@unique([memoryId, emailType])          // confirmation idempotency by constraint
+  @@index([status, nextAttemptAt])
+  @@index([recipientEmail, createdAt])     // per-recipient cap
+}

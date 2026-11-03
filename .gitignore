@@ -42,3 +42,9 @@ next-env.d.ts
 
 # prisma client output (`prisma generate`)
 /generated/
+
+# reference code copied into worker worktrees (never committed)
+/.reference/
+
+# agent scratch workspace (superpowers plan ledgers, logs)
+/.superpowers/

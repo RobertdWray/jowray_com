@@ -1,0 +1,25 @@
+name: neon-cleanup
+
+# Deletes the Neon branch that the Vercel–Neon integration created for a
+# pull request's preview deployment (preview/<head branch>) once the PR closes.
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  delete-preview-branch:
+    # Forks have no NEON_API_KEY; docs-only PRs may never have had a preview branch.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: neondatabase/delete-branch-action@v3
+        # The action exits non-zero when the branch is already gone (Neon's own
+        # cleanup or a PR without a deployment); that is not a failure here.
+        continue-on-error: true
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          branch: preview/${{ github.head_ref }}
+          api_key: ${{ secrets.NEON_API_KEY }}
