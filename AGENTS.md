@@ -28,7 +28,7 @@ Adapted from the EmpathIQ conventions for this repo's root-level `app/` director
 ```
 app/            routes, pages, Server Functions, route handlers (thin; call features)
 features/       use cases (createMemory, recordMedia, confirm); import services and lib
-services/       interfaces + factories (storage, email); import integrations
+services/       interfaces + factories (storage, email; the two email templates share `services/email/templates/shared.ts`); import integrations
 integrations/   vendor clients (Vercel Blob, SendGrid); import nothing above them
 server/         db client, env sub-schemas (server-only leaves)
 lib/            helpers with no layer above them: logger, validations, claim tokens, media types, site URL, email assets (generated base64 PNG brand marks; `scripts/make-email-assets.ts` regenerates them) (some are server-only)
