@@ -97,7 +97,8 @@ const base = {
   memoryId: "mem_1",
   to: "person@example.com",
   name: "Jo Contributor",
-  received: { type: "PHOTO" as const, fileCount: 1 },
+  note: "She once taught me to quilt.",
+  media: [],
   claimLink: "https://www.jowray.com/m/token",
 };
 
@@ -208,6 +209,39 @@ describe("sendMemoryConfirmation", () => {
     await sendMemoryConfirmation({ ...base, name: "x".repeat(200) });
     const msg = sendMock.mock.calls[0]?.[0] as { html: string };
     expect(msg.html).not.toContain("x".repeat(61));
+  });
+});
+
+describe("transport attachments", () => {
+  it("sends inline attachments with a content id and keeps tracking off", async () => {
+    const { SendGridTransport } = await import("@/integrations/sendgrid");
+    await new SendGridTransport().send({
+      to: base.to,
+      from: "memories@jowray.com",
+      subject: "s",
+      text: "t",
+      html: '<img src="cid:brand-heart">',
+      attachments: [{ filename: "heart.png", contentType: "image/png", contentBase64: "aGVhcnQ=", contentId: "brand-heart" }],
+    });
+    const msg = sendMock.mock.calls[0]?.[0] as { attachments?: unknown[]; trackingSettings: { openTracking: { enable: boolean }; clickTracking: { enable: boolean } } };
+    expect(msg.attachments).toEqual([{ content: "aGVhcnQ=", filename: "heart.png", type: "image/png", disposition: "inline", contentId: "brand-heart" }]);
+    expect(msg.trackingSettings.openTracking.enable).toBe(false);
+    expect(msg.trackingSettings.clickTracking.enable).toBe(false);
+  });
+
+  it("refuses an attachment whose content id or filename breaks the MIME contract", async () => {
+    const { SendGridTransport } = await import("@/integrations/sendgrid");
+    const message = { to: base.to, from: "memories@jowray.com", subject: "s", text: "t", html: "" };
+    await expect(new SendGridTransport().send({ ...message, attachments: [{ filename: "heart.png", contentType: "image/png", contentBase64: "aGVhcnQ=", contentId: "bad id<" }] })).rejects.toThrow(/content id/i);
+    await expect(new SendGridTransport().send({ ...message, attachments: [{ filename: "../heart.png\r\n", contentType: "image/png", contentBase64: "aGVhcnQ=", contentId: "ok" }] })).rejects.toThrow(/filename/i);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("omits the attachments field when a message has none", async () => {
+    const { SendGridTransport } = await import("@/integrations/sendgrid");
+    await new SendGridTransport().send({ to: base.to, from: "memories@jowray.com", subject: "s", text: "t", html: "<p>t</p>" });
+    const msg = sendMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect("attachments" in msg).toBe(false);
   });
 });
 

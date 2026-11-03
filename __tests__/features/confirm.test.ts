@@ -4,7 +4,18 @@ import { hashClaimToken } from "@/lib/claim-token";
 import { resetEnvCache } from "@/server/config/env";
 
 const TOKEN = "t".repeat(43);
-interface MemoryRow { id: string; type: "VOICE" | "VIDEO" | "PHOTO" | "TEXT"; deletedAt: Date | null; claimTokenHash: string; contributorNote: string | null; contributor: { name: string | null; email: string | null } | null; media: Array<{ status: "PENDING" | "READY" | "FAILED" }> }
+interface MediaRow { id: string; status: "PENDING" | "READY" | "FAILED"; mimeType: string; originalFilename: string | null; durationSeconds: number | null }
+interface MemoryRow {
+  id: string;
+  type: "VOICE" | "VIDEO" | "PHOTO" | "TEXT";
+  deletedAt: Date | null;
+  claimTokenHash: string;
+  contributorNote: string | null;
+  approxDateText: string | null;
+  place: string | null;
+  contributor: { name: string | null; email: string | null; relationship: string | null } | null;
+  media: MediaRow[];
+}
 let memory: MemoryRow | null = null;
 const emailUpdateMock = vi.fn(async (_arg: unknown) => ({ count: 1 }));
 const dbStub = {
@@ -20,8 +31,22 @@ vi.mock("@/services/email", () => ({ sendMemoryConfirmation: (arg: unknown) => s
 
 import { confirmMemory } from "@/features/memories/confirm";
 
+function readyPhoto(over: Partial<MediaRow> = {}): MediaRow {
+  return { id: "med_1", status: "READY", mimeType: "image/jpeg", originalFilename: "IMG_0001.jpg", durationSeconds: null, ...over };
+}
+
 beforeEach(() => {
-  memory = { id: "mem_1", type: "PHOTO", deletedAt: null, claimTokenHash: hashClaimToken(TOKEN), contributorNote: null, contributor: { name: "Jo", email: "jo@example.com" }, media: [{ status: "READY" }] };
+  memory = {
+    id: "mem_1",
+    type: "PHOTO",
+    deletedAt: null,
+    claimTokenHash: hashClaimToken(TOKEN),
+    contributorNote: null,
+    approxDateText: "Summer 1985",
+    place: "her classroom",
+    contributor: { name: "Jo", email: "jo@example.com", relationship: "former student" },
+    media: [readyPhoto()],
+  };
   emailUpdateMock.mockClear();
   sendMock.mockClear();
   process.env.NEXT_PUBLIC_SITE_URL = "https://www.jowray.com";
@@ -31,25 +56,45 @@ beforeEach(() => {
 });
 
 describe("confirmMemory", () => {
-  it("sends the confirmation with the claim link and what was received", async () => {
+  it("sends the confirmation with the claim link, the contributor's details and what was received", async () => {
+    memory!.contributorNote = "She once taught me to quilt.";
     const result = await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN });
     expect(result).toEqual({ sent: true, messageId: "m1" });
     expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({
       memoryId: "mem_1",
       to: "jo@example.com",
       name: "Jo",
-      received: { type: "PHOTO", fileCount: 1 },
+      relationship: "former student",
+      approxDateText: "Summer 1985",
+      place: "her classroom",
+      note: "She once taught me to quilt.",
+      media: [{ kind: "PHOTO", originalFilename: "IMG_0001.jpg", durationSeconds: null, preview: null }],
       claimLink: `https://www.jowray.com/m/${TOKEN}`,
     }));
     const arg = sendMock.mock.calls[0]?.[0] as unknown as { rotateToClaimTokenHash?: string };
     expect(arg.rotateToClaimTokenHash).toBeUndefined();
   });
 
+  it("lists only READY files, in upload order, with their kind and duration", async () => {
+    memory!.type = "VOICE";
+    memory!.media = [
+      readyPhoto({ id: "a", mimeType: "audio/mp4", originalFilename: "voice.m4a", durationSeconds: 134 }),
+      readyPhoto({ id: "b", status: "PENDING", mimeType: "video/mp4" }),
+      readyPhoto({ id: "c", mimeType: "video/quicktime", originalFilename: "clip.mov" }),
+    ];
+    await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN });
+    const arg = sendMock.mock.calls[0]?.[0] as unknown as { media: Array<{ kind: string; originalFilename: string | null; durationSeconds: number | null }> };
+    expect(arg.media).toEqual([
+      { kind: "VOICE", originalFilename: "voice.m4a", durationSeconds: 134, preview: null },
+      { kind: "VIDEO", originalFilename: "clip.mov", durationSeconds: null, preview: null },
+    ]);
+  });
+
   it("skips when there is no email, when the memory is deleted, missing, or has no READY file", async () => {
-    memory!.contributor = { name: "Jo", email: null };
+    memory!.contributor = { name: "Jo", email: null, relationship: null };
     expect(await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).toEqual({ sent: false, skipped: "no_email" });
-    memory!.contributor = { name: "Jo", email: "jo@example.com" };
-    memory!.media = [{ status: "PENDING" }];
+    memory!.contributor = { name: "Jo", email: "jo@example.com", relationship: null };
+    memory!.media = [readyPhoto({ status: "PENDING" })];
     expect(await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).toEqual({ sent: false, skipped: "not_ready" });
     memory!.deletedAt = new Date();
     expect(await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).toEqual({ sent: false, skipped: "deleted" });
@@ -59,9 +104,9 @@ describe("confirmMemory", () => {
   });
 
   it("a TEXT memory needs no file", async () => {
-    memory!.type = "TEXT"; memory!.media = [];
+    memory!.type = "TEXT"; memory!.media = []; memory!.contributorNote = "words";
     expect((await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).sent).toBe(true);
-    expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({ received: { type: "TEXT", fileCount: 0 } }));
+    expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({ media: [], note: "words" }));
   });
 
   it("rejects a claim token that does not belong to the memory", async () => {
@@ -107,8 +152,9 @@ describe("rotation bookkeeping and note-only eligibility", () => {
   });
 
   it("confirms a memory whose file failed but whose note exists", async () => {
-    memory!.media = [{ status: "FAILED" }];
+    memory!.media = [readyPhoto({ status: "FAILED" })];
     memory!.contributorNote = "the words were saved";
     expect((await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).sent).toBe(true);
+    expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({ media: [], note: "the words were saved" }));
   });
 });

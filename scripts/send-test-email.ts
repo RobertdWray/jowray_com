@@ -1,10 +1,11 @@
-// Sends the memory-confirmation template to one address through SendGrid.
+// Sends the memory-confirmation template (with sample content and inline
+// previews) to one address through SendGrid.
 // Usage: npx tsx --env-file=.env scripts/send-test-email.ts <address>
 // Runs outside Next.js, so it uses @sendgrid/mail directly and writes no
 // EmailLog row. The address must be allowlisted unless OUTBOUND_ENABLED=true.
 import sgMail from "@sendgrid/mail";
 
-import { buildMemoryConfirmation } from "../services/email/templates/memory-confirmation";
+import { buildSampleConfirmation } from "./sample-confirmation";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -27,18 +28,24 @@ async function main(): Promise<void> {
     throw new Error(`${to} is not in OUTBOUND_ALLOWLIST and OUTBOUND_ENABLED is not "true"`);
   }
   sgMail.setApiKey(required("SENDGRID_API_KEY"));
-  const rendered = buildMemoryConfirmation({
-    name: "Test Contributor",
-    received: { type: "PHOTO", fileCount: 1 },
-    claimLink: "https://www.jowray.com/m/example-token",
-  });
+  const rendered = await buildSampleConfirmation("https://www.jowray.com/m/example-token");
   const [response] = await sgMail.send({
     to,
     from: required("SENDGRID_FROM_EMAIL"),
-    ...rendered,
+    subject: rendered.subject,
+    text: rendered.text,
+    html: rendered.html,
+    attachments: rendered.attachments.map((a) => ({
+      content: a.contentBase64,
+      filename: a.filename,
+      type: a.contentType,
+      disposition: "inline",
+      contentId: a.contentId,
+    })),
     trackingSettings: { clickTracking: { enable: false, enableText: false }, openTracking: { enable: false } },
   });
-  console.log(`status ${response.statusCode}; x-message-id ${String(response.headers["x-message-id"] ?? "")}`);
+  const bytes = rendered.attachments.reduce((sum, a) => sum + Math.round(a.contentBase64.length * 0.75), 0);
+  console.log(`status ${response.statusCode}; x-message-id ${String(response.headers["x-message-id"] ?? "")}; html ${Buffer.byteLength(rendered.html)} bytes; ${rendered.attachments.length} attachments (${bytes} bytes)`);
 }
 
 main().catch((error: unknown) => {

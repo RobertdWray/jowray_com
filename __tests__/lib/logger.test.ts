@@ -97,3 +97,14 @@ describe("logger redaction depth", () => {
     expect(out).toContain("mem_2");
   });
 });
+
+describe("contributor content never reaches a log line", () => {
+  it("redacts the note, relationship, place, date, filename and claim link at any depth", () => {
+    const out = redactPii({ memoryId: "m1", note: "secret words", relationship: "aunt", place: "Lake George", approxDateText: "1998", originalFilename: "IMG_1.jpg", claimLink: "https://x/m/tok", contributorNote: "also words", nested: { note: "deep" } }) as Record<string, unknown>;
+    expect(out.memoryId).toBe("m1");
+    for (const key of ["note", "relationship", "place", "approxDateText", "originalFilename", "claimLink", "contributorNote"]) {
+      expect(out[key]).toBe("[Redacted]");
+    }
+    expect((out.nested as Record<string, unknown>).note).toBe("[Redacted]");
+  });
+});

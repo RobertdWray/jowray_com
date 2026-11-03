@@ -5,7 +5,20 @@ import pino, { type DestinationStream, type Logger, type LoggerOptions } from "p
  * Keys that must never reach a log line. Contributors' identities live in
  * the database, not in Vercel logs or Sentry breadcrumbs.
  */
-const PII_KEYS = ["email", "recipientEmail", "name", "phone"];
+const PII_KEYS = [
+  "email",
+  "recipientEmail",
+  "name",
+  "phone",
+  // Contributor content and the bearer link (2026-11-03): never in a log line either.
+  "note",
+  "contributorNote",
+  "relationship",
+  "place",
+  "approxDateText",
+  "originalFilename",
+  "claimLink",
+];
 const SECRET_HEADER_KEYS = ["cookie", "authorization", "x-vercel-protection-bypass", "x-vercel-signature"];
 // Pino wildcards match one level each; these paths cover the top level and
 // three levels down (enough for a Prisma `include` shape). Log ids, never rows.

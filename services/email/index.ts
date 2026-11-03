@@ -8,7 +8,17 @@ import { getDb } from "@/server/db/client";
 import { buildMemoryConfirmation } from "./templates/memory-confirmation";
 import type { EmailTransport, MemoryConfirmationInput, SendResult } from "./types";
 
-export type { EmailTransport, MemoryConfirmationInput, OutboundEmail, ReceivedType, SendResult, SkipReason } from "./types";
+export type {
+  EmailAttachment,
+  EmailTransport,
+  MediaKind,
+  MemoryConfirmationContent,
+  MemoryConfirmationInput,
+  MemoryMediaSummary,
+  OutboundEmail,
+  SendResult,
+  SkipReason,
+} from "./types";
 export { buildMemoryConfirmation, MEMORY_CONFIRMATION_SUBJECT } from "./templates/memory-confirmation";
 
 const log = createLogger({ category: "email" });

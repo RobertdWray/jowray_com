@@ -242,3 +242,22 @@ placeholders for them. (The obituary page left this list on 2026-11-03; see
 `[PHONE-NUMBER]` on the "Text us" card's `sms:` link — fill from the
 voip.ms number in `docs/`. The hero carries no dates on purpose (the
 family hasn't settled on how to show them); leave them off.
+
+## 11. Email (added 2026-11-03, confirmation email PR)
+The one transactional email follows the same palette and voice, with the
+constraints email clients impose (Outlook's Word engine, Gmail's CSS
+subset). Rules that differ from the web pages:
+- Table layout, inline styles, `bgcolor` fallbacks; no `box-shadow`,
+  no CSS positioning, no `@font-face`. Display text falls back to
+  `Georgia, 'Times New Roman', serif`; body to
+  `'Atkinson Hyperlegible', Arial, Helvetica, sans-serif`.
+- The flat "stitched-on" shadow is built structurally: an outer cell in
+  the shadow colour with bottom padding around the button or card.
+- Every image is an inline attachment (`cid:`); the email never loads
+  anything from a URL, so no token or tracking request leaves the reader.
+  Brand marks live in `lib/email-assets/` (generated from
+  `design/reference/*.svg` at 2x by `scripts/make-email-assets.ts`).
+- Badges (`badge-play`, `badge-audio`, `badge-video`, `badge-photo`) are
+  the calico heart's idiom: jo-red disc, paper stitch ring, paper glyph.
+- Preview with `npx tsx scripts/render-email-preview.ts`; the sample
+  comps are in `docs/plans/evidence/2026-11-confirmation-email/`.

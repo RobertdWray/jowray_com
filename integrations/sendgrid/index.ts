@@ -58,9 +58,25 @@ function messageIdOf(headers: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+const CONTENT_ID = /^[a-z0-9-]+$/;
+const ATTACHMENT_FILENAME = /^[A-Za-z0-9._-]+$/;
+
+/** The MIME contract at the vendor boundary: ids and names that cannot break headers or be mistaken for paths. */
+function assertAttachmentContract(message: OutboundEmail): void {
+  for (const attachment of message.attachments ?? []) {
+    if (!CONTENT_ID.test(attachment.contentId)) {
+      throw new Error(`attachment content id is not cid-safe: ${JSON.stringify(attachment.contentId)}`);
+    }
+    if (!ATTACHMENT_FILENAME.test(attachment.filename)) {
+      throw new Error(`attachment filename is not header-safe: ${JSON.stringify(attachment.filename)}`);
+    }
+  }
+}
+
 /** SendGrid transport: three inline attempts with linear backoff; 202 means accepted. */
 export class SendGridTransport implements EmailTransport {
   async send(message: OutboundEmail): Promise<{ messageId?: string }> {
+    assertAttachmentContract(message);
     const client = getSendGridClient();
     let lastError: unknown;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
@@ -71,6 +87,18 @@ export class SendGridTransport implements EmailTransport {
           subject: message.subject,
           text: message.text,
           html: message.html,
+          // Inline images by Content-ID; the helper library serialises `contentId` as `content_id`.
+          ...(message.attachments && message.attachments.length > 0
+            ? {
+                attachments: message.attachments.map((a) => ({
+                  content: a.contentBase64,
+                  filename: a.filename,
+                  type: a.contentType,
+                  disposition: "inline",
+                  contentId: a.contentId,
+                })),
+              }
+            : {}),
           trackingSettings: {
             clickTracking: { enable: false, enableText: false },
             openTracking: { enable: false },
