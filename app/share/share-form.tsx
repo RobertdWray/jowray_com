@@ -124,7 +124,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
       approxDateText: String(form.get("approxDateText") ?? ""),
       place: String(form.get("place") ?? ""),
       note: String(form.get("note") ?? ""),
-      visibility: String(form.get("visibility") ?? "FAMILY"),
+      visibility: String(form.get("visibility") ?? "PUBLIC"),
       contactOptIn: form.get("contactOptIn") === "on",
       file: file ? { name: file.name, type: file.type, size: file.size } : null,
       });
@@ -302,7 +302,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
         </label>
         <label className={labelClass}>
           <span>Who can see this?</span>
-          <select name="visibility" defaultValue="FAMILY" className={selectClass}>
+          <select name="visibility" defaultValue="PUBLIC" className={selectClass}>
             <option value="FAMILY">The family</option>
             <option value="PUBLIC">Everyone who visits the memorial</option>
             <option value="PRIVATE">Only me and the family admins</option>

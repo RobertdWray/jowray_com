@@ -35,7 +35,7 @@ export const createMemoryInputSchema = z
     approxDateText: optionalText(120),
     place: optionalText(200),
     note: z.string().max(10_000).optional().nullable(),
-    visibility: z.enum(["PUBLIC", "FAMILY", "PRIVATE"]).default("FAMILY"),
+    visibility: z.enum(["PUBLIC", "FAMILY", "PRIVATE"]).default("PUBLIC"),
     contactOptIn: z.boolean().default(false),
     file: fileInputSchema.nullable(),
   })
