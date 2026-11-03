@@ -1,7 +1,6 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
   cacheComponents: true,
   partialPrefetching: true,
   turbopack: {
@@ -11,6 +10,15 @@ const nextConfig: NextConfig = {
         as: "*.css",
       },
     },
+  },
+  async headers() {
+    return [
+      {
+        // Claim links carry the raw token in the path; never leak it through Referer.
+        source: "/m/:path*",
+        headers: [{ key: "Referrer-Policy", value: "same-origin" }],
+      },
+    ];
   },
 };
 
