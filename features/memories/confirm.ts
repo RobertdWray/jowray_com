@@ -1,10 +1,8 @@
 import "server-only";
 
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
-import { consentTextFor } from "@/lib/consent";
 import { createLogger } from "@/lib/logger";
 import { getSiteUrl } from "@/lib/site-url";
-import { getMemorialEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 import { sendMemoryConfirmation, type SendResult } from "@/services/email";
 
@@ -55,7 +53,6 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
   const rotating = claimToken === undefined;
   const token = claimToken ?? newClaimToken();
 
-  const { CONSENT_VERSION } = getMemorialEnv();
   // Cron path: the service writes the new hash together with SENT in one
   // transaction, so a skipped or failed send changes nothing and a delivered
   // email never points at an unsaved hash.
@@ -65,7 +62,6 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
     name: memory.contributor?.name ?? null,
     received: { type: memory.type, fileCount: readyCount },
     claimLink: `${getSiteUrl()}/m/${token}`,
-    usageSentence: consentTextFor(CONSENT_VERSION).usage,
     ...(rotating && { rotateToClaimTokenHash: hashClaimToken(token) }),
   });
   if (rotating && result.sent) {

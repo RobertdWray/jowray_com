@@ -31,7 +31,6 @@ async function main(): Promise<void> {
     name: "Test Contributor",
     received: { type: "PHOTO", fileCount: 1 },
     claimLink: "https://www.jowray.com/m/example-token",
-    usageSentence: process.env.TEST_USAGE_SENTENCE,
   });
   const [response] = await sgMail.send({
     to,
