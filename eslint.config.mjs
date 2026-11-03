@@ -19,7 +19,7 @@ const noFeatureImports = {
 };
 const noServiceImports = {
   group: ["@/services", "@/services/*"],
-  message: "Integrations never import services/ (services import integrations).",
+  message: "Only features/ import services/ (app/ calls features; integrations implement service interfaces).",
 };
 const noServerFromClient = {
   group: ["@/server", "@/server/*", "@/integrations", "@/integrations/*"],
@@ -99,18 +99,20 @@ const eslintConfig = defineConfig([
       "app/**/*-form.tsx",
       "app/**/*-client.tsx",
       "app/**/recorder.ts",
+      "app/**/error.tsx",
       "app/global-error.tsx",
       "instrumentation-client.ts",
     ],
     rules: {
-      "no-restricted-imports": ["error", { patterns: [noServerFromClient] }],
+      "no-restricted-imports": ["error", { patterns: [noServerFromClient, noServiceImports] }],
     },
   },
   {
     files: ["app/**/*.{ts,tsx}"],
-    ignores: ["app/**/*-form.tsx", "app/**/*-client.tsx", "app/**/recorder.ts", "app/global-error.tsx"],
+    ignores: ["app/**/*-form.tsx", "app/**/*-client.tsx", "app/**/recorder.ts", "app/**/error.tsx", "app/global-error.tsx"],
     rules: {
-      "no-restricted-imports": ["error", { patterns: [noIntegrationsFromFeatures] }],
+      // app/ calls features/ (and lib/, server/); never services/ or integrations/ directly.
+      "no-restricted-imports": ["error", { patterns: [noIntegrationsFromFeatures, noServiceImports] }],
     },
   },
   {

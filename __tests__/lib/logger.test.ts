@@ -1,8 +1,11 @@
 import { Writable } from "node:stream";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { buildLogger } from "@/lib/logger";
+const captureMock = vi.fn();
+vi.mock("@sentry/nextjs", () => ({ captureException: (...a: unknown[]) => captureMock(...a), flush: vi.fn(async () => true) }));
+
+import { buildLogger, logError, redactPii } from "@/lib/logger";
 
 function capture(): { sink: Writable; lines: () => string[] } {
   const chunks: string[] = [];
@@ -49,5 +52,38 @@ describe("logger redaction", () => {
     const parsed = JSON.parse(lines()[0]) as Record<string, unknown>;
     expect(parsed.service).toBe("upload");
     expect(parsed.action).toBe("ticket");
+  });
+});
+
+describe("redactPii", () => {
+  it("replaces PII keys at any depth and leaves ids alone", () => {
+    const out = redactPii({ memoryId: "m1", email: "a@b.c", nested: { deep: { phone: "+1", name: "N", mediaId: "x" } }, list: [{ email: "l@b.c" }] }) as Record<string, unknown>;
+    expect(JSON.stringify(out)).not.toMatch(/a@b\.c|\+1|"N"|l@b\.c/);
+    expect(out.memoryId).toBe("m1");
+    expect((out.nested as { deep: { mediaId: string } }).deep.mediaId).toBe("x");
+  });
+});
+
+describe("logError", () => {
+  it("never forwards PII to Sentry extra", () => {
+    captureMock.mockClear();
+    logError("boom", new Error("x"), { category: "email", memoryId: "m1", recipientEmail: "p@example.com", contributor: { name: "Jo" } });
+    expect(captureMock).toHaveBeenCalledTimes(1);
+    const extra = JSON.stringify(captureMock.mock.calls[0]?.[1]);
+    expect(extra).not.toContain("p@example.com");
+    expect(extra).not.toContain("Jo");
+    expect(extra).toContain("m1");
+  });
+});
+
+describe("logger redaction depth", () => {
+  it("redacts two and three levels down", () => {
+    const { sink, lines } = capture();
+    const log = buildLogger({ destination: sink, level: "info" });
+    log.info({ memory: { contributor: { email: "deep@example.com" } }, a: { b: { c: { email: "three@example.com" } } }, memoryId: "mem_2" }, "shape");
+    const out = lines().join("\n");
+    expect(out).not.toContain("deep@example.com");
+    expect(out).not.toContain("three@example.com");
+    expect(out).toContain("mem_2");
   });
 });

@@ -1,0 +1,14 @@
+
+> jowray_com@0.1.0 validate
+> npm run type-check && npm run lint
+
+
+> jowray_com@0.1.0 type-check
+> next typegen && tsc --noEmit
+
+Generating route types...
+✓ Types generated successfully
+
+> jowray_com@0.1.0 lint
+> eslint
+
