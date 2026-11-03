@@ -5,18 +5,43 @@ import pino, { type DestinationStream, type Logger, type LoggerOptions } from "p
  * Keys that must never reach a log line. Contributors' identities live in
  * the database, not in Vercel logs or Sentry breadcrumbs.
  */
+const PII_KEYS = ["email", "recipientEmail", "name", "phone"];
+const SECRET_HEADER_KEYS = ["cookie", "authorization", "x-vercel-protection-bypass", "x-vercel-signature"];
+// Pino wildcards match one level each; these paths cover the top level and
+// three levels down (enough for a Prisma `include` shape). Log ids, never rows.
 export const REDACT_PATHS = [
-  "email",
-  "recipientEmail",
-  "name",
-  "phone",
-  "*.email",
-  "*.recipientEmail",
-  "*.name",
-  "*.phone",
-  "req.headers.cookie",
-  "req.headers.authorization",
+  ...PII_KEYS,
+  ...PII_KEYS.map((key) => `*.${key}`),
+  ...PII_KEYS.map((key) => `*.*.${key}`),
+  ...PII_KEYS.map((key) => `*.*.*.${key}`),
+  ...SECRET_HEADER_KEYS.map((key) => `req.headers["${key}"]`),
+  ...SECRET_HEADER_KEYS.map((key) => `headers["${key}"]`),
+  ...SECRET_HEADER_KEYS.map((key) => `*.headers["${key}"]`),
 ];
+
+const REDACTED = "[Redacted]";
+const SENSITIVE = new Set([...PII_KEYS, ...SECRET_HEADER_KEYS]);
+
+/**
+ * Recursive redaction for data that leaves the process by a path Pino does
+ * not serialize (Sentry `extra`). Same keys as REDACT_PATHS, any depth.
+ */
+export function redactPii(value: unknown, depth = 0): unknown {
+  if (depth > 20 || value === null || typeof value !== "object") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactPii(entry, depth + 1));
+  }
+  if (value instanceof Error) {
+    return { type: value.name, message: value.message };
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = SENSITIVE.has(key) ? REDACTED : redactPii(entry, depth + 1);
+  }
+  return out;
+}
 
 export interface BuildLoggerOptions {
   level?: string;
@@ -29,7 +54,7 @@ export interface BuildLoggerOptions {
 export function buildLogger(options: BuildLoggerOptions = {}): Logger {
   const pinoOptions: LoggerOptions = {
     level: options.level ?? "info",
-    redact: { paths: REDACT_PATHS, censor: "[Redacted]" },
+    redact: { paths: REDACT_PATHS, censor: REDACTED },
     base: { env: process.env.NODE_ENV },
     ...(options.pretty && {
       transport: {
@@ -77,8 +102,10 @@ export function logError(
 ): void {
   const normalized = toError(error);
   logger.error({ err: normalized, ...context }, message);
+  // Sentry `extra` bypasses Pino's redaction; scrub it the same way first.
+  const safeContext = context ? (redactPii(context) as Record<string, unknown>) : {};
   Sentry.captureException(normalized, {
-    extra: { message, ...context },
+    extra: { message, ...safeContext },
     ...(tags && { tags }),
   });
 }

@@ -793,6 +793,20 @@ These are inputs for the later SMS and phone-line phases (deferred as too comple
 
 ---
 
+## 11.5 Post-execution amendments (2026-11-03)
+
+The plan was executed as written except where the execution ledger (`docs/plans/phase1-ledger.md`) records a `Ruling:`. The Team Code Review of this document (George/Oscar, 2026-11-03) flagged the following points; each is resolved in the implementation, not by rewriting the tasks above:
+
+- **Claim token recovery.** The raw token is never stored. Request-time callers pass it to `confirmMemory()`; the reconcile cron rotates the token and persists the new hash only after a successful send (ledger, Task 8 and the fix pass). `finalizeUpload()` takes `{ ticket, claimToken }`.
+- **Sentry data collection.** Both inits set `httpBodies: []`, `httpHeaders: false`, `cookies: false`, `urlQueryParams: false`, `userInfo: false`, `databaseQueryData: false`, and scrub URLs in `beforeSend`, `beforeSendSpan` (v11 streams spans; `beforeSendTransaction` is ignored) and `beforeBreadcrumb` from one shared `lib/sentry/scrub.ts`.
+- **Text-only memories** call `confirmMemory()` from `createMemory()`; cron step (e) selects `type = TEXT` or a READY media row, never `Memory.status = READY`.
+- **Cron idempotency.** Step (f) clears `blobUrl` after deletion; skips persist a terminal `SKIPPED` `EmailLog` row (`EmailStatus` gained `SENDING` and `SKIPPED`); every step has a `take` bound and the checksum step a deadline.
+- **Budgets.** `createUploadTicket()` enforces the daily byte budget as well as the per-memory cap.
+- **Media route.** Inline views 302 to a 60-second presigned URL (`@vercel/blob` 2.8.2 ships `presignUrl`); downloads stream only for small files; the route sends `Referrer-Policy: no-referrer`.
+- **Cache Components.** Dynamic page components call `await connection()` first; `await params` alone does not stop a runtime prefetch prerender.
+- **`prisma.config.ts`** uses `DATABASE_URL_UNPOOLED` only (no pooled fallback) and the seed validates its env.
+- **DNS script** matches records by FQDN through the API query and is idempotent (verified by a second run).
+
 ## 12. Review findings disposition
 
 ### Part A — revision 1 review (2026-11-02; George #1–12, Oscar #13–43)

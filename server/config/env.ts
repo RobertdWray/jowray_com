@@ -33,15 +33,19 @@ const sentrySchema = z.object({
   NEXT_PUBLIC_SENTRY_DSN: z.string().min(1).optional(),
 });
 
-const siteSchema = z.object({
-  NEXT_PUBLIC_SITE_URL: z
-    .string()
-    .url()
-    .transform((value) => value.replace(/\/+$/, ""))
-    .optional(),
-  VERCEL_ENV: z.enum(["production", "preview", "development"]).optional(),
-  VERCEL_BRANCH_URL: z.string().min(1).optional(),
-});
+const siteSchema = z
+  .object({
+    NEXT_PUBLIC_SITE_URL: z
+      .url({ protocol: /^https?$/ })
+      .transform((value) => value.replace(/\/+$/, ""))
+      .optional(),
+    VERCEL_ENV: z.enum(["production", "preview", "development"]).optional(),
+    VERCEL_BRANCH_URL: z.string().min(1).optional(),
+  })
+  .refine(
+    (env) => env.VERCEL_ENV !== "production" || !env.NEXT_PUBLIC_SITE_URL || env.NEXT_PUBLIC_SITE_URL.startsWith("https://"),
+    { message: "NEXT_PUBLIC_SITE_URL must use https in production (claim links are bearer tokens)", path: ["NEXT_PUBLIC_SITE_URL"] }
+  );
 
 const blobSchema = z.object({
   BLOB_READ_WRITE_TOKEN: z.string().min(1, "BLOB_READ_WRITE_TOKEN is required"),
@@ -72,7 +76,7 @@ function memoized<T>(key: string, schema: z.ZodType<T>): () => T {
     const result = schema.safeParse(process.env);
     if (!result.success) {
       const issues = result.error.issues
-        .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+        .map((issue) => `${issue.path.map(String).join(".")}: ${issue.message}`)
         .join("; ");
       throw new Error(`Invalid environment (${key}): ${issues}`);
     }
