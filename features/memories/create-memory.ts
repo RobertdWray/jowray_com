@@ -2,7 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import { confirmMemory } from "@/features/memories/confirm";
+import { confirmQuietly } from "@/features/memories/ingest-upload";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { extensionFor, maxBytesFor, memoryTypeFor, normalizeMime } from "@/lib/media-types";
@@ -155,7 +155,7 @@ export async function createMemory(raw: unknown): Promise<CreateMemoryResult> {
   }
   log.info({ action: "memory_created", memoryId: created.memoryId, hasFile: created.upload !== null }, "memory created");
   // A text-only memory is complete now; one with a file is confirmed by finalizeUpload().
-  const emailed = created.upload === null ? (await confirmMemory({ memoryId: created.memoryId, claimToken })).sent : false;
+  const emailed = created.upload === null ? await confirmQuietly(created.memoryId, claimToken) : false;
   return { ok: true, memoryId: created.memoryId, claimToken, upload: created.upload, emailed };
 }
 

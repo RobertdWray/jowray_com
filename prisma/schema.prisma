@@ -54,8 +54,10 @@ enum EmailType {
 }
 enum EmailStatus {
   PENDING
+  SENDING
   SENT
   FAILED
+  SKIPPED
 }
 model Memorial {
   id                String      @id @default(uuid())

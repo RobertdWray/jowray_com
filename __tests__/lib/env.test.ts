@@ -92,6 +92,11 @@ describe("getSiteEnv / getSiteUrl", () => {
     expect(getSiteEnv().VERCEL_ENV).toBeUndefined();
   });
 
+  it("refuses to fall back to localhost in production", () => {
+    process.env.VERCEL_ENV = "production";
+    expect(() => getSiteUrl()).toThrow(/NEXT_PUBLIC_SITE_URL/);
+  });
+
   it("rejects a NEXT_PUBLIC_SITE_URL that is not an absolute URL", () => {
     process.env.NEXT_PUBLIC_SITE_URL = "www.jowray.com";
     expect(() => getSiteUrl()).toThrow();

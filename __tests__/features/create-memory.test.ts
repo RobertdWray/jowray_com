@@ -95,6 +95,14 @@ describe("createMemory", () => {
     expect(medias).toHaveLength(0);
   });
 
+  it("still returns the claim link for a text memory when the confirmation email throws", async () => {
+    confirmMock.mockRejectedValueOnce(new Error("email service down"));
+    const result = await createMemory({ ...valid, file: null });
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.emailed).toBe(false);
+    expect(memories).toHaveLength(1);
+  });
+
   it("rejects without storage consent, without note and file, or with a disallowed type", async () => {
     expect(await createMemory({ ...valid, storageConsent: false })).toMatchObject({ ok: false, code: "invalid" });
     expect(await createMemory({ ...valid, note: "", file: null })).toMatchObject({ ok: false, code: "invalid" });

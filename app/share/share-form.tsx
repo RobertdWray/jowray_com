@@ -12,7 +12,7 @@ type Phase =
   | { kind: "idle" }
   | { kind: "saving"; progress?: number }
   | { kind: "done"; claimLink: string; fileStatus: "READY" | "PENDING" | "FAILED" | "none"; emailed: boolean }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string; claimLink?: string };
 
 export interface ConsentCopy {
   version: string;
@@ -77,6 +77,7 @@ export function ShareForm({ consent }: { consent: ConsentCopy }) {
       return;
     }
 
+    const claimLink = `${window.location.origin}/m/${created.claimToken}`;
     try {
       const { ticket, pathname } = created.upload;
       await upload(pathname, file, {
@@ -91,12 +92,13 @@ export function ShareForm({ consent }: { consent: ConsentCopy }) {
       });
       const finalized = await finalizeUpload({ ticket, claimToken: created.claimToken });
       if (finalized.status === "REJECTED") {
-        setPhase({ kind: "error", message: "The upload could not be confirmed. Please try again." });
+        setPhase({ kind: "error", message: "The upload could not be confirmed. Your words were saved; use your link below.", claimLink });
         return;
       }
       setPhase({ kind: "done", claimLink: finalized.claimLink, fileStatus: finalized.status, emailed: finalized.emailed });
     } catch (error) {
-      setPhase({ kind: "error", message: error instanceof Error ? error.message : "Upload failed" });
+      // The memory is already saved; never lose the link over a failed upload.
+      setPhase({ kind: "error", message: `${error instanceof Error ? error.message : "Upload failed"}. Your words were saved; use your link below to try the file again.`, claimLink });
     }
   }
 
@@ -183,6 +185,14 @@ export function ShareForm({ consent }: { consent: ConsentCopy }) {
       {phase.kind === "error" && (
         <p role="alert" className="text-red-700">
           {phase.message}
+          {phase.claimLink && (
+            <>
+              {" "}
+              <a className="underline break-all" href={phase.claimLink}>
+                {phase.claimLink}
+              </a>
+            </>
+          )}
         </p>
       )}
       <button type="submit" disabled={busy || isRecording} className="rounded bg-black px-4 py-2 text-white">

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 
 import { confirmMemory } from "@/features/memories/confirm";
 import { hashClaimToken } from "@/lib/claim-token";
-import { createLogger, logError } from "@/lib/logger";
+import { createLogger, logError, logErrorAndFlush } from "@/lib/logger";
 import { isAllowedMime } from "@/lib/media-types";
 import { afterWithFlush } from "@/lib/sentry/after-flush";
 import { getSiteUrl } from "@/lib/site-url";
@@ -135,7 +135,10 @@ export async function finalizeUpload({
   ticket: UploadTicket;
   claimToken: string;
 }): Promise<FinalizeResult> {
-  const verified = verifyUploadTicket(ticket);
+  // The expiry bounds the token exchange, not this step: a 500 MB upload can
+  // take longer than 15 minutes and the claim token (checked below) is the
+  // authority here. The signature still has to match.
+  const verified = verifyUploadTicket(ticket, { ignoreExpiry: true });
   if (!verified.ok) {
     return { status: "REJECTED", reason: verified.reason };
   }
@@ -149,7 +152,7 @@ export async function finalizeUpload({
   }
   let emailed = false;
   if (outcome.status === "READY") {
-    emailed = (await confirmMemory({ memoryId: memory.id, claimToken })).sent;
+    emailed = await confirmQuietly(memory.id, claimToken);
     if (outcome.sizeBytes <= INLINE_HASH_MAX_BYTES) {
       afterWithFlush(async () => {
         await computeChecksum({ mediaId: outcome.mediaId });
@@ -157,4 +160,17 @@ export async function finalizeUpload({
     }
   }
   return { status: outcome.status, claimLink: `${getSiteUrl()}/m/${claimToken}`, emailed };
+}
+
+/**
+ * The save is already committed; an email problem must never turn it into an
+ * error for the contributor. Failures are reported and left to the cron.
+ */
+export async function confirmQuietly(memoryId: string, claimToken: string): Promise<boolean> {
+  try {
+    return (await confirmMemory({ memoryId, claimToken })).sent;
+  } catch (error) {
+    await logErrorAndFlush("confirmation email failed after save", error, { category: "email", memoryId });
+    return false;
+  }
 }

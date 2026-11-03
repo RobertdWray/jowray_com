@@ -1,7 +1,7 @@
 import * as Sentry from "@sentry/nextjs";
 
 import { DATA_COLLECTION } from "@/lib/sentry/data-collection";
-import { scrubBreadcrumb, scrubEvent } from "@/lib/sentry/scrub";
+import { scrubBreadcrumb, scrubEvent, scrubSpan } from "@/lib/sentry/scrub";
 
 // Server-side Sentry init runs here, inside register(), for the Node.js
 // runtime only. Nothing runs on the deprecated Edge runtime.
@@ -15,7 +15,8 @@ export function register(): void {
       dataCollection: DATA_COLLECTION,
       integrations: [Sentry.prismaIntegration(), Sentry.pinoIntegration()],
       beforeSend: (event) => scrubEvent(event),
-      beforeSendTransaction: (event) => scrubEvent(event),
+      // v11 streams spans: beforeSendTransaction is ignored, beforeSendSpan runs per span.
+      beforeSendSpan: (span) => scrubSpan(span),
       beforeBreadcrumb: (breadcrumb) => scrubBreadcrumb(breadcrumb),
     });
   }

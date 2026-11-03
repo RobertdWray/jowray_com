@@ -120,3 +120,34 @@ Authoritative record of what has already happened. Read every copy (main, open P
 | Neon project / main branch | icy-scene-20351172 / br-restless-king-bbmkh5zd | bootstrap |
 | Sentry project | med3ai/jowray_com (4512363870158848) | bootstrap |
 | Cloudflare zone | dad5b9fdb1ece5afc4a4224f61a51770 | docs/domain.md |
+
+## Final review and fix pass (2026-11-03)
+
+Two fresh-context reviews ran on the whole stack: (1) the EmpathIQ-citation review Rob asked for (ports `[C5]`–`[C12]`; no critical findings) and (2) a whole-branch code review (2 critical, 5 important, 14 minor). One fix pass, each fix test-first (`__tests__` additions, 80 → 90 tests), suite green, validate and offline build green.
+
+Fixed (critical/important):
+- Cron-path token rotation could loop and kill live links: `confirmMemory()` now persists the rotated hash **only after** the email was sent; skips and failures change nothing. The email service writes a terminal `SKIPPED` row (reason in `errorMessage`) for `outbound_disabled` / `recipient_capped`, so cron step (e) stops re-picking the memory; step (d) retries only `FAILED` rows of non-deleted memories; step (e) orders oldest-first and waits 30 minutes after creation. Migration `20261103031114_email_status_sending_skipped` adds `SENDING` and `SKIPPED` to `EmailStatus` (additive).
+- Sentry v11 streams spans: `beforeSendTransaction` is ignored, so claim tokens in `url.path`/`url.full` would have reached Sentry. Both inits now use `beforeSendSpan` → `scrubSpan()` (name/description and every string attribute); `beforeSendTransaction` removed.
+- `finalizeUpload()` no longer enforces the 15-minute ticket expiry (the claim token is the authority; long uploads were being rejected); the form keeps and shows the claim link when the upload or finalize fails instead of asking for a retry that would duplicate the memory.
+- Email errors can no longer turn a committed save into an error: `confirmQuietly()` wraps `confirmMemory` on both request paths (`logErrorAndFlush`, `emailed: false`); the outbound guard reads only `OUTBOUND_*` (`getOutboundEnv`), separate from the SendGrid credentials.
+- `getSiteUrl()` throws in production when `NEXT_PUBLIC_SITE_URL` is unset instead of emitting localhost links.
+- Confirmation sends are claimed atomically (`updateMany` `PENDING|FAILED|SKIPPED → SENDING`; a concurrent caller gets `in_progress`); SENT bookkeeping failures are logged, never turned into a resend.
+- Cron order: event replay, email retries and first confirmations now run before the checksum backlog; step (b) stops starting files after 40 s.
+- From the citation review: `tsconfig.json` excludes `.reference` and `.superpowers` (worker worktrees would have failed `tsc`); `afterWithFlush` drops the inert OpenTelemetry wrapper and the two `@opentelemetry/*` packages (Sentry 11 never sets that key); Pino redaction now covers two levels down with a depth-2 test, and the "any depth" wording in `docs/code-layout.md`/`AGENTS.md` is corrected; `@next/env` is a declared dependency and `docs/environment.md` names the file set `prisma.config.ts` loads; the six Task 5 keys are documented; `[C11]` marked "not ported; superseded by [C77]"; the `lib/` prose no longer says "pure".
+
+Final: minor (deferred), from the code review, for Rob to accept or schedule:
+- `/m/<wrong token>` answers 200 with a not-found body (streamed shell); the Task 8 "404" check needs a different assertion or a lookup in Proxy.
+- `share-form.tsx` computes `canRecord` from `window` during render (hydration mismatch); use an effect or `useSyncExternalStore`.
+- `ClaimView` carries the contributor email to the client although the form never uses it.
+- Server Functions (`finalizeUpload`, `updateMemory`, `finalizeAddedFile`) do not zod-validate their raw input shape; a non-string token is a 500.
+- `/api/upload` parses the JSON body outside the `try`; a malformed body is an unhandled 500.
+- Cron step (a) marks a row FAILED without `status: PENDING` in the `where`.
+- Cron step (f) never deletes blobs of PENDING media on deleted memories (`blobUrl` null).
+- Per-recipient cap uses the literal address; plus-tag variants bypass it.
+- iOS Chrome/Firefox (WebKit) get a HEIC download link although they can render HEIC.
+- Budget checks race at READ COMMITTED (WAF rule mitigates).
+- `filename*` leaves `'()*!` unencoded (RFC 8187 nit, not injectable).
+- Replaying finalize restarts the inline hash while the checksum is null and can resend a FAILED email without backoff.
+- EmpathIQ's eslint-comments rules were not ported (the no-suppression rule is enforced by AGENTS.md and a grep).
+
+Final: Ruling (declined-to-judge items): 60-second presigned URLs and Range seeking on long videos, Blob's enforcement of `validUntil`/`maximumSizeInBytes` on multipart parts, and Vercel request logs recording `/m/<token>` remain to be checked in the Task 10 preview/iPhone tests and §11 #3; the code stands as is.

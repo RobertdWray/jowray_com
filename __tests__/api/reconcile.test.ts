@@ -8,8 +8,8 @@ const HOUR = 60 * 60 * 1000;
 
 interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; memory: { deletedAt: Date | null } }
 interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
-interface EmailRow { id: string; memoryId: string; status: "PENDING" | "SENT" | "FAILED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date }
-interface MemoryRow { id: string; type: string; deletedAt: Date | null; contributor: { email: string | null } | null; media: Array<{ status: string }>; emails: EmailRow[] }
+interface EmailRow { id: string; memoryId: string; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null } }
+interface MemoryRow { id: string; type: string; deletedAt: Date | null; createdAt: Date; contributor: { email: string | null } | null; media: Array<{ status: string }>; emails: EmailRow[] }
 
 let media: MediaRow[] = [];
 let events: EventRow[] = [];
@@ -51,7 +51,7 @@ type RecordOutcome = { status: "READY"; mediaId: string; memoryId: string; sizeB
 const recordMediaMock = vi.fn(async ({ mediaId }: { mediaId: string }): Promise<RecordOutcome> => ({ status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 }));
 const checksumMock = vi.fn(async ({ mediaId }: { mediaId: string }) => { media.find((m) => m.id === mediaId)!.checksumSha256 = "a".repeat(64); return "a".repeat(64); });
 vi.mock("@/features/memories/ingest-upload", () => ({ recordMedia: (a: { mediaId: string }) => recordMediaMock(a), computeChecksum: (a: { mediaId: string }) => checksumMock(a) }));
-const confirmMock = vi.fn(async ({ memoryId }: { memoryId: string }) => { const existing = emails.find((e) => e.memoryId === memoryId); if (existing) { existing.status = "SENT"; } else { emails.push({ id: `log_${memoryId}`, memoryId, status: "SENT", attempts: 1, nextAttemptAt: null, createdAt: new Date() }); } const mem = memories.find((m) => m.id === memoryId); if (mem) { mem.emails = emails.filter((e) => e.memoryId === memoryId); } return { sent: true }; });
+const confirmMock = vi.fn(async ({ memoryId }: { memoryId: string }) => { const existing = emails.find((e) => e.memoryId === memoryId); if (existing) { existing.status = "SENT"; } else { emails.push({ id: `log_${memoryId}`, memoryId, status: "SENT", attempts: 1, nextAttemptAt: null, createdAt: new Date(), memory: { deletedAt: null } }); } const mem = memories.find((m) => m.id === memoryId); if (mem) { mem.emails = emails.filter((e) => e.memoryId === memoryId); } return { sent: true }; });
 vi.mock("@/features/memories/confirm", () => ({ confirmMemory: (a: { memoryId: string }) => confirmMock(a) }));
 const delMock = vi.fn();
 vi.mock("@/services/storage", () => ({ createStorageService: () => ({ del: delMock, head: vi.fn(), get: vi.fn(), put: vi.fn(), presignGet: vi.fn() }) }));
@@ -75,10 +75,17 @@ beforeEach(() => {
     { id: "med_gone", memoryId: "mem_3", status: "READY", checksumSha256: "b".repeat(64), createdAt: old, storageKey: "originals/mem_3/e", memory: { deletedAt: ancient } },
   ];
   events = [{ id: "evt_1", processedAt: null, attempts: 1, error: "boom", payload: { tokenPayload: JSON.stringify({ mediaId: "med_stale" }) } }];
-  emails = [{ id: "log_1", memoryId: "mem_4", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old }];
+  emails = [
+    { id: "log_1", memoryId: "mem_4", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: null } },
+    { id: "log_gone", memoryId: "mem_gone", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: ancient } },
+    { id: "log_skipped", memoryId: "mem_skipped", status: "SKIPPED", attempts: 0, nextAttemptAt: null, createdAt: old, memory: { deletedAt: null } },
+  ];
   memories = [
-    { id: "mem_4", type: "PHOTO", deletedAt: null, contributor: { email: "a@example.com" }, media: [{ status: "READY" }], emails: [emails[0]!] },
-    { id: "mem_5", type: "PHOTO", deletedAt: null, contributor: { email: "b@example.com" }, media: [{ status: "READY" }], emails: [] },
+    { id: "mem_4", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "a@example.com" }, media: [{ status: "READY" }], emails: [emails[0]!] },
+    { id: "mem_5", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "b@example.com" }, media: [{ status: "READY" }], emails: [] },
+    { id: "mem_young", type: "PHOTO", deletedAt: null, createdAt: new Date(), contributor: { email: "c@example.com" }, media: [{ status: "READY" }], emails: [] },
+    { id: "mem_gone", type: "PHOTO", deletedAt: ancient, createdAt: old, contributor: { email: "d@example.com" }, media: [{ status: "READY" }], emails: [emails[1]!] },
+    { id: "mem_skipped", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "e@example.com" }, media: [{ status: "READY" }], emails: [emails[2]!] },
   ];
   recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); delMock.mockClear();
   recordMediaMock.mockImplementation(async ({ mediaId }) => mediaId === "med_orphan" ? { status: "PENDING", mediaId, memoryId: "mem_2" } : { status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 });
@@ -106,7 +113,8 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(checksumMock).toHaveBeenCalledWith({ mediaId: "med_nohash" });
     // (c) unprocessed webhook events re-run
     expect(events[0]?.processedAt).toBeInstanceOf(Date);
-    // (d) failed email retried, (e) READY memory with email and no log confirmed
+    // (d) failed email retried (not for a deleted memory), (e) READY memory with email and no log confirmed
+    // (not one younger than 30 minutes, not one with a terminal SKIPPED row)
     expect(confirmMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5"]);
     // (f) blobs of soft-deleted memories deleted
     expect(delMock).toHaveBeenCalledWith("originals/mem_3/e");

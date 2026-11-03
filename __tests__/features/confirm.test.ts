@@ -76,6 +76,16 @@ describe("confirmMemory", () => {
     expect(hashClaimToken(newToken)).toBe(memory!.claimTokenHash);
   });
 
+  it("does not rotate the token when the email service skips or fails (cron path)", async () => {
+    const before = memory!.claimTokenHash;
+    sendMock.mockResolvedValueOnce({ sent: false, skipped: "recipient_capped" } as never);
+    expect(await confirmMemory({ memoryId: "mem_1" })).toEqual({ sent: false, skipped: "recipient_capped" });
+    sendMock.mockRejectedValueOnce(new Error("sendgrid down"));
+    await expect(confirmMemory({ memoryId: "mem_1" })).rejects.toThrow("sendgrid down");
+    expect(memory!.claimTokenHash).toBe(before);
+    expect(dbStub.memory.update).not.toHaveBeenCalled();
+  });
+
   it("passes through the email service's skip reasons", async () => {
     sendMock.mockResolvedValueOnce({ sent: false, skipped: "already_sent" } as never);
     expect(await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).toEqual({ sent: false, skipped: "already_sent" });

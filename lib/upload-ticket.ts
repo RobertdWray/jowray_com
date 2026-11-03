@@ -72,7 +72,11 @@ function isClaims(value: unknown): value is UploadTicket {
   );
 }
 
-export function verifyUploadTicket(ticket: UploadTicket, now: number = Date.now()): TicketVerification {
+export function verifyUploadTicket(
+  ticket: UploadTicket,
+  options: { now?: number; ignoreExpiry?: boolean } = {}
+): TicketVerification {
+  const now = options.now ?? Date.now();
   if (!isClaims(ticket)) {
     return { ok: false, reason: "malformed" };
   }
@@ -89,7 +93,7 @@ export function verifyUploadTicket(ticket: UploadTicket, now: number = Date.now(
   if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
     return { ok: false, reason: "bad_signature" };
   }
-  if (claims.expiresAt <= now) {
+  if (!options.ignoreExpiry && claims.expiresAt <= now) {
     return { ok: false, reason: "expired" };
   }
   return { ok: true, claims };

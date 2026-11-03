@@ -20,8 +20,9 @@ export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "
  * The claim link needs the raw token, which is never stored. Request-time
  * callers (createMemory, finalizeUpload) pass it in. The reconcile cron has
  * only the hash, so when `claimToken` is omitted the token is rotated: a
- * fresh one is minted, its hash replaces the old, and the email carries the
- * new link. An emailed link therefore always supersedes the on-screen one.
+ * fresh one is minted, the email carries the new link, and its hash replaces
+ * the old one only after the send succeeded. An emailed link therefore
+ * supersedes the on-screen one, and a skipped or failed send changes nothing.
  */
 export async function confirmMemory({ memoryId, claimToken }: { memoryId: string; claimToken?: string }): Promise<ConfirmResult> {
   const db = getDb();
@@ -47,15 +48,11 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
     return { sent: false, skipped: "not_ready" };
   }
 
-  let token = claimToken;
-  if (token === undefined) {
-    token = newClaimToken();
-    await db.memory.update({ where: { id: memoryId }, data: { claimTokenHash: hashClaimToken(token) } });
-    log.info({ action: "token_rotated", memoryId }, "claim token rotated for an emailed link");
-  }
+  const rotating = claimToken === undefined;
+  const token = claimToken ?? newClaimToken();
 
   const { CONSENT_VERSION } = getMemorialEnv();
-  return sendMemoryConfirmation({
+  const result = await sendMemoryConfirmation({
     memoryId,
     to: email,
     name: memory.contributor?.name ?? null,
@@ -63,4 +60,13 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
     claimLink: `${getSiteUrl()}/m/${token}`,
     usageSentence: consentTextFor(CONSENT_VERSION).usage,
   });
+
+  // Cron path: the new token is persisted only once the email actually went
+  // out, so a skipped or failed send never invalidates the link the
+  // contributor already has on screen.
+  if (rotating && result.sent) {
+    await db.memory.update({ where: { id: memoryId }, data: { claimTokenHash: hashClaimToken(token) } });
+    log.info({ action: "token_rotated", memoryId }, "claim token rotated for an emailed link");
+  }
+  return result;
 }

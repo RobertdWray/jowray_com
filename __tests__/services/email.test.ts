@@ -13,7 +13,7 @@ interface Row {
   memoryId: string;
   recipientEmail: string;
   emailType: "MEMORY_CONFIRMATION";
-  status: "PENDING" | "SENT" | "FAILED";
+  status: "PENDING" | "SENDING" | "SENT" | "FAILED" | "SKIPPED";
   attempts: number;
   nextAttemptAt: Date | null;
   errorMessage: string | null;
@@ -27,8 +27,8 @@ const dbStub = {
     findUnique: vi.fn(async ({ where }: { where: { memoryId_emailType: { memoryId: string } } }) =>
       rows.find((r) => r.memoryId === where.memoryId_emailType.memoryId) ?? null
     ),
-    count: vi.fn(async ({ where }: { where: { recipientEmail: string; createdAt: { gte: Date } } }) =>
-      rows.filter((r) => r.recipientEmail === where.recipientEmail && r.createdAt >= where.createdAt.gte).length
+    count: vi.fn(async ({ where }: { where: { recipientEmail: string; createdAt: { gte: Date }; status?: { in: Row["status"][] } } }) =>
+      rows.filter((r) => r.recipientEmail === where.recipientEmail && r.createdAt >= where.createdAt.gte && (!where.status || where.status.in.includes(r.status))).length
     ),
     upsert: vi.fn(async ({ where, create }: { where: { memoryId_emailType: { memoryId: string } }; create: Pick<Row, "memoryId" | "recipientEmail" | "emailType" | "status"> }) => {
       const existing = rows.find((r) => r.memoryId === where.memoryId_emailType.memoryId);
@@ -55,6 +55,14 @@ const dbStub = {
       }
       Object.assign(row, data);
       return row;
+    }),
+    updateMany: vi.fn(async ({ where, data }: { where: { id: string; status: { in: Row["status"][] } }; data: Partial<Row> }) => {
+      const row = rows.find((r) => r.id === where.id && where.status.in.includes(r.status));
+      if (!row) {
+        return { count: 0 };
+      }
+      Object.assign(row, data);
+      return { count: 1 };
     }),
   },
 };
@@ -115,11 +123,28 @@ describe("sendMemoryConfirmation", () => {
     expect(rows[0]?.status).toBe("FAILED");
   });
 
-  it("skips a non-allowlisted recipient when outbound is disabled, without a row", async () => {
+  it("skips a non-allowlisted recipient when outbound is disabled and records a terminal SKIPPED row", async () => {
     const result = await sendMemoryConfirmation({ ...base, to: "stranger@example.net" });
     expect(result).toEqual({ sent: false, skipped: "outbound_disabled" });
-    expect(rows).toHaveLength(0);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: "SKIPPED", errorMessage: "outbound_disabled" });
     expect(sendMock).not.toHaveBeenCalled();
+    // and a second call is still a skip, not a resend attempt
+    expect(await sendMemoryConfirmation({ ...base, to: "stranger@example.net" })).toEqual({ sent: false, skipped: "outbound_disabled" });
+  });
+
+  it("claims the row atomically so two concurrent sends produce one email", async () => {
+    const [a, b] = await Promise.all([sendMemoryConfirmation(base), sendMemoryConfirmation(base)]);
+    expect([a, b].filter((r) => r.sent)).toHaveLength(1);
+    expect([a, b].filter((r) => !r.sent && r.skipped === "in_progress")).toHaveLength(1);
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not mark a delivered email FAILED when the SENT bookkeeping throws", async () => {
+    dbStub.emailLog.update.mockRejectedValueOnce(new Error("db hiccup"));
+    const result = await sendMemoryConfirmation(base);
+    expect(result).toEqual({ sent: true, messageId: "msg-1" });
+    expect(rows[0]?.status).not.toBe("FAILED");
   });
 
   it("sends to anyone when OUTBOUND_ENABLED is true", async () => {
@@ -137,6 +162,7 @@ describe("sendMemoryConfirmation", () => {
     const fourth = await sendMemoryConfirmation({ ...base, memoryId: "mem_4" });
     expect(fourth).toEqual({ sent: false, skipped: "recipient_capped" });
     expect(sendMock).toHaveBeenCalledTimes(3);
+    expect(rows.find((r) => r.memoryId === "mem_4")).toMatchObject({ status: "SKIPPED", errorMessage: "recipient_capped" });
   });
 
   it("escapes the name in the HTML part and strips control characters in the text part", async () => {

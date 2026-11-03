@@ -153,6 +153,17 @@ describe("finalizeUpload", () => {
     expect(headMock).not.toHaveBeenCalled();
   });
 
+  it("accepts an expired ticket at finalize (the claim token is the authority; the upload took longer than 15 minutes)", async () => {
+    const result = await finalizeUpload({ ticket: mintUploadTicket(claims, { now: Date.now() - 20 * 60_000 }), claimToken: CLAIM });
+    expect(result.status).toBe("READY");
+  });
+
+  it("still returns the claim link when the confirmation email throws", async () => {
+    confirmMock.mockRejectedValueOnce(new Error("SENDGRID_FROM_EMAIL is required"));
+    const result = await finalizeUpload({ ticket: mintUploadTicket(claims), claimToken: CLAIM });
+    expect(result).toEqual({ status: "READY", claimLink: `https://www.jowray.com/m/${CLAIM}`, emailed: false });
+  });
+
   it("does not schedule an inline checksum for a file over 50 MB", async () => {
     headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 60 * 1024 * 1024, contentType: "video/mp4", uploadedAt: new Date() });
     media = [row({ mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 })];

@@ -15,6 +15,10 @@ const log = createLogger({ category: "cron" });
 const HOUR_MS = 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
 const CHECKSUM_BATCH = 20;
+/** Step (b) stops starting new files after this; the function's maxDuration is 60 s. */
+const CHECKSUM_DEADLINE_MS = 40_000;
+/** Step (e) leaves very new memories to the request path (finalize may still be running). */
+const CONFIRM_MIN_AGE_MS = 30 * MINUTE_MS;
 const EMAIL_MAX_ATTEMPTS = 5;
 const EVENT_MAX_ATTEMPTS = 3;
 
@@ -74,23 +78,6 @@ export async function GET(request: NextRequest): Promise<Response> {
     }
   }
 
-  // (b) READY media without a checksum, oldest first, bounded per run.
-  const unhashed = await db.media.findMany({
-    where: { status: "READY", checksumSha256: null, memory: { deletedAt: null } },
-    orderBy: { createdAt: "asc" },
-    take: CHECKSUM_BATCH,
-  });
-  for (const row of unhashed) {
-    try {
-      if (await computeChecksum({ mediaId: row.id })) {
-        counts.checksumsComputed += 1;
-      }
-    } catch (error) {
-      counts.errors += 1;
-      logError("reconcile: checksum failed", error, { category: "cron", mediaId: row.id });
-    }
-  }
-
   // (c) Upload-completed events that never finished processing.
   const events = await db.webhookEvent.findMany({
     where: { processedAt: null, attempts: { lt: EVENT_MAX_ATTEMPTS } },
@@ -120,11 +107,13 @@ export async function GET(request: NextRequest): Promise<Response> {
   // (d) Emails that failed (with retries left and due) or stalled in PENDING.
   const retryable = await db.emailLog.findMany({
     where: {
+      memory: { deletedAt: null },
       OR: [
         { status: "FAILED", attempts: { lt: EMAIL_MAX_ATTEMPTS }, nextAttemptAt: { lte: new Date(now) } },
         { status: "PENDING", createdAt: { lt: new Date(now - 15 * MINUTE_MS) } },
       ],
     },
+    orderBy: { createdAt: "asc" },
     take: 50,
   });
   for (const row of retryable) {
@@ -139,14 +128,17 @@ export async function GET(request: NextRequest): Promise<Response> {
     }
   }
 
-  // (e) Memories with an address and something READY (or TEXT) that were never emailed.
+  // (e) Memories with an address and something READY (or TEXT) that were never
+  // emailed and are old enough that no request-path confirm is still running.
   const unconfirmed = await db.memory.findMany({
     where: {
       deletedAt: null,
+      createdAt: { lt: new Date(now - CONFIRM_MIN_AGE_MS) },
       contributor: { email: { not: null } },
       emails: { none: {} },
       OR: [{ type: "TEXT" }, { media: { some: { status: "READY" } } }],
     },
+    orderBy: { createdAt: "asc" },
     take: 50,
   });
   for (const memory of unconfirmed) {
@@ -158,6 +150,28 @@ export async function GET(request: NextRequest): Promise<Response> {
     } catch (error) {
       counts.errors += 1;
       logError("reconcile: confirmation failed", error, { category: "cron", memoryId: memory.id });
+    }
+  }
+
+  // (b) READY media without a checksum, oldest first, bounded per run and by
+  // the deadline; it runs after the email steps so a backlog of large files
+  // never starves them.
+  const unhashed = await db.media.findMany({
+    where: { status: "READY", checksumSha256: null, memory: { deletedAt: null } },
+    orderBy: { createdAt: "asc" },
+    take: CHECKSUM_BATCH,
+  });
+  for (const row of unhashed) {
+    if (Date.now() - now > CHECKSUM_DEADLINE_MS) {
+      break;
+    }
+    try {
+      if (await computeChecksum({ mediaId: row.id })) {
+        counts.checksumsComputed += 1;
+      }
+    } catch (error) {
+      counts.errors += 1;
+      logError("reconcile: checksum failed", error, { category: "cron", mediaId: row.id });
     }
   }
 

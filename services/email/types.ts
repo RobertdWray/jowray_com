@@ -12,6 +12,7 @@ export interface MemoryConfirmationInput {
 
 export type SkipReason =
   | "already_sent"
+  | "in_progress"
   | "outbound_disabled"
   | "recipient_capped"
   | "failed";
