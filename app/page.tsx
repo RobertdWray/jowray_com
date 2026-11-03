@@ -52,7 +52,7 @@ export default function HomePage() {
             </div>
           </div>
           <span className="relative -top-7 inline-block rotate-[4deg] rounded-full bg-jo-red px-[14px] py-2 text-small font-bold text-paper shadow-pill">
-            Christmas, Hunt Valley
+            Christmas, Baltimore Harbor 2014
           </span>
         </figure>
       </section>
