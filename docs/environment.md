@@ -74,6 +74,7 @@ These are used by the agent running the Phase 1 plan and by GitHub Actions, neve
 | `SENDGRID_FROM_EMAIL` | The confirmation email's from-address, on the authenticated domain `jowray.com`. Production + Preview + `.env`. |
 | `OUTBOUND_ENABLED` | Strict `"true"`/`"false"`. When false, email goes only to `OUTBOUND_ALLOWLIST`. `true` in Production only. |
 | `OUTBOUND_ALLOWLIST` | Comma-separated addresses that may receive email even when outbound is disabled (lower-cased, trimmed). Production + Preview. |
+| `ADMIN_ALERT_EMAILS` | Comma-separated family-admin addresses that get the "new memory" alert (`ADMIN_NEW_MEMORY`), one message to all of them; trimmed, lower-cased, each validated as an address. Empty or unset turns the alert off (the reconcile cron catches up once it is set). Still subject to `OUTBOUND_ENABLED` / `OUTBOUND_ALLOWLIST`. Production + Preview + local `.env`. |
 | `NEXT_PUBLIC_SITE_URL` | `https://www.jowray.com` in Production only; previews derive their own host from `VERCEL_BRANCH_URL`, local falls back to `http://localhost:3000`. Production refuses to run without it. |
 
 ## Phase 1: DNS automation

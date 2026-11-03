@@ -77,8 +77,14 @@ const cronSchema = z.object({
   CRON_SECRET: z.string().min(16).optional(),
 });
 
+/** Family admins who get the "new memory" alert; empty means the alert is off (the cron catches up once set). */
+const adminAlertSchema = z.object({
+  ADMIN_ALERT_EMAILS: csvList.pipe(z.array(z.email())).default([]),
+});
+
 export type DbEnv = z.infer<typeof dbSchema>;
 export type CronEnv = z.infer<typeof cronSchema>;
+export type AdminAlertEnv = z.infer<typeof adminAlertSchema>;
 export type MemorialEnv = z.infer<typeof memorialSchema>;
 export type UploadEnv = z.infer<typeof uploadSchema>;
 export type BlobEnv = z.infer<typeof blobSchema>;
@@ -116,6 +122,7 @@ export const getOutboundEnv = memoized("outbound", outboundSchema);
 export const getUploadEnv = memoized("upload", uploadSchema);
 export const getMemorialEnv = memoized("memorial", memorialSchema);
 export const getCronEnv = memoized("cron", cronSchema);
+export const getAdminAlertEnv = memoized("adminAlert", adminAlertSchema);
 
 /** Test helper: forget every parsed sub-schema so the next call re-reads `process.env`. */
 export function resetEnvCache(): void {
