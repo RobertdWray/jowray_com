@@ -1,0 +1,188 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { ImageDeriveError } from "@/lib/image-derive-error";
+import { resetEnvCache } from "@/server/config/env";
+import type { DerivedSet } from "@/services/images";
+import type * as ImagesModule from "@/services/images";
+import type * as LoggerModule from "@/lib/logger";
+
+type Kind = "WEB_IMAGE" | "THUMBNAIL";
+interface DerivedRow { id: string; mediaId: string; kind: Kind; status: "PENDING" | "READY" | "FAILED"; storageKey: string; mimeType: string | null; sizeBytes: number | null; width: number | null; height: number | null; error: string | null; attempts: number; claimedAt: Date | null }
+interface MediaRow { id: string; memoryId: string; status: string; mimeType: string; storageKey: string; deletedAt: Date | null; width: number | null; height: number | null; memory: { deletedAt: Date | null } }
+
+let media: MediaRow[] = [];
+let derived: DerivedRow[] = [];
+const lockCalls: string[] = [];
+let nextId = 1;
+
+function matches(row: Record<string, unknown>, where: Record<string, unknown>): boolean {
+  return Object.entries(where).every(([k, v]) => {
+    const actual = row[k];
+    if (v instanceof Date) { return actual instanceof Date && actual.getTime() === v.getTime(); }
+    if (v !== null && typeof v === "object") {
+      const cond = v as { in?: unknown[]; lt?: Date; not?: unknown; startsWith?: string };
+      if (cond.in) { return cond.in.includes(actual); }
+      if (cond.lt) { return actual instanceof Date && actual < cond.lt; }
+      if ("not" in cond) { return actual !== cond.not; }
+      if (cond.startsWith) { return typeof actual === "string" && actual.startsWith(cond.startsWith); }
+    }
+    return actual === v;
+  });
+}
+const db = {
+  $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; }),
+  $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) => fn(db)),
+  media: {
+    findUnique: vi.fn(async ({ where, include }: { where: { id: string }; include?: { derivatives?: { where?: Record<string, unknown> } } }) => {
+      const row = media.find((m) => m.id === where.id);
+      if (!row) { return null; }
+      const w = include?.derivatives?.where ?? {};
+      return { ...row, derivatives: derived.filter((d) => d.mediaId === row.id && matches(d as unknown as Record<string, unknown>, w)) };
+    }),
+    findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => media.find((m) => matches(m as unknown as Record<string, unknown>, where)) ?? null),
+    update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }),
+    updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Partial<MediaRow> }) => { const rows = media.filter((m) => matches(m as unknown as Record<string, unknown>, where)); for (const r of rows) { Object.assign(r, data); } return { count: rows.length }; }),
+  },
+  derivedMedia: {
+    create: vi.fn(async ({ data }: { data: Pick<DerivedRow, "mediaId" | "kind" | "status" | "storageKey" | "claimedAt" | "attempts"> }) => {
+      if (derived.some((d) => d.mediaId === data.mediaId && d.kind === data.kind)) { throw Object.assign(new Error("Unique constraint failed on the fields: (`mediaId`,`kind`)"), { code: "P2002" }); }
+      const row: DerivedRow = { id: `der_${nextId++}`, mimeType: null, sizeBytes: null, width: null, height: null, error: null, ...data };
+      derived.push(row); return row;
+    }),
+    findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => derived.find((d) => matches(d as unknown as Record<string, unknown>, where)) ?? null),
+    updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+      const rows = derived.filter((d) => matches(d as unknown as Record<string, unknown>, where));
+      for (const r of rows) {
+        for (const [k, v] of Object.entries(data)) {
+          if (k === "attempts" && v && typeof v === "object" && "increment" in v) { r.attempts += (v as { increment: number }).increment; } else { (r as unknown as Record<string, unknown>)[k] = v; }
+        }
+      }
+      return { count: rows.length };
+    }),
+  },
+};
+vi.mock("@/server/db/client", () => ({ getDb: () => db }));
+
+const getMock = vi.fn(async () => ({ stream: new Blob([new Uint8Array([1, 2, 3])]).stream(), contentType: "image/jpeg", contentLength: 3 }));
+const putMock = vi.fn(async (pathname: string) => ({ pathname, url: `https://blob.test/${pathname}`, size: 1, contentType: "image/jpeg", uploadedAt: new Date() }));
+const delMock = vi.fn(async () => undefined);
+vi.mock("@/services/storage", () => ({ createStorageService: () => ({ get: getMock, put: putMock, del: delMock, head: vi.fn(), presignGet: vi.fn() }) }));
+
+const web = { data: Buffer.from("web"), mimeType: "image/jpeg", extension: "jpg", width: 2048, height: 1536 };
+const thumb = { data: Buffer.from("thumb"), mimeType: "image/jpeg", extension: "jpg", width: 1000, height: 750 };
+const deriveMock = vi.fn(async (_input: Buffer, _opts: unknown): Promise<DerivedSet> => ({ sourceWidth: 4000, sourceHeight: 3000, web, thumb }));
+vi.mock("@/services/images", async (importOriginal) => {
+  const actual = await importOriginal<typeof ImagesModule>();
+  return { ...actual, createImageService: () => ({ derive: (i: Buffer, o: unknown) => deriveMock(i, o), inFlight: () => 0 }) };
+});
+
+const logErrorMock = vi.fn();
+vi.mock("@/lib/logger", async (importOriginal) => {
+  const actual = await importOriginal<typeof LoggerModule>();
+  return { ...actual, logError: (...args: unknown[]) => logErrorMock(...args) };
+});
+
+import { deriveMedia } from "@/features/memories/derive-media";
+
+function photo(over: Partial<MediaRow> = {}): MediaRow {
+  return { id: "med_1", memoryId: "mem_1", status: "READY", mimeType: "image/heic", storageKey: "dev/originals/mem_1/0f6a1c7e-3f1a-4b5e-9c2d-1234567890ab.heic", deletedAt: null, width: null, height: null, memory: { deletedAt: null }, ...over };
+}
+const NOW = new Date("2026-11-03T12:00:00Z");
+const STALE = new Date(NOW.getTime() - 11 * 60_000);
+function row(kind: Kind, over: Partial<DerivedRow> = {}): DerivedRow {
+  return { id: `der_${nextId++}`, mediaId: "med_1", kind, status: "PENDING", storageKey: `dev/derived/mem_1/${kind.toLowerCase()}.jpg`, mimeType: null, sizeBytes: null, width: null, height: null, error: null, attempts: 1, claimedAt: NOW, ...over };
+}
+
+beforeEach(() => {
+  delete process.env.VERCEL_ENV; resetEnvCache();
+  media = [photo()]; derived = []; lockCalls.length = 0; nextId = 1;
+  getMock.mockClear(); putMock.mockClear(); delMock.mockClear(); deriveMock.mockClear(); logErrorMock.mockClear();
+  deriveMock.mockImplementation(async () => ({ sourceWidth: 4000, sourceHeight: 3000, web, thumb }));
+});
+
+describe("deriveMedia", () => {
+  it("claims both rows with their keys before reading the original, decodes once, publishes both and fills the original's dimensions", async () => {
+    const result = await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW });
+    expect(result).toEqual({ WEB_IMAGE: "derived", THUMBNAIL: "derived" });
+    expect(deriveMock).toHaveBeenCalledTimes(1);
+    expect(getMock).toHaveBeenCalledTimes(1);
+    const createOrder = db.derivedMedia.create.mock.invocationCallOrder[0]!;
+    expect(createOrder).toBeLessThan(getMock.mock.invocationCallOrder[0]!);
+    const webRow = derived.find((d) => d.kind === "WEB_IMAGE")!;
+    const thumbRow = derived.find((d) => d.kind === "THUMBNAIL")!;
+    expect(webRow).toMatchObject({ status: "READY", mimeType: "image/jpeg", sizeBytes: 3, width: 2048, height: 1536, error: null });
+    expect(webRow.storageKey).toMatch(/^dev\/derived\/mem_1\/[0-9a-f-]{36}\.jpg$/);
+    expect(thumbRow).toMatchObject({ status: "READY", mimeType: "image/jpeg", sizeBytes: 5, width: 1000, height: 750 });
+    expect(putMock).toHaveBeenCalledWith(webRow.storageKey, web.data, "image/jpeg");
+    expect(putMock).toHaveBeenCalledWith(thumbRow.storageKey, thumb.data, "image/jpeg");
+    expect(media[0]).toMatchObject({ width: 4000, height: 3000 });
+    expect(lockCalls[0]).toContain("FOR UPDATE|mem_1");
+  });
+
+  it("does nothing for non-image, non-READY, removed, foreign-prefix or deleted-memory media", async () => {
+    for (const over of [{ mimeType: "video/mp4" }, { status: "PENDING" }, { deletedAt: new Date() }, { storageKey: "originals/mem_1/x.heic" }, { memory: { deletedAt: new Date() } }] as Partial<MediaRow>[]) {
+      media = [photo(over)]; derived = [];
+      expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "not_eligible", THUMBNAIL: "not_eligible" });
+    }
+    expect(getMock).not.toHaveBeenCalled();
+    expect(derived).toHaveLength(0);
+  });
+
+  it("leaves READY and terminal FAILED rows alone and reports a fresh claim as someone else's", async () => {
+    derived = [row("WEB_IMAGE", { status: "READY" }), row("THUMBNAIL", { status: "FAILED", error: "too_large" })];
+    expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "not_eligible", THUMBNAIL: "not_eligible" });
+    derived = [row("WEB_IMAGE", { claimedAt: new Date(NOW.getTime() - 60_000) }), row("THUMBNAIL", { status: "READY" })];
+    expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "claimed_elsewhere", THUMBNAIL: "not_eligible" });
+    expect(getMock).not.toHaveBeenCalled();
+  });
+
+  it("reclaims a stale PENDING row: deletes its half-written key, allocates a new one, counts the attempt", async () => {
+    derived = [row("WEB_IMAGE", { claimedAt: STALE, storageKey: "dev/derived/mem_1/stale.jpg" }), row("THUMBNAIL", { status: "READY" })];
+    expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "derived", THUMBNAIL: "not_eligible" });
+    expect(delMock).toHaveBeenCalledWith("dev/derived/mem_1/stale.jpg");
+    const webRow = derived.find((d) => d.kind === "WEB_IMAGE")!;
+    expect(webRow.storageKey).not.toBe("dev/derived/mem_1/stale.jpg");
+    expect(webRow).toMatchObject({ status: "READY", attempts: 2 });
+  });
+
+  it("retries decode_failed and timeout up to three attempts and a too_many_pixels row only when the ceiling was raised", async () => {
+    derived = [row("WEB_IMAGE", { status: "FAILED", error: "decode_failed", attempts: 2 }), row("THUMBNAIL", { status: "FAILED", error: "timeout", attempts: 3 })];
+    expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "derived", THUMBNAIL: "not_eligible" });
+    derived = [row("WEB_IMAGE", { status: "FAILED", error: "too_many_pixels:1000", attempts: 1 }), row("THUMBNAIL", { status: "FAILED", error: "too_many_pixels:30000000", attempts: 1 })];
+    expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "derived", THUMBNAIL: "not_eligible" });
+  });
+
+  it("records a decode refusal on every claimed row with the ceiling, deleting the unused candidate keys", async () => {
+    deriveMock.mockRejectedValueOnce(new ImageDeriveError("too_many_pixels", { limit: 30_000_000 }));
+    expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "failed", THUMBNAIL: "failed" });
+    expect(derived.map((d) => [d.status, d.error])).toEqual([["FAILED", "too_many_pixels:30000000"], ["FAILED", "too_many_pixels:30000000"]]);
+    expect(putMock).not.toHaveBeenCalled();
+    expect(delMock).toHaveBeenCalledTimes(2);
+    expect(logErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("marks only the thumbnail too_large when the web copy succeeded", async () => {
+    deriveMock.mockResolvedValueOnce({ sourceWidth: 4000, sourceHeight: 3000, web, thumb: { failed: "too_large" } });
+    expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "derived", THUMBNAIL: "failed" });
+    expect(derived.find((d) => d.kind === "THUMBNAIL")).toMatchObject({ status: "FAILED", error: "too_large" });
+    expect(derived.find((d) => d.kind === "WEB_IMAGE")).toMatchObject({ status: "READY" });
+    expect(putMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats an unexpected failure as a retryable decode_failed and reports it with the media id only", async () => {
+    putMock.mockRejectedValueOnce(new Error("blob store down"));
+    expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "failed", THUMBNAIL: "failed" });
+    expect(derived.every((d) => d.status === "FAILED" && d.error === "decode_failed")).toBe(true);
+    expect(logErrorMock).toHaveBeenCalledTimes(1);
+    const ctx = logErrorMock.mock.calls[0]![2] as Record<string, unknown>;
+    expect(ctx).toMatchObject({ mediaId: "med_1" });
+    expect(JSON.stringify(ctx)).not.toMatch(/token/i);
+  });
+
+  it("does not publish when the media was removed while deriving", async () => {
+    getMock.mockImplementationOnce(async () => { media[0]!.deletedAt = new Date(); return { stream: new Blob([new Uint8Array([1])]).stream(), contentType: "image/jpeg", contentLength: 1 }; });
+    expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "claimed_elsewhere", THUMBNAIL: "claimed_elsewhere" });
+    expect(derived.every((d) => d.status === "PENDING")).toBe(true);
+    expect(delMock).toHaveBeenCalledTimes(2);
+  });
+});

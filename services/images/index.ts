@@ -16,3 +16,17 @@ export function createImageService(): ImageService {
   instance ??= new SharpHeicImageService();
   return instance;
 }
+
+/** File extension of the web copy for an original's MIME (the thumbnail is always `jpg`). */
+export function webExtensionFor(sourceMime: string): "jpg" | "png" | "webp" | "gif" {
+  switch (sourceMime) {
+    case "image/png":
+      return "png";
+    case "image/webp":
+      return "webp";
+    case "image/gif":
+      return "gif";
+    default:
+      return "jpg";
+  }
+}
