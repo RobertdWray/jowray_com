@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { scrubBreadcrumb, scrubEvent, scrubSpan, scrubUrl } from "@/lib/sentry/scrub";
+import { scrubBreadcrumb, scrubEvent, scrubLog, scrubSpan, scrubUrl } from "@/lib/sentry/scrub";
 
 const TOKEN = "AbCdEf0123456789_-AbCdEf0123456789_-AbCdEf0";
 
@@ -79,5 +79,26 @@ describe("scrubSpan on Sentry 11's StreamedSpanJSON shape (name + attributes)", 
     });
     expect(JSON.stringify(span)).not.toContain(TOKEN);
     expect(span.name).toBe("GET /m/[claimToken]");
+  });
+});
+
+describe("scrubUrl edge cases from the team review", () => {
+  it("removes every t= parameter, including consecutive ones", () => {
+    expect(scrubUrl(`/api/media/1?t=${TOKEN}&t=${TOKEN}`)).toBe("/api/media/1");
+    expect(scrubUrl(`/api/media/1?t=${TOKEN}&t=${TOKEN}&download=1`)).toBe("/api/media/1?download=1");
+    expect(scrubUrl(`t=${TOKEN}&t=${TOKEN}`)).toBe("");
+  });
+
+  it("scrubs claim paths and t= values embedded in free-form messages", () => {
+    expect(scrubUrl(`GET /m/${TOKEN} 200 in 12ms`)).toBe("GET /m/[claimToken] 200 in 12ms");
+    expect(scrubUrl(`fetch /api/media/1?t=${TOKEN} failed with 404`)).toBe("fetch /api/media/1 failed with 404");
+  });
+});
+
+describe("scrubLog", () => {
+  it("scrubs the message and string attributes of a Sentry log", () => {
+    const log = scrubLog({ level: "warn", message: `slow request /m/${TOKEN}`, attributes: { url: `/api/media/1?t=${TOKEN}`, count: 2 } });
+    expect(JSON.stringify(log)).not.toContain(TOKEN);
+    expect(log.attributes?.count).toBe(2);
   });
 });

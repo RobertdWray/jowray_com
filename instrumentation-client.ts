@@ -1,7 +1,7 @@
 import * as Sentry from "@sentry/nextjs";
 
 import { DATA_COLLECTION } from "@/lib/sentry/data-collection";
-import { scrubBreadcrumb, scrubEvent, scrubSpan } from "@/lib/sentry/scrub";
+import { scrubBreadcrumb, scrubEvent, scrubLog, scrubSpan } from "@/lib/sentry/scrub";
 
 // Browser init with the same data controls as the server: page-load
 // transactions, breadcrumbs and errors on /m/<token> would otherwise carry
@@ -15,6 +15,7 @@ Sentry.init({
   // v11 streams spans: beforeSendTransaction is ignored, beforeSendSpan runs per span.
   beforeSendSpan: (span) => scrubSpan(span),
   beforeBreadcrumb: (breadcrumb) => scrubBreadcrumb(breadcrumb),
+  beforeSendLog: (log) => scrubLog(log),
 });
 
 export const onRouterTransitionStart = Sentry.captureRouterTransitionStart;

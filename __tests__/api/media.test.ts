@@ -2,11 +2,13 @@ import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { hashClaimToken } from "@/lib/claim-token";
+import { attachmentDisposition } from "@/lib/media-types";
 
 const TOKEN = "AbCdEf0123456789_-AbCdEf0123456789_-AbCdEf0";
 
 interface MediaRow {
   id: string;
+  sizeBytes: number | null;
   status: "PENDING" | "READY" | "FAILED";
   mimeType: string;
   storageKey: string;
@@ -45,14 +47,15 @@ beforeEach(() => {
   media = [
     {
       id: "med_ready",
+      sizeBytes: 9,
       status: "READY",
       mimeType: "image/jpeg",
       storageKey: "originals/mem_1/abc.jpg",
       originalFilename: 'photo "one"\r\nBcc.jpg',
       memory: { claimTokenHash: hashClaimToken(TOKEN), deletedAt: null },
     },
-    { ...{} as MediaRow, id: "med_pending", status: "PENDING", mimeType: "video/mp4", storageKey: "originals/mem_1/p.mp4", originalFilename: null, memory: { claimTokenHash: hashClaimToken(TOKEN), deletedAt: null } },
-    { ...{} as MediaRow, id: "med_deleted", status: "READY", mimeType: "image/png", storageKey: "originals/mem_2/d.png", originalFilename: null, memory: { claimTokenHash: hashClaimToken(TOKEN), deletedAt: new Date() } },
+    { ...{} as MediaRow, id: "med_pending", sizeBytes: null, status: "PENDING", mimeType: "video/mp4", storageKey: "originals/mem_1/p.mp4", originalFilename: null, memory: { claimTokenHash: hashClaimToken(TOKEN), deletedAt: null } },
+    { ...{} as MediaRow, id: "med_deleted", sizeBytes: 9, status: "READY", mimeType: "image/png", storageKey: "originals/mem_2/d.png", originalFilename: null, memory: { claimTokenHash: hashClaimToken(TOKEN), deletedAt: new Date() } },
   ];
   presignMock.mockClear();
 });
@@ -74,7 +77,7 @@ describe("GET /api/media/[id]", () => {
     expect(res.headers.get("cache-control")).toBe("private, no-store");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
-    expect(res.headers.get("referrer-policy")).toBe("same-origin");
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
     expect(presignMock).toHaveBeenCalledWith(expect.objectContaining({ pathname: "originals/mem_1/abc.jpg" }));
     const call = presignMock.mock.calls[0]?.[0];
     expect(call!.validUntil - Date.now()).toBeLessThanOrEqual(60_000);
@@ -90,8 +93,32 @@ describe("GET /api/media/[id]", () => {
     expect(res.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
     const disposition = res.headers.get("content-disposition") ?? "";
     expect(disposition).toMatch(/^attachment; filename="[A-Za-z0-9._-]+"; filename\*=UTF-8''/);
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
     expect(disposition).not.toMatch(/[\r\n]/);
     expect(disposition).not.toContain('""');
     expect(await res.text()).toBe("jpegbytes");
+  });
+});
+
+describe("download size cap and header hygiene", () => {
+  it("redirects large downloads to the presigned url instead of streaming through the function", async () => {
+    getMock.mockResolvedValueOnce({ stream: new Blob(["x"]).stream(), contentType: "video/mp4", contentLength: 200 * 1024 * 1024 });
+    media.push({ ...media[0]!, id: "med_big", sizeBytes: 200 * 1024 * 1024, mimeType: "video/mp4", storageKey: "originals/mem_1/big.mp4" });
+    const res = await request("med_big", `?t=${TOKEN}&download=1`);
+    expect(res.status).toBe(302);
+    expect(presignMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends no-referrer on every response", async () => {
+    expect((await request("med_ready", `?t=${TOKEN}`)).headers.get("referrer-policy")).toBe("no-referrer");
+    expect((await request("nope", "")).headers.get("referrer-policy")).toBe("no-referrer");
+  });
+});
+
+describe("attachmentDisposition", () => {
+  it("percent-encodes RFC 8187 attr-char exceptions and falls back to memory.<ext> for non-ASCII names", () => {
+    expect(attachmentDisposition("it's (1)*.jpg", "jpg")).toBe("attachment; filename=\"it_s_1.jpg\"; filename*=UTF-8''it%27s%20%281%29%2A.jpg");
+    expect(attachmentDisposition("思い出.heic", "heic")).toMatch(/^attachment; filename="memory\.heic"; filename\*=UTF-8''%E6/);
+    expect(attachmentDisposition("\r\nBcc: x.png", "png")).not.toMatch(/[\r\n]/);
   });
 });

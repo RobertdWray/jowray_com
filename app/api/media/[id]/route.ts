@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 
 import { hashClaimToken, safeEqualHex } from "@/lib/claim-token";
-import { extensionFor, isAllowedMime } from "@/lib/media-types";
+import { attachmentDisposition, extensionFor, isAllowedMime, MAX_BYTES } from "@/lib/media-types";
 import { getDb } from "@/server/db/client";
 import { createStorageService } from "@/services/storage";
 
@@ -15,19 +15,19 @@ const PROTECTIVE_HEADERS = {
   "Cache-Control": "private, no-store",
   "X-Content-Type-Options": "nosniff",
   "Content-Security-Policy": "default-src 'none'; sandbox",
-  "Referrer-Policy": "same-origin",
+  "Referrer-Policy": "no-referrer",
 } as const;
 
 function notFound(): Response {
   return new Response("Not found", { status: 404, headers: PROTECTIVE_HEADERS });
 }
 
-/** `attachment; filename="ascii"; filename*=UTF-8''percent-encoded` with no control characters. */
-export function attachmentDisposition(filename: string): string {
-  const clean = filename.replaceAll(/\p{Cc}/gu, "").trim();
-  const ascii = clean.replaceAll(/[^A-Za-z0-9._-]/g, "_").replaceAll(/_+/g, "_") || "memory";
-  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(clean || ascii)}`;
-}
+/**
+ * Downloads stream through this function only up to this size; the function
+ * has 60 s, and Vercel advises against proxying large files. Larger media
+ * (video, long audio) is redirected to the presigned URL like inline views.
+ */
+const MAX_PROXY_DOWNLOAD_BYTES = MAX_BYTES.PHOTO;
 
 export async function GET(request: NextRequest, context: RouteContext<"/api/media/[id]">): Promise<Response> {
   // Request-time reads first (Cache Components), then data.
@@ -53,21 +53,25 @@ export async function GET(request: NextRequest, context: RouteContext<"/api/medi
   }
 
   const storage = createStorageService();
-  if (download) {
+  if (download && (media.sizeBytes ?? 0) <= MAX_PROXY_DOWNLOAD_BYTES) {
     const file = await storage.get(media.storageKey);
     if (!file) {
       return notFound();
     }
-    const filename = media.originalFilename ?? `memory.${extensionFor(media.mimeType)}`;
-    return new Response(file.stream, {
-      status: 200,
-      headers: {
-        ...PROTECTIVE_HEADERS,
-        "Content-Type": media.mimeType,
-        "Content-Length": String(file.contentLength),
-        "Content-Disposition": attachmentDisposition(filename),
-      },
-    });
+    if (file.contentLength <= MAX_PROXY_DOWNLOAD_BYTES) {
+      const extension = extensionFor(media.mimeType);
+      const filename = media.originalFilename ?? `memory.${extension}`;
+      return new Response(file.stream, {
+        status: 200,
+        headers: {
+          ...PROTECTIVE_HEADERS,
+          "Content-Type": media.mimeType,
+          "Content-Length": String(file.contentLength),
+          "Content-Disposition": attachmentDisposition(filename, extension),
+        },
+      });
+    }
+    await file.stream.cancel();
   }
 
   const { url } = await storage.presignGet({

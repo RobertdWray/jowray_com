@@ -92,9 +92,16 @@ describe("getSiteEnv / getSiteUrl", () => {
     expect(getSiteEnv().VERCEL_ENV).toBeUndefined();
   });
 
-  it("refuses to fall back to localhost in production", () => {
+  it("requires https for NEXT_PUBLIC_SITE_URL in production and rejects non-web schemes", () => {
     process.env.VERCEL_ENV = "production";
-    expect(() => getSiteUrl()).toThrow(/NEXT_PUBLIC_SITE_URL/);
+    process.env.NEXT_PUBLIC_SITE_URL = "http://www.jowray.com";
+    expect(() => getSiteUrl()).toThrow(/https/);
+    resetEnvCache();
+    process.env.NEXT_PUBLIC_SITE_URL = "ftp://www.jowray.com";
+    expect(() => getSiteUrl()).toThrow();
+    resetEnvCache();
+    process.env.NEXT_PUBLIC_SITE_URL = "https://www.jowray.com";
+    expect(getSiteUrl()).toBe("https://www.jowray.com");
   });
 
   it("rejects a NEXT_PUBLIC_SITE_URL that is not an absolute URL", () => {

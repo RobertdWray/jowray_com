@@ -18,6 +18,9 @@ async function main(): Promise<void> {
   const connectionString = required("DATABASE_URL_UNPOOLED");
   const name = required("MEMORIAL_NAME");
   const slug = required("MEMORIAL_SLUG");
+  // Not used here, but the app cannot serve /share without it; fail the
+  // deployment at seed time rather than at the first request.
+  required("CONSENT_VERSION");
 
   const prisma = new PrismaClient({ adapter: new PrismaNeon({ connectionString }) });
   try {
@@ -26,11 +29,12 @@ async function main(): Promise<void> {
       create: { name, slug },
       update: {},
     });
-    await prisma.person.upsert({
-      where: { memorialId_name: { memorialId: memorial.id, name } },
-      create: { memorialId: memorial.id, name, isTheDeceased: true },
-      update: {},
-    });
+    // The deceased is identified by the flag, not by the (editable) name, so a
+    // rename in Prisma Studio never produces a second deceased person.
+    const deceased = await prisma.person.findFirst({ where: { memorialId: memorial.id, isTheDeceased: true } });
+    if (!deceased) {
+      await prisma.person.create({ data: { memorialId: memorial.id, name: memorial.name, isTheDeceased: true } });
+    }
     console.log(`seed: memorial "${slug}" (${memorial.id}) and its person row are present`);
   } finally {
     await prisma.$disconnect();
