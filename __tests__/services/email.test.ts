@@ -4,15 +4,16 @@ import { resetEnvCache } from "@/server/config/env";
 
 // --- stubs -------------------------------------------------------------
 const sendMock = vi.fn();
+const setTimeoutMock = vi.fn();
 vi.mock("@sendgrid/mail", () => ({
-  default: { setApiKey: vi.fn(), send: (...args: unknown[]) => sendMock(...args) },
+  default: { setApiKey: vi.fn(), setTimeout: (...args: unknown[]) => setTimeoutMock(...args), send: (...args: unknown[]) => sendMock(...args) },
 }));
 
 interface Row {
   id: string;
   memoryId: string;
   recipientEmail: string;
-  emailType: "MEMORY_CONFIRMATION";
+  emailType: "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY";
   status: "PENDING" | "SENDING" | "SENT" | "FAILED" | "SKIPPED";
   attempts: number;
   nextAttemptAt: Date | null;
@@ -242,6 +243,27 @@ describe("transport attachments", () => {
     await new SendGridTransport().send({ to: base.to, from: "memories@jowray.com", subject: "s", text: "t", html: "<p>t</p>" });
     const msg = sendMock.mock.calls[0]?.[0] as Record<string, unknown>;
     expect("attachments" in msg).toBe(false);
+  });
+
+  it("passes an array of recipients through as one message", async () => {
+    const { SendGridTransport } = await import("@/integrations/sendgrid");
+    await new SendGridTransport().send({ to: ["a@example.com", "b@example.org"], from: "memories@jowray.com", subject: "s", text: "t", html: "<p>t</p>" });
+    const msg = sendMock.mock.calls[0]?.[0] as { to: unknown };
+    expect(msg.to).toEqual(["a@example.com", "b@example.org"]);
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the request timeout together with the API key, once per key", async () => {
+    // Fresh module state: `configuredKey` lives in the client module, so earlier tests in this file already configured it.
+    vi.resetModules();
+    setTimeoutMock.mockClear();
+    const { getSendGridClient, SENDGRID_REQUEST_TIMEOUT_MS } = await import("@/integrations/sendgrid/client");
+    getSendGridClient();
+    getSendGridClient();
+    expect(SENDGRID_REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(5_000);
+    expect(SENDGRID_REQUEST_TIMEOUT_MS).toBeLessThanOrEqual(15_000);
+    expect(setTimeoutMock).toHaveBeenCalledTimes(1);
+    expect(setTimeoutMock).toHaveBeenCalledWith(SENDGRID_REQUEST_TIMEOUT_MS);
   });
 });
 
