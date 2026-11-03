@@ -72,13 +72,14 @@ interface SgDomain {
 
 async function ensureSendGridDomain(): Promise<SgDomain> {
   const existing = await sg<SgDomain[]>(`/whitelabel/domains?domain=${DOMAIN}`);
-  if (existing.length > 0) {
-    console.log(`sendgrid: domain authentication exists (id ${existing[0].id}, subdomain ${existing[0].subdomain}, valid ${existing[0].valid})`);
-    return existing[0];
+  const match = existing.find((d) => d.domain === DOMAIN);
+  if (match) {
+    console.log(`sendgrid: domain authentication exists (id ${match.id}, subdomain ${match.subdomain}, valid ${match.valid})`);
+    return match;
   }
   const created = await sg<SgDomain>("/whitelabel/domains", {
     method: "POST",
-    body: JSON.stringify({ domain: DOMAIN, automated_security: true, default: false }),
+    body: JSON.stringify({ domain: DOMAIN, automatic_security: true, default: false }),
   });
   console.log(`sendgrid: created domain authentication id ${created.id} (subdomain ${created.subdomain})`);
   return created;
@@ -100,7 +101,7 @@ async function ensureRecord(type: string, name: string, content: string): Promis
   }
   const created = await cf<CfRecord>(`/zones/${cfZone}/dns_records`, {
     method: "POST",
-    body: JSON.stringify({ type, name, content, proxied: false, ttl: 1, comment: "SendGrid domain authentication (Phase 1 Task 6)" }),
+    body: JSON.stringify({ type, name: fqdn, content, proxied: false, ttl: 1, comment: "SendGrid domain authentication (Phase 1 Task 6)" }),
   });
   console.log(`cloudflare: created ${type} ${fqdn} -> ${content} (id ${created.id})`);
 }

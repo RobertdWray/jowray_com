@@ -99,7 +99,7 @@ describe("sendMemoryConfirmation", () => {
     const err = Object.assign(new Error("boom"), { code: 500 });
     sendMock.mockRejectedValue(err);
     const result = await sendMemoryConfirmation(base);
-    expect(result).toEqual({ sent: false, skipped: "failed", error: "boom" });
+    expect(result).toMatchObject({ sent: false, skipped: "failed", error: expect.stringMatching(/boom/) });
     expect(rows[0]?.status).toBe("FAILED");
     expect(rows[0]?.attempts).toBe(1);
     expect(rows[0]?.nextAttemptAt).toBeInstanceOf(Date);
@@ -153,4 +153,27 @@ describe("sendMemoryConfirmation", () => {
     const msg = sendMock.mock.calls[0]?.[0] as { html: string };
     expect(msg.html).not.toContain("x".repeat(61));
   });
+});
+
+describe("transport error hygiene", () => {
+  it("records a status-coded message and never logs the SendGrid response body", async () => {
+    const err = Object.assign(new Error("Bad Request"), { code: 400, response: { body: { errors: [{ message: "The recipient person@example.com is invalid" }] } } });
+    sendMock.mockRejectedValue(err);
+    const result = await sendMemoryConfirmation(base);
+    expect(result.sent).toBe(false);
+    expect(rows[0]?.status).toBe("FAILED");
+    expect(rows[0]?.errorMessage).toMatch(/^SendGrid 400/);
+    expect(rows[0]?.errorMessage).not.toContain("person@example.com");
+    expect(result.sent === false && result.error).not.toContain("person@example.com");
+  });
+
+  it("does not retry deterministic 4xx responses other than 408 and 429", async () => {
+    sendMock.mockRejectedValue(Object.assign(new Error("Payload Too Large"), { code: 413 }));
+    await sendMemoryConfirmation(base);
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    sendMock.mockClear(); rows.length = 0;
+    sendMock.mockRejectedValue(Object.assign(new Error("Too Many Requests"), { code: 429 }));
+    await sendMemoryConfirmation(base);
+    expect(sendMock).toHaveBeenCalledTimes(3);
+  }, 15_000);
 });

@@ -4,13 +4,14 @@ import sgMail from "@sendgrid/mail";
 
 import { getEmailEnv } from "@/server/config/env";
 
-let configured = false;
+let configuredKey: string | undefined;
 
-/** The SendGrid mail client with the API key applied once, on first use. */
+/** The SendGrid mail client with the current API key applied (re-applied if it changes). */
 export function getSendGridClient(): typeof sgMail {
-  if (!configured) {
-    sgMail.setApiKey(getEmailEnv().SENDGRID_API_KEY);
-    configured = true;
+  const key = getEmailEnv().SENDGRID_API_KEY;
+  if (configuredKey !== key) {
+    sgMail.setApiKey(key);
+    configuredKey = key;
   }
   return sgMail;
 }

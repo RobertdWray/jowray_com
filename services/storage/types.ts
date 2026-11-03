@@ -16,8 +16,6 @@ export interface PresignGetOptions {
   pathname: string;
   /** Absolute expiry, epoch milliseconds. */
   validUntil: number;
-  /** Optional Content-Disposition the blob host should send. */
-  contentDisposition?: string;
 }
 
 export interface PresignGetResult {

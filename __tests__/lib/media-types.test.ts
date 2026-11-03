@@ -77,3 +77,13 @@ describe("isRenderableIn", () => {
     expect(isRenderableIn("video/mp4", null)).toBe(true);
   });
 });
+
+describe("prototype-safe lookups", () => {
+  it("never resolves inherited object properties as media types", () => {
+    expect(normalizeMime("", "x.__proto__")).toBeNull();
+    expect(normalizeMime("", "x.constructor")).toBeNull();
+    expect(normalizeMime("constructor", "x")).toBeNull();
+    expect(isAllowedMime("__proto__")).toBe(false);
+    expect(() => maxBytesFor("constructor")).toThrow(/Unsupported/);
+  });
+});
