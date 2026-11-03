@@ -11,9 +11,14 @@ permissions:
 
 jobs:
   delete-preview-branch:
+    # Forks have no NEON_API_KEY; docs-only PRs may never have had a preview branch.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: neondatabase/delete-branch-action@v3
+        # The action exits non-zero when the branch is already gone (Neon's own
+        # cleanup or a PR without a deployment); that is not a failure here.
+        continue-on-error: true
         with:
           project_id: ${{ vars.NEON_PROJECT_ID }}
           branch: preview/${{ github.head_ref }}
