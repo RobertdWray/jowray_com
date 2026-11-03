@@ -9,6 +9,8 @@ export function deferred<T>() {
 export class FakeTrack extends EventTarget {
   readonly kind = "audio";
   readyState: MediaStreamTrackState = "live";
+  /** Set by tests before dispatching "mute"; the engine must not sample while true. */
+  muted = false;
 
   constructor(readonly label = "Test microphone", readonly deviceId = "test-mic") {
     super();

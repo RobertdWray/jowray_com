@@ -94,7 +94,17 @@ export function LevelMeter({
     }
     const colours = themeColours();
     const levels = new Float32Array(LEVEL_HISTORY);
-    const observer = new ResizeObserver(() => fitCanvas(canvas));
+    // Resizing the backing store clears the bitmap; redraw from the last level
+    // so the reduced-motion bar (no animation loop) does not stay blank.
+    let lastDbfs = SILENCE_FLOOR_DBFS;
+    const observer = new ResizeObserver(() => {
+      fitCanvas(canvas);
+      if (reducedMotion) {
+        drawBar(lastDbfs);
+      } else {
+        drawBars();
+      }
+    });
     observer.observe(canvas);
 
     // Motion: a scrolling bar waveform, newest at the right, drawn each frame.
@@ -119,6 +129,7 @@ export function LevelMeter({
 
     // Reduced motion: one horizontal level bar, redrawn only when a tick arrives.
     const drawBar = (dbfs: number) => {
+      lastDbfs = dbfs;
       const ctx = fitCanvas(canvas);
       if (!ctx) {
         return;

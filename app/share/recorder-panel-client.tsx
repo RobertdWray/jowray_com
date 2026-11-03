@@ -64,6 +64,9 @@ export function RecorderPanel({ rec, canRecord, disabled }: { rec: UseRecorder; 
   const { status } = rec.snapshot;
   const active = status.kind === "requesting" || status.kind === "recording" || status.kind === "finishing";
   const verdict = rec.clip?.recording.verdict;
+  // A kept clip stays playable during the next take, but its verdict and help
+  // belong to that take only.
+  const showVerdict = rec.clip !== null && !active && status.kind !== "error";
 
   function toggle() {
     if (status.kind === "recording") {
@@ -126,22 +129,22 @@ export function RecorderPanel({ rec, canRecord, disabled }: { rec: UseRecorder; 
             <>
               <audio controls src={rec.clip.url} className="w-full min-w-0" />
               <span className="text-small text-walnut-soft">Recorded {formatDuration(rec.clip.recording.durationMs)}</span>
-              {verdict === "suspectedSilent" && (
+              {showVerdict && verdict === "suspectedSilent" && (
                 <p role="status" className={errorClass}>
                   This recording sounds silent. Play it back before you send it.
                 </p>
               )}
-              {verdict === "unchecked" && (
+              {showVerdict && verdict === "unchecked" && (
                 <p role="status" className="text-small text-walnut">
                   We couldn&apos;t check this recording — play it back before you send it.
                 </p>
               )}
-              {rec.clip.recording.partial && (
+              {showVerdict && rec.clip.recording.partial && (
                 <p role="status" className="text-small text-walnut">
                   The recording was cut short; what we have is here.
                 </p>
               )}
-              {verdict === "suspectedSilent" && rec.help && <HelpBox help={rec.help} tone="warning" />}
+              {showVerdict && verdict === "suspectedSilent" && rec.help && <HelpBox help={rec.help} tone="warning" />}
               <SecondaryButton onClick={rec.discard} disabled={disabled || active}>
                 Remove recording
               </SecondaryButton>

@@ -79,38 +79,52 @@ export function useShareDraft(): {
     }
   }, []);
 
-  useEffect(
-    () => () => {
-      if (timerRef.current !== null) {
-        clearTimeout(timerRef.current);
+  /** Write the fields now; the debounce only decides when this runs. */
+  const flush = useCallback(() => {
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    const form = formElement.current;
+    const store = storage();
+    if (!form || !store) {
+      return;
+    }
+    const draft = readFields(form);
+    try {
+      if (isShareDraftEmpty(draft)) {
+        store.removeItem(SHARE_DRAFT_KEY);
+      } else {
+        store.setItem(SHARE_DRAFT_KEY, serializeShareDraft(draft, Date.now()));
       }
-    },
-    [],
-  );
+    } catch {
+      // Quota or blocked storage: the form still works without a draft.
+    }
+  }, []);
+
+  // Closing the tab inside the debounce window must not lose the last words:
+  // flush on pagehide (the reliable "leaving" signal on phones) and on unmount.
+  useEffect(() => {
+    const onPageHide = () => {
+      if (timerRef.current !== null) {
+        flush();
+      }
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      if (timerRef.current !== null) {
+        flush();
+      }
+    };
+  }, [flush]);
 
   const onInput = useCallback(() => {
     if (timerRef.current !== null) {
       clearTimeout(timerRef.current);
     }
-    timerRef.current = setTimeout(() => {
-      timerRef.current = null;
-      const form = formElement.current;
-      const store = storage();
-      if (!form || !store) {
-        return;
-      }
-      const draft = readFields(form);
-      try {
-        if (isShareDraftEmpty(draft)) {
-          store.removeItem(SHARE_DRAFT_KEY);
-        } else {
-          store.setItem(SHARE_DRAFT_KEY, serializeShareDraft(draft, Date.now()));
-        }
-      } catch {
-        // Quota or blocked storage: the form still works without a draft.
-      }
-    }, SAVE_DELAY_MS);
-  }, []);
+    timerRef.current = setTimeout(flush, SAVE_DELAY_MS);
+  }, [flush]);
 
   const clear = useCallback(() => {
     if (timerRef.current !== null) {

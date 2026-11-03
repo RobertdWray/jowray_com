@@ -458,3 +458,23 @@ Each finding was checked against source before ruling. Baseline correction: `mai
 Smoke prerequisites: Google Chrome at `/Applications/Google Chrome.app` (tested 156.0.8078.80), `npx next dev -p 3101` in a checkout, Node 22 (global `WebSocket`). Flags used: `--headless=new --use-fake-ui-for-media-stream --use-fake-device-for-media-stream --autoplay-policy=no-user-gesture-required [--use-file-for-fake-audio-capture=<16-bit PCM WAV>]`; `--screenshot-dir` writes `<expect>-recording.png` / `<expect>-clip.png`.
 
 Publication note: the orchestrator's engine/UI commits live on `feat/recorder-feedback`, so the PR is opened from that branch with `gh`; the Astra runs hold the worker evidence (briefs, reports, inspection diffs, check logs, acceptances) and their integration branches were cherry-picked here (64603da, a3e121b, 959f07e).
+
+## Review round 1 (Team Code Review on PR #21 head d322bb6; log `~/Downloads/team-review-20261103-151028-jowray_com-pr21-d322bb6.md`)
+
+George (gemini-4-argon) 8 findings, Oscar (gpt-6-astra) 10. All verified against source; Rob chose buckets 1 + 2 in full (2026-11-03).
+
+| # | Finding | Bucket | Done |
+|---|---|---|---|
+| G1 | Form rewrite reverted PR #16 (opt-ins, PUBLIC default, remembered contributor, Nov 10th copy) | fixed before triage | f026e70 |
+| G2/O9 | OS stop / track ended never reached `rec.clip` | 1 | one effect on `status.kind === "clip"` publishes both manual and automatic takes |
+| G3/O14/O15 | silence judge on missing evidence (leading/trailing gap, muted track, no resume) | 1 | W4 (`runStartedAt`, `clipVerdict(state, stoppedAt)`, fresh-evidence live verdict) + engine skips sampling while `track.muted`, resumes the context on unmute, passes the stop time |
+| G4/O12 | `await refreshDevices()` before `recorder.start()`; stale `selectedRef` | 1 | start is synchronous into the engine; ref written in the same handlers |
+| G5/O10 | startup throws leak the mic and wedge "Starting…" | 1 | `createAudioContext`, `attachTrack`/`buildGraph`/`createMediaRecorder`, `recorder.start` all guarded → release + error |
+| O11 | `ended` finalised before the queued final `dataavailable`/`stop` | 1 | finalise only from `onstop` |
+| G6 | stale silent-clip help during the next take; duplicate boxes | 1 | phase-scoped `help`; verdict/help hidden while a take is active or errored |
+| O17 | draft debounce lost on tab close | 1 | `flush()` on `pagehide` and unmount |
+| G7/O13/O16 | fallback `getUserMedia` after cancel; chunks retained | 1 | session-checked fallback; `release()` clears `chunks`/`error` |
+| G8 | resize blanks the reduced-motion bar | 2 | observer redraws from the last level |
+| O18 | help names unavailable controls | 2 | W4: `helpFor(problem, platform, phase)` |
+
+Engine tests: +8 (`AudioRecorder review-round fixes`). Suite: 25 files, 586 tests. Bucket 3 (not doing) and bucket 4 (out of scope) are recorded as a PR comment: https://github.com/RobertdWray/jowray_com/pull/21#issuecomment-6614899813. Astra run for W4: `20261103T203856Z-8dd4c0a5`.

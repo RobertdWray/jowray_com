@@ -60,11 +60,12 @@ export function useRecorder(): UseRecorder {
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [deviceNotice, setDeviceNotice] = useState<string | null>(null);
   const [granted, setGranted] = useState(false);
-  // Latest choice for the async start/refresh paths, written outside render.
+  // Latest choice for the async start/refresh paths; written in the same
+  // handlers that set the state so it is never one commit behind.
   const selectedRef = useRef<string | null>(null);
-  useEffect(() => {
-    selectedRef.current = selectedDeviceId;
-  }, [selectedDeviceId]);
+  // The Recording already published as `clip`, so manual and automatic
+  // completion share one publication path without publishing twice.
+  const publishedRef = useRef<Recording | null>(null);
 
   const replaceClip = useCallback((next: Clip | null) => {
     if (clipUrlRef.current) {
@@ -90,9 +91,34 @@ export function useRecorder(): UseRecorder {
     if (chosen !== null && resolveSelectedDevice(chosen, next) === null) {
       const fallback = next[0]?.label ?? "your microphone";
       setDeviceNotice(`Your chosen microphone was unplugged — using ${fallback}.`);
+      selectedRef.current = null;
       setSelectedDeviceId(null);
     }
   }, []);
+
+  // One place publishes a finished clip, whether the contributor tapped Stop
+  // or the OS ended the take (screen lock, call, unplugged microphone).
+  useEffect(() => {
+    if (snapshot.status.kind !== "clip") {
+      return;
+    }
+    let cancelled = false;
+    recorder.stop().then(
+      (recording) => {
+        if (cancelled || publishedRef.current === recording) {
+          return;
+        }
+        publishedRef.current = recording;
+        replaceClip({ recording, url: URL.createObjectURL(recording.blob) });
+      },
+      () => {
+        // Rejected takes keep the previous accepted clip; the status shows the error.
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [snapshot.status, recorder, replaceClip]);
 
   // The list is refreshed for the panel's lifetime once permission exists:
   // on plug/unplug, on coming back to the tab, and before every start.
@@ -129,9 +155,8 @@ export function useRecorder(): UseRecorder {
   );
 
   const start = useCallback(async () => {
-    if (granted) {
-      await refreshDevices();
-    }
+    // Synchronous into the engine: the AudioContext must be created inside the
+    // tap. A device that vanished since the last refresh falls back in acquire().
     try {
       await recorder.start({ deviceId: selectedRef.current });
     } catch {
@@ -140,18 +165,16 @@ export function useRecorder(): UseRecorder {
     }
     setGranted(true);
     void refreshDevices();
-  }, [recorder, granted, refreshDevices]);
+  }, [recorder, refreshDevices]);
 
   const stop = useCallback(async () => {
-    let recording: Recording;
     try {
-      recording = await recorder.stop();
+      await recorder.stop();
     } catch {
       // A failed take keeps the previous accepted clip; the status shows the error.
-      return;
     }
-    replaceClip({ recording, url: URL.createObjectURL(recording.blob) });
-  }, [recorder, replaceClip]);
+    // The clip itself is published by the status effect above.
+  }, [recorder]);
 
   const discard = useCallback(() => {
     if (recorder.status.kind === "clip" || recorder.status.kind === "error") {
@@ -163,6 +186,7 @@ export function useRecorder(): UseRecorder {
   }, [recorder, replaceClip]);
 
   const selectDevice = useCallback((deviceId: string | null) => {
+    selectedRef.current = deviceId;
     setSelectedDeviceId(deviceId);
     setDeviceNotice(null);
   }, []);
@@ -175,16 +199,18 @@ export function useRecorder(): UseRecorder {
     return describeActiveInput({ label: active.label, deviceId: active.deviceId ?? undefined }, inputs);
   }, [snapshot.activeInput, inputs]);
 
+  // Help for the current phase only: a kept silent clip's steps do not follow
+  // the contributor into their next take.
   const help = useMemo<RecorderHelp | null>(() => {
     const status = snapshot.status;
     if (status.kind === "error") {
-      return helpFor(status.problem, platform);
+      return helpFor(status.problem, platform, "error");
     }
-    if (status.kind === "recording" && status.hearing === "silent") {
-      return helpFor("silent", platform);
+    if (status.kind === "recording" || status.kind === "requesting" || status.kind === "finishing") {
+      return status.kind === "recording" && status.hearing === "silent" ? helpFor("silent", platform, "recording") : null;
     }
     if (clip?.recording.verdict === "suspectedSilent") {
-      return helpFor("silent", platform);
+      return helpFor("silent", platform, "clip");
     }
     return null;
   }, [snapshot.status, clip, platform]);

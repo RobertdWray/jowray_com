@@ -408,3 +408,106 @@ describe("AudioRecorder lifecycle", () => {
     expect(deps.getUserMedia).not.toHaveBeenCalled();
   });
 });
+
+describe("AudioRecorder review-round fixes", () => {
+  it("does not count a muted track as silence evidence", async () => {
+    const { engine, track, clock } = setup();
+    await engine.start();
+    track.muted = true;
+    track.dispatchEvent(new Event("mute"));
+    ticks(clock, 35);
+
+    expect(engine.status).toMatchObject({ kind: "recording", interrupted: true, elapsedSeconds: 3 });
+    expect((engine.status as { hearing: string }).hearing).not.toBe("silent");
+    const recording = await engine.stop();
+    expect(recording.verdict).toBe("unchecked");
+  });
+
+  it("asks the audio context to resume when the track unmutes", async () => {
+    const { engine, track, context } = setup();
+    await engine.start();
+    expect(context.resume).toHaveBeenCalledTimes(1);
+    track.dispatchEvent(new Event("mute"));
+    track.dispatchEvent(new Event("unmute"));
+    expect(context.resume).toHaveBeenCalledTimes(2);
+    expect(engine.status).toMatchObject({ kind: "recording", interrupted: false });
+  });
+
+  it("a trailing analysis gap before stop leaves the clip unchecked", async () => {
+    const { engine, context, clock } = setup();
+    await engine.start();
+    ticks(clock, 2); // two quiet samples at 100 ms and 200 ms
+    context.state = "suspended"; // nothing analysed from here on
+    ticks(clock, 30);
+
+    const recording = await engine.stop();
+    expect(recording.durationMs).toBe(3200);
+    expect(recording.verdict).toBe("unchecked");
+  });
+
+  it("publishes an error without touching the microphone when the audio context cannot be created", async () => {
+    const { engine, deps } = setup({
+      createAudioContext: () => {
+        throw new DOMException("no audio", "NotSupportedError");
+      },
+    });
+    await expect(engine.start()).rejects.toThrow("no audio");
+    expect(engine.status).toEqual({ kind: "error", problem: "unknown" });
+    expect(deps.getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("releases the stream when building the audio graph throws", async () => {
+    const { engine, context, track } = setup();
+    context.createMediaStreamSource.mockImplementation(() => {
+      throw new Error("graph");
+    });
+    await expect(engine.start()).rejects.toThrow("graph");
+    expect(engine.status).toEqual({ kind: "error", problem: "unknown" });
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(context.state).toBe("closed");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("releases everything when the recorder refuses to start", async () => {
+    const { engine, context, track, recorder } = setup();
+    recorder.start.mockImplementation(() => {
+      throw new DOMException("bad type", "NotSupportedError");
+    });
+    await expect(engine.start()).rejects.toThrow("bad type");
+    expect(engine.status).toEqual({ kind: "error", problem: "unknown" });
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(context.state).toBe("closed");
+    expect(vi.getTimerCount()).toBe(0);
+    await expect(engine.stop()).rejects.toThrow("Not recording");
+  });
+
+  it("waits for the recorder's own stop event after the track ends", async () => {
+    const { engine, track, recorder } = setup();
+    await engine.start();
+    const statuses = observeStatuses(engine);
+    // The browser already flipped the recorder to inactive but has not yet
+    // delivered its final dataavailable + stop.
+    recorder.state = "inactive";
+    track.dispatchEvent(new Event("ended"));
+    expect(engine.status.kind).toBe("finishing");
+    expect(recorder.stop).not.toHaveBeenCalled();
+    expect(engine.hasFinishedClip).toBe(false);
+
+    recorder.emitChunk(3);
+    recorder.onstop?.();
+    const recording = await engine.stop();
+    expect(statuses).toEqual(["finishing", "clip"]);
+    expect(recording.blob.size).toBe(3);
+  });
+
+  it("does not request the fallback microphone once the attempt was cancelled", async () => {
+    const first = deferred<MediaStream>();
+    const { engine, deps } = setup({ getUserMedia: () => first.promise });
+    const starting = engine.start({ deviceId: "gone" });
+    engine.cancel();
+    first.reject(new DOMException("gone", "OverconstrainedError"));
+    await expect(starting).rejects.toThrow("gone");
+    expect(deps.getUserMedia).toHaveBeenCalledTimes(1);
+    expect(engine.status).toEqual({ kind: "idle" });
+  });
+});

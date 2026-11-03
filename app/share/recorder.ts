@@ -193,13 +193,19 @@ export class AudioRecorder {
     }
     // Created synchronously inside the tap: Web Audio started outside a user
     // input handler is subject to autoplay rules and may stay suspended.
-    const context = this.deps.createAudioContext();
+    let context: AudioContext;
+    try {
+      context = this.deps.createAudioContext();
+    } catch (error) {
+      this.fail(problemFromError(error));
+      throw error instanceof Error ? error : new Error("Audio is unavailable");
+    }
     this.context = context;
     void context.resume().catch(() => {});
 
     let stream: MediaStream;
     try {
-      stream = await this.acquire(deviceId);
+      stream = await this.acquire(deviceId, session);
     } catch (error) {
       if (session === this.session) {
         this.release();
@@ -215,15 +221,15 @@ export class AudioRecorder {
 
     this.stream = stream;
     this.track = stream.getAudioTracks()[0] ?? null;
-    this.attachTrack(session);
-    this.buildGraph(context, stream);
-
     this.chunks = [];
     this.error = null;
     let recorder: MediaRecorder;
     try {
+      this.attachTrack(session);
+      this.buildGraph(context, stream);
       recorder = this.deps.createMediaRecorder(stream, { mimeType });
     } catch (error) {
+      // Anything that throws here leaves the microphone open: release it and say so.
       this.release();
       this.fail(problemFromError(error));
       throw error instanceof Error ? error : new Error("Recording failed to start");
@@ -260,7 +266,15 @@ export class AudioRecorder {
     this.silence = createSilenceState(now);
     this.levels.fill(SILENCE_FLOOR_DBFS);
     this.levelsHead = 0;
-    recorder.start(1000);
+    try {
+      recorder.start(1000);
+    } catch (error) {
+      this.settle = null;
+      this.finished = null;
+      this.release();
+      this.fail(problemFromError(error));
+      throw error instanceof Error ? error : new Error("Recording failed to start");
+    }
     this.timer = setInterval(() => this.sample(session), TICK_MS);
     this.dispatch({ type: "granted", now });
   }
@@ -316,12 +330,13 @@ export class AudioRecorder {
 
   // ----- internals --------------------------------------------------------
 
-  private async acquire(deviceId: string | null): Promise<MediaStream> {
+  private async acquire(deviceId: string | null, session: number): Promise<MediaStream> {
     try {
       return await this.deps.getUserMedia(audioConstraintsFor(deviceId));
     } catch (error) {
-      // The chosen microphone vanished: fall back to the default one.
-      if (deviceId !== null && problemFromError(error) === "overconstrained") {
+      // The chosen microphone vanished: fall back to the default one, unless
+      // this attempt was cancelled while the prompt was open.
+      if (deviceId !== null && problemFromError(error) === "overconstrained" && session === this.session) {
         return this.deps.getUserMedia(audioConstraintsFor(null));
       }
       throw error;
@@ -345,10 +360,14 @@ export class AudioRecorder {
     });
     on("unmute", () => {
       if (session === this.session) {
+        // iOS leaves the context interrupted after a call; ask for it back.
+        void this.context?.resume().catch(() => {});
         this.dispatch({ type: "resumed" });
       }
     });
-    // The OS took the microphone away: finish with what we have.
+    // The OS took the microphone away: finish with what we have. The clip is
+    // finalised only from `onstop`, after the recorder's final `dataavailable`
+    // — an inactive recorder may still have both events queued.
     on("ended", () => {
       if (session !== this.session) {
         return;
@@ -357,8 +376,6 @@ export class AudioRecorder {
       const recorder = this.recorder;
       if (recorder && recorder.state !== "inactive") {
         recorder.stop();
-      } else {
-        this.finish();
       }
     });
     const settings = typeof track.getSettings === "function" ? track.getSettings() : {};
@@ -391,9 +408,9 @@ export class AudioRecorder {
     this.dispatch({ type: "tick", now });
     const context = this.context;
     const analyser = this.analyser;
-    // Suspended or interrupted context: no data to judge. The gap it leaves
-    // is what marks the clip "unchecked" rather than "silent".
-    if (!context || context.state !== "running" || !analyser) {
+    // Suspended/interrupted context or a muted track (phone call): no data to
+    // judge. The gap it leaves is what marks the clip "unchecked", not "silent".
+    if (!context || context.state !== "running" || !analyser || this.track?.muted === true) {
       return;
     }
     const dbfs = this.readDbfs(analyser);
@@ -429,8 +446,9 @@ export class AudioRecorder {
     }
     const mimeType = recorder.mimeType || "audio/webm";
     const blob = new Blob(this.chunks, { type: mimeType });
-    const durationMs = Math.max(0, Math.round(this.deps.now() - this.startedAt));
-    const verdict = this.silence ? clipVerdict(this.silence) : "unchecked";
+    const stoppedAt = this.deps.now();
+    const durationMs = Math.max(0, Math.round(stoppedAt - this.startedAt));
+    const verdict = this.silence ? clipVerdict(this.silence, stoppedAt) : "unchecked";
     const error = this.error;
     const session = this.session;
     this.release();
@@ -521,6 +539,9 @@ export class AudioRecorder {
     this.track = null;
     this.recorder = null;
     this.silence = null;
+    // The Blob was built (or never will be); do not keep up to 100 MB reachable.
+    this.chunks = [];
+    this.error = null;
   }
 
   /** Run the reducer; publish only when the status object changed. Returns whether it did. */
