@@ -4,6 +4,13 @@ import { summarizeReadyMedia } from "@/features/memories/media-summary";
 import { getDb } from "@/server/db/client";
 import { sendAdminNewMemory, type SendResult } from "@/services/email";
 
+/**
+ * Activation boundary for the cron backfill (ruling R6): memories created
+ * before this instant existed before the alert and are never announced as
+ * new. Set to the day the feature merged; the request path needs no cutoff.
+ */
+export const ADMIN_ALERT_SINCE = new Date("2026-11-04T00:00:00Z");
+
 export type NotifyAdminsResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "not_ready" };
 
 /**
