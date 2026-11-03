@@ -60,9 +60,10 @@ Authoritative record of what has already happened. Read every copy (main, open P
 - Checks passed: `npm run validate`, `npm run test:run` (12/12), `npm run build` with `DATABASE_URL` unset and remote network blocked (Node-level `dns.lookup`/`net.connect` blocker via `NODE_OPTIONS`; `sandbox-exec` is unusable because Turbopack's loader IPC port binding fails under any profile). Only blocked hosts during the build: `registry.npmjs.org` (npm update check) and `telemetry.nextjs.org`, both non-fatal. `AGENTS.md` updated from `docs/code-layout.md`.
 
 ## Task 3 — Database
-- Status: [ ]   Owner: orchestrator   Branch/PR: B
-- External IDs: migration phase1_init; Vercel env MEMORIAL_NAME / MEMORIAL_SLUG / CONSENT_VERSION (production, preview)
-- Checks passed: —
+- Status: [~]   Owner: orchestrator   Branch/PR: B `feat/phase1-data-observability` (stacked on A)
+- External IDs: migration `20261103022414_phase1_init` applied to Neon `dev` (`br-holy-rice-bbz4t50l`) on 2026-11-03; Vercel env MEMORIAL_NAME / MEMORIAL_SLUG / CONSENT_VERSION: **pending Rob's values** (not yet added; `vercel.json` is therefore not yet committed, per Task 3 step 7).
+- Checks passed (2026-11-03): `npx prisma migrate deploy` twice → "No pending migrations to apply."; seed three times with placeholder values (`Seed Test` / `seed-test`) → one Memorial + one Person, a manual `born` edit survives the third run; 10 tables in `public`; `npm run validate`, `npm run test:run` (12/12), `npm run build` with `DATABASE_URL` unset and remote network blocked; `npm run lint` passes with `generated/` present. The `dev` branch was reset from `main` afterwards and re-migrated so no placeholder rows remain.
+- Plan deviation: the plan's single-line enum blocks (`enum X { A B }`) are not valid Prisma; written one value per line (same values).
 
 ## Task 4 — Sentry 11
 - Status: [ ]   Owner: orchestrator + Rob   Branch/PR: B
