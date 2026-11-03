@@ -8,3 +8,4 @@ Non-personal images generated locally; CI needs no encoder.
 Tools: ImageMagick `7.1.2-35`, libheif `heif-enc 1.23.7` (Homebrew), 2026-11-03.
 - `anim.gif`: two 32×32 frames (red, blue), loops; proves animated GIF output keeps its frames. `magick -size 32x32 xc:red xc:blue -set delay 20 -loop 0 anim.gif`
 - `noise.png`: 1000×1000 random noise; its JPEG at q72 and q60 both exceed 350 KB, which is the thumbnail `too_large` case. `magick -size 1000x1000 xc:gray +noise Random -depth 8 noise.png`
+- `anim-portrait.gif`: two 40×400 frames; proves the long-edge cap applies to a portrait animation (per-frame height). `magick -size 40x400 xc:red xc:blue -set delay 20 -loop 0 anim-portrait.gif`

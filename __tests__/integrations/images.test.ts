@@ -5,11 +5,11 @@ import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 
 import { ImageDeriveError } from "@/lib/image-derive-error";
-import { createImageService, DERIVE_DEFAULTS } from "@/services/images";
+import { createImageService, DERIVE_DEFAULTS, type DeriveOptions } from "@/services/images";
 
 const fixture = (name: string) => readFile(resolve(__dirname, "../fixtures", name));
 const service = createImageService();
-const opts = (sourceMime: string, over: Partial<typeof DERIVE_DEFAULTS> = {}) => ({ ...DERIVE_DEFAULTS, ...over, sourceMime, deadlineMs: 20_000 });
+const opts = (sourceMime: string, over: Partial<DeriveOptions> = {}) => ({ ...DERIVE_DEFAULTS, deadlineMs: 20_000, ...over, sourceMime });
 
 async function meta(buf: Buffer) {
   return sharp(buf).metadata();
@@ -56,6 +56,8 @@ describe("ImageService.derive", () => {
     const out = await service.derive(await fixture("anim.gif"), opts("image/gif"));
     expect(out.web.mimeType).toBe("image/gif");
     expect((await meta(out.web.data)).pages).toBe(2);
+    expect([out.sourceWidth, out.sourceHeight]).toEqual([32, 32]);
+    expect([out.web.width, out.web.height]).toEqual([32, 32]);
     if ("failed" in out.thumb) { throw new Error("thumb failed"); }
     expect(out.thumb.mimeType).toBe("image/jpeg");
     expect((await meta(out.thumb.data)).pages ?? 1).toBe(1);
@@ -89,10 +91,33 @@ describe("ImageService.derive", () => {
     expect("failed" in ok.thumb).toBe(false);
   });
 
+  it("rejects bytes that do not match the declared type (loaders are chosen by bytes, not by the label)", async () => {
+    const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: "#000" } }).png().toBuffer();
+    await expect(service.derive(png, opts("image/jpeg"))).rejects.toMatchObject({ code: "unsupported_type" });
+    const tiff = await sharp({ create: { width: 8, height: 8, channels: 3, background: "#000" } }).tiff().toBuffer();
+    await expect(service.derive(tiff, opts("image/png"))).rejects.toMatchObject({ code: "unsupported_type" });
+  });
+
+  it("caps a portrait animation by its frame height, not only its width", async () => {
+    const out = await service.derive(await fixture("anim-portrait.gif"), opts("image/gif", { web: { maxEdge: 100, quality: 85 } }));
+    expect([out.sourceWidth, out.sourceHeight]).toEqual([40, 400]);
+    expect([out.web.width, out.web.height]).toEqual([10, 100]);
+    const m = await meta(out.web.data);
+    expect(m.pages).toBe(2);
+    expect(m.height).toBe(100);
+  });
+
   it("rejects unsupported types and corrupt bytes with typed errors", async () => {
     await expect(service.derive(Buffer.from("x"), opts("image/svg+xml"))).rejects.toMatchObject({ code: "unsupported_type" });
     await expect(service.derive(Buffer.from("not a jpeg"), opts("image/jpeg"))).rejects.toBeInstanceOf(ImageDeriveError);
     await expect(service.derive(Buffer.from("not a jpeg"), opts("image/jpeg"))).rejects.toMatchObject({ code: "decode_failed" });
+  });
+
+  it("spends the deadline on queue time too: a call that waited past its deadline fails fast with timeout", async () => {
+    const slow = service.derive(await fixture("tiny.heic"), opts("image/heic"));
+    const queued = service.derive(await fixture("tiny.heic"), opts("image/heic", { deadlineMs: 1 }));
+    await expect(queued).rejects.toMatchObject({ code: "timeout" });
+    await slow;
   });
 
   it("runs one derivation at a time per process", async () => {

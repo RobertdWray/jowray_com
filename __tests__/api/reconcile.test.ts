@@ -47,7 +47,7 @@ function finder<T extends Record<string, unknown>>(rows: () => T[]) {
 const derivedDeletes: Array<Record<string, unknown>> = [];
 const dbStub = {
   // Prisma always returns `derivatives` as an array when it is included; fixtures may omit it.
-  media: { findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => (await finder(() => media as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }) },
+  media: { findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => (await finder(() => media as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }) },
   derivedMedia: { deleteMany: vi.fn(async ({ where }: { where: { mediaId: string; storageKey?: { in: string[] } } }) => { derivedDeletes.push(where); const m = media.find((x) => x.id === where.mediaId); if (m?.derivatives) { m.derivatives = m.derivatives.filter((d) => where.storageKey ? !where.storageKey.in.includes(d.storageKey) : false); } return { count: 1 }; }) },
   webhookEvent: { findMany: finder(() => events as unknown as Record<string, unknown>[]), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<EventRow> }) => { Object.assign(events.find((e) => e.id === where.id)!, data); }) },
   emailLog: { findMany: finder(() => emails as unknown as Record<string, unknown>[]) },
@@ -97,6 +97,7 @@ beforeEach(() => {
     { id: "med_photo_done", memoryId: "mem_1", status: "READY", checksumSha256: "d".repeat(64), createdAt: old, storageKey: "dev/originals/mem_1/p2.jpg", blobUrl: "u", deletedAt: null, mimeType: "image/jpeg", derivatives: [{ kind: "WEB_IMAGE", status: "READY", error: null, attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_1/w.jpg" }, { kind: "THUMBNAIL", status: "READY", error: null, attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_1/t.jpg" }], memory: { deletedAt: null } },
     { id: "med_photo_stale", memoryId: "mem_1", status: "READY", checksumSha256: "d".repeat(64), createdAt: old, storageKey: "dev/originals/mem_1/p3.png", blobUrl: "u", deletedAt: null, mimeType: "image/png", derivatives: [{ kind: "WEB_IMAGE", status: "PENDING", error: null, attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_1/s.png" }, { kind: "THUMBNAIL", status: "READY", error: null, attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_1/t3.jpg" }], memory: { deletedAt: null } },
     { id: "med_photo_terminal", memoryId: "mem_1", status: "READY", checksumSha256: "d".repeat(64), createdAt: old, storageKey: "dev/originals/mem_1/p4.jpg", blobUrl: "u", deletedAt: null, mimeType: "image/jpeg", derivatives: [{ kind: "WEB_IMAGE", status: "FAILED", error: "too_many_pixels:30000000", attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_1/f.jpg" }, { kind: "THUMBNAIL", status: "FAILED", error: "too_large", attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_1/f2.jpg" }], memory: { deletedAt: null } },
+    { id: "med_photo_nullclaim", memoryId: "mem_1", status: "READY", checksumSha256: "d".repeat(64), createdAt: old, storageKey: "dev/originals/mem_1/p5.jpg", blobUrl: "u", deletedAt: null, mimeType: "image/jpeg", derivatives: [{ kind: "WEB_IMAGE", status: "PENDING", error: null, attempts: 1, claimedAt: null, storageKey: "dev/derived/mem_1/n.jpg" }, { kind: "THUMBNAIL", status: "READY", error: null, attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_1/t5.jpg" }], memory: { deletedAt: null } },
     { id: "med_photo_prod", memoryId: "mem_9", status: "READY", checksumSha256: "d".repeat(64), createdAt: old, storageKey: "originals/mem_9/p.heic", blobUrl: "u", deletedAt: null, mimeType: "image/heic", derivatives: [], memory: { deletedAt: null } },
     // Cancelled minutes ago: its Blob token is still valid, so the pathname is left alone until the grace period passes.
     { id: "med_cancelled_fresh", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: new Date(), storageKey: "dev/originals/mem_1/i", blobUrl: "u", deletedAt: new Date(), memory: { deletedAt: null } },
@@ -153,7 +154,6 @@ describe("GET /api/cron/reconcile-uploads", () => {
     // its derived copies (any non-fresh status) and its poster staging pathname go too, and the rows are dropped
     expect(delMock).toHaveBeenCalledWith("dev/derived/mem_3/w.jpg");
     expect(delMock).toHaveBeenCalledWith("dev/derived/mem_3/t.jpg");
-    expect(delMock).toHaveBeenCalledWith("dev/derived/mem_3/0f6a1c7e-3f1a-4b5e-9c2d-1234567890ab.upload.jpg");
     expect(derivedDeletes.some((w) => w.mediaId === "med_gone")).toBe(true);
     expect(media.find((m) => m.id === "med_gone")?.derivatives).toEqual([]);
     expect(delMock).not.toHaveBeenCalledWith("dev/derived/mem_1/fresh.jpg");
@@ -165,10 +165,13 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(delMock).toHaveBeenCalledWith("dev/originals/mem_1/g");
     expect(delMock).not.toHaveBeenCalledWith("dev/originals/mem_1/i");
     expect(media.find((m) => m.id === "med_cancelled")?.status).toBe("FAILED");
-    // (g) derived copies: the photo without copies and the one with a stale claim, this environment only, terminal failures left alone
-    expect(deriveMediaMock.mock.calls.map((c) => c[0].mediaId).sort()).toEqual(["med_photo_new", "med_photo_stale"]);
-    expect(deriveMediaMock.mock.calls[0]![0].deadlineMs).toBe(30_000);
-    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 1, confirmationsSent: 1, deletedBlobsRemoved: 3, derived: 2 });
+    // (g) derived copies: the photo without copies, the one with a stale claim and the one whose claim has no timestamp, this environment only, terminal failures left alone
+    expect(deriveMediaMock.mock.calls.map((c) => c[0].mediaId).sort()).toEqual(["med_photo_new", "med_photo_nullclaim", "med_photo_stale"]);
+    expect(deriveMediaMock.mock.calls[0]![0].deadlineMs).toBeLessThanOrEqual(30_000);
+    expect(deriveMediaMock.mock.calls[0]![0].deadlineMs).toBeGreaterThan(25_000);
+    // the staging pathname is only ever deleted for videos
+    expect(delMock.mock.calls.map((c) => c[0] as string).filter((k) => k.endsWith(".upload.jpg"))).toEqual([]);
+    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 1, confirmationsSent: 1, deletedBlobsRemoved: 3, derived: 3 });
   });
 
   it("is a no-op on a second run", async () => {
@@ -203,5 +206,25 @@ describe("purge drains a backlog and never re-selects a tombstone", () => {
     }
     expect(runs).toEqual([50, 1, 0]);
     expect(media.every((m) => m.blobUrl === null)).toBe(true);
+  });
+});
+
+describe("step (g) budget", () => {
+  it("hands each candidate only the time left in the step", async () => {
+    const old = new Date(Date.now() - 2 * HOUR);
+    media = ["a", "b", "c"].map((k) => ({ id: `med_${k}`, memoryId: "mem_1", status: "READY" as const, checksumSha256: "d".repeat(64), createdAt: old, storageKey: `dev/originals/mem_1/${k}.jpg`, blobUrl: "u", deletedAt: null, mimeType: "image/jpeg", derivatives: [], memory: { deletedAt: null } }));
+    events = []; emails = []; memories = [];
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      deriveMediaMock.mockImplementation(async ({ mediaId }) => { vi.setSystemTime(Date.now() + 20_000); const m = media.find((x) => x.id === mediaId)!; m.derivatives = [{ kind: "WEB_IMAGE", status: "READY", error: null, attempts: 1, claimedAt: new Date(), storageKey: "k" }, { kind: "THUMBNAIL", status: "READY", error: null, attempts: 1, claimedAt: new Date(), storageKey: "k2" }]; return { WEB_IMAGE: "derived", THUMBNAIL: "derived" }; });
+      await run(`Bearer ${SECRET}`);
+      const budgets = deriveMediaMock.mock.calls.map((c) => c[0].deadlineMs);
+      expect(budgets).toHaveLength(2);
+      expect(budgets[0]).toBeLessThanOrEqual(30_000);
+      expect(budgets[1]).toBeLessThanOrEqual(10_000);
+      expect(budgets[1]).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -34,29 +34,28 @@ export function runWorker<T>(script: string, options: RunWorkerOptions): Promise
       resourceLimits: { maxOldGenerationSizeMb: options.maxOldGenerationSizeMb },
     });
     let settled = false;
+    // The promise settles only once the worker is gone, so the caller's slot (and its WASM memory)
+    // is never handed to the next decode while this one is still being torn down.
     const settle = (fn: () => void) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        fn();
+      if (settled) {
+        return;
       }
+      settled = true;
+      clearTimeout(timer);
+      worker
+        .terminate()
+        .catch(() => undefined)
+        .then(fn, fn);
     };
     const timer = setTimeout(() => {
       settle(() => reject(new ImageDeriveError("timeout")));
-      void worker.terminate();
     }, options.deadlineMs);
     worker.once("message", (value: T) => {
       settle(() => resolve(value));
-      void worker.terminate();
     });
     worker.once("error", (error: Error & { code?: string }) => {
-      settle(() =>
-        reject(
-          error.code === "ERR_WORKER_OUT_OF_MEMORY"
-            ? new ImageDeriveError("too_many_pixels", { limit: Number(options.workerData.maxPixels) || undefined, cause: error })
-            : new ImageDeriveError("decode_failed", { cause: error })
-        )
-      );
+      // A heap-limit kill is about this instance's memory, not the picture: retryable, like any other crash.
+      settle(() => reject(new ImageDeriveError("decode_failed", { cause: error })));
     });
     worker.once("exit", () => {
       settle(() => reject(new ImageDeriveError("decode_failed", { cause: new Error("worker exited without a result") })));
@@ -114,7 +113,8 @@ export async function decodeHeicInWorker(
     maxOldGenerationSizeMb,
   });
   if ("error" in message) {
-    throw new ImageDeriveError("decode_failed", { cause: new Error(message.error) });
+    // heic-decode checks the container brand first; anything else labelled HEIC is the wrong kind of file.
+    throw new ImageDeriveError(/not a HEIC image/i.test(message.error) ? "unsupported_type" : "decode_failed", { cause: new Error(message.error) });
   }
   if ("tooManyPixels" in message) {
     throw new ImageDeriveError("too_many_pixels", { limit: maxPixels });

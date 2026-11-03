@@ -50,6 +50,7 @@ const db = {
       derived.push(row); return row;
     }),
     findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => derived.find((d) => matches(d as unknown as Record<string, unknown>, where)) ?? null),
+    deleteMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => { const before = derived.length; const keep = derived.filter((d) => !matches(d as unknown as Record<string, unknown>, where)); derived.length = 0; derived.push(...keep); return { count: before - keep.length }; }),
     updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
       const rows = derived.filter((d) => matches(d as unknown as Record<string, unknown>, where));
       for (const r of rows) {
@@ -145,6 +146,40 @@ describe("deriveMedia", () => {
     expect(webRow).toMatchObject({ status: "READY", attempts: 2 });
   });
 
+  it("reclaims by conditional update first and only then deletes the previous candidate, so a copy published meanwhile survives", async () => {
+    // Another worker publishes the stale row between our read and our reclaim.
+    derived = [row("WEB_IMAGE", { claimedAt: STALE, storageKey: "dev/derived/mem_1/live.jpg" }), row("THUMBNAIL", { status: "READY" })];
+    db.derivedMedia.updateMany.mockImplementationOnce(async () => { derived[0]!.status = "READY"; return { count: 0 }; });
+    expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "claimed_elsewhere", THUMBNAIL: "not_eligible" });
+    expect(delMock).not.toHaveBeenCalledWith("dev/derived/mem_1/live.jpg");
+  });
+
+  it("marks a stale claim that has used up its attempts as abandoned instead of retrying it forever", async () => {
+    derived = [row("WEB_IMAGE", { claimedAt: STALE, attempts: 3, storageKey: "dev/derived/mem_1/dead.jpg" }), row("THUMBNAIL", { status: "READY" })];
+    expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "failed", THUMBNAIL: "not_eligible" });
+    expect(derived[0]).toMatchObject({ status: "FAILED", error: "abandoned" });
+    expect(delMock).toHaveBeenCalledWith("dev/derived/mem_1/dead.jpg");
+    expect(getMock).not.toHaveBeenCalled();
+  });
+
+  it("never throws: a failure while claiming the second kind releases the first claim and is reported", async () => {
+    db.derivedMedia.create.mockImplementationOnce(async ({ data }) => { const r: DerivedRow = { id: "der_x", mimeType: null, sizeBytes: null, width: null, height: null, error: null, ...data }; derived.push(r); return r; });
+    db.derivedMedia.create.mockImplementationOnce(async () => { throw new Error("db down"); });
+    const result = await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW });
+    expect(result.WEB_IMAGE).toBe("failed");
+    expect(derived.find((d) => d.kind === "WEB_IMAGE")).toMatchObject({ status: "FAILED", error: "decode_failed" });
+    expect(logErrorMock).toHaveBeenCalledTimes(1);
+    expect(getMock).not.toHaveBeenCalled();
+  });
+
+  it("does not delete a candidate whose row is no longer PENDING when cleaning up after an error", async () => {
+    // The publish committed but its acknowledgement was lost: the rows are READY by the time the catch runs.
+    putMock.mockImplementationOnce(async () => { for (const d of derived) { d.status = "READY"; } throw new Error("ack lost"); });
+    await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW });
+    expect(derived.every((d) => d.status === "READY")).toBe(true);
+    expect(delMock).not.toHaveBeenCalled();
+  });
+
   it("retries decode_failed and timeout up to three attempts and a too_many_pixels row only when the ceiling was raised", async () => {
     derived = [row("WEB_IMAGE", { status: "FAILED", error: "decode_failed", attempts: 2 }), row("THUMBNAIL", { status: "FAILED", error: "timeout", attempts: 3 })];
     expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "derived", THUMBNAIL: "not_eligible" });
@@ -183,10 +218,15 @@ describe("deriveMedia", () => {
     expect(JSON.stringify(ctx)).not.toMatch(/token/i);
   });
 
-  it("does not publish when the media was removed while deriving", async () => {
+  it("drops its claims and candidates, after the transaction, when the media was removed while deriving", async () => {
     getMock.mockImplementationOnce(async () => { media[0]!.deletedAt = new Date(); return { stream: new Blob([new Uint8Array([1])]).stream(), contentType: "image/jpeg", contentLength: 1 }; });
     expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "claimed_elsewhere", THUMBNAIL: "claimed_elsewhere" });
-    expect(derived.every((d) => d.status === "PENDING")).toBe(true);
+    expect(derived).toHaveLength(0);
     expect(delMock).toHaveBeenCalledTimes(2);
+    // no storage call while the memory lock was held
+    const lockOrder = db.$queryRaw.mock.invocationCallOrder[0]!;
+    const txEnd = db.$transaction.mock.results[0]!;
+    expect(txEnd).toBeDefined();
+    expect(delMock.mock.invocationCallOrder.every((o) => o > lockOrder)).toBe(true);
   });
 });

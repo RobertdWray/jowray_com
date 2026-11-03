@@ -31,9 +31,12 @@ describe("decodeHeicInWorker", () => {
     await expect(decodeHeicInWorker(await fixture("tiny.heic"), { deadlineMs: 20_000, maxPixels: 100 })).rejects.toMatchObject({ code: "too_many_pixels", limit: 100 });
   });
 
-  it("reports a non-HEIC buffer as decode_failed", async () => {
+  it("reports a non-HEIC buffer as unsupported_type and a corrupt HEIC as decode_failed", async () => {
     await expect(decodeHeicInWorker(Buffer.from("not an image"), { deadlineMs: 20_000, maxPixels: 1_000_000 })).rejects.toBeInstanceOf(ImageDeriveError);
-    await expect(decodeHeicInWorker(Buffer.from("not an image"), { deadlineMs: 20_000, maxPixels: 1_000_000 })).rejects.toMatchObject({ code: "decode_failed" });
+    await expect(decodeHeicInWorker(Buffer.from("not an image"), { deadlineMs: 20_000, maxPixels: 1_000_000 })).rejects.toMatchObject({ code: "unsupported_type" });
+    const corrupt = Buffer.from(await fixture("tiny.heic"));
+    corrupt.fill(0, 64); // keep the ftyp box, destroy the rest
+    await expect(decodeHeicInWorker(corrupt, { deadlineMs: 20_000, maxPixels: 1_000_000 })).rejects.toMatchObject({ code: "decode_failed" });
   });
 });
 

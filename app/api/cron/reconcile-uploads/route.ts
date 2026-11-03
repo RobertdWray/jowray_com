@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 
 import { confirmMemory } from "@/features/memories/confirm";
-import { deriveMedia, MAX_DECODE_ATTEMPTS, MAX_PIXELS, STALE_CLAIM_MS } from "@/features/memories/derive-media";
+import { DERIVED_KINDS, deriveMedia, MAX_DECODE_ATTEMPTS, MAX_PIXELS, STALE_CLAIM_MS } from "@/features/memories/derive-media";
 import { computeChecksum, recordMedia } from "@/features/memories/ingest-upload";
 import { safeEqualHex } from "@/lib/claim-token";
 import { posterStagingKeyFor } from "@/lib/derived-keys";
@@ -220,21 +220,25 @@ export async function GET(request: NextRequest): Promise<Response> {
       OR: [
         { derivatives: { none: { kind: "WEB_IMAGE" } } },
         { derivatives: { none: { kind: "THUMBNAIL" } } },
-        { derivatives: { some: { status: "PENDING", claimedAt: { lt: new Date(now - STALE_CLAIM_MS) } } } },
-        { derivatives: { some: { status: "FAILED", error: { in: ["decode_failed", "timeout"] }, attempts: { lt: MAX_DECODE_ATTEMPTS } } } },
-        // A refusal made under a lower ceiling than today's (limits only ever rise).
-        { derivatives: { some: { status: "FAILED", error: { startsWith: "too_many_pixels:", not: `too_many_pixels:${MAX_PIXELS}` } } } },
+        // Stale claims (a null claimedAt is treated as stale; exhausted ones are retired by deriveMedia).
+        { derivatives: { some: { kind: { in: [...DERIVED_KINDS] }, status: "PENDING", OR: [{ claimedAt: null }, { claimedAt: { lt: new Date(now - STALE_CLAIM_MS) } }] } } },
+        { derivatives: { some: { kind: { in: [...DERIVED_KINDS] }, status: "FAILED", error: { in: ["decode_failed", "timeout"] }, attempts: { lt: MAX_DECODE_ATTEMPTS } } } },
+        // A refusal made under a ceiling other than today's: one retry converges the row.
+        { derivatives: { some: { kind: { in: [...DERIVED_KINDS] }, status: "FAILED", error: { startsWith: "too_many_pixels:", not: `too_many_pixels:${MAX_PIXELS}` } } } },
       ],
     },
     orderBy: { createdAt: "asc" },
     take: DERIVE_BATCH,
   });
+  const deriveStart = Date.now();
   for (const row of candidates) {
-    if (Date.now() - now > DERIVE_DEADLINE_MS || outOfTime()) {
+    // Each candidate gets only what is left of the step and of the run, never a fresh budget.
+    const remainingMs = Math.min(DERIVE_DEADLINE_MS - (Date.now() - deriveStart), RUN_DEADLINE_MS - (Date.now() - now));
+    if (remainingMs <= 0) {
       break;
     }
     try {
-      const outcome = await deriveMedia({ mediaId: row.id, deadlineMs: DERIVE_DEADLINE_MS });
+      const outcome = await deriveMedia({ mediaId: row.id, deadlineMs: remainingMs });
       if (Object.values(outcome).includes("derived")) {
         counts.derived += 1;
       }
@@ -264,7 +268,7 @@ export async function GET(request: NextRequest): Promise<Response> {
           OR: [
             { blobUrl: { not: null } },
             { derivatives: { some: { status: { not: "PENDING" } } } },
-            { derivatives: { some: { status: "PENDING", claimedAt: { lt: staleClaimBefore } } } },
+            { derivatives: { some: { status: "PENDING", OR: [{ claimedAt: null }, { claimedAt: { lt: staleClaimBefore } }] } } },
           ],
         },
       ],
@@ -288,7 +292,9 @@ export async function GET(request: NextRequest): Promise<Response> {
       for (const copy of copies) {
         await storage.del(copy.storageKey);
       }
-      await storage.del(posterStagingKeyFor(row.storageKey));
+      if (row.mimeType.startsWith("video/")) {
+        await storage.del(posterStagingKeyFor(row.storageKey));
+      }
       if (copies.length > 0) {
         await db.derivedMedia.deleteMany({ where: { mediaId: row.id, storageKey: { in: copies.map((c) => c.storageKey) } } });
       }
