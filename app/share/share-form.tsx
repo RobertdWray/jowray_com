@@ -1,7 +1,7 @@
 "use client";
 
 import { upload } from "@vercel/blob/client";
-import { useRef, useState } from "react";
+import { useRef, useState, useSyncExternalStore } from "react";
 
 import { ACCEPT_ATTRIBUTE } from "@/lib/media-types";
 
@@ -20,13 +20,19 @@ export interface ConsentCopy {
   contact: string;
 }
 
+function subscribeNever(): () => void {
+  return () => {};
+}
+
 export function ShareForm({ consent }: { consent: ConsentCopy }) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [recording, setRecording] = useState<Recording | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const recorderRef = useRef<AudioRecorder | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
-  const canRecord = typeof window !== "undefined" && pickRecordingType() !== null;
+  // Server snapshot is false, client snapshot asks the browser: same markup on
+  // both sides at hydration, then the record button appears where supported.
+  const canRecord = useSyncExternalStore(subscribeNever, () => pickRecordingType() !== null, () => false);
 
   async function toggleRecording() {
     try {
