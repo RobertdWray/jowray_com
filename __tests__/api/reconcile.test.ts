@@ -23,7 +23,7 @@ function matches(row: Record<string, unknown>, where: Record<string, unknown>): 
     if (k === "OR") { return (v as Record<string, unknown>[]).some((w) => matches(row, w)); }
     if (k === "emails") { const n = v as { none?: unknown }; return n.none !== undefined ? (row.emails as unknown[]).length === 0 : true; }
     if (k === "media") { const s = v as { some?: Record<string, unknown> }; return s.some ? (row.media as Record<string, unknown>[]).some((m) => matches(m, s.some!)) : true; }
-    if (k === "contributor") { const c = v as { email?: { not: null } }; return c.email?.not === null ? (row.contributor as { email: string | null } | null)?.email != null : true; }
+    if (k === "contributor") { const c = v as { email?: { not: null } }; if (c.email?.not !== null) { return true; } const email = (row.contributor as { email: string | null } | null)?.email; return email !== null && email !== undefined; }
     const actual = row[k];
     if (v !== null && typeof v === "object" && !(v instanceof Date)) {
       const cond = v as { lt?: Date; lte?: Date; gt?: Date; not?: unknown };
