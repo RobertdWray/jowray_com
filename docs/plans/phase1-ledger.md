@@ -73,14 +73,19 @@ Authoritative record of what has already happened. Read every copy (main, open P
 - Checks passed: `npm ls @sentry/nextjs` → 11.10.0; `git ls-files | grep -c sentry-build-plugin` → 0; validate, 17/17 tests, offline build without `SENTRY_AUTH_TOKEN` is quiet. Pending: `vercel env ls` shows `SENTRY_AUTH_TOKEN`; step 6 confirmations.
 
 ## Task 5 — Storage + email services
-- Status: [ ]   Owner: split   Branch/PR: C   Worktree: …   Head: …
-- External IDs: BLOB_STORE_ID …; Vercel env SENDGRID_FROM_EMAIL, OUTBOUND_ENABLED (production), OUTBOUND_ALLOWLIST, NEXT_PUBLIC_SITE_URL (production)
-- Checks passed: —
+- Status: [~]   Owner: split   Branch/PR: C `feat/phase1-storage-email-dns` (stacked on B)   Worktree: inline   Head: …
+- External IDs: private Blob store **jowray-media** = `store_tyOGMmElrZZu69is` (created 2026-11-03 with `vercel blob create-store jowray-media --access private --yes`, connected to Production, Preview, Development; `BLOB_READ_WRITE_TOKEN` set by Vercel in all three and merged into local `.env` with `BLOB_STORE_ID`). Vercel env SENDGRID_FROM_EMAIL, OUTBOUND_ENABLED (production), OUTBOUND_ALLOWLIST, NEXT_PUBLIC_SITE_URL (production): **pending Rob's values**.
+- Incident: `vercel blob create-store --yes` ran its own `vercel env pull` into `.env.local`, replacing the Neon `dev`-branch override with the Development environment's values (see the findings file). `.env.local` was restored to `VERCEL_OIDC_TOKEN` + the two `dev`-branch URLs; verified host `ep-solitary-tree-bbnwysvl`.
+- Code done 2026-11-03 (inline): `lib/media-types.ts`, `lib/claim-token.ts`, `services/storage/*`, `integrations/vercel-blob/index.ts`, `services/email/*` (`sendMemoryConfirmation`, template), `integrations/sendgrid/*`, `app/api/media/[id]/route.ts`, `scripts/send-test-email.ts`, `getBlobEnv`/`getEmailEnv` sub-schemas, tests (`__tests__/lib/media-types`, `claim-token`, `__tests__/services/email`, `__tests__/api/media`).
+- Ruling: `@vercel/blob@2.8.2` exports `issueSignedToken` + `presignUrl`, so inline media views **302 to a 60-second presigned URL** (the blob host serves Range requests, so a 500 MB video is not streamed through a 60 s function); `?download=1` streams through the route with `Content-Disposition: attachment` and the protective headers (HEIC downloads are ≤ 25 MB). Cost if wrong: the content response's headers come from the blob host, not this route; the 302 itself carries `Cache-Control: private, no-store`, nosniff, CSP sandbox and `Referrer-Policy`.
+- Ruling: integrations may import *types* from `services/*/types` (ESLint `allowTypeImports`), as EmpathIQ's pattern requires.
+- Checks passed: `vercel blob list --limit 1 --rw-token …` → "No blobs in this store" (the plain command needs `BLOB_STORE_ID` next to `VERCEL_OIDC_TOKEN` in the same env file, so `--rw-token` is used); no `.env.vercel.tmp`; `.env.local` host is the `dev` branch; `npm run validate`, `npm run test:run` (40/40), offline build without `DATABASE_URL`/`BLOB_READ_WRITE_TOKEN`/`SENDGRID_API_KEY`. Pending: `vercel env ls` shows the four keys (Rob's values).
 
 ## Task 6 — DNS for SendGrid
-- Status: [ ]   Owner: orchestrator + Rob   Branch/PR: C
-- External IDs: Cloudflare record ids …; SendGrid domain authentication id …; verified on: …
-- Checks passed: —
+- Status: [~]   Owner: orchestrator + Rob   Branch/PR: C
+- External IDs (created 2026-11-03 by `scripts/dns-setup.ts`, run with `npx tsx --env-file=.env scripts/dns-setup.ts`): SendGrid domain authentication **id 33798852** (`jowray.com`, subdomain `em4653`, automated security, not default); Cloudflare records (zone `dad5b9fdb1ece5afc4a4224f61a51770`, all DNS-only): CNAME `em4653` → `u46785377.wl128.sendgrid.net` (`496f00c07369a141a68fde36ead9cd71`), CNAME `s1._domainkey` → `s1.domainkey.u46785377.wl128.sendgrid.net` (`ac50b464b68b2414420ea3276500e738`), CNAME `s2._domainkey` → `s2.domainkey.u46785377.wl128.sendgrid.net` (`8931d1c589ebf61c67c588090494d13c`), TXT `_dmarc` → `v=DMARC1; p=none; rua=mailto:dmarc@jowray.com` (`c726c35b037f8ab93d2c9d23f1c827a1`). Verified on: **2026-11-03** (second run of the script: `validation valid=true`, `mail_cname`/`dkim1`/`dkim2` all valid; `dig @1.1.1.1` returns all four records).
+- Ruling: the domain authentication was created through the SendGrid API (the key has `whitelabel.create`) instead of Rob clicking through the UI, and the script reads the records from the API instead of a pasted findings entry; link branding was not set up (click tracking is disabled in the transport). Cost if wrong: one `DELETE /v3/whitelabel/domains/33798852` and four Cloudflare record deletions.
+- Checks passed: Vercel `A`/`CNAME` records verified present and DNS-only before any change; Cloudflare token `active` via `/accounts/{id}/tokens/verify`. `dig +short CNAME em4653.jowray.com @1.1.1.1` → `u46785377.wl128.sendgrid.net.`; SendGrid validation **valid** (2026-11-03); second script run created nothing (idempotent). Pending: test email `dkim=pass` check (sent to Rob with a provisional from-address; see findings).
 
 ## Task 7 — Web upload
 - Status: [ ]   Owner: worker   Branch/PR: D   Worktree: …   Head: …

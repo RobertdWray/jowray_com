@@ -47,7 +47,21 @@ const siteSchema = z
     { message: "NEXT_PUBLIC_SITE_URL must use https in production (claim links are bearer tokens)", path: ["NEXT_PUBLIC_SITE_URL"] }
   );
 
+const blobSchema = z.object({
+  BLOB_READ_WRITE_TOKEN: z.string().min(1, "BLOB_READ_WRITE_TOKEN is required"),
+});
+
+const emailSchema = z.object({
+  SENDGRID_API_KEY: z.string().min(1, "SENDGRID_API_KEY is required"),
+  SENDGRID_FROM_EMAIL: z.string().email("SENDGRID_FROM_EMAIL must be an address"),
+  OUTBOUND_ENABLED: strictBoolean.default(false),
+  OUTBOUND_ALLOWLIST: csvList.default([]),
+  CONSENT_VERSION: z.string().min(1, "CONSENT_VERSION is required"),
+});
+
 export type DbEnv = z.infer<typeof dbSchema>;
+export type BlobEnv = z.infer<typeof blobSchema>;
+export type EmailEnv = z.infer<typeof emailSchema>;
 export type SentryEnv = z.infer<typeof sentrySchema>;
 export type SiteEnv = z.infer<typeof siteSchema>;
 
@@ -74,6 +88,8 @@ function memoized<T>(key: string, schema: z.ZodType<T>): () => T {
 export const getDbEnv = memoized("db", dbSchema);
 export const getSentryEnv = memoized("sentry", sentrySchema);
 export const getSiteEnv = memoized("site", siteSchema);
+export const getBlobEnv = memoized("blob", blobSchema);
+export const getEmailEnv = memoized("email", emailSchema);
 
 /** Test helper: forget every parsed sub-schema so the next call re-reads `process.env`. */
 export function resetEnvCache(): void {
