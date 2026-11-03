@@ -37,6 +37,8 @@ export const createMemoryInputSchema = z
     note: z.string().max(10_000).optional().nullable(),
     visibility: z.enum(["PUBLIC", "FAMILY", "PRIVATE"]).default("PUBLIC"),
     contactOptIn: z.boolean().default(false),
+    mailingListOptIn: z.boolean().default(false),
+    notifyWhenPosted: z.boolean().default(true),
     file: fileInputSchema.nullable(),
   })
   .refine((value) => value.file !== null || (value.note ?? "").trim().length > 0, {

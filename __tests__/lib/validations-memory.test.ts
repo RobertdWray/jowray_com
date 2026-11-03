@@ -22,4 +22,16 @@ describe("createMemoryInputSchema defaults", () => {
   it("defaults contactOptIn to false when absent; the share form sends true because its checkbox is on by default", () => {
     expect(createMemoryInputSchema.parse(textOnly).contactOptIn).toBe(false);
   });
+
+  it("defaults the weekly mailing list to off and 'tell me when my story is posted' to on (Rob, 2026-11-03)", () => {
+    const parsed = createMemoryInputSchema.parse(textOnly);
+    expect(parsed.mailingListOptIn).toBe(false);
+    expect(parsed.notifyWhenPosted).toBe(true);
+  });
+
+  it("keeps explicit preference values", () => {
+    const parsed = createMemoryInputSchema.parse({ ...textOnly, mailingListOptIn: true, notifyWhenPosted: false });
+    expect(parsed.mailingListOptIn).toBe(true);
+    expect(parsed.notifyWhenPosted).toBe(false);
+  });
 });

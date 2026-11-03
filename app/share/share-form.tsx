@@ -3,9 +3,15 @@
 import { upload } from "@vercel/blob/client";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
-import { CONTACT_OPT_IN_LABEL, IMPLICIT_CONSENT_NOTE } from "@/lib/consent";
+import { CONTACT_OPT_IN_LABEL, IMPLICIT_CONSENT_NOTE, MAILING_LIST_LABEL, NOTIFY_WHEN_POSTED_LABEL } from "@/lib/consent";
 import { formatDuration } from "@/lib/format-duration";
 import { ACCEPT_ATTRIBUTE } from "@/lib/media-types";
+import {
+  getRememberedServerSnapshot,
+  getRememberedSnapshot,
+  rememberContributor,
+  subscribeRemembered,
+} from "@/lib/remembered-contributor";
 
 import { PrimaryButton, SecondaryButton, TertiaryButton, secondaryButtonClass } from "../_components/buttons";
 import {
@@ -45,6 +51,8 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
   // Server snapshot is false, client snapshot asks the browser: same markup on
   // both sides at hydration, then the record button appears where supported.
   const canRecord = useSyncExternalStore(subscribeNever, () => pickRecordingType() !== null, () => false);
+  // Name, email and relationship from an earlier memory on this device; null on the server and until hydration.
+  const remembered = useSyncExternalStore(subscribeRemembered, getRememberedSnapshot, getRememberedServerSnapshot);
 
   function replaceClip(next: { recording: Recording; url: string } | null) {
     if (clipUrlRef.current) {
@@ -113,19 +121,24 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
     const form = new FormData(event.currentTarget);
     const picked = form.get("file");
     const file = clip?.recording.file ?? (picked instanceof File && picked.size > 0 ? picked : null);
+    const contributor = {
+      name: String(form.get("name") ?? ""),
+      relationship: String(form.get("relationship") ?? ""),
+      email: String(form.get("email") ?? ""),
+    };
     setPhase({ kind: "saving" });
 
     let created: Awaited<ReturnType<typeof createMemory>>;
     try {
       created = await createMemory({
-      name: String(form.get("name") ?? ""),
-      relationship: String(form.get("relationship") ?? ""),
-      email: String(form.get("email") ?? ""),
+      ...contributor,
       approxDateText: String(form.get("approxDateText") ?? ""),
       place: String(form.get("place") ?? ""),
       note: String(form.get("note") ?? ""),
       visibility: String(form.get("visibility") ?? "PUBLIC"),
       contactOptIn: form.get("contactOptIn") === "on",
+      notifyWhenPosted: form.get("notifyWhenPosted") === "on",
+      mailingListOptIn: form.get("mailingListOptIn") === "on",
       file: file ? { name: file.name, type: file.type, size: file.size } : null,
       });
     } catch {
@@ -137,6 +150,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
       setPhase({ kind: "error", message: created.message });
       return;
     }
+    rememberContributor(contributor);
 
     if (!created.upload || !file) {
       setPhase({ kind: "done", claimLink: `${window.location.origin}/m/${created.claimToken}`, fileStatus: "none", emailed: created.emailed });
@@ -199,6 +213,10 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
           <h1 className="font-display text-display-sm font-extrabold sm:text-thanks">Jo would have loved this.</h1>
           <p className="max-w-[30em] text-lead">
             Thank you. Your memory is on its way to Richard, Rob and Tracy. We read every single one, usually more than once.
+          </p>
+          <p className="max-w-[30em] text-body">
+            On November 10th, after we have some stories, photos and videos collected, we&apos;ll be sharing them with
+            everyone and will email an update to all who have contributed.
           </p>
           <div className="flex flex-wrap justify-center gap-4">
             <PrimaryButton onClick={resetForm}>Tell another one</PrimaryButton>
@@ -273,16 +291,16 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
         <div className="flex flex-wrap gap-5">
           <label className={`${labelClass} flex-[1_1_200px]`}>
             <span>Your name</span>
-            <input name="name" maxLength={120} className={inputClass} autoComplete="name" placeholder="Kay Bartholomew" />
+            <input name="name" maxLength={120} className={inputClass} autoComplete="name" placeholder="Kay Bartholomew" defaultValue={remembered?.name} />
           </label>
           <label className={`${labelClass} flex-[1_1_200px]`}>
             <span>Email <span className={helperClass}>(optional · so we can say thank you and send your private link)</span></span>
-            <input name="email" type="email" maxLength={254} className={inputClass} autoComplete="email" placeholder="So we can say thank you" />
+            <input name="email" type="email" maxLength={254} className={inputClass} autoComplete="email" placeholder="So we can say thank you" defaultValue={remembered?.email} />
           </label>
         </div>
         <label className={labelClass}>
           <span>How you knew Jo</span>
-          <input name="relationship" maxLength={120} className={inputClass} placeholder="former student · church friend · neighbor · family" />
+          <input name="relationship" maxLength={120} className={inputClass} placeholder="former student · church friend · neighbor · family" defaultValue={remembered?.relationship} />
         </label>
         <label className={labelClass}>
           <span>When is this memory from? <span className={helperClass}>(roughly is fine)</span></span>
@@ -332,6 +350,14 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
         <label className="flex items-start gap-3 text-small">
           <input name="contactOptIn" type="checkbox" defaultChecked className="mt-1 size-6 accent-jo-red" />
           <span>{CONTACT_OPT_IN_LABEL}</span>
+        </label>
+        <label className="flex items-start gap-3 text-small">
+          <input name="notifyWhenPosted" type="checkbox" defaultChecked className="mt-1 size-6 accent-jo-red" />
+          <span>{NOTIFY_WHEN_POSTED_LABEL}</span>
+        </label>
+        <label className="flex items-start gap-3 text-small">
+          <input name="mailingListOptIn" type="checkbox" className="mt-1 size-6 accent-jo-red" />
+          <span>{MAILING_LIST_LABEL}</span>
         </label>
         <p className="text-small text-walnut-soft">{IMPLICIT_CONSENT_NOTE}</p>
       </form>

@@ -91,6 +91,7 @@ model Contributor {                       // one row per submission in Phase 1; 
   email         String?                    // unverified; used only to send the confirmation
   relationship  String?
   contactOptIn  Boolean   @default(false)  // the OPTIONAL "you may contact me" checkbox, not the storage consent
+  mailingListOptIn Boolean @default(false) // "sign up for our weekly mailing list" checkbox; off by default (Rob, 2026-11-03)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   memorial      Memorial  @relation(fields: [memorialId], references: [id])
@@ -112,6 +113,7 @@ model Memory {
   contributorNote String?        // exactly as typed; never rewritten
   language        String         @default("en")
   visibility      Visibility     @default(FAMILY)
+  notifyWhenPosted Boolean       @default(true)  // "let me know when my story is posted" checkbox; on by default (Rob, 2026-11-03)
   consentVersion  String
   consentedAt     DateTime       // required: web submissions always carry it
   status          MemoryStatus   @default(PENDING)
