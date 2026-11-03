@@ -6,7 +6,8 @@ import { resetEnvCache } from "@/server/config/env";
 const SECRET = "c".repeat(40);
 const HOUR = 60 * 60 * 1000;
 
-interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; memory: { deletedAt: Date | null } }
+interface DerivedRow { kind: string; status: string; error: string | null; attempts: number; claimedAt: Date | null; storageKey: string }
+interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; mimeType?: string; derivatives?: DerivedRow[]; memory: { deletedAt: Date | null } }
 interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
 interface EmailRow { id: string; memoryId: string; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null } }
 interface MemoryRow { id: string; type: string; deletedAt: Date | null; createdAt: Date; contributorNote?: string | null; contributor: { email: string | null } | null; media: Array<{ status: string; deletedAt: Date | null }>; emails: EmailRow[] }
@@ -23,10 +24,12 @@ function matches(row: Record<string, unknown>, where: Record<string, unknown>): 
     if (k === "OR") { return (v as Record<string, unknown>[]).some((w) => matches(row, w)); }
     if (k === "emails") { const n = v as { none?: unknown }; return n.none !== undefined ? (row.emails as unknown[]).length === 0 : true; }
     if (k === "media") { const s = v as { some?: Record<string, unknown> }; return s.some ? (row.media as Record<string, unknown>[]).some((m) => matches(m, s.some!)) : true; }
+    if (k === "derivatives") { const d = v as { some?: Record<string, unknown>; none?: Record<string, unknown> }; const rows = (row.derivatives as Record<string, unknown>[] | undefined) ?? []; if (d.none) { return !rows.some((r) => matches(r, d.none!)); } if (d.some) { return rows.some((r) => matches(r, d.some!)); } return true; }
     if (k === "contributor") { const c = v as { email?: { not: null } }; if (c.email?.not !== null) { return true; } const email = (row.contributor as { email: string | null } | null)?.email; return email !== null && email !== undefined; }
     const actual = row[k];
     if (v !== null && typeof v === "object" && !(v instanceof Date)) {
-      const cond = v as { lt?: Date; lte?: Date; gt?: Date; not?: unknown; startsWith?: string };
+      const cond = v as { lt?: Date; lte?: Date; gt?: Date; not?: unknown; startsWith?: string; in?: unknown[] };
+      if (cond.in !== undefined && !cond.in.includes(actual)) { return false; }
       if (cond.lt !== undefined && !((actual as Date) < cond.lt)) { return false; }
       if (cond.lte !== undefined && !((actual as Date) <= cond.lte)) { return false; }
       if (cond.gt !== undefined && !((actual as Date) > cond.gt)) { return false; }
@@ -54,6 +57,8 @@ const checksumMock = vi.fn(async ({ mediaId }: { mediaId: string }) => { media.f
 vi.mock("@/features/memories/ingest-upload", () => ({ recordMedia: (a: { mediaId: string }) => recordMediaMock(a), computeChecksum: (a: { mediaId: string }) => checksumMock(a) }));
 const confirmMock = vi.fn(async ({ memoryId }: { memoryId: string }) => { const existing = emails.find((e) => e.memoryId === memoryId); if (existing) { existing.status = "SENT"; } else { emails.push({ id: `log_${memoryId}`, memoryId, status: "SENT", attempts: 1, nextAttemptAt: null, createdAt: new Date(), memory: { deletedAt: null } }); } const mem = memories.find((m) => m.id === memoryId); if (mem) { mem.emails = emails.filter((e) => e.memoryId === memoryId); } return { sent: true }; });
 vi.mock("@/features/memories/confirm", () => ({ confirmMemory: (a: { memoryId: string }) => confirmMock(a) }));
+const deriveMediaMock = vi.fn(async ({ mediaId }: { mediaId: string; deadlineMs: number }) => { const m = media.find((x) => x.id === mediaId)!; m.derivatives = [{ kind: "WEB_IMAGE", status: "READY", error: null, attempts: 1, claimedAt: new Date(), storageKey: "dev/derived/x/a.jpg" }, { kind: "THUMBNAIL", status: "READY", error: null, attempts: 1, claimedAt: new Date(), storageKey: "dev/derived/x/b.jpg" }]; return { WEB_IMAGE: "derived", THUMBNAIL: "derived" }; });
+vi.mock("@/features/memories/derive-media", async (importOriginal) => { const actual = await importOriginal<Record<string, unknown>>(); return { ...actual, deriveMedia: (a: { mediaId: string; deadlineMs: number }) => deriveMediaMock(a) }; });
 const delMock = vi.fn();
 vi.mock("@/services/storage", () => ({ createStorageService: () => ({ del: delMock, head: vi.fn(), get: vi.fn(), put: vi.fn(), presignGet: vi.fn() }) }));
 
@@ -79,6 +84,12 @@ beforeEach(() => {
     // Removed through the claim page: never re-recorded or hashed; its blob is purged from this environment.
     { id: "med_cancelled", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: old, storageKey: "dev/originals/mem_1/g", blobUrl: null, deletedAt: old, memory: { deletedAt: null } },
     { id: "med_removed", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: old, storageKey: "dev/originals/mem_1/h", blobUrl: "u", deletedAt: old, memory: { deletedAt: null } },
+    // (g) candidates: a READY photo in this environment without copies; one with copies; one whose claim went stale; one from production (never from here)
+    { id: "med_photo_new", memoryId: "mem_1", status: "READY", checksumSha256: "d".repeat(64), createdAt: old, storageKey: "dev/originals/mem_1/p1.heic", blobUrl: "u", deletedAt: null, mimeType: "image/heic", derivatives: [], memory: { deletedAt: null } },
+    { id: "med_photo_done", memoryId: "mem_1", status: "READY", checksumSha256: "d".repeat(64), createdAt: old, storageKey: "dev/originals/mem_1/p2.jpg", blobUrl: "u", deletedAt: null, mimeType: "image/jpeg", derivatives: [{ kind: "WEB_IMAGE", status: "READY", error: null, attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_1/w.jpg" }, { kind: "THUMBNAIL", status: "READY", error: null, attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_1/t.jpg" }], memory: { deletedAt: null } },
+    { id: "med_photo_stale", memoryId: "mem_1", status: "READY", checksumSha256: "d".repeat(64), createdAt: old, storageKey: "dev/originals/mem_1/p3.png", blobUrl: "u", deletedAt: null, mimeType: "image/png", derivatives: [{ kind: "WEB_IMAGE", status: "PENDING", error: null, attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_1/s.png" }, { kind: "THUMBNAIL", status: "READY", error: null, attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_1/t3.jpg" }], memory: { deletedAt: null } },
+    { id: "med_photo_terminal", memoryId: "mem_1", status: "READY", checksumSha256: "d".repeat(64), createdAt: old, storageKey: "dev/originals/mem_1/p4.jpg", blobUrl: "u", deletedAt: null, mimeType: "image/jpeg", derivatives: [{ kind: "WEB_IMAGE", status: "FAILED", error: "too_many_pixels:30000000", attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_1/f.jpg" }, { kind: "THUMBNAIL", status: "FAILED", error: "too_large", attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_1/f2.jpg" }], memory: { deletedAt: null } },
+    { id: "med_photo_prod", memoryId: "mem_9", status: "READY", checksumSha256: "d".repeat(64), createdAt: old, storageKey: "originals/mem_9/p.heic", blobUrl: "u", deletedAt: null, mimeType: "image/heic", derivatives: [], memory: { deletedAt: null } },
     // Cancelled minutes ago: its Blob token is still valid, so the pathname is left alone until the grace period passes.
     { id: "med_cancelled_fresh", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: new Date(), storageKey: "dev/originals/mem_1/i", blobUrl: "u", deletedAt: new Date(), memory: { deletedAt: null } },
   ];
@@ -97,7 +108,7 @@ beforeEach(() => {
     // Its only READY file was removed and it has no words: nothing to confirm.
     { id: "mem_emptied", type: "PHOTO", deletedAt: null, createdAt: old, contributorNote: null, contributor: { email: "f@example.com" }, media: [{ status: "READY", deletedAt: old }], emails: [] },
   ];
-  recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); delMock.mockClear();
+  recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear();
   recordMediaMock.mockImplementation(async ({ mediaId }) => mediaId === "med_orphan" ? { status: "PENDING", mediaId, memoryId: "mem_2" } : { status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 });
 });
 
@@ -138,17 +149,21 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(delMock).toHaveBeenCalledWith("dev/originals/mem_1/g");
     expect(delMock).not.toHaveBeenCalledWith("dev/originals/mem_1/i");
     expect(media.find((m) => m.id === "med_cancelled")?.status).toBe("FAILED");
-    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 1, confirmationsSent: 1, deletedBlobsRemoved: 3 });
+    // (g) derived copies: the photo without copies and the one with a stale claim, this environment only, terminal failures left alone
+    expect(deriveMediaMock.mock.calls.map((c) => c[0].mediaId).sort()).toEqual(["med_photo_new", "med_photo_stale"]);
+    expect(deriveMediaMock.mock.calls[0]![0].deadlineMs).toBe(30_000);
+    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 1, confirmationsSent: 1, deletedBlobsRemoved: 3, derived: 2 });
   });
 
   it("is a no-op on a second run", async () => {
     await run(`Bearer ${SECRET}`);
-    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); delMock.mockClear();
+    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear();
     const res = await run(`Bearer ${SECRET}`);
     const body = (await res.json()) as { data: Record<string, number> };
     expect(checksumMock).not.toHaveBeenCalled();
     expect(confirmMock).not.toHaveBeenCalled();
     expect(delMock).not.toHaveBeenCalled();
+    expect(deriveMediaMock).not.toHaveBeenCalled();
     expect(body.data.checksumsComputed).toBe(0);
     expect(body.data.confirmationsSent).toBe(0);
   });

@@ -3,6 +3,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 
 import { confirmMemory } from "@/features/memories/confirm";
+import { deriveMedia } from "@/features/memories/derive-media";
 import { lockMemory } from "@/features/memories/lock";
 import { appendClaimRevision, recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
 import { hashClaimToken } from "@/lib/claim-token";
@@ -20,6 +21,8 @@ const TX_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;
 
 /** Files at or under this size are hashed inline in `after()`; larger ones by the cron. */
 export const INLINE_HASH_MAX_BYTES = 50 * 1024 * 1024;
+/** Budget for the derived copies made right after finalize (the page's Server Functions have 120 s). */
+export const DERIVE_DEADLINE_FINALIZE_MS = 20_000;
 
 export type RecordMediaResult =
   | { status: "READY"; mediaId: string; memoryId: string; sizeBytes: number }
@@ -207,11 +210,14 @@ export async function finalizeUpload({
   let emailed = false;
   if (outcome.status === "READY") {
     emailed = await confirmQuietly(memory.id, claimToken);
-    if (outcome.sizeBytes <= INLINE_HASH_MAX_BYTES) {
-      afterWithFlush(async () => {
+    // After the response: the checksum (small files) and the web copy and
+    // thumbnail (photos; other kinds return not_eligible at once).
+    afterWithFlush(async () => {
+      if (outcome.sizeBytes <= INLINE_HASH_MAX_BYTES) {
         await computeChecksum({ mediaId: outcome.mediaId });
-      });
-    }
+      }
+      await deriveMedia({ mediaId: outcome.mediaId, deadlineMs: DERIVE_DEADLINE_FINALIZE_MS });
+    });
   }
   return { status: outcome.status, claimLink: `${getSiteUrl()}/m/${claimToken}`, emailed };
 }

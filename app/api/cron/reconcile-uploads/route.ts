@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 
 import { confirmMemory } from "@/features/memories/confirm";
+import { deriveMedia, MAX_DECODE_ATTEMPTS, MAX_PIXELS, STALE_CLAIM_MS } from "@/features/memories/derive-media";
 import { computeChecksum, recordMedia } from "@/features/memories/ingest-upload";
 import { safeEqualHex } from "@/lib/claim-token";
 import { createLogger, logError } from "@/lib/logger";
@@ -26,6 +27,9 @@ const EMAIL_MAX_ATTEMPTS = 5;
 const EVENT_MAX_ATTEMPTS = 3;
 /** A cancelled reservation may still receive bytes until its Blob client token (1 h) expires; purge it after that plus a margin. */
 const CANCELLED_RESERVATION_GRACE_MS = 75 * MINUTE_MS;
+/** Step (g): a few photos per run, each decode bounded; the shared run deadline still applies. */
+const DERIVE_BATCH = 3;
+const DERIVE_DEADLINE_MS = 30_000;
 
 interface Counts {
   pendingRechecked: number;
@@ -35,6 +39,7 @@ interface Counts {
   emailsRetried: number;
   confirmationsSent: number;
   deletedBlobsRemoved: number;
+  derived: number;
   errors: number;
 }
 
@@ -59,6 +64,7 @@ export async function GET(request: NextRequest): Promise<Response> {
     emailsRetried: 0,
     confirmationsSent: 0,
     deletedBlobsRemoved: 0,
+    derived: 0,
     errors: 0,
   };
   const db = getDb();
@@ -196,6 +202,44 @@ export async function GET(request: NextRequest): Promise<Response> {
     } catch (error) {
       counts.errors += 1;
       logError("reconcile: checksum failed", error, { category: "cron", mediaId: row.id });
+    }
+  }
+
+  // (g) Derived copies (web image + email thumbnail) for READY photos of this
+  // environment that have none, a stale claim, or a retryable failure. This is
+  // the backfill for photos stored before the pipeline existed and the retry
+  // path for finalize/callback runs that died. Same eligibility as deriveMedia.
+  const candidates = await db.media.findMany({
+    where: {
+      status: "READY",
+      deletedAt: null,
+      mimeType: { startsWith: "image/" },
+      storageKey: { startsWith: storagePrefix() },
+      memory: { deletedAt: null },
+      OR: [
+        { derivatives: { none: { kind: "WEB_IMAGE" } } },
+        { derivatives: { none: { kind: "THUMBNAIL" } } },
+        { derivatives: { some: { status: "PENDING", claimedAt: { lt: new Date(now - STALE_CLAIM_MS) } } } },
+        { derivatives: { some: { status: "FAILED", error: { in: ["decode_failed", "timeout"] }, attempts: { lt: MAX_DECODE_ATTEMPTS } } } },
+        // A refusal made under a lower ceiling than today's (limits only ever rise).
+        { derivatives: { some: { status: "FAILED", error: { startsWith: "too_many_pixels:", not: `too_many_pixels:${MAX_PIXELS}` } } } },
+      ],
+    },
+    orderBy: { createdAt: "asc" },
+    take: DERIVE_BATCH,
+  });
+  for (const row of candidates) {
+    if (Date.now() - now > DERIVE_DEADLINE_MS || outOfTime()) {
+      break;
+    }
+    try {
+      const outcome = await deriveMedia({ mediaId: row.id, deadlineMs: DERIVE_DEADLINE_MS });
+      if (Object.values(outcome).includes("derived")) {
+        counts.derived += 1;
+      }
+    } catch (error) {
+      counts.errors += 1;
+      logError("reconcile: derive failed", error, { category: "cron", mediaId: row.id });
     }
   }
 
