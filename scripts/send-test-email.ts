@@ -1,11 +1,12 @@
-// Sends the memory-confirmation template (with sample content and inline
-// previews) to one address through SendGrid.
-// Usage: npx tsx --env-file=.env scripts/send-test-email.ts <address>
+// Sends a sample email (the contributor confirmation or the family-admin
+// alert, with sample content and inline previews) to one address through
+// SendGrid.
+// Usage: npx tsx --env-file=.env scripts/send-test-email.ts <address> [confirmation|admin]
 // Runs outside Next.js, so it uses @sendgrid/mail directly and writes no
 // EmailLog row. The address must be allowlisted unless OUTBOUND_ENABLED=true.
 import sgMail from "@sendgrid/mail";
 
-import { buildSampleConfirmation } from "./sample-confirmation";
+import { buildSample, parseTemplate } from "./render-email-preview";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -18,8 +19,9 @@ function required(name: string): string {
 async function main(): Promise<void> {
   const to = process.argv[2]?.trim().toLowerCase();
   if (!to) {
-    throw new Error("usage: send-test-email.ts <address>");
+    throw new Error("usage: send-test-email.ts <address> [confirmation|admin]");
   }
+  const template = parseTemplate(process.argv[3]);
   const allowlist = (process.env.OUTBOUND_ALLOWLIST ?? "")
     .split(",")
     .map((s) => s.trim().toLowerCase())
@@ -28,7 +30,7 @@ async function main(): Promise<void> {
     throw new Error(`${to} is not in OUTBOUND_ALLOWLIST and OUTBOUND_ENABLED is not "true"`);
   }
   sgMail.setApiKey(required("SENDGRID_API_KEY"));
-  const rendered = await buildSampleConfirmation("https://www.jowray.com/m/example-token");
+  const rendered = await buildSample(template);
   const [response] = await sgMail.send({
     to,
     from: required("SENDGRID_FROM_EMAIL"),
@@ -45,7 +47,7 @@ async function main(): Promise<void> {
     trackingSettings: { clickTracking: { enable: false, enableText: false }, openTracking: { enable: false } },
   });
   const bytes = rendered.attachments.reduce((sum, a) => sum + Math.round(a.contentBase64.length * 0.75), 0);
-  console.log(`status ${response.statusCode}; x-message-id ${String(response.headers["x-message-id"] ?? "")}; html ${Buffer.byteLength(rendered.html)} bytes; ${rendered.attachments.length} attachments (${bytes} bytes)`);
+  console.log(`${template}: status ${response.statusCode}; x-message-id ${String(response.headers["x-message-id"] ?? "")}; html ${Buffer.byteLength(rendered.html)} bytes; ${rendered.attachments.length} attachments (${bytes} bytes)`);
 }
 
 main().catch((error: unknown) => {
