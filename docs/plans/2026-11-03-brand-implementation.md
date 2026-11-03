@@ -451,14 +451,35 @@ Record each V result (date, pass/fail, note) in Progress.
 
 - [x] Step 0 (2026-11-03): branch `claude/zealous-allen-pxrdpu` from `main` at `71007dd` (main had moved past `3f5cbf4` by PR 13, docs only); merged `origin/design/phase1-brand-handoff` (`bc90805`) as `45ec56b`, no conflicts; `npm ci`; baselines with no `.env*`: tests 115 passed in 15 files, validate green, build green; plan copied, commit `c43a82c`
 - [x] Step 1 (2026-11-03), partial: 1a packages (`@fontsource-variable/fraunces` 5.3.0, `@fontsource/atkinson-hyperlegible` 5.3.0 exact; `geist` gone from `package-lock.json`), 1b `app/layout.tsx` font imports, 1d offline guard, README sentence, Checks sentence in `AGENTS.md` / `docs/code-layout.md`; checkpoint green (validate, 115 tests, `build:offline`); negative control prints `blocked:`; commit `a6603b7`. Deviation: the guard is `scripts/no-network.mjs` loaded with `NODE_OPTIONS=--import=…` because the repo ESLint config forbids `require()` (`@typescript-eslint/no-require-imports`) and a suppression is not allowed; `--import` is the ESM equivalent of `--require` and the negative control passes through `NODE_OPTIONS` too. 1c `app/global-error.tsx` is done with Step 5a (it imports the button class from `app/_components/buttons.tsx`)
-- [ ] Step 2: tokens; checkpoint green; commit __ (fallback used for font imports? yes/no)
+- [x] Step 2 (2026-11-03): `@theme` from `design/tokens.css` plus the display-sm / h2-sm / thanks / hover-shadow / pill tokens, `@layer base`, `@utility patchwork`, starter blocks removed; body `font-size` / `line-height` mirrored into `design/tokens.css`; Astra commit 9fbaa65 (task w1-foundation); checkpoint green; fallback for font imports not needed (the Fontsource package CSS imports in `app/layout.tsx` build under Turbopack)
 - [x] Step 3 (2026-11-03): metadata, `app/icon.svg`, `app/favicon.ico` (3 PNG entries 16/32/48, `file` reports "MS Windows icon resource - 3 icons"); checkpoint green; the built `index.html` links `/favicon.ico?favicon.…ico` (sizes 48x48) and `/icon.svg?icon.…svg` (sizes any, image/svg+xml): Next 16.4 names the route `/icon.svg`, not `/icon` as V5 and [C10] say; commit `75c01f9`
 - [x] Step 4 (2026-11-03): photo moved (1840×1380, 452 KB, measured with ImageMagick `identify`); `design/DESIGN.md` row and `home.html` src updated; validate green; commit `6633692`
-- [ ] Step 5: components, layout, home; checkpoint green; V2 home screenshots; commit __
-- [ ] Step 6: share page; checkpoint green; V2 share screenshots; V3; commit __
-- [ ] Step 7: thank-you; checkpoint green; commit __
-- [ ] Step 8: claim page + referrer; checkpoint green; commit __
-- [ ] Step 9: ledger, plan copy final, PR opened (url __); V4–V8 recorded
+- [x] Step 5 (2026-11-03): 5a/5b (components, ESLint pattern, AGENTS/code-layout bullet, root layout) in Astra commit 9fbaa65 (task w1-foundation); 5c home page in Astra commit d566d54 (task w2-home-claim); each task's checkpoint green independently (validate, test:run, build:offline); V2 home screenshots at 1280/390 taken on d566d54 (see V2 below)
+- [x] Step 6 (2026-11-03): share page, recorder playback and "Remove recording", lib/format-duration.ts written test-first (10 cases); Astra commit a2c885c (task w3-share); checkpoint green (125 tests in 16 files); V2 share screenshots and V3 on d566d54 (below)
+- [x] Step 7 (2026-11-03): thank-you state with Web Share / mailto, resetForm; same commit a2c885c; checkpoint green
+- [x] Step 8 (2026-11-03): claim page and claim form restyled, meta referrer now no-referrer; Astra commit d566d54 (task w2-home-claim); checkpoint green
+- [x] Step 9 (2026-11-03): ledger Task 11 appended, this checklist final, draft PR https://github.com/RobertdWray/jowray_com/pull/15 opened from the Astra integration branch; V-results below
+
+### Execution notes
+
+- Built with `/astra-work`: Steps 0, 1, 3 and 4 by the orchestrator (network needed: merge, `npm install`, Playwright favicon render); Step 1c + 2 + 5a + 5b by worker `w1-foundation`; Steps 6 + 7 by worker `w3-share` and Step 5c + 8 by worker `w2-home-claim` (two workers in parallel); every worker diff was read line by line against this plan before acceptance, and each task's checks were re-run outside the worker sandbox (the Codex sandbox refuses loopback listeners, so `next build` cannot run inside it). Run directory: `~/.local/state/astra-work/888f1417a12a/20261103T162111Z-ca92182b`.
+- Branch: the PR branch is the Astra integration branch `astra-work/20261103T162111Z-ca92182b/integration`, which contains `claude/zealous-allen-pxrdpu` (Steps 0–4, pushed) plus the three worker commits and this docs commit. The preview Neon branch is therefore `preview/astra-work/20261103T162111Z-ca92182b/integration`, not `preview/claude/zealous-allen-pxrdpu`.
+- Step 1d deviation: `scripts/no-network.mjs` with `NODE_OPTIONS=--import=…` instead of a `.cjs` `--require` preload (the repo ESLint config forbids `require()`); same guard, same negative control.
+- Step 3 note: Next 16.4 emits `<link rel="icon" href="/icon.svg?…" sizes="any" type="image/svg+xml">`, so V5 and [C10]'s `/icon?` expectation reads `/icon.svg?`.
+- Screenshots (app and comps at 1280/390, recorder state, thank-you, claim page, error page) live in the run's `evidence/screenshots/` and in `~/Downloads/jowray-brand-screenshots-20261103/`; GitHub's API cannot attach images to a PR body, so Rob can drag them into the PR if wanted.
+
+### Verification results (2026-11-03)
+
+| # | Result | Note |
+|---|---|---|
+| V1 | pass | On the integration head: `validate` green, `test:run` 125 passed in 16 files (baseline 115 + 10 for `formatDuration`), `build:offline` green, no `.env*`; negative control prints `blocked: [no-network] blocked outbound connection to example.com` |
+| V2 | pass | `/`, `/share` and both comps at 1280 and 390 (dpr 2, after `document.fonts.ready`); 17/17 automated checks: no horizontal scroll at 390, wordmark and light cards `rgb(46, 36, 32)`, Fraunces h1, 20px Atkinson body, goldenrod 4px focus ring on Tab, `/share#record` and `/share#form` land on their targets; side-by-side with the comp matches except the intentional differences in § 3 |
+| V3 | pass | Headless Chromium with fake media: Start → Stop shows the player and "Recorded 0:01"; the file input is disabled while a clip exists and re-enabled after Remove; Record again replaces the clip; `URL.revokeObjectURL` called exactly 2× (one replace + one remove) |
+| V4 | pass | Vercel preview `jowraycom-git-astra-work-20261103t162-86c814-rob-wrays-projects.vercel.app` (Neon branch `preview/astra-work/20261103T162111Z-ca92182b/integration`), bypass cookie set once via the query-param form (a bypass *header* breaks the cross-origin Blob upload's CORS preflight, a harness artefact): text-only memory with email blank → thank-you with claim link and no "emailed" line; "Tell another one" → empty form with the file input enabled; photo memory (`jo-santa.jpg`) → thank-you "file accepted", claim page renders the photo (READY); claim edit → "Saved."; add another file → "File added." and two photos after reload; screenshots at 1280 and 390 |
+| V5 | pass | `<title>Jo Wray — Leave a memory</title>`; `<link rel="icon" href="/favicon.ico?…" sizes="48x48" type="image/x-icon">` and `<link rel="icon" href="/icon.svg?…" sizes="any" type="image/svg+xml">`; GET `/icon.svg` 200 `image/svg+xml`, GET `/favicon.ico` 200 `image/vnd.microsoft.icon` (Next 16.4 names the route `/icon.svg`, not `/icon` as [C10] reads) |
+| V6 | pass | `/m/<token>` answers `referrer-policy: no-referrer` and carries `<meta name="referrer" content="no-referrer">`; 23 requests issued from the claim page (RSC prefetches of `/` and `/share`, assets) and none carries a `Referer` containing `/m/`; the header links navigate client-side from already-prefetched payloads, so the live production check stays follow-up F2 |
+| V7 | pass | Temporary throw in `app/layout.tsx` under `next dev`: muslin ground, Fraunces "Something went wrong", lead, red "Try again" (`rgb(200, 16, 46)`), title "Jo Wray — Something went wrong"; `Sentry.captureException` unchanged; throw reverted before any commit |
+| V8 | pass | PR #15 "Files changed" = plan § 6 plus PR 14's `design/` files (stacked); nothing extra; `docs/plans/phase1-ledger.md` was the only § 6 file missing before this docs commit |
 
 ---
 
