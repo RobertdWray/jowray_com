@@ -330,7 +330,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
           Memories go to Richard, Rob and Tracy first. Later, with your okay, they&apos;ll join a shared collection the whole family can read.
         </p>
         <label className="flex items-start gap-3 text-small">
-          <input name="contactOptIn" type="checkbox" className="mt-1 size-6 accent-jo-red" />
+          <input name="contactOptIn" type="checkbox" defaultChecked className="mt-1 size-6 accent-jo-red" />
           <span>{CONTACT_OPT_IN_LABEL}</span>
         </label>
         <p className="text-small text-walnut-soft">{IMPLICIT_CONSENT_NOTE}</p>
