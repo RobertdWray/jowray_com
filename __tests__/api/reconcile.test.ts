@@ -6,10 +6,10 @@ import { resetEnvCache } from "@/server/config/env";
 const SECRET = "c".repeat(40);
 const HOUR = 60 * 60 * 1000;
 
-interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; memory: { deletedAt: Date | null } }
+interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; memory: { deletedAt: Date | null } }
 interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
 interface EmailRow { id: string; memoryId: string; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null } }
-interface MemoryRow { id: string; type: string; deletedAt: Date | null; createdAt: Date; contributor: { email: string | null } | null; media: Array<{ status: string }>; emails: EmailRow[] }
+interface MemoryRow { id: string; type: string; deletedAt: Date | null; createdAt: Date; contributorNote?: string | null; contributor: { email: string | null } | null; media: Array<{ status: string; deletedAt: Date | null }>; emails: EmailRow[] }
 
 let media: MediaRow[] = [];
 let events: EventRow[] = [];
@@ -69,13 +69,18 @@ beforeEach(() => {
   const old = new Date(Date.now() - 2 * HOUR);
   const ancient = new Date(Date.now() - 30 * HOUR);
   media = [
-    { id: "med_stale", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: old, storageKey: "originals/mem_1/a", memory: { deletedAt: null } },
-    { id: "med_fresh", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: new Date(), storageKey: "originals/mem_1/b", memory: { deletedAt: null } },
-    { id: "med_orphan", memoryId: "mem_2", status: "PENDING", checksumSha256: null, createdAt: ancient, storageKey: "originals/mem_2/c", memory: { deletedAt: null } },
-    { id: "med_nohash", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: old, storageKey: "originals/mem_1/d", memory: { deletedAt: null } },
-    { id: "med_gone", memoryId: "mem_3", status: "READY", checksumSha256: "b".repeat(64), createdAt: old, storageKey: "dev/originals/mem_3/e", memory: { deletedAt: ancient } },
+    { id: "med_stale", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: old, storageKey: "originals/mem_1/a", blobUrl: "u", deletedAt: null, memory: { deletedAt: null } },
+    { id: "med_fresh", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: new Date(), storageKey: "originals/mem_1/b", blobUrl: "u", deletedAt: null, memory: { deletedAt: null } },
+    { id: "med_orphan", memoryId: "mem_2", status: "PENDING", checksumSha256: null, createdAt: ancient, storageKey: "originals/mem_2/c", blobUrl: "u", deletedAt: null, memory: { deletedAt: null } },
+    { id: "med_nohash", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: old, storageKey: "originals/mem_1/d", blobUrl: "u", deletedAt: null, memory: { deletedAt: null } },
+    { id: "med_gone", memoryId: "mem_3", status: "READY", checksumSha256: "b".repeat(64), createdAt: old, storageKey: "dev/originals/mem_3/e", blobUrl: "u", deletedAt: null, memory: { deletedAt: ancient } },
     // A row copied from production into this branch: its blob must never be touched from here.
-    { id: "med_prod_copy", memoryId: "mem_9", status: "READY", checksumSha256: "c".repeat(64), createdAt: old, storageKey: "originals/mem_9/f", memory: { deletedAt: ancient } },
+    { id: "med_prod_copy", memoryId: "mem_9", status: "READY", checksumSha256: "c".repeat(64), createdAt: old, storageKey: "originals/mem_9/f", blobUrl: "u", deletedAt: null, memory: { deletedAt: ancient } },
+    // Removed through the claim page: never re-recorded or hashed; its blob is purged from this environment.
+    { id: "med_cancelled", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: old, storageKey: "dev/originals/mem_1/g", blobUrl: null, deletedAt: old, memory: { deletedAt: null } },
+    { id: "med_removed", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: old, storageKey: "dev/originals/mem_1/h", blobUrl: "u", deletedAt: old, memory: { deletedAt: null } },
+    // Cancelled minutes ago: its Blob token is still valid, so the pathname is left alone until the grace period passes.
+    { id: "med_cancelled_fresh", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: new Date(), storageKey: "dev/originals/mem_1/i", blobUrl: "u", deletedAt: new Date(), memory: { deletedAt: null } },
   ];
   events = [{ id: "evt_1", processedAt: null, attempts: 1, error: "boom", payload: { tokenPayload: JSON.stringify({ mediaId: "med_stale" }) } }];
   emails = [
@@ -84,11 +89,13 @@ beforeEach(() => {
     { id: "log_skipped", memoryId: "mem_skipped", status: "SKIPPED", attempts: 0, nextAttemptAt: null, createdAt: old, memory: { deletedAt: null } },
   ];
   memories = [
-    { id: "mem_4", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "a@example.com" }, media: [{ status: "READY" }], emails: [emails[0]!] },
-    { id: "mem_5", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "b@example.com" }, media: [{ status: "READY" }], emails: [] },
-    { id: "mem_young", type: "PHOTO", deletedAt: null, createdAt: new Date(), contributor: { email: "c@example.com" }, media: [{ status: "READY" }], emails: [] },
-    { id: "mem_gone", type: "PHOTO", deletedAt: ancient, createdAt: old, contributor: { email: "d@example.com" }, media: [{ status: "READY" }], emails: [emails[1]!] },
-    { id: "mem_skipped", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "e@example.com" }, media: [{ status: "READY" }], emails: [emails[2]!] },
+    { id: "mem_4", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "a@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [emails[0]!] },
+    { id: "mem_5", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "b@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [] },
+    { id: "mem_young", type: "PHOTO", deletedAt: null, createdAt: new Date(), contributor: { email: "c@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [] },
+    { id: "mem_gone", type: "PHOTO", deletedAt: ancient, createdAt: old, contributor: { email: "d@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [emails[1]!] },
+    { id: "mem_skipped", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "e@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [emails[2]!] },
+    // Its only READY file was removed and it has no words: nothing to confirm.
+    { id: "mem_emptied", type: "PHOTO", deletedAt: null, createdAt: old, contributorNote: null, contributor: { email: "f@example.com" }, media: [{ status: "READY", deletedAt: old }], emails: [] },
   ];
   recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); delMock.mockClear();
   recordMediaMock.mockImplementation(async ({ mediaId }) => mediaId === "med_orphan" ? { status: "PENDING", mediaId, memoryId: "mem_2" } : { status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 });
@@ -119,10 +126,19 @@ describe("GET /api/cron/reconcile-uploads", () => {
     // (d) failed email retried (not for a deleted memory), (e) READY memory with email and no log confirmed
     // (not one younger than 30 minutes, not one with a terminal SKIPPED row)
     expect(confirmMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5"]);
-    // (f) blobs of soft-deleted memories deleted
+    // removed rows are neither re-recorded (a) nor hashed (b)
+    expect(recordMediaMock.mock.calls.map((c) => c[0].mediaId)).not.toContain("med_cancelled");
+    expect(checksumMock).not.toHaveBeenCalledWith({ mediaId: "med_removed" });
+    // (f) blobs of soft-deleted memories and of removed files deleted, this environment only
     expect(delMock).toHaveBeenCalledWith("dev/originals/mem_3/e");
+    expect(delMock).toHaveBeenCalledWith("dev/originals/mem_1/h");
     expect(delMock).not.toHaveBeenCalledWith("originals/mem_9/f");
-    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 1, confirmationsSent: 1, deletedBlobsRemoved: 1 });
+    expect(media.find((m) => m.id === "med_removed")?.blobUrl).toBeNull();
+    // a cancelled reservation older than the Blob token lifetime: its pathname is deleted (idempotent) and the row leaves PENDING
+    expect(delMock).toHaveBeenCalledWith("dev/originals/mem_1/g");
+    expect(delMock).not.toHaveBeenCalledWith("dev/originals/mem_1/i");
+    expect(media.find((m) => m.id === "med_cancelled")?.status).toBe("FAILED");
+    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 1, confirmationsSent: 1, deletedBlobsRemoved: 3 });
   });
 
   it("is a no-op on a second run", async () => {

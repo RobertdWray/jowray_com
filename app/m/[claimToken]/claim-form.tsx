@@ -1,11 +1,11 @@
 "use client";
 
-import { upload } from "@vercel/blob/client";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import type { ClaimView } from "@/features/memories/claim";
 import { ACCEPT_ATTRIBUTE } from "@/lib/media-types";
+import { uploadWithTicket } from "@/lib/upload-client";
 
 import { PrimaryButton } from "../../_components/buttons";
 import { fileInputClass, inputClass, labelClass, selectClass, textareaClass } from "../../_components/field-classes";
@@ -32,7 +32,13 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
           visibility: String(form.get("visibility") ?? memory.visibility),
         },
       });
-      setMessage(result.ok ? "Saved." : "Could not save. Please check the fields and try again.");
+      setMessage(
+        result.ok
+          ? "Saved."
+          : result.code === "last_words"
+            ? "Your words are all this memory has right now. Add a file before clearing them, or keep a few words."
+            : "Could not save. Please check the fields and try again."
+      );
       if (result.ok) {
         router.refresh();
       }
@@ -56,16 +62,9 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
         setMessage(ticketed.code === "too_many_files" ? "This memory already has the maximum number of files." : "That file cannot be added.");
         return;
       }
-      const { ticket, pathname } = ticketed.upload;
-      await upload(pathname, file, {
-        access: "private",
-        handleUploadUrl: "/api/upload",
-        multipart: true,
-        contentType: ticket.mimeType,
-        clientPayload: JSON.stringify(ticket),
-      });
-      const finalized = await finalizeAddedFile({ ticket, claimToken });
-      setMessage(finalized.status === "READY" ? "File added." : "The file could not be accepted.");
+      await uploadWithTicket(ticketed.upload, file);
+      const finalized = await finalizeAddedFile({ ticket: ticketed.upload.ticket, claimToken });
+      setMessage(finalized.status === "READY" ? "File added." : finalized.status === "PENDING" ? "The file is still being checked; it will appear shortly." : "The file could not be accepted.");
       router.refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Upload failed");

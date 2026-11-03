@@ -24,6 +24,8 @@ const CHECKSUM_DEADLINE_MS = 40_000;
 const CONFIRM_MIN_AGE_MS = 30 * MINUTE_MS;
 const EMAIL_MAX_ATTEMPTS = 5;
 const EVENT_MAX_ATTEMPTS = 3;
+/** A cancelled reservation may still receive bytes until its Blob client token (1 h) expires; purge it after that plus a margin. */
+const CANCELLED_RESERVATION_GRACE_MS = 75 * MINUTE_MS;
 
 interface Counts {
   pendingRechecked: number;
@@ -65,7 +67,7 @@ export async function GET(request: NextRequest): Promise<Response> {
   // (a) PENDING media older than an hour: re-record; after 24 h with no blob, give up.
   const outOfTime = (): boolean => Date.now() - now > RUN_DEADLINE_MS;
   const stale = await db.media.findMany({
-    where: { status: "PENDING", createdAt: { lt: new Date(now - HOUR_MS) }, memory: { deletedAt: null } },
+    where: { status: "PENDING", deletedAt: null, createdAt: { lt: new Date(now - HOUR_MS) }, memory: { deletedAt: null } },
     orderBy: { createdAt: "asc" },
     take: 100,
   });
@@ -155,7 +157,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       createdAt: { lt: new Date(now - CONFIRM_MIN_AGE_MS) },
       contributor: { email: { not: null } },
       emails: { none: {} },
-      OR: [{ type: "TEXT" }, { contributorNote: { not: null } }, { media: { some: { status: "READY" } } }],
+      OR: [{ type: "TEXT" }, { contributorNote: { not: null } }, { media: { some: { status: "READY", deletedAt: null } } }],
     },
     orderBy: { createdAt: "asc" },
     take: 50,
@@ -179,7 +181,7 @@ export async function GET(request: NextRequest): Promise<Response> {
   // the deadline; it runs after the email steps so a backlog of large files
   // never starves them.
   const unhashed = await db.media.findMany({
-    where: { status: "READY", checksumSha256: null, memory: { deletedAt: null } },
+    where: { status: "READY", deletedAt: null, checksumSha256: null, memory: { deletedAt: null } },
     orderBy: { createdAt: "asc" },
     take: CHECKSUM_BATCH,
   });
@@ -197,10 +199,21 @@ export async function GET(request: NextRequest): Promise<Response> {
     }
   }
 
-  // (f) Blobs of soft-deleted memories, only those this environment uploaded:
-  // preview/dev Neon branches hold copies of production rows and share the store.
+  // (f) Purge: blobs of soft-deleted memories and of files removed through the
+  // claim page, only those this environment uploaded (preview/dev Neon branches
+  // hold copies of production rows and share the store). Only rows with a blob
+  // still recorded are selected, so a purged row is never re-selected.
   const orphanedBlobs = await db.media.findMany({
-    where: { memory: { deletedAt: { not: null } }, blobUrl: { not: null }, storageKey: { startsWith: storagePrefix() } },
+    where: {
+      // A cancelled file's Blob token may still be valid; wait for it to expire so the freed pathname cannot be refilled.
+      OR: [
+        { memory: { deletedAt: { not: null } } },
+        { deletedAt: { not: null }, createdAt: { lt: new Date(now - CANCELLED_RESERVATION_GRACE_MS) } },
+      ],
+      blobUrl: { not: null },
+      storageKey: { startsWith: storagePrefix() },
+    },
+    orderBy: { id: "asc" },
     take: 50,
   });
   const storage = createStorageService();
@@ -215,6 +228,33 @@ export async function GET(request: NextRequest): Promise<Response> {
     } catch (error) {
       counts.errors += 1;
       logError("reconcile: blob deletion failed", error, { category: "cron", mediaId: row.id });
+    }
+  }
+
+  // (f2) Reservations cancelled on the claim page whose upload might have landed
+  // without a callback or finalize: once the Blob token has expired, delete the
+  // pathname (idempotent) and mark the row FAILED so it is never selected again.
+  const cancelled = await db.media.findMany({
+    where: {
+      status: "PENDING",
+      deletedAt: { not: null },
+      createdAt: { lt: new Date(now - CANCELLED_RESERVATION_GRACE_MS) },
+      storageKey: { startsWith: storagePrefix() },
+    },
+    orderBy: { id: "asc" },
+    take: 50,
+  });
+  for (const row of cancelled) {
+    if (outOfTime()) {
+      break;
+    }
+    try {
+      await storage.del(row.storageKey);
+      await db.media.update({ where: { id: row.id }, data: { status: "FAILED", blobUrl: null } });
+      counts.deletedBlobsRemoved += 1;
+    } catch (error) {
+      counts.errors += 1;
+      logError("reconcile: cancelled reservation purge failed", error, { category: "cron", mediaId: row.id });
     }
   }
 

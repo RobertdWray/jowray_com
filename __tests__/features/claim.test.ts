@@ -6,10 +6,36 @@ const TOKEN = "t".repeat(43);
 interface Rev { memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown> }
 const revisions: Rev[] = [];
 let memory: Record<string, unknown> | null;
+type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; sortOrder: number; deletedAt: Date | null; replacesMediaId: string | null; createdAt: Date; durationSeconds: number | null };
+const mediaRows: MediaRow[] = [];
+const lockCalls: string[] = [];
+function matchesMedia(row: MediaRow, where: Record<string, unknown>): boolean {
+  for (const [k, v] of Object.entries(where)) {
+    if (k === "status" && typeof v === "object" && v !== null && "in" in v) { if (!(v as { in: string[] }).in.includes(row.status)) { return false; } continue; }
+    if ((row as Record<string, unknown>)[k] !== v) { return false; }
+  }
+  return true;
+}
 const tx = {
+  $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; }),
+  media: {
+    findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => mediaRows.find((r) => matchesMedia(r, where)) ?? null),
+    findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => mediaRows.filter((r) => matchesMedia(r, where))),
+    count: vi.fn(async ({ where }: { where: Record<string, unknown> }) => mediaRows.filter((r) => matchesMedia(r, where)).length),
+    update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { const row = mediaRows.find((r) => r.id === where.id)!; Object.assign(row, data); return row; }),
+    updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Partial<MediaRow> }) => { const rows = mediaRows.filter((r) => matchesMedia(r, where)); for (const r of rows) { Object.assign(r, data); } return { count: rows.length }; }),
+  },
   memory: {
-    findUnique: vi.fn(async ({ where }: { where: { claimTokenHash?: string; id?: string } }) =>
-      memory && (where.claimTokenHash ? memory.claimTokenHash === where.claimTokenHash : memory.id === where.id) ? memory : null),
+    findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { if (!memory || memory.id !== where.id) { throw Object.assign(new Error("not found"), { code: "P2025" }); } return memory; }),
+    findUnique: vi.fn(async ({ where, include }: { where: { claimTokenHash?: string; id?: string }; include?: { media?: { where?: Record<string, unknown> } } }) => {
+      if (!memory || !(where.claimTokenHash ? memory.claimTokenHash === where.claimTokenHash : memory.id === where.id)) { return null; }
+      if (include?.media) {
+        const w = include.media.where ?? {};
+        return { ...memory, media: mediaRows.filter((r) => r.memoryId === memory!.id && matchesMedia(r, w)).sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.getTime() - b.createdAt.getTime()) };
+      }
+      // A snapshot, like a real pre-lock read: later mutations are only visible through findUniqueOrThrow.
+      return { ...memory, contributor: memory.contributor ? { ...(memory.contributor as object) } : null };
+    }),
     update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { Object.assign(memory!, data); return memory; }),
   },
   contributor: { update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { Object.assign(memory!.contributor as object, data); return memory!.contributor; }) },
@@ -21,10 +47,18 @@ const tx = {
 const dbStub = { ...tx, $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx)) };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
-import { getMemoryForClaim, updateMemoryFromClaim } from "@/features/memories/claim";
+import { cancelReservation, getMemoryForClaim, removeMediaFromClaim, updateMemoryFromClaim } from "@/features/memories/claim";
 
 beforeEach(() => {
   revisions.length = 0;
+  lockCalls.length = 0;
+  mediaRows.length = 0;
+  mediaRows.push(
+    { id: "med_1", memoryId: "mem_1", status: "READY", mimeType: "image/heic", originalFilename: "a.heic", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:00Z"), durationSeconds: 24 },
+    { id: "med_2", memoryId: "mem_1", status: "PENDING", mimeType: "video/mp4", originalFilename: null, sortOrder: 1, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:01Z"), durationSeconds: null },
+    { id: "med_gone", memoryId: "mem_1", status: "READY", mimeType: "image/jpeg", originalFilename: "old.jpg", sortOrder: 2, deletedAt: new Date("2026-11-03T11:00:00Z"), replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:02Z"), durationSeconds: null },
+    { id: "med_other", memoryId: "mem_2", status: "READY", mimeType: "image/jpeg", originalFilename: "x.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:03Z"), durationSeconds: null },
+  );
   memory = {
     id: "mem_1", type: "PHOTO", deletedAt: null, claimTokenHash: hashClaimToken(TOKEN), consentVersion: "2026-11-v1",
     approxDateText: "Summer 1998", place: null, contributorNote: "old note", visibility: "FAMILY",
@@ -34,10 +68,10 @@ beforeEach(() => {
 });
 
 describe("getMemoryForClaim", () => {
-  it("returns the memory with only READY media for a valid token", async () => {
+  it("returns every live file with its status, in sort order, and hides removed ones", async () => {
     const found = await getMemoryForClaim(TOKEN);
     expect(found?.id).toBe("mem_1");
-    expect(found?.media.map((m) => m.id)).toEqual(["med_1"]);
+    expect(found?.media.map((m) => [m.id, m.status, m.sortOrder])).toEqual([["med_1", "READY", 0], ["med_2", "PENDING", 1]]);
     expect(found?.media[0]?.durationSeconds).toBe(24);
   });
 
@@ -71,5 +105,111 @@ describe("updateMemoryFromClaim", () => {
     memory!.deletedAt = new Date();
     expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "x" } })).toEqual({ ok: false, code: "not_found" });
     expect(revisions).toHaveLength(0);
+  });
+});
+
+describe("removeMediaFromClaim", () => {
+  const VALID = { claimToken: TOKEN, mediaId: "00000000-0000-4000-8000-000000000001" };
+  beforeEach(() => { mediaRows[0]!.id = VALID.mediaId; });
+
+  it("soft-deletes the file under the memory lock, cancels its pending replacement, recomputes the type and writes a revision", async () => {
+    mediaRows.push({ id: "med_rep", memoryId: "mem_1", status: "PENDING", mimeType: "image/jpeg", originalFilename: "new.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: VALID.mediaId, createdAt: new Date(), durationSeconds: null });
+    memory!.contributorNote = "some words";
+    const result = await removeMediaFromClaim(VALID);
+    expect(result).toEqual({ ok: true });
+    expect(lockCalls[0]).toContain("FOR UPDATE|mem_1");
+    expect(mediaRows.find((r) => r.id === VALID.mediaId)!.deletedAt).toBeInstanceOf(Date);
+    expect(mediaRows.find((r) => r.id === "med_rep")!.deletedAt).toBeInstanceOf(Date);
+    expect(memory!.type).toBe("TEXT");
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]!.before).toMatchObject({ mediaIds: [VALID.mediaId, "med_2"], type: "PHOTO" });
+    expect(revisions[0]!.after).toMatchObject({ mediaIds: ["med_2"], type: "TEXT" });
+  });
+
+  it("refuses to remove the only live file of a memory without words", async () => {
+    memory!.contributorNote = null;
+    expect(await removeMediaFromClaim(VALID)).toEqual({ ok: false, code: "last_file" });
+    expect(mediaRows.find((r) => r.id === VALID.mediaId)!.deletedAt).toBeNull();
+    expect(revisions).toHaveLength(0);
+  });
+
+  it("rejects a wrong token, another memory's file, an already-removed file and invalid input without writing", async () => {
+    expect(await removeMediaFromClaim({ ...VALID, claimToken: "x".repeat(43) })).toEqual({ ok: false, code: "not_found" });
+    mediaRows.find((r) => r.id === "med_other")!.id = "00000000-0000-4000-8000-00000000000f";
+    expect(await removeMediaFromClaim({ ...VALID, mediaId: "00000000-0000-4000-8000-00000000000f" })).toEqual({ ok: false, code: "not_found" });
+    mediaRows.find((r) => r.id === "med_gone")!.id = "00000000-0000-4000-8000-00000000000e";
+    expect(await removeMediaFromClaim({ ...VALID, mediaId: "00000000-0000-4000-8000-00000000000e" })).toEqual({ ok: false, code: "not_found" });
+    expect(await removeMediaFromClaim({ claimToken: TOKEN, mediaId: "med_1" })).toEqual({ ok: false, code: "invalid" });
+    expect(revisions).toHaveLength(0);
+  });
+});
+
+describe("cancelReservation", () => {
+  const PENDING_ID = "00000000-0000-4000-8000-000000000002";
+  beforeEach(() => { mediaRows[1]!.id = PENDING_ID; });
+
+  it("soft-deletes a PENDING reservation and writes a revision", async () => {
+    expect(await cancelReservation({ claimToken: TOKEN, mediaId: PENDING_ID })).toEqual({ ok: true });
+    expect(mediaRows.find((r) => r.id === PENDING_ID)!.deletedAt).toBeInstanceOf(Date);
+    expect(revisions[0]!.after).toMatchObject({ mediaIds: ["med_1"] });
+  });
+
+  it("does not cancel a READY file", async () => {
+    mediaRows[0]!.id = "00000000-0000-4000-8000-000000000001";
+    expect(await cancelReservation({ claimToken: TOKEN, mediaId: "00000000-0000-4000-8000-000000000001" })).toEqual({ ok: false, code: "not_found" });
+    expect(mediaRows[0]!.deletedAt).toBeNull();
+  });
+});
+
+describe("updateMemoryFromClaim non-empty invariant", () => {
+  it("refuses to clear the note when no live READY file remains", async () => {
+    mediaRows[0]!.deletedAt = new Date();
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "" } })).toEqual({ ok: false, code: "last_words" });
+    expect(memory!.contributorNote).toBe("old note");
+  });
+
+  it("allows clearing the note while a READY file remains and recomputes the type", async () => {
+    memory!.type = "TEXT";
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "" } })).toEqual({ ok: true });
+    expect(memory!.contributorNote).toBeNull();
+    expect(memory!.type).toBe("PHOTO");
+  });
+});
+
+describe("invariants are evaluated after the lock", () => {
+  it("sees a note cleared by a concurrent editor and refuses to remove the last file", async () => {
+    const VALID = { claimToken: TOKEN, mediaId: "00000000-0000-4000-8000-000000000001" };
+    mediaRows[0]!.id = VALID.mediaId;
+    memory!.contributorNote = "words that will be gone by the time we hold the lock";
+    tx.$queryRaw.mockImplementationOnce(async (strings: TemplateStringsArray, ...values: unknown[]) => { memory!.contributorNote = null; lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; });
+    expect(await removeMediaFromClaim(VALID)).toEqual({ ok: false, code: "last_file" });
+    expect(mediaRows.find((r) => r.id === VALID.mediaId)!.deletedAt).toBeNull();
+  });
+});
+
+describe("revision bookkeeping", () => {
+  const VALID = { claimToken: TOKEN, mediaId: "00000000-0000-4000-8000-000000000001" };
+
+  it("records the consent version on the first revision even when that revision is a removal", async () => {
+    mediaRows[0]!.id = VALID.mediaId;
+    memory!.contributorNote = "words";
+    await removeMediaFromClaim(VALID);
+    expect(revisions[0]!.after).toMatchObject({ consentVersion: "2026-11-v1" });
+    await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Baltimore" } });
+    expect(revisions[1]!.after).not.toHaveProperty("consentVersion");
+  });
+
+  it("names the cancelled replacement in its revision instead of writing identical snapshots", async () => {
+    const REP = "00000000-0000-4000-8000-000000000009";
+    mediaRows.push({ id: REP, memoryId: "mem_1", status: "PENDING", mimeType: "image/jpeg", originalFilename: "new.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: "med_1", createdAt: new Date(), durationSeconds: null });
+    expect(await cancelReservation({ claimToken: TOKEN, mediaId: REP })).toEqual({ ok: true });
+    expect(revisions[0]!.after).toMatchObject({ cancelledReplacementOf: "med_1" });
+  });
+
+  it("takes contributor name and relationship from the post-lock read", async () => {
+    tx.$queryRaw.mockImplementationOnce(async (strings: TemplateStringsArray, ...values: unknown[]) => { (memory!.contributor as { name: string }).name = "Renamed meanwhile"; lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; });
+    await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Baltimore" } });
+    expect(revisions[0]!.before).toMatchObject({ name: "Renamed meanwhile" });
+    expect((memory!.contributor as { name: string }).name).toBe("Renamed meanwhile");
   });
 });

@@ -13,6 +13,7 @@ interface MediaRow {
   mimeType: string;
   storageKey: string;
   originalFilename: string | null;
+  deletedAt: Date | null;
   memory: { claimTokenHash: string; deletedAt: Date | null };
 }
 let media: MediaRow[] = [];
@@ -52,10 +53,12 @@ beforeEach(() => {
       mimeType: "image/jpeg",
       storageKey: "originals/mem_1/abc.jpg",
       originalFilename: 'photo "one"\r\nBcc.jpg',
+      deletedAt: null,
       memory: { claimTokenHash: hashClaimToken(TOKEN), deletedAt: null },
     },
-    { ...{} as MediaRow, id: "med_pending", sizeBytes: null, status: "PENDING", mimeType: "video/mp4", storageKey: "originals/mem_1/p.mp4", originalFilename: null, memory: { claimTokenHash: hashClaimToken(TOKEN), deletedAt: null } },
-    { ...{} as MediaRow, id: "med_deleted", sizeBytes: 9, status: "READY", mimeType: "image/png", storageKey: "originals/mem_2/d.png", originalFilename: null, memory: { claimTokenHash: hashClaimToken(TOKEN), deletedAt: new Date() } },
+    { ...{} as MediaRow, id: "med_pending", sizeBytes: null, status: "PENDING", mimeType: "video/mp4", storageKey: "originals/mem_1/p.mp4", originalFilename: null, deletedAt: null, memory: { claimTokenHash: hashClaimToken(TOKEN), deletedAt: null } },
+    { ...{} as MediaRow, id: "med_deleted", sizeBytes: 9, status: "READY", mimeType: "image/png", storageKey: "originals/mem_2/d.png", originalFilename: null, deletedAt: null, memory: { claimTokenHash: hashClaimToken(TOKEN), deletedAt: new Date() } },
+    { ...{} as MediaRow, id: "med_removed", sizeBytes: 9, status: "READY", mimeType: "image/png", storageKey: "originals/mem_1/r.png", originalFilename: null, deletedAt: new Date(), memory: { claimTokenHash: hashClaimToken(TOKEN), deletedAt: null } },
   ];
   presignMock.mockClear();
 });
@@ -66,6 +69,7 @@ describe("GET /api/media/[id]", () => {
     expect((await request("med_ready", "?t=wrong")).status).toBe(404);
     expect((await request("med_pending", `?t=${TOKEN}`)).status).toBe(404);
     expect((await request("med_deleted", `?t=${TOKEN}`)).status).toBe(404);
+    expect((await request("med_removed", `?t=${TOKEN}`)).status).toBe(404);
     expect((await request("nope", `?t=${TOKEN}`)).status).toBe(404);
     expect(presignMock).not.toHaveBeenCalled();
   });

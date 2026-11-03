@@ -59,7 +59,8 @@ export async function POST(request: NextRequest): Promise<Response> {
           where: { id: claims.mediaId },
           include: { memory: { select: { deletedAt: true } } },
         });
-        if (!row || row.status !== "PENDING" || row.memory.deletedAt !== null) {
+        // A cancelled reservation (deletedAt) must not receive bytes either.
+        if (!row || row.status !== "PENDING" || row.deletedAt !== null || row.memory.deletedAt !== null) {
           throw new UploadRefused("not_pending");
         }
         return {

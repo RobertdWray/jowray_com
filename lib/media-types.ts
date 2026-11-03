@@ -21,6 +21,9 @@ export const MAX_BYTES: Record<MediaKind, number> = {
   VIDEO: 500 * MB,
 };
 
+/** Live (READY or PENDING, not removed) files one memory may hold. Lives here so `lib/validations` can import it. */
+export const MAX_FILES_PER_MEMORY = 10;
+
 const ALLOWED: Record<string, MediaTypeSpec> = {
   "image/jpeg": { kind: "PHOTO", extension: "jpg" },
   "image/png": { kind: "PHOTO", extension: "png" },
@@ -104,6 +107,31 @@ function spec(mime: string): MediaTypeSpec {
 
 export function memoryTypeFor(mime: string): MediaKind {
   return spec(mime).kind;
+}
+
+/**
+ * The memory's summary type from its live media: VIDEO wins over VOICE over
+ * PHOTO; with no live media the memory is TEXT when it has words and otherwise
+ * has no honest type (null: callers keep the provisional value and treat the
+ * memory as not confirmable). Unknown MIME types are ignored.
+ */
+export function summarizeMemoryType(media: ReadonlyArray<{ mimeType: string }>, hasWords: boolean): MediaKind | "TEXT" | null {
+  const kinds = new Set<MediaKind>();
+  for (const { mimeType } of media) {
+    if (isAllowedMime(mimeType)) {
+      kinds.add(memoryTypeFor(mimeType));
+    }
+  }
+  if (kinds.has("VIDEO")) {
+    return "VIDEO";
+  }
+  if (kinds.has("VOICE")) {
+    return "VOICE";
+  }
+  if (kinds.has("PHOTO")) {
+    return "PHOTO";
+  }
+  return hasWords ? "TEXT" : null;
 }
 
 export function maxBytesFor(mime: string): number {

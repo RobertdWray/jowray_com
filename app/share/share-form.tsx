@@ -1,11 +1,11 @@
 "use client";
 
-import { upload } from "@vercel/blob/client";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
 import { CONTACT_OPT_IN_LABEL, IMPLICIT_CONSENT_NOTE, MAILING_LIST_LABEL, NOTIFY_WHEN_POSTED_LABEL } from "@/lib/consent";
 import { durationSecondsFor } from "@/lib/format-duration";
 import { ACCEPT_ATTRIBUTE } from "@/lib/media-types";
+import { uploadWithTicket } from "@/lib/upload-client";
 import {
   getRememberedServerSnapshot,
   getRememberedSnapshot,
@@ -128,17 +128,8 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
 
     const claimLink = `${window.location.origin}/m/${created.claimToken}`;
     try {
-      const { ticket, pathname } = created.upload;
-      await upload(pathname, file, {
-        access: "private",
-        handleUploadUrl: "/api/upload",
-        multipart: true,
-        // Required: the SDK sends the type only when it is set here, and the
-        // token allows exactly the ticketed type (recordings have no extension type).
-        contentType: ticket.mimeType,
-        clientPayload: JSON.stringify(ticket),
-        onUploadProgress: ({ percentage }) => setPhase({ kind: "saving", progress: percentage }),
-      });
+      const { ticket } = created.upload;
+      await uploadWithTicket(created.upload, file, (percentage) => setPhase({ kind: "saving", progress: percentage }));
       const finalized = await finalizeUpload({ ticket, claimToken: created.claimToken });
       clearDraft();
       if (finalized.status === "REJECTED") {

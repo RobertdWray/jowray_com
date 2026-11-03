@@ -148,10 +148,17 @@ model Media {
   height           Int?
   capturedAt       DateTime?                // from EXIF when present
   exif             Json?
+  deletedAt        DateTime?                // soft delete: removed file, cancelled reservation or cancelled replacement; blobs purged by cron step (f)
+  replacesMediaId  String?                  // set on a PENDING replacement; the target is retired when this row reaches READY (one-to-many so a FAILED attempt can be retried)
+  sortOrder        Int         @default(0)  // display order chosen by the contributor; a replacement copies its target's
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
   memory           Memory      @relation(fields: [memoryId], references: [id])
+  replaces         Media?      @relation("Replacement", fields: [replacesMediaId], references: [id])
+  replacements     Media[]     @relation("Replacement")
   @@index([memoryId])
+  @@index([memoryId, deletedAt])
+  @@index([replacesMediaId])
   @@index([checksumSha256])
   @@index([status, createdAt])
   @@index([createdAt])
