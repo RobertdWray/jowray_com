@@ -97,7 +97,8 @@ const base = {
   memoryId: "mem_1",
   to: "person@example.com",
   name: "Jo Contributor",
-  received: { type: "PHOTO" as const, fileCount: 1 },
+  note: "She once taught me to quilt.",
+  media: [],
   claimLink: "https://www.jowray.com/m/token",
 };
 

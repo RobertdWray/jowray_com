@@ -1,13 +1,27 @@
-export type ReceivedType = "VOICE" | "VIDEO" | "PHOTO" | "TEXT";
+export type MediaKind = "PHOTO" | "VOICE" | "VIDEO";
 
-export interface MemoryConfirmationInput {
+/** One READY file as the email shows it; `preview` is the derived JPEG when one exists. */
+export interface MemoryMediaSummary {
+  kind: MediaKind;
+  originalFilename: string | null;
+  durationSeconds: number | null;
+  preview: { contentId: string; contentBase64: string; width: number; height: number } | null;
+}
+
+/** Everything the confirmation template renders; every field is untrusted contributor input except `claimLink` and `media[].preview`. */
+export interface MemoryConfirmationContent {
+  name?: string | null;
+  relationship?: string | null;
+  approxDateText?: string | null;
+  place?: string | null;
+  note?: string | null;
+  media: MemoryMediaSummary[];
+  claimLink: string;
+}
+
+export interface MemoryConfirmationInput extends MemoryConfirmationContent {
   memoryId: string;
   to: string;
-  name?: string | null;
-  received: { type: ReceivedType; fileCount: number };
-  claimLink: string;
-  /** The "how memories are used" sentence from docs/consent/<CONSENT_VERSION>.md. */
-  usageSentence?: string;
   /**
    * Cron path only: the link in this email carries a freshly minted token;
    * its hash is written together with the SENT status in one transaction so

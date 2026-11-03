@@ -4,16 +4,29 @@ import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { getSiteUrl } from "@/lib/site-url";
 import { getDb } from "@/server/db/client";
-import { sendMemoryConfirmation, type SendResult } from "@/services/email";
+import { type MediaKind, type MemoryMediaSummary, sendMemoryConfirmation, type SendResult } from "@/services/email";
 
 const log = createLogger({ category: "email" });
 
 export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "no_email" | "not_ready" };
 
+function kindOf(mimeType: string): MediaKind {
+  if (mimeType.startsWith("image/")) {
+    return "PHOTO";
+  }
+  if (mimeType.startsWith("audio/")) {
+    return "VOICE";
+  }
+  return "VIDEO";
+}
+
 /**
  * Send the one confirmation email for a memory, if there is an address and
  * something READY to confirm (or the memory is TEXT). Idempotency, the
  * outbound guard and the per-recipient cap live in the email service.
+ *
+ * The email echoes the contributor's words and details (ruling R1) and lists
+ * every READY file in upload order.
  *
  * The claim link needs the raw token, which is never stored. Request-time
  * callers (createMemory, finalizeUpload) pass it in. The reconcile cron has
@@ -27,7 +40,13 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
   const db = getDb();
   const memory = await db.memory.findUnique({
     where: { id: memoryId },
-    include: { contributor: { select: { name: true, email: true } }, media: { select: { status: true } } },
+    include: {
+      contributor: { select: { name: true, email: true, relationship: true } },
+      media: {
+        select: { id: true, status: true, mimeType: true, originalFilename: true, durationSeconds: true },
+        orderBy: { createdAt: "asc" },
+      },
+    },
   });
   if (!memory) {
     return { sent: false, skipped: "not_found" };
@@ -42,13 +61,20 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
   if (!email) {
     return { sent: false, skipped: "no_email" };
   }
-  const readyCount = memory.media.filter((m) => m.status === "READY").length;
+  const ready = memory.media.filter((m) => m.status === "READY");
   const hasWords = (memory.contributorNote ?? "").trim().length > 0;
   // Something to confirm: a file that arrived, or words (a TEXT memory, or a
   // memory whose file failed but whose note was saved).
-  if (memory.type !== "TEXT" && readyCount === 0 && !hasWords) {
+  if (memory.type !== "TEXT" && ready.length === 0 && !hasWords) {
     return { sent: false, skipped: "not_ready" };
   }
+
+  const media: MemoryMediaSummary[] = ready.map((m) => ({
+    kind: kindOf(m.mimeType),
+    originalFilename: m.originalFilename,
+    durationSeconds: m.durationSeconds,
+    preview: null,
+  }));
 
   const rotating = claimToken === undefined;
   const token = claimToken ?? newClaimToken();
@@ -60,7 +86,11 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
     memoryId,
     to: email,
     name: memory.contributor?.name ?? null,
-    received: { type: memory.type, fileCount: readyCount },
+    relationship: memory.contributor?.relationship ?? null,
+    approxDateText: memory.approxDateText,
+    place: memory.place,
+    note: memory.contributorNote,
+    media,
     claimLink: `${getSiteUrl()}/m/${token}`,
     ...(rotating && { rotateToClaimTokenHash: hashClaimToken(token) }),
   });
