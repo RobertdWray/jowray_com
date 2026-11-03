@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { createMemoryInputSchema } from "@/lib/validations/memory";
+import { createMemoryInputSchema, fileInputSchema, uploadTicketRequestSchema } from "@/lib/validations/memory";
 
 const textOnly = { note: "She once taught me to quilt.", file: null };
+const file = { name: "clip.webm", type: "audio/webm;codecs=opus", size: 10 };
 
 describe("createMemoryInputSchema defaults", () => {
   it("defaults visibility to PUBLIC when the field is absent (Rob, 2026-11-03)", () => {
@@ -33,5 +34,31 @@ describe("createMemoryInputSchema defaults", () => {
     const parsed = createMemoryInputSchema.parse({ ...textOnly, mailingListOptIn: true, notifyWhenPosted: false });
     expect(parsed.mailingListOptIn).toBe(true);
     expect(parsed.notifyWhenPosted).toBe(false);
+  });
+});
+
+describe("fileInputSchema", () => {
+  it("accepts a file without a duration", () => {
+    expect(fileInputSchema.parse(file)).toEqual(file);
+  });
+
+  it.each([0, 24, 86_400])("keeps a duration of %i seconds", (durationSeconds) => {
+    expect(fileInputSchema.parse({ ...file, durationSeconds })).toEqual({ ...file, durationSeconds });
+  });
+
+  it.each([1.5, -1, 86_401, "24"])("rejects invalid duration %s", (durationSeconds) => {
+    expect(fileInputSchema.safeParse({ ...file, durationSeconds }).success).toBe(false);
+  });
+});
+
+describe("memory file validation", () => {
+  it("keeps the duration on a new memory's file", () => {
+    const parsed = createMemoryInputSchema.parse({ file: { ...file, durationSeconds: 24 } });
+    expect(parsed.file?.durationSeconds).toBe(24);
+  });
+
+  it("accepts a claim-page upload ticket without a duration", () => {
+    const input = { claimToken: "t".repeat(43), file };
+    expect(uploadTicketRequestSchema.parse(input)).toEqual(input);
   });
 });

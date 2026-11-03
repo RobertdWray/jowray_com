@@ -34,6 +34,7 @@ interface ResolvedFile {
   maxBytes: number;
   extension: string;
   originalFilename: string;
+  durationSeconds: number | null;
 }
 
 function resolveFile(file: FileInput): ResolvedFile | "unsupported_type" | "too_large" {
@@ -45,7 +46,10 @@ function resolveFile(file: FileInput): ResolvedFile | "unsupported_type" | "too_
   if (file.size > maxBytes) {
     return "too_large";
   }
-  return { mimeType, maxBytes, extension: extensionFor(mimeType), originalFilename: file.name.slice(0, 255) };
+  const durationSeconds = memoryTypeFor(mimeType) !== "PHOTO" && file.durationSeconds !== undefined && file.durationSeconds > 0
+    ? file.durationSeconds
+    : null;
+  return { mimeType, maxBytes, extension: extensionFor(mimeType), originalFilename: file.name.slice(0, 255), durationSeconds };
 }
 
 type Tx = Parameters<Parameters<ReturnType<typeof getDb>["$transaction"]>[0]>[0];
@@ -78,6 +82,7 @@ async function createPendingMedia(tx: Tx, memoryId: string, file: ResolvedFile):
       mimeType: file.mimeType,
       maxBytes: file.maxBytes,
       originalFilename: file.originalFilename,
+      durationSeconds: file.durationSeconds,
       status: "PENDING",
     },
   });

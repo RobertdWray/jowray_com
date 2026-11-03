@@ -28,6 +28,7 @@
     "@sendgrid/mail": "^8.1.6",
     "@sentry/nextjs": "^11.10.0",
     "@vercel/blob": "^2.8.2",
+    "fix-webm-duration": "1.0.6",
     "next": "16.4.4",
     "pino": "^10.4.0",
     "react": "19.3.0",

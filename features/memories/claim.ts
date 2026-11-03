@@ -43,7 +43,7 @@ export interface ClaimView {
   contributorNote: string | null;
   visibility: "PUBLIC" | "FAMILY" | "PRIVATE";
   contributor: { name: string | null; relationship: string | null; email: string | null } | null;
-  media: Array<{ id: string; mimeType: string; originalFilename: string | null }>;
+  media: Array<{ id: string; mimeType: string; originalFilename: string | null; durationSeconds: number | null }>;
 }
 
 /** The memory behind a claim token, with its READY media, or null. */
@@ -52,7 +52,7 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
     where: { claimTokenHash: hashClaimToken(claimToken) },
     include: {
       contributor: { select: { name: true, relationship: true, email: true } },
-      media: { select: { id: true, status: true, mimeType: true, originalFilename: true }, orderBy: { createdAt: "asc" } },
+      media: { select: { id: true, status: true, mimeType: true, originalFilename: true, durationSeconds: true }, orderBy: { createdAt: "asc" } },
     },
   });
   if (!memory || memory.deletedAt !== null) {
@@ -66,7 +66,7 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
     contributorNote: memory.contributorNote,
     visibility: memory.visibility,
     contributor: memory.contributor,
-    media: memory.media.filter((m) => m.status === "READY").map(({ id, mimeType, originalFilename }) => ({ id, mimeType, originalFilename })),
+    media: memory.media.filter((m) => m.status === "READY").map(({ id, mimeType, originalFilename, durationSeconds }) => ({ id, mimeType, originalFilename, durationSeconds })),
   };
 }
 
