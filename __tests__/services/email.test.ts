@@ -1,0 +1,156 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { resetEnvCache } from "@/server/config/env";
+
+// --- stubs -------------------------------------------------------------
+const sendMock = vi.fn();
+vi.mock("@sendgrid/mail", () => ({
+  default: { setApiKey: vi.fn(), send: (...args: unknown[]) => sendMock(...args) },
+}));
+
+interface Row {
+  id: string;
+  memoryId: string;
+  recipientEmail: string;
+  emailType: "MEMORY_CONFIRMATION";
+  status: "PENDING" | "SENT" | "FAILED";
+  attempts: number;
+  nextAttemptAt: Date | null;
+  errorMessage: string | null;
+  sendgridMessageId: string | null;
+  sentAt: Date | null;
+  createdAt: Date;
+}
+const rows: Row[] = [];
+const dbStub = {
+  emailLog: {
+    findUnique: vi.fn(async ({ where }: { where: { memoryId_emailType: { memoryId: string } } }) =>
+      rows.find((r) => r.memoryId === where.memoryId_emailType.memoryId) ?? null
+    ),
+    count: vi.fn(async ({ where }: { where: { recipientEmail: string; createdAt: { gte: Date } } }) =>
+      rows.filter((r) => r.recipientEmail === where.recipientEmail && r.createdAt >= where.createdAt.gte).length
+    ),
+    upsert: vi.fn(async ({ where, create }: { where: { memoryId_emailType: { memoryId: string } }; create: Pick<Row, "memoryId" | "recipientEmail" | "emailType" | "status"> }) => {
+      const existing = rows.find((r) => r.memoryId === where.memoryId_emailType.memoryId);
+      if (existing) {
+        return existing;
+      }
+      const row: Row = {
+        id: `log_${rows.length + 1}`,
+        createdAt: new Date(),
+        attempts: 0,
+        nextAttemptAt: null,
+        errorMessage: null,
+        sendgridMessageId: null,
+        sentAt: null,
+        ...create,
+      };
+      rows.push(row);
+      return row;
+    }),
+    update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<Row> }) => {
+      const row = rows.find((r) => r.id === where.id);
+      if (!row) {
+        throw new Error("missing row");
+      }
+      Object.assign(row, data);
+      return row;
+    }),
+  },
+};
+vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
+
+import { sendMemoryConfirmation } from "@/services/email";
+
+const base = {
+  memoryId: "mem_1",
+  to: "person@example.com",
+  name: "Jo Contributor",
+  received: { type: "PHOTO" as const, fileCount: 1 },
+  claimLink: "https://www.jowray.com/m/token",
+};
+
+beforeEach(() => {
+  rows.length = 0;
+  sendMock.mockReset();
+  sendMock.mockResolvedValue([{ statusCode: 202, headers: { "x-message-id": "msg-1" } }, {}]);
+  process.env.SENDGRID_API_KEY = "SG.test";
+  process.env.SENDGRID_FROM_EMAIL = "memories@jowray.com";
+  process.env.OUTBOUND_ENABLED = "false";
+  process.env.OUTBOUND_ALLOWLIST = "person@example.com, Other@Example.org";
+  process.env.CONSENT_VERSION = "2026-11-v1";
+  resetEnvCache();
+});
+
+describe("sendMemoryConfirmation", () => {
+  it("sends once and records SENT with the message id", async () => {
+    const first = await sendMemoryConfirmation(base);
+    expect(first).toEqual({ sent: true, messageId: "msg-1" });
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    expect(rows[0]?.status).toBe("SENT");
+    expect(rows[0]?.sendgridMessageId).toBe("msg-1");
+
+    const second = await sendMemoryConfirmation(base);
+    expect(second).toEqual({ sent: false, skipped: "already_sent" });
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks FAILED with attempts and nextAttemptAt when SendGrid fails", async () => {
+    const err = Object.assign(new Error("boom"), { code: 500 });
+    sendMock.mockRejectedValue(err);
+    const result = await sendMemoryConfirmation(base);
+    expect(result).toEqual({ sent: false, skipped: "failed", error: "boom" });
+    expect(rows[0]?.status).toBe("FAILED");
+    expect(rows[0]?.attempts).toBe(1);
+    expect(rows[0]?.nextAttemptAt).toBeInstanceOf(Date);
+    expect(rows[0]!.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now() + 14 * 60_000);
+    // retried inline 3 times with linear backoff before giving up
+    expect(sendMock).toHaveBeenCalledTimes(3);
+  }, 15_000);
+
+  it("does not retry non-retryable 4xx errors", async () => {
+    sendMock.mockRejectedValue(Object.assign(new Error("bad"), { code: 401 }));
+    await sendMemoryConfirmation(base);
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    expect(rows[0]?.status).toBe("FAILED");
+  });
+
+  it("skips a non-allowlisted recipient when outbound is disabled, without a row", async () => {
+    const result = await sendMemoryConfirmation({ ...base, to: "stranger@example.net" });
+    expect(result).toEqual({ sent: false, skipped: "outbound_disabled" });
+    expect(rows).toHaveLength(0);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("sends to anyone when OUTBOUND_ENABLED is true", async () => {
+    process.env.OUTBOUND_ENABLED = "true";
+    resetEnvCache();
+    const result = await sendMemoryConfirmation({ ...base, to: "stranger@example.net" });
+    expect(result.sent).toBe(true);
+  });
+
+  it("caps at three confirmations per address per day", async () => {
+    for (let i = 1; i <= 3; i += 1) {
+      const r = await sendMemoryConfirmation({ ...base, memoryId: `mem_${i}` });
+      expect(r.sent).toBe(true);
+    }
+    const fourth = await sendMemoryConfirmation({ ...base, memoryId: "mem_4" });
+    expect(fourth).toEqual({ sent: false, skipped: "recipient_capped" });
+    expect(sendMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("escapes the name in the HTML part and strips control characters in the text part", async () => {
+    await sendMemoryConfirmation({ ...base, name: '<a href="https://evil.test">Jo</a>\r\nBcc: x' });
+    const msg = sendMock.mock.calls[0]?.[0] as { html: string; text: string; subject: string };
+    expect(msg.html).not.toContain('href="https://evil.test"');
+    expect(msg.html).toContain("&lt;a href=&quot;https://evil.test&quot;&gt;Jo&lt;/a&gt;");
+    expect(msg.text).not.toMatch(/[\r\n]Bcc/);
+    expect(msg.subject).not.toContain("Jo");
+  });
+
+  it("truncates a long name to 60 characters", async () => {
+    await sendMemoryConfirmation({ ...base, name: "x".repeat(200) });
+    const msg = sendMock.mock.calls[0]?.[0] as { html: string };
+    expect(msg.html).not.toContain("x".repeat(61));
+  });
+});

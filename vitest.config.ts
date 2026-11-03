@@ -7,6 +7,7 @@ const root = fileURLToPath(new URL(".", import.meta.url));
 export default defineConfig({
   test: {
     environment: "node",
+    env: { LOG_LEVEL: "silent" },
     include: ["__tests__/**/*.test.ts"],
   },
   resolve: {

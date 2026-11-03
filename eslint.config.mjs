@@ -69,11 +69,20 @@ const eslintConfig = defineConfig([
     },
   },
   {
+    // Integrations implement the interfaces that services/ declare, so type-only
+    // imports from services/ are allowed; value imports are not.
     files: ["integrations/**/*.{ts,tsx}"],
     rules: {
-      "no-restricted-imports": [
+      "no-restricted-imports": "off",
+      "@typescript-eslint/no-restricted-imports": [
         "error",
-        { patterns: [noFeatureImports, noServiceImports, noAppImports] },
+        {
+          patterns: [
+            noFeatureImports,
+            { ...noServiceImports, allowTypeImports: true },
+            noAppImports,
+          ],
+        },
       ],
     },
   },
