@@ -103,12 +103,13 @@ const eslintConfig = defineConfig([
     },
   },
   {
-    // Client Components by convention: *-form.tsx, *-client.tsx, recorder.ts, instrumentation-client.ts.
+    // Client Components by convention: *-form.tsx, *-client.tsx, recorder.ts, use-*.ts, instrumentation-client.ts.
     // app/_components/ is shared by Client Components, so it follows the same rule.
     files: [
       "app/**/*-form.tsx",
       "app/**/*-client.tsx",
       "app/**/recorder.ts",
+      "app/**/use-*.ts",
       "app/**/error.tsx",
       "app/global-error.tsx",
       "app/_components/**/*.{ts,tsx}",
@@ -128,7 +129,7 @@ const eslintConfig = defineConfig([
   },
   {
     files: ["app/**/*.{ts,tsx}"],
-    ignores: ["app/api/**", "app/**/*-form.tsx", "app/**/*-client.tsx", "app/**/recorder.ts", "app/**/error.tsx", "app/global-error.tsx", "app/_components/**/*.{ts,tsx}"],
+    ignores: ["app/api/**", "app/**/*-form.tsx", "app/**/*-client.tsx", "app/**/recorder.ts", "app/**/use-*.ts", "app/**/error.tsx", "app/global-error.tsx", "app/_components/**/*.{ts,tsx}"],
     rules: {
       // Pages and Server Functions call features/ (and lib/, server/); never services/ or integrations/ directly.
       "no-restricted-imports": ["error", { patterns: [noIntegrationsFromFeatures, noServiceImports] }],
