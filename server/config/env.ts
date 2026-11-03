@@ -66,7 +66,12 @@ const memorialSchema = z.object({
   CONSENT_VERSION: z.string().min(1, "CONSENT_VERSION is required"),
 });
 
+const cronSchema = z.object({
+  CRON_SECRET: z.string().min(16).optional(),
+});
+
 export type DbEnv = z.infer<typeof dbSchema>;
+export type CronEnv = z.infer<typeof cronSchema>;
 export type MemorialEnv = z.infer<typeof memorialSchema>;
 export type UploadEnv = z.infer<typeof uploadSchema>;
 export type BlobEnv = z.infer<typeof blobSchema>;
@@ -101,6 +106,7 @@ export const getBlobEnv = memoized("blob", blobSchema);
 export const getEmailEnv = memoized("email", emailSchema);
 export const getUploadEnv = memoized("upload", uploadSchema);
 export const getMemorialEnv = memoized("memorial", memorialSchema);
+export const getCronEnv = memoized("cron", cronSchema);
 
 /** Test helper: forget every parsed sub-schema so the next call re-reads `process.env`. */
 export function resetEnvCache(): void {

@@ -1,0 +1,133 @@
+import { NextRequest } from "next/server";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { resetEnvCache } from "@/server/config/env";
+
+const SECRET = "c".repeat(40);
+const HOUR = 60 * 60 * 1000;
+
+interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; memory: { deletedAt: Date | null } }
+interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
+interface EmailRow { id: string; memoryId: string; status: "PENDING" | "SENT" | "FAILED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date }
+interface MemoryRow { id: string; type: string; deletedAt: Date | null; contributor: { email: string | null } | null; media: Array<{ status: string }>; emails: EmailRow[] }
+
+let media: MediaRow[] = [];
+let events: EventRow[] = [];
+let emails: EmailRow[] = [];
+let memories: MemoryRow[] = [];
+
+function matches(row: Record<string, unknown>, where: Record<string, unknown>): boolean {
+  return Object.entries(where).every(([k, v]) => {
+    if (k === "memory") { return matches(row.memory as Record<string, unknown>, v as Record<string, unknown>); }
+    if (k === "NOT") { return !matches(row, v as Record<string, unknown>); }
+    if (k === "OR") { return (v as Record<string, unknown>[]).some((w) => matches(row, w)); }
+    if (k === "emails") { const n = v as { none?: unknown }; return n.none !== undefined ? (row.emails as unknown[]).length === 0 : true; }
+    if (k === "media") { const s = v as { some?: Record<string, unknown> }; return s.some ? (row.media as Record<string, unknown>[]).some((m) => matches(m, s.some!)) : true; }
+    if (k === "contributor") { const c = v as { email?: { not: null } }; return c.email?.not === null ? (row.contributor as { email: string | null } | null)?.email != null : true; }
+    const actual = row[k];
+    if (v !== null && typeof v === "object" && !(v instanceof Date)) {
+      const cond = v as { lt?: Date; lte?: Date; gt?: Date; not?: unknown };
+      if (cond.lt !== undefined && !((actual as Date) < cond.lt)) { return false; }
+      if (cond.lte !== undefined && !((actual as Date) <= cond.lte)) { return false; }
+      if (cond.gt !== undefined && !((actual as Date) > cond.gt)) { return false; }
+      if ("not" in cond && actual === cond.not) { return false; }
+      return true;
+    }
+    return actual === v;
+  });
+}
+function finder<T extends Record<string, unknown>>(rows: () => T[]) {
+  return vi.fn(async ({ where, take }: { where: Record<string, unknown>; take?: number }) => rows().filter((r) => matches(r, where)).slice(0, take ?? 1000));
+}
+const dbStub = {
+  media: { findMany: finder(() => media as unknown as Record<string, unknown>[]), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }) },
+  webhookEvent: { findMany: finder(() => events as unknown as Record<string, unknown>[]), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<EventRow> }) => { Object.assign(events.find((e) => e.id === where.id)!, data); }) },
+  emailLog: { findMany: finder(() => emails as unknown as Record<string, unknown>[]) },
+  memory: { findMany: finder(() => memories as unknown as Record<string, unknown>[]) },
+};
+vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
+
+type RecordOutcome = { status: "READY"; mediaId: string; memoryId: string; sizeBytes: number } | { status: "PENDING"; mediaId: string; memoryId: string };
+const recordMediaMock = vi.fn(async ({ mediaId }: { mediaId: string }): Promise<RecordOutcome> => ({ status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 }));
+const checksumMock = vi.fn(async ({ mediaId }: { mediaId: string }) => { media.find((m) => m.id === mediaId)!.checksumSha256 = "a".repeat(64); return "a".repeat(64); });
+vi.mock("@/features/memories/ingest-upload", () => ({ recordMedia: (a: { mediaId: string }) => recordMediaMock(a), computeChecksum: (a: { mediaId: string }) => checksumMock(a) }));
+const confirmMock = vi.fn(async ({ memoryId }: { memoryId: string }) => { const existing = emails.find((e) => e.memoryId === memoryId); if (existing) { existing.status = "SENT"; } else { emails.push({ id: `log_${memoryId}`, memoryId, status: "SENT", attempts: 1, nextAttemptAt: null, createdAt: new Date() }); } const mem = memories.find((m) => m.id === memoryId); if (mem) { mem.emails = emails.filter((e) => e.memoryId === memoryId); } return { sent: true }; });
+vi.mock("@/features/memories/confirm", () => ({ confirmMemory: (a: { memoryId: string }) => confirmMock(a) }));
+const delMock = vi.fn();
+vi.mock("@/services/storage", () => ({ createStorageService: () => ({ del: delMock, head: vi.fn(), get: vi.fn(), put: vi.fn(), presignGet: vi.fn() }) }));
+
+import { GET } from "@/app/api/cron/reconcile-uploads/route";
+
+function run(auth?: string) {
+  return GET(new NextRequest("http://localhost:3000/api/cron/reconcile-uploads", { headers: auth ? { authorization: auth } : {} }));
+}
+
+beforeEach(() => {
+  process.env.CRON_SECRET = SECRET;
+  resetEnvCache();
+  const old = new Date(Date.now() - 2 * HOUR);
+  const ancient = new Date(Date.now() - 30 * HOUR);
+  media = [
+    { id: "med_stale", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: old, storageKey: "originals/mem_1/a", memory: { deletedAt: null } },
+    { id: "med_fresh", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: new Date(), storageKey: "originals/mem_1/b", memory: { deletedAt: null } },
+    { id: "med_orphan", memoryId: "mem_2", status: "PENDING", checksumSha256: null, createdAt: ancient, storageKey: "originals/mem_2/c", memory: { deletedAt: null } },
+    { id: "med_nohash", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: old, storageKey: "originals/mem_1/d", memory: { deletedAt: null } },
+    { id: "med_gone", memoryId: "mem_3", status: "READY", checksumSha256: "b".repeat(64), createdAt: old, storageKey: "originals/mem_3/e", memory: { deletedAt: ancient } },
+  ];
+  events = [{ id: "evt_1", processedAt: null, attempts: 1, error: "boom", payload: { tokenPayload: JSON.stringify({ mediaId: "med_stale" }) } }];
+  emails = [{ id: "log_1", memoryId: "mem_4", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old }];
+  memories = [
+    { id: "mem_4", type: "PHOTO", deletedAt: null, contributor: { email: "a@example.com" }, media: [{ status: "READY" }], emails: [emails[0]!] },
+    { id: "mem_5", type: "PHOTO", deletedAt: null, contributor: { email: "b@example.com" }, media: [{ status: "READY" }], emails: [] },
+  ];
+  recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); delMock.mockClear();
+  recordMediaMock.mockImplementation(async ({ mediaId }) => mediaId === "med_orphan" ? { status: "PENDING", mediaId, memoryId: "mem_2" } : { status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 });
+});
+
+describe("GET /api/cron/reconcile-uploads", () => {
+  it("401s without the bearer secret or with the wrong one, and fails closed when CRON_SECRET is unset", async () => {
+    expect((await run()).status).toBe(401);
+    expect((await run("Bearer nope")).status).toBe(401);
+    delete process.env.CRON_SECRET; resetEnvCache();
+    expect((await run(`Bearer ${SECRET}`)).status).toBe(401);
+  });
+
+  it("runs every step once and reports counts", async () => {
+    const res = await run(`Bearer ${SECRET}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: Record<string, number> };
+    expect(body.success).toBe(true);
+    // (a) stale PENDING (>1h) re-recorded; the fresh one untouched; the >24h orphan whose blob is still missing → FAILED
+    // step (a) re-records both stale rows; step (c) replays med_stale once more from the event
+    expect(new Set(recordMediaMock.mock.calls.map((c) => c[0].mediaId))).toEqual(new Set(["med_orphan", "med_stale"]));
+    expect(recordMediaMock).toHaveBeenCalledTimes(3);
+    expect(media.find((m) => m.id === "med_orphan")?.status).toBe("FAILED");
+    // (b) checksum backfill
+    expect(checksumMock).toHaveBeenCalledWith({ mediaId: "med_nohash" });
+    // (c) unprocessed webhook events re-run
+    expect(events[0]?.processedAt).toBeInstanceOf(Date);
+    // (d) failed email retried, (e) READY memory with email and no log confirmed
+    expect(confirmMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5"]);
+    // (f) blobs of soft-deleted memories deleted
+    expect(delMock).toHaveBeenCalledWith("originals/mem_3/e");
+    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 1, confirmationsSent: 1, deletedBlobsRemoved: 1 });
+  });
+
+  it("is a no-op on a second run", async () => {
+    await run(`Bearer ${SECRET}`);
+    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); delMock.mockClear();
+    const res = await run(`Bearer ${SECRET}`);
+    const body = (await res.json()) as { data: Record<string, number> };
+    expect(checksumMock).not.toHaveBeenCalled();
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(delMock).not.toHaveBeenCalled();
+    expect(body.data.checksumsComputed).toBe(0);
+    expect(body.data.confirmationsSent).toBe(0);
+  });
+
+  it("gives up on a webhook event after three attempts", async () => {
+    events[0]!.attempts = 3;
+    await run(`Bearer ${SECRET}`);
+    expect(events[0]?.processedAt).toBeNull();
+  });
+});

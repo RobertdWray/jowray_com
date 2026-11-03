@@ -101,9 +101,11 @@ Authoritative record of what has already happened. Read every copy (main, open P
 - Checks passed: validate, 76/76 tests, offline build. Pending (orchestrator, preview): edit via claim page → one `MemoryRevision`; wrong token → 404; real confirmation email to an allowlisted address with a working preview link; HEIC download link in Chrome / render in Safari; second file from the claim page → READY.
 
 ## Task 9 — Reconcile cron
-- Status: [ ]   Owner: worker + orchestrator   Branch/PR: D (live checks after merge)
-- External IDs: Vercel env CRON_SECRET (production, preview)
-- Checks passed: —
+- Status: [~]   Owner: worker + orchestrator   Branch/PR: D (live checks after merge)
+- External IDs: Vercel env `CRON_SECRET` (Production and Preview, different values, sensitive; added 2026-11-03); local `.env` has its own. `vercel.json` (`crons: */10 * * * *` + the Task 3 `buildCommand`) is **not yet committed**: it waits for `MEMORIAL_NAME`/`MEMORIAL_SLUG`/`CONSENT_VERSION` in Vercel (Task 3 step 7).
+- Code done 2026-11-03 (TDD): `app/api/cron/reconcile-uploads/route.ts` reads `authorization` first, fails closed without `CRON_SECRET`, compares with `safeEqualHex`; steps (a) stale PENDING → `recordMedia`, orphan after 24 h → FAILED; (b) checksum backfill, 20 per run, oldest first; (c) unprocessed `WebhookEvent` replay, abandoned (Sentry) at the third attempt; (d) FAILED (< 5 attempts, due) or stalled PENDING `EmailLog` → `confirmMemory` (rotates the token, see Task 8 ruling); (e) READY/TEXT memories with an address and no `EmailLog` → `confirmMemory`; (f) blobs of soft-deleted memories → `del()`, `blobUrl` cleared so the step is idempotent. Returns `{ success, data: counts }`. Tests: `__tests__/api/reconcile` (401s, every step once, no-op second run, event abandoned after 3 attempts).
+- Plan deviation: the response does not include the day's `recipient_capped` / budget-refusal counts (nothing persists them; they are logged by the email service and `createMemory`). Cost if wrong: that summary must come from logs until a counter table exists.
+- Checks passed: validate, 80/80 tests, offline build; `.next/server/app/api/cron/reconcile-uploads/` holds only `route.js` (no static body). Pending (after PR D merges): `curl` with and without the bearer → 200 / 401; Vercel dashboard shows the cron; forced email failure retried.
 
 ## Task 10 — Verification + gates
 - Status: [ ]   Owner: orchestrator + Rob   Branch/PR: docs/phase1-close
