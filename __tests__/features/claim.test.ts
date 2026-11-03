@@ -29,7 +29,7 @@ beforeEach(() => {
     id: "mem_1", type: "PHOTO", deletedAt: null, claimTokenHash: hashClaimToken(TOKEN), consentVersion: "2026-11-v1",
     approxDateText: "Summer 1998", place: null, contributorNote: "old note", visibility: "FAMILY",
     contributor: { id: "con_1", name: "Jo", relationship: "friend", email: "jo@example.com" },
-    media: [{ id: "med_1", status: "READY", mimeType: "image/heic", originalFilename: "a.heic" }, { id: "med_2", status: "PENDING", mimeType: "video/mp4", originalFilename: null }],
+    media: [{ id: "med_1", status: "READY", mimeType: "image/heic", originalFilename: "a.heic", durationSeconds: 24 }, { id: "med_2", status: "PENDING", mimeType: "video/mp4", originalFilename: null, durationSeconds: null }],
   };
 });
 
@@ -38,6 +38,7 @@ describe("getMemoryForClaim", () => {
     const found = await getMemoryForClaim(TOKEN);
     expect(found?.id).toBe("mem_1");
     expect(found?.media.map((m) => m.id)).toEqual(["med_1"]);
+    expect(found?.media[0]?.durationSeconds).toBe(24);
   });
 
   it("returns null for a wrong token or a deleted memory", async () => {

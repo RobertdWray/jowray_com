@@ -5,6 +5,7 @@ import { connection } from "next/server";
 import { Suspense } from "react";
 
 import { getMemoryForClaim } from "@/features/memories/claim";
+import { formatDuration } from "@/lib/format-duration";
 import { isRenderableIn } from "@/lib/media-types";
 
 import { linkClass } from "../../_components/field-classes";
@@ -83,6 +84,9 @@ async function ClaimContent({ params }: { params: PageProps<"/m/[claimToken]">["
             return (
               <div key={item.id} className="rounded-card border-[3px] border-wood-light bg-paper p-3">
                 <audio controls src={src} className="w-full" />
+                {item.durationSeconds !== null && (
+                  <p className="text-small text-walnut-soft">{formatDuration(item.durationSeconds * 1000)}</p>
+                )}
               </div>
             );
           }

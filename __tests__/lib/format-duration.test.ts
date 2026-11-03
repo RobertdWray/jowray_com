@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatDuration } from "@/lib/format-duration";
+import { durationSecondsFor, formatDuration } from "@/lib/format-duration";
 
 describe("formatDuration", () => {
   it.each([
@@ -16,5 +16,24 @@ describe("formatDuration", () => {
 
   it.each([-1_000, NaN, Infinity, -Infinity])("formats invalid duration %s as 0:00", (ms) => {
     expect(formatDuration(ms)).toBe("0:00");
+  });
+});
+
+describe("durationSecondsFor", () => {
+  it.each([
+    [1, 1],
+    [199, 1],
+    [400, 1],
+    [499, 1],
+    [500, 1],
+    [999, 1],
+    [1000, 1],
+    [24_400, 24],
+  ])("stores %i ms as %i seconds without losing short clips", (ms, expected) => {
+    expect(durationSecondsFor(ms)).toBe(expected);
+  });
+
+  it.each([0, -1, NaN, Infinity, -Infinity])("omits invalid duration %s", (ms) => {
+    expect(durationSecondsFor(ms)).toBeUndefined();
   });
 });

@@ -1,10 +1,13 @@
 import { z } from "zod";
 
+export const MAX_DURATION_SECONDS = 86_400;
+
 /** What the browser knows about a chosen file or recording. */
 export const fileInputSchema = z.object({
   name: z.string().min(1).max(255),
   type: z.string().max(255),
   size: z.number().int().nonnegative(),
+  durationSeconds: z.number().int().min(0).max(MAX_DURATION_SECONDS).optional(),
 });
 export type FileInput = z.infer<typeof fileInputSchema>;
 

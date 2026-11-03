@@ -5,7 +5,7 @@ import { verifyUploadTicket } from "@/lib/upload-ticket";
 import { resetEnvCache } from "@/server/config/env";
 
 interface MemoryRow { id: string; memorialId: string; contributorId: string; type: string; source: string; status: string; claimTokenHash: string; consentVersion: string; consentedAt: Date; createdAt: Date; deletedAt: Date | null; approxDateText: string | null; contributorNote: string | null; visibility: string; notifyWhenPosted: boolean }
-interface MediaRow { id: string; memoryId: string; storageKey: string; mimeType: string; maxBytes: number; status: string; createdAt: Date; originalFilename: string | null }
+interface MediaRow { id: string; memoryId: string; storageKey: string; mimeType: string; maxBytes: number; status: string; createdAt: Date; originalFilename: string | null; durationSeconds?: number | null }
 const memories: MemoryRow[] = [];
 const medias: MediaRow[] = [];
 const contributors: Record<string, unknown>[] = [];
@@ -79,6 +79,38 @@ describe("createMemory", () => {
     const result = await createMemory({ ...valid, file: { name: "clip.webm", type: "audio/webm;codecs=opus", size: 10 } });
     expect(result.ok && result.upload?.ticket.mimeType).toBe("audio/webm");
     expect(result.ok && result.upload?.pathname).toMatch(/\.webm$/);
+  });
+
+  it("stores durationSeconds for a recording", async () => {
+    const result = await createMemory({ ...valid, file: { name: "clip.webm", type: "audio/webm;codecs=opus", size: 10, durationSeconds: 24 } });
+    expect(result.ok).toBe(true);
+    expect(medias[0]?.durationSeconds).toBe(24);
+  });
+
+  it("stores null when no duration is sent", async () => {
+    const result = await createMemory(valid);
+    expect(result.ok).toBe(true);
+    expect(medias[0]?.durationSeconds).toBeNull();
+  });
+
+  it("stores null for 0", async () => {
+    const result = await createMemory({ ...valid, file: { ...valid.file, durationSeconds: 0 } });
+    expect(result.ok).toBe(true);
+    expect(medias[0]?.durationSeconds).toBeNull();
+  });
+
+  it("ignores durationSeconds on a photo", async () => {
+    const result = await createMemory({ ...valid, file: { name: "photo.jpg", type: "image/jpeg", size: 10, durationSeconds: 24 } });
+    expect(result.ok).toBe(true);
+    expect(medias[0]?.durationSeconds).toBeNull();
+  });
+
+  it("rejects a negative durationSeconds", async () => {
+    const result = await createMemory({ ...valid, file: { ...valid.file, durationSeconds: -1 } });
+    expect(result).toMatchObject({ ok: false, code: "invalid" });
+    expect(memories).toHaveLength(0);
+    expect(medias).toHaveLength(0);
+    expect(contributors).toHaveLength(0);
   });
 
   it("maps an untyped iPhone photo from its extension", async () => {
