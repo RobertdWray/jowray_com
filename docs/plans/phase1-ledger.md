@@ -45,7 +45,8 @@ Authoritative record of what has already happened. Read every copy (main, open P
 ## Task 1 — Infra follow-ups
 - Status: [~]   Owner: orchestrator + Rob   Branch/PR: A `feat/phase1-foundation` (PR #4, draft, stacked on #3)
 - Done 2026-11-02: `.github/workflows/ci.yml` (job `ci`: lint, type-check, test:run, build on PRs and main), `.github/workflows/neon-cleanup.yml`, `.gitignore` (`/generated/`, `/.reference/`), `docs/environment.md` rows for `NEON_API_KEY` and `VERCEL_AUTOMATION_BYPASS_SECRET`; GitHub variable `NEON_PROJECT_ID=icy-scene-20351172` set (2026-11-03T01:54Z).
-- Waiting on Rob: Neon auth (`neonctl auth` or `NEON_API_KEY`) → then Neon `dev` branch, `.env.local` append, GitHub secret `NEON_API_KEY`, delete stale `preview/docs/bootstrap-report`; `main` ruleset after PR A merges and `ci` is green on main once.
+- External IDs: Neon `dev` branch **`br-holy-rice-bbz4t50l`** (parent `main` `br-restless-king-bbmkh5zd`, created 2026-11-03T02:05Z through the Neon MCP connector because the `neon` CLI is not authenticated); GitHub variable `NEON_PROJECT_ID`.
+- Waiting on Rob: `NEON_API_KEY` (GitHub secret for the cleanup action; `.env` for the CLI); approval to delete the stale `preview/docs/bootstrap-report` (`br-orange-rice-bbil7ivy`) and `preview/docs/custom-domain` (`br-weathered-queen-bb8o0zd5`) branches (both PRs are closed; the cleanup action did not exist yet); `main` ruleset after PR A merges and `ci` is green on main once.
 - Checks passed: `gh variable list` shows `NEON_PROJECT_ID`. Pending: `neon branches list`, `.env.local` checks, CI green on main, ruleset, `gh secret list`.
 
 ## Task 2a — Pre-flight
