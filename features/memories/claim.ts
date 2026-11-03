@@ -2,10 +2,10 @@ import "server-only";
 
 import { z } from "zod";
 
-import { lockMemory, type Tx } from "@/features/memories/lock";
+import { lockMemory } from "@/features/memories/lock";
+import { hasWords, LIVE_MEDIA_ORDER, recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
-import { summarizeMemoryType } from "@/lib/media-types";
 import { claimMediaRefSchema } from "@/lib/validations/media";
 import type { Prisma } from "@/generated/prisma/client";
 import { getDb } from "@/server/db/client";
@@ -63,8 +63,6 @@ export interface ClaimView {
   media: ClaimMediaView[];
 }
 
-const LIVE_MEDIA_ORDER = [{ sortOrder: "asc" }, { createdAt: "asc" }] as const;
-
 /** The memory behind a claim token with its live media (any status), or null. */
 export async function getMemoryForClaim(claimToken: string): Promise<ClaimView | null> {
   const memory = await getDb().memory.findUnique({
@@ -99,34 +97,6 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
       durationSeconds,
     })),
   };
-}
-
-function hasWords(note: string | null): boolean {
-  return (note ?? "").trim().length > 0;
-}
-
-/** The files a contributor sees as theirs: live rows that are not pending replacements of another row. */
-async function visibleMediaIds(tx: Tx, memoryId: string): Promise<string[]> {
-  const rows = await tx.media.findMany({
-    where: { memoryId, deletedAt: null, replacesMediaId: null },
-    select: { id: true },
-    orderBy: [...LIVE_MEDIA_ORDER],
-  });
-  return rows.map((r) => r.id);
-}
-
-/**
- * Recompute `Memory.type` from the live READY media and the note (P8). A
- * memory with neither keeps its provisional type; callers refuse to create
- * that state, this only reports it.
- */
-async function recomputeType(tx: Tx, memoryId: string, note: string | null): Promise<"VOICE" | "VIDEO" | "PHOTO" | "TEXT" | null> {
-  const ready = await tx.media.findMany({ where: { memoryId, deletedAt: null, status: "READY" }, select: { mimeType: true } });
-  const type = summarizeMemoryType(ready, hasWords(note));
-  if (type !== null) {
-    await tx.memory.update({ where: { id: memoryId }, data: { type } });
-  }
-  return type;
 }
 
 export type ClaimUpdateResult = { ok: true } | { ok: false; code: "invalid" | "not_found" | "last_words" };
@@ -184,7 +154,7 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
       await tx.contributor.update({ where: { id: memory.contributor.id }, data: { name: after.name, relationship: after.relationship } });
     }
     if (hasWords(before.contributorNote) !== hasWords(after.contributorNote)) {
-      await recomputeType(tx, memory.id, after.contributorNote);
+      await recomputeMemoryType(tx, memory.id, after.contributorNote);
     }
     const isFirst = (await tx.memoryRevision.count({ where: { memoryId: memory.id } })) === 0;
     await tx.memoryRevision.create({
@@ -242,7 +212,7 @@ async function retireMedia(raw: unknown, statuses: MediaStatus[], action: "remov
     const now = new Date();
     await tx.media.update({ where: { id: target.id }, data: { deletedAt: now } });
     await tx.media.updateMany({ where: { memoryId: memory.id, replacesMediaId: target.id, deletedAt: null, status: "PENDING" }, data: { deletedAt: now } });
-    const type = (await recomputeType(tx, memory.id, memory.contributorNote)) ?? memory.type;
+    const type = (await recomputeMemoryType(tx, memory.id, memory.contributorNote)) ?? memory.type;
     const after = { mediaIds: await visibleMediaIds(tx, memory.id), type };
     await tx.memoryRevision.create({
       data: {

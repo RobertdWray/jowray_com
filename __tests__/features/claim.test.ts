@@ -11,8 +11,8 @@ const mediaRows: MediaRow[] = [];
 const lockCalls: string[] = [];
 function matchesMedia(row: MediaRow, where: Record<string, unknown>): boolean {
   for (const [k, v] of Object.entries(where)) {
-    if (k === "status" && typeof v === "object" && v !== null && "in" in v) { if (!(v as { in: string[] }).in.includes(row.status)) return false; continue; }
-    if ((row as Record<string, unknown>)[k] !== v) return false;
+    if (k === "status" && typeof v === "object" && v !== null && "in" in v) { if (!(v as { in: string[] }).in.includes(row.status)) { return false; } continue; }
+    if ((row as Record<string, unknown>)[k] !== v) { return false; }
   }
   return true;
 }
@@ -23,11 +23,11 @@ const tx = {
     findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => mediaRows.filter((r) => matchesMedia(r, where))),
     count: vi.fn(async ({ where }: { where: Record<string, unknown> }) => mediaRows.filter((r) => matchesMedia(r, where)).length),
     update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { const row = mediaRows.find((r) => r.id === where.id)!; Object.assign(row, data); return row; }),
-    updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Partial<MediaRow> }) => { const rows = mediaRows.filter((r) => matchesMedia(r, where)); for (const r of rows) Object.assign(r, data); return { count: rows.length }; }),
+    updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Partial<MediaRow> }) => { const rows = mediaRows.filter((r) => matchesMedia(r, where)); for (const r of rows) { Object.assign(r, data); } return { count: rows.length }; }),
   },
   memory: {
     findUnique: vi.fn(async ({ where, include }: { where: { claimTokenHash?: string; id?: string }; include?: { media?: { where?: Record<string, unknown> } } }) => {
-      if (!memory || !(where.claimTokenHash ? memory.claimTokenHash === where.claimTokenHash : memory.id === where.id)) return null;
+      if (!memory || !(where.claimTokenHash ? memory.claimTokenHash === where.claimTokenHash : memory.id === where.id)) { return null; }
       if (include?.media) {
         const w = include.media.where ?? {};
         return { ...memory, media: mediaRows.filter((r) => r.memoryId === memory!.id && matchesMedia(r, w)).sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.getTime() - b.createdAt.getTime()) };

@@ -3,16 +3,21 @@ import "server-only";
 import { createHash } from "node:crypto";
 
 import { confirmMemory } from "@/features/memories/confirm";
+import { lockMemory } from "@/features/memories/lock";
+import { recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger, logError, logErrorAndFlush } from "@/lib/logger";
 import { isAllowedMime } from "@/lib/media-types";
 import { afterWithFlush } from "@/lib/sentry/after-flush";
 import { getSiteUrl } from "@/lib/site-url";
 import { type UploadTicket, verifyUploadTicket } from "@/lib/upload-ticket";
+import type { Prisma } from "@/generated/prisma/client";
 import { getDb } from "@/server/db/client";
 import { createStorageService } from "@/services/storage";
 
 const log = createLogger({ category: "upload" });
+/** Neon computes can take a couple of seconds to wake; Prisma's defaults (2 s / 5 s) are too tight. */
+const TX_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;
 
 /** Files at or under this size are hashed inline in `after()`; larger ones by the cron. */
 export const INLINE_HASH_MAX_BYTES = 50 * 1024 * 1024;
@@ -38,7 +43,7 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
   const db = getDb();
   const row = await db.media.findUnique({
     where: { id: mediaId },
-    include: { memory: { select: { deletedAt: true } } },
+    include: { memory: { select: { deletedAt: true, contributorNote: true } } },
   });
   if (!row || row.memory.deletedAt !== null) {
     return { status: "NOT_FOUND", mediaId };
@@ -61,12 +66,12 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
   if (tooLarge || wrongType) {
     const reason = tooLarge ? "too_large" : "wrong_type";
     await storage.del(row.storageKey);
-    await transition(mediaId, { status: "FAILED" });
+    await transition(row, { status: "FAILED" });
     log.warn({ action: "reject", mediaId, memoryId: row.memoryId, reason, size: head.size }, "upload rejected");
     return { status: "FAILED", mediaId, memoryId: row.memoryId, reason };
   }
 
-  const updated = await transition(mediaId, { status: "READY", sizeBytes: head.size, blobUrl: head.url });
+  const updated = await transition(row, { status: "READY", sizeBytes: head.size, blobUrl: head.url });
   if (updated === "lost_race") {
     // Another writer transitioned the row first; report what it decided.
     const current = await db.media.findUnique({ where: { id: mediaId } });
@@ -81,13 +86,39 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
   return { status: "READY", mediaId, memoryId: row.memoryId, sizeBytes: head.size };
 }
 
-/** Conditional PENDING → next-state update; P2025 (no row matched) means another writer got there first. */
+/**
+ * Conditional PENDING → next-state update inside a transaction that holds the
+ * memory lock; P2025 (no row matched) means another writer got there first.
+ * Also recomputes `Memory.type`, and when a replacement reaches READY retires
+ * its target (or cancels itself if the target was removed meanwhile).
+ */
 async function transition(
-  mediaId: string,
+  row: { id: string; memoryId: string; replacesMediaId: string | null; memory: { contributorNote: string | null } },
   data: { status: "READY"; sizeBytes: number; blobUrl: string } | { status: "FAILED" }
 ): Promise<"done" | "lost_race"> {
   try {
-    await getDb().media.update({ where: { id: mediaId, status: "PENDING" }, data });
+    await getDb().$transaction(async (tx) => {
+      await lockMemory(tx, row.memoryId);
+      await tx.media.update({ where: { id: row.id, status: "PENDING" }, data });
+      if (data.status === "READY" && row.replacesMediaId !== null) {
+        const before = { mediaIds: await visibleMediaIds(tx, row.memoryId) };
+        const now = new Date();
+        const retired = await tx.media.updateMany({ where: { id: row.replacesMediaId, deletedAt: null }, data: { deletedAt: now } });
+        if (retired.count === 1) {
+          // The replacement takes the target's place; clearing the pointer makes it a visible file.
+          await tx.media.update({ where: { id: row.id }, data: { replacesMediaId: null } });
+          const after = { mediaIds: await visibleMediaIds(tx, row.memoryId) };
+          await tx.memoryRevision.create({
+            data: { memoryId: row.memoryId, changedVia: "CLAIM_LINK", before: before as Prisma.InputJsonValue, after: after as Prisma.InputJsonValue },
+          });
+        } else {
+          // The target was removed while this upload ran: the replacement must not resurrect it.
+          await tx.media.update({ where: { id: row.id }, data: { deletedAt: now } });
+          log.info({ action: "replacement_cancelled", mediaId: row.id, memoryId: row.memoryId }, "replacement target already removed");
+        }
+      }
+      await recomputeMemoryType(tx, row.memoryId, row.memory.contributorNote);
+    }, TX_OPTIONS);
     return "done";
   } catch (error) {
     if (isPrismaCode(error, "P2025")) {
