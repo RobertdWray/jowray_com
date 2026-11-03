@@ -1,0 +1,233 @@
+# Design spec — jowray.com, Phase 1 (collect memories)
+
+**Source of truth for look and feel.** When this file and the current code
+disagree, this file wins. When this file and `reference/home.html` disagree,
+the reference HTML wins (it is the comp, exported from the design canvas).
+
+What's in this folder:
+
+| File | What it is |
+|---|---|
+| `DESIGN.md` | This spec: rules, tokens, components, copy, accessibility |
+| `tokens.css` | Tailwind 4 `@theme` block + base rules, ready for `app/globals.css` |
+| `reference/home.html` | The home page comp (desktop 1280, fluid to 390). Open it in a browser. |
+| `reference/thank-you.html` | The post-submit state |
+| `reference/jo-santa.jpg` | The one Phase 1 photo (hero) |
+| `reference/heart-stitched.svg` | The mark: running-stitch outline heart |
+| `reference/heart-solid.svg` | Solid calico heart (favicon / avatar / thank-you) |
+
+## 1. Direction in one line
+
+**A celebration of Jo, not a memorial of her.** Warm, bright, handmade, a
+little cheeky. If a screen would look at home on a funeral-home website, it's
+wrong. Think a quilt on a porch swing, a kindergarten classroom wall, a
+Christmas Eve living room.
+
+Jo's maiden name was Hart. **The heart is the mark.** Always red, always
+handmade-looking (stitched outline or solid "calico" with a stitch inside),
+never a glossy icon or emoji.
+
+## 2. Implementation plan (do these in order)
+
+1. **Fonts.** The build must download nothing (see `AGENTS.md` § Checks), so
+   do not use `next/font/google`. Add the self-hosted packages and import them
+   in `app/layout.tsx`:
+   ```
+   npm i @fontsource-variable/fraunces @fontsource/atkinson-hyperlegible
+   ```
+   ```ts
+   import "@fontsource-variable/fraunces";          // display
+   import "@fontsource/atkinson-hyperlegible/400.css";
+   import "@fontsource/atkinson-hyperlegible/700.css";
+   ```
+   Remove the Geist imports and classes from `app/layout.tsx`; Geist is not
+   part of this brand. Set `className="h-full antialiased"` only.
+2. **Tokens.** Replace the starter `@theme inline` block and body rule in
+   `app/globals.css` with the contents of `design/tokens.css`. Delete the
+   `prefers-color-scheme: dark` block: the site has one warm theme.
+3. **Metadata.** `title: "Jo Wray — Leave a memory"`, description
+   `"Tell us a Jo story. Her family is collecting memories of Velma Josephine
+   \"Jo\" Wray — a voice recording, a photo, a video, or a few words."`
+   Favicon: `reference/heart-solid.svg` rendered to `app/icon.svg` (Next
+   picks it up) — keep `app/favicon.ico` as the fallback, regenerated from it.
+4. **Hero photo.** Move `reference/jo-santa.jpg` to `public/photos/jo-santa.jpg`
+   and render it with `next/image` (`sizes="(min-width: 900px) 560px, 100vw"`).
+   Alt text is in the reference HTML; keep it.
+5. **Home page** (`app/page.tsx`): rebuild to match `reference/home.html`
+   section for section (§ 5 below). Keep it a static page; it links to `/share`.
+6. **Share page** (`app/share/page.tsx`, `share-form.tsx`): restyle with the
+   same tokens and the field styling in § 5.4. **Keep every existing field,
+   name and validation** — the comp shows a simplified field set only to
+   establish the look. Map as follows:
+   - `name` → "Your name"
+   - `relationship` → "How you knew Jo" (placeholder: *former student · church friend · neighbor · family*)
+   - `email` → "Email" (helper: *so we can say thank you*)
+   - `approxDateText` → "When is this memory from? (roughly is fine)"
+   - `place` → "Where? (optional)" (placeholder: *her classroom · Lake George · Broadmead*)
+   - `note` → "Your memory of Jo"
+   - `file` + recorder → the "Rather say it than type it?" periwinkle box, then the dashed file field
+   - `visibility` → keep as a labelled select, styled like an input, below the file field
+   - `contactOptIn` → the checkbox under the submit button, with the sentence from the comp ("Memories go to Richard, Rob and Tracy first…") as its surrounding copy
+   - Submit button → "Send this to Jo's family" with the solid heart icon
+7. **Thank-you state** (wherever the form's success currently renders): match
+   `reference/thank-you.html`. The headline is **"Jo would have loved this."**
+8. **`/m/[claimToken]`** and any other visitor-facing page: same ground, type
+   and buttons. No page in the app keeps black-on-white Geist.
+
+Run `npm run validate`, `npm run test:run`, `npm run build` as usual.
+
+## 3. Color
+
+Hex values and names are in `tokens.css`. Usage rules:
+
+- **Red leads; everything else supports.** One red primary action per screen.
+  Hearts are always `jo-red`.
+- **Warm neutrals only.** Ground is `muslin` with the faint periwinkle gingham
+  (`body` rule in `tokens.css`). Cards and the form sit on `paper`. No white
+  (#fff) surfaces except the inside of inputs. No greys of any kind.
+- **Text is `walnut`**, secondary text `walnut-soft`. Never black.
+- **Small red text uses `jo-red-deep`**, not `jo-red` (contrast). Red at
+  ≥24px bold may use `jo-red`.
+- `periwinkle`, `goldenrod`, `lake-green` at their base values are **decor
+  and grounds only** (patchwork, dashed borders, the story band, the focus
+  ring). As text or a button they must use the `-deep` variants.
+- Pastels only as tints of these colors, never as a base.
+- **Never:** dove grey, lavender, navy-and-gold, gradients used as washes,
+  black-and-white photo treatments.
+
+Contrast checked: walnut on muslin 13:1, white on jo-red 5.5:1, jo-red-deep
+on muslin 6.1:1, periwinkle-deep on muslin 5.6:1, white on lake-green 5.3:1,
+walnut-soft on muslin 7.2:1.
+
+## 4. Type
+
+- **Display:** Fraunces (variable), weight 700–800, optical size on. Used for
+  h1, h2, card titles, the photo caption, the pull-quote, and the footer line.
+  Tight tracking (−0.015 to −0.02em) at display sizes only.
+- **Body:** Atkinson Hyperlegible 400/700 for everything else, including
+  labels, buttons and inputs. It was designed for low-vision readers; the
+  audience is largely 70+.
+- **Scale (desktop):** display 68 · h2 44 · card title 28 · lead 22 · body 20
+  · label 19 · small 17. **17px is the floor** — nothing on the site is
+  smaller, including helper text and the footer.
+- **Phone:** display 44, h2 34; everything else unchanged.
+- Line-height 1.5 for body, 1.02–1.1 for display.
+- **No script or cursive fonts anywhere.** No italic Fraunces except the one
+  closing line on the thank-you page.
+
+## 5. Components (see `reference/home.html` for exact values)
+
+### 5.1 Header
+Stitched-heart mark (44px solid heart with the inner stitch) + "Jo Wray"
+wordmark in Fraunces 700 30px. Right: text links at 19px 700, 44px tall
+hit area. Wraps under the wordmark on phones.
+
+### 5.2 Hero
+Two columns that wrap (text `flex: 1 1 380px`, photo `flex: 1 1 400px`,
+max 560px). Eyebrow in `jo-red-deep` 20px uppercase, tracking 0.08em:
+"Velma Josephine "Jo" Wray, née Hart". H1: *Tell us a **Jo** story.* with
+"Jo" in `jo-red`. Lead paragraph. Primary button + dashed secondary button.
+
+**Photo treatment:** the photo sits in a `.patchwork` frame (16px padding,
+6px radius, soft shadow) with a `paper` inner mount (14px padding), a
+Fraunces caption underneath, the whole figure rotated −1.5°, and a red pill
+"label" overlapping the bottom edge rotated +4°. This is the house photo
+treatment for every photo on the site; never vignettes, never desaturation.
+
+### 5.3 "Four ways to share" band
+`paper` ground, 3px dashed `jo-red` rule top and bottom. Four cards in a
+wrapping flex row (`flex: 1 1 200px`, min-height 220px, radius 18px, 24px
+padding). The first (Record here) is the red card: `jo-red` ground, white
+text, `shadow-card-red`. The other three: `muslin` ground, 3px `wood-light`
+border, `shadow-card`. Each card: 44px stroke icon (inline SVG, 1.8 stroke,
+round caps, `jo-red-deep` on light cards / white on red), Fraunces 28px
+title, 18px line. Hover lifts 3px; the card is an `<a>` so it is keyboard
+reachable. Cards link to the share page (`/share`, with `#record` for the
+recorder).
+
+Icons are hand-drawn stroke SVGs in the reference; there is no icon library.
+Keep them inline and `aria-hidden="true"`.
+
+### 5.4 Form
+`paper` ground, 20px radius, 3px `wood-light` border, `shadow-form`, 32px
+padding, 22px gap. Labels 19px 700 above the input, helper text 400
+`walnut-soft` inline in the label. Inputs: 56px min height, 20px text,
+2px `wood` border, 12px radius, white inside, placeholder `wood`. Textarea
+7 rows. File input on `muslin` with a 2px dashed `wood` border. Focus:
+4px `goldenrod` outline. Submit: primary button (below). Errors: `jo-red-deep`
+text at 17px under the field, kind in tone ("We'll need a name so the family
+knows who to thank").
+
+The recorder lives in a `paper` box with a 3px dashed `periwinkle` border,
+16px radius, titled "Rather say it than type it?", with a `periwinkle-deep`
+56px "Start recording" button and a 17px line "Up to 10 minutes. You can
+listen back before you send it." (adjust the limit to whatever
+`recorder.ts` enforces).
+
+### 5.5 Buttons
+- **Primary:** `jo-red` ground, white 22px 700 text, 64px min height, 14px
+  radius, 30px side padding, `shadow-button-red` (a flat 5px offset — the
+  "stitched-on" look; no blur), optional stitched-heart icon at left.
+- **Secondary:** transparent, 3px dashed `wood` border, `walnut` 20px 700
+  text, 64px min height, 14px radius. On the green band the dash and text
+  are `#E7F0E3`.
+- **Tertiary (periwinkle):** `periwinkle-deep` ground, white text, 56px.
+- No hover-only affordances. Hover may darken the shadow; focus must be
+  the goldenrod ring.
+
+### 5.6 Story band
+`lake-green` ground, `#FFFDF8` text, `#E7F0E3` secondary text. Two columns
+that wrap. The Mrs. Claus paragraph is a pull-quote: Fraunces 24px on a
+`rgb(255 253 248 / 0.12)` panel, 14px radius, no left border.
+
+### 5.7 Footer
+Centered: stitched-heart outline (40px), Fraunces 22px "Made with love by
+Richard, Rob, Tracy and Ava.", 18px contact line.
+
+### 5.8 Thank-you
+Centered, min full viewport height. 96px solid heart inside a 150px `paper`
+circle inside a round `.patchwork` ring. H1 60px "Jo would have loved
+this.", 22px lead, primary "Tell another one" + dashed secondary, and the
+italic closer "Spelling, as promised, did not count."
+
+## 6. Layout
+- Content max-width 1200px, 5% side padding (≥16px on phones).
+- Section padding 64–72px top and bottom on desktop, 40–48px on phones.
+- Every section is a wrapping flex row or a flex column; no fixed heights.
+- Touch targets ≥44px, inputs and buttons 56–64px.
+- No sticky header, no modals, no autoplay audio, no hover-only interactions.
+- The page must look finished at 390px wide — most visitors arrive from a
+  text-message link. `reference/home.html` at 390px is the phone comp.
+
+## 7. Voice and microcopy
+Warm, plain, a little playful. Jo was teasing and direct. Use the copy in
+the reference files verbatim unless a field needs something it doesn't
+cover; then write in the same register.
+
+- **Say:** "Tell us a Jo story." · "Leave a memory of Jo" · "Send this to
+  Jo's family" · "Jo would have loved this." · "Spelling doesn't count."
+- **Never:** "In loving memory" · "Celebrate a life" · "Tribute wall" ·
+  "Submit" · "Mrs. Claus" (except in the obituary pull-quote).
+- Empty and error states sound like a kind teacher: "Nothing here yet — be
+  the first to tell a Jo story."
+
+## 8. Accessibility (non-negotiable)
+- WCAG AA everywhere, AAA for body text (walnut on muslin and paper is).
+- Real `<button>`, `<a href>`, `<label for>` on every control; no click
+  handlers on divs.
+- Visible goldenrod focus ring on everything focusable.
+- Decorative SVGs `aria-hidden="true"`; the heart mark in the header is
+  decorative (the wordmark carries the name).
+- No text below 17px, no light-weight type, no text over photos.
+- Reduced motion: the only animation is the 3px card lift; wrap it in
+  `@media (prefers-reduced-motion: no-preference)`.
+
+## 9. Not in Phase 1
+Phone-in voicemail (there is no "Call" card — removed 2026-11-03), the
+obituary page, the memory wall, tag cloud, search, seasonal/Christmas
+variant. Don't build placeholders for them.
+
+## 10. Placeholders in the comp
+`[PHONE-NUMBER]` on the "Text us" card's `sms:` link — fill from the
+voip.ms number in `docs/`. The hero carries no dates on purpose (the
+family hasn't settled on how to show them); leave them off.
