@@ -39,9 +39,16 @@ export type ClaimChanges = z.infer<typeof claimChangesSchema>;
 
 export type MediaStatus = "PENDING" | "READY" | "FAILED";
 
+/** State of a photo's sanitized web copy; non-photos are always `none`. */
+export interface WebCopyState {
+  status: "ready" | "pending" | "failed" | "none";
+  mimeType: string | null;
+}
+
 export interface ClaimMediaView {
   id: string;
   status: MediaStatus;
+  web: WebCopyState;
   mimeType: string;
   originalFilename: string | null;
   sortOrder: number;
@@ -62,6 +69,13 @@ export interface ClaimView {
   media: ClaimMediaView[];
 }
 
+function webCopyState(row: { status: "PENDING" | "READY" | "FAILED"; mimeType: string | null } | null): WebCopyState {
+  if (!row) {
+    return { status: "none", mimeType: null };
+  }
+  return { status: row.status === "READY" ? "ready" : row.status === "PENDING" ? "pending" : "failed", mimeType: row.mimeType };
+}
+
 /** The memory behind a claim token with its live media (any status), or null. */
 export async function getMemoryForClaim(claimToken: string): Promise<ClaimView | null> {
   const memory = await getDb().memory.findUnique({
@@ -70,7 +84,16 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
       contributor: { select: { name: true, relationship: true, email: true } },
       media: {
         where: { deletedAt: null },
-        select: { id: true, status: true, mimeType: true, originalFilename: true, sortOrder: true, replacesMediaId: true, durationSeconds: true },
+        select: {
+          id: true,
+          status: true,
+          mimeType: true,
+          originalFilename: true,
+          sortOrder: true,
+          replacesMediaId: true,
+          durationSeconds: true,
+          derivatives: { where: { kind: "WEB_IMAGE" }, select: { status: true, mimeType: true } },
+        },
         orderBy: [...LIVE_MEDIA_ORDER],
       },
     },
@@ -86,9 +109,10 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
     contributorNote: memory.contributorNote,
     visibility: memory.visibility,
     contributor: memory.contributor,
-    media: memory.media.map(({ id, status, mimeType, originalFilename, sortOrder, replacesMediaId, durationSeconds }) => ({
+    media: memory.media.map(({ id, status, mimeType, originalFilename, sortOrder, replacesMediaId, durationSeconds, derivatives }) => ({
       id,
       status,
+      web: webCopyState(derivatives?.[0] ?? null),
       mimeType,
       originalFilename,
       sortOrder,

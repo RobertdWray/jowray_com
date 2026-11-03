@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { ClaimMediaView } from "@/features/memories/claim";
 import { formatDuration } from "@/lib/format-duration";
@@ -39,6 +39,23 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
   const [message, setMessage] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+
+  // While a photo's sanitized copy is still being made (seconds, normally), re-read the page a few times.
+  const waiting = media.some((item) => item.status === "READY" && kindOf(item.mimeType) === "photo" && (item.web.status === "pending" || item.web.status === "none"));
+  useEffect(() => {
+    if (!waiting) {
+      return;
+    }
+    let ticks = 0;
+    const timer = setInterval(() => {
+      ticks += 1;
+      router.refresh();
+      if (ticks >= 10) {
+        clearInterval(timer);
+      }
+    }, 3_000);
+    return () => clearInterval(timer);
+  }, [waiting, router]);
 
   const replacements = new Map<string, ClaimMediaView>();
   for (const item of media) {
@@ -151,7 +168,16 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
         const download = `${src}&download=1`;
         return (
           <div key={item.id} className={cardClass}>
-            {!isRenderableIn(item.mimeType, userAgent) ? (
+            {kind === "photo" && item.web.status !== "ready" ? (
+              item.web.status === "failed" ? (
+                <p className="text-body">
+                  We could not prepare this photo for the page.{" "}
+                  <a className={linkClass} href={download}>Download {item.originalFilename ?? "the original"}</a>
+                </p>
+              ) : (
+                <p className="text-body text-walnut-soft" role="status">Preparing your photo…</p>
+              )
+            ) : kind === "photo" && !isRenderableIn(item.web.mimeType ?? item.mimeType, userAgent) ? (
               <p>
                 <a className={linkClass} href={download}>Download {item.originalFilename ?? "file"}</a> (this browser cannot display {item.mimeType})
               </p>
