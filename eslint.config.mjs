@@ -120,7 +120,15 @@ const eslintConfig = defineConfig([
       "no-console": "off",
     },
   },
-  globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts", "generated/**", ".reference/**"]),
+  globalIgnores([
+    ".next/**",
+    "out/**",
+    "build/**",
+    "next-env.d.ts",
+    "generated/**",
+    ".reference/**",
+    ".superpowers/**",
+  ]),
 ]);
 
 export default eslintConfig;

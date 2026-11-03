@@ -43,18 +43,20 @@ Authoritative record of what has already happened. Read every copy (main, open P
 - Waiting on Rob: `MEMORIAL_NAME`, `MEMORIAL_SLUG`, `SENDGRID_FROM_EMAIL`, consent sentences + `CONSENT_VERSION`, `OUTBOUND_ALLOWLIST` emails, Vercel Protection Bypass secret, Neon auth.
 
 ## Task 1 — Infra follow-ups
-- Status: [ ]   Owner: orchestrator + Rob   Branch/PR: A
-- External IDs: Neon dev branch …; GitHub variable NEON_PROJECT_ID; GitHub secret NEON_API_KEY; ruleset (see one-off actions)
-- Checks passed: —
+- Status: [~]   Owner: orchestrator + Rob   Branch/PR: A `feat/phase1-foundation` (PR #4, draft, stacked on #3)
+- Done 2026-11-02: `.github/workflows/ci.yml` (job `ci`: lint, type-check, test:run, build on PRs and main), `.github/workflows/neon-cleanup.yml`, `.gitignore` (`/generated/`, `/.reference/`), `docs/environment.md` rows for `NEON_API_KEY` and `VERCEL_AUTOMATION_BYPASS_SECRET`; GitHub variable `NEON_PROJECT_ID=icy-scene-20351172` set (2026-11-03T01:54Z).
+- Waiting on Rob: Neon auth (`neonctl auth` or `NEON_API_KEY`) → then Neon `dev` branch, `.env.local` append, GitHub secret `NEON_API_KEY`, delete stale `preview/docs/bootstrap-report`; `main` ruleset after PR A merges and `ci` is green on main once.
+- Checks passed: `gh variable list` shows `NEON_PROJECT_ID`. Pending: `neon branches list`, `.env.local` checks, CI green on main, ruleset, `gh secret list`.
 
 ## Task 2a — Pre-flight
-- Status: [ ]   Owner: orchestrator   Branch/PR: A   Base commit for 2b: …
-- Checks passed: offline build on the base: —
+- Status: [x] 2026-11-02   Owner: orchestrator   Branch/PR: A   Base commit for 2b: `24974eb`
+- Installed (one lockfile change): zod, pino, pino-pretty, server-only, geist, @sentry/nextjs 11.10.0, @vercel/blob 2.8.2, @sendgrid/mail 8.1.6; dev: vitest 5.1.0, @types/node 26. (Task 2b added @opentelemetry/api and @opentelemetry/core as explicit deps for `afterWithFlush`, same PR.) `npm audit`: transitive advisories only (deepmerge via @sendgrid/mail; glob/minimatch via @sentry/bundler-plugins); the offered fixes are breaking downgrades and were not applied.
+- Checks passed: `npm ls` resolves all; `grep -c typegen package.json` → 1; `npm run validate` and `npm run build` green on the base (network on). Offline proof on the base: `npm ci --offline` ok in a scratch worktree; the pre-font-swap build fails on `fonts.googleapis.com` as expected (recorded in the findings file).
 
 ## Task 2b — Conventions, logging, tests
-- Status: [ ]   Owner: worker   Branch/PR: A   Worktree: …   wip branch: wip/task-2b   Head: …
-- Hand-back received: —   Merged into A at: —
-- Checks passed: —
+- Status: [x] 2026-11-02   Owner: worker (executed inline by the orchestrator session)   Branch/PR: A   Worktree: `../jowray_wt_task-2b` (removed after merge)   wip branch: wip/task-2b   Head: `bc4bd05`
+- Hand-back received: inline   Merged into A at: `c13784c`
+- Checks passed: `npm run validate`, `npm run test:run` (12/12), `npm run build` with `DATABASE_URL` unset and remote network blocked (Node-level `dns.lookup`/`net.connect` blocker via `NODE_OPTIONS`; `sandbox-exec` is unusable because Turbopack's loader IPC port binding fails under any profile). Only blocked hosts during the build: `registry.npmjs.org` (npm update check) and `telemetry.nextjs.org`, both non-fatal. `AGENTS.md` updated from `docs/code-layout.md`.
 
 ## Task 3 — Database
 - Status: [ ]   Owner: orchestrator   Branch/PR: B
