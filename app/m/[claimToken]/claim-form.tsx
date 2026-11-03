@@ -7,6 +7,8 @@ import { useState } from "react";
 import type { ClaimView } from "@/features/memories/claim";
 import { ACCEPT_ATTRIBUTE } from "@/lib/media-types";
 
+import { PrimaryButton } from "../../_components/buttons";
+import { fileInputClass, inputClass, labelClass, selectClass, textareaClass } from "../../_components/field-classes";
 import { addFileTicket, finalizeAddedFile, updateMemory } from "./actions";
 
 export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: ClaimView }) {
@@ -75,26 +77,46 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
 
   return (
     <div className="space-y-6">
-      <form onSubmit={onSave} className="space-y-3" aria-busy={busy}>
-        <label className="block"><span>Your name</span><input name="name" defaultValue={memory.contributor?.name ?? ""} maxLength={120} className="mt-1 block w-full rounded border p-2" /></label>
-        <label className="block"><span>Relationship</span><input name="relationship" defaultValue={memory.contributor?.relationship ?? ""} maxLength={120} className="mt-1 block w-full rounded border p-2" /></label>
-        <label className="block"><span>Roughly when</span><input name="approxDateText" defaultValue={memory.approxDateText ?? ""} maxLength={120} className="mt-1 block w-full rounded border p-2" /></label>
-        <label className="block"><span>Where</span><input name="place" defaultValue={memory.place ?? ""} maxLength={200} className="mt-1 block w-full rounded border p-2" /></label>
-        <label className="block"><span>Your words</span><textarea name="note" defaultValue={memory.contributorNote ?? ""} rows={6} maxLength={10_000} className="mt-1 block w-full rounded border p-2" /></label>
-        <label className="block"><span>Who can see this?</span>
-          <select name="visibility" defaultValue={memory.visibility} className="mt-1 block rounded border p-2">
+      <form
+        onSubmit={onSave}
+        className="flex flex-col gap-[22px] rounded-form border-[3px] border-wood-light bg-paper p-8 shadow-form"
+        aria-busy={busy}
+      >
+        <label className={labelClass}>
+          <span>Your name</span>
+          <input name="name" defaultValue={memory.contributor?.name ?? ""} maxLength={120} className={inputClass} />
+        </label>
+        <label className={labelClass}>
+          <span>Relationship</span>
+          <input name="relationship" defaultValue={memory.contributor?.relationship ?? ""} maxLength={120} className={inputClass} />
+        </label>
+        <label className={labelClass}>
+          <span>Roughly when</span>
+          <input name="approxDateText" defaultValue={memory.approxDateText ?? ""} maxLength={120} className={inputClass} />
+        </label>
+        <label className={labelClass}>
+          <span>Where</span>
+          <input name="place" defaultValue={memory.place ?? ""} maxLength={200} className={inputClass} />
+        </label>
+        <label className={labelClass}>
+          <span>Your words</span>
+          <textarea name="note" defaultValue={memory.contributorNote ?? ""} rows={6} maxLength={10_000} className={textareaClass} />
+        </label>
+        <label className={labelClass}>
+          <span>Who can see this?</span>
+          <select name="visibility" defaultValue={memory.visibility} className={selectClass}>
             <option value="FAMILY">The family</option>
             <option value="PUBLIC">Everyone who visits the memorial</option>
             <option value="PRIVATE">Only me and the family admins</option>
           </select>
         </label>
-        <button type="submit" disabled={busy} className="rounded bg-black px-4 py-2 text-white">Save changes</button>
+        <PrimaryButton type="submit" disabled={busy}>Save changes</PrimaryButton>
       </form>
-      <label className="block">
+      <label className={labelClass}>
         <span>Add another photo, video or recording</span>
-        <input type="file" accept={ACCEPT_ATTRIBUTE} onChange={onAddFile} disabled={busy} className="mt-1 block" />
+        <input type="file" accept={ACCEPT_ATTRIBUTE} onChange={onAddFile} disabled={busy} className={fileInputClass} />
       </label>
-      {message && <p role="status">{message}</p>}
+      {message && <p role="status" className="text-body">{message}</p>}
     </div>
   );
 }
