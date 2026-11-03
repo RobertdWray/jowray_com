@@ -2,6 +2,8 @@ name: neon-cleanup
 
 # Deletes the Neon branch that the Vercel–Neon integration created for a
 # pull request's preview deployment (preview/<head branch>) once the PR closes.
+# Uses the Neon REST API directly: neonctl cannot resolve this Vercel-managed
+# project with an organization API key ("project not found"), the API can.
 on:
   pull_request:
     types: [closed]
@@ -19,25 +21,17 @@ jobs:
       NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
       BRANCH_NAME: preview/${{ github.head_ref }}
     steps:
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 26
-      - name: Does the preview branch exist?
-        id: lookup
+      - name: Delete the preview branch if it exists
         # Auth or project errors fail here (visibly); only a genuinely absent
-        # branch skips the delete step.
+        # branch is a no-op.
         run: |
           set -euo pipefail
-          npx --yes neonctl@2 branches list --project-id "$NEON_PROJECT_ID" --api-key "$NEON_API_KEY" --output json > branches.json
-          if node -e 'const b=require("./branches.json"); process.exit(b.some(x=>x.name===process.env.BRANCH_NAME)?0:1)'; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+          api="https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches"
+          list=$(curl -sS --fail -H "Authorization: Bearer $NEON_API_KEY" -H "Accept: application/json" "$api")
+          id=$(printf '%s' "$list" | jq -r --arg n "$BRANCH_NAME" '.branches[] | select(.name == $n) | .id')
+          if [ -z "$id" ]; then
             echo "No Neon branch named $BRANCH_NAME; nothing to delete."
+            exit 0
           fi
-      - if: steps.lookup.outputs.exists == 'true'
-        uses: neondatabase/delete-branch-action@v3
-        with:
-          project_id: ${{ vars.NEON_PROJECT_ID }}
-          branch: ${{ env.BRANCH_NAME }}
-          api_key: ${{ secrets.NEON_API_KEY }}
+          curl -sS --fail -X DELETE -H "Authorization: Bearer $NEON_API_KEY" -H "Accept: application/json" "$api/$id" > /dev/null
+          echo "Deleted Neon branch $BRANCH_NAME ($id)."
