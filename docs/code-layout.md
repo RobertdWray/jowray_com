@@ -31,7 +31,7 @@ Next.js 16 with `cacheComponents: true` prerenders whatever it can at build time
 
 ## Checks
 
-`npm run validate` (= `next typegen && tsc --noEmit`, then `eslint`), `npm run test:run`, `npm run build`. All three pass with `DATABASE_URL` unset and the network disabled; the build downloads nothing (fonts come from the `geist` package).
+`npm run validate` (= `next typegen && tsc --noEmit`, then `eslint`), `npm run test:run`, `npm run build:offline` (the build behind `scripts/no-network.mjs`, which refuses every non-loopback socket). All three pass with `DATABASE_URL` unset and no `.env*` file; fonts come from the Fontsource packages.
 
 ## Rules every agent follows
 
