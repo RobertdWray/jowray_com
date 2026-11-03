@@ -3,6 +3,7 @@
 import { upload } from "@vercel/blob/client";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
+import { CONTACT_OPT_IN_LABEL, IMPLICIT_CONSENT_NOTE } from "@/lib/consent";
 import { ACCEPT_ATTRIBUTE } from "@/lib/media-types";
 
 import { createMemory, finalizeUpload } from "./actions";
@@ -14,17 +15,11 @@ type Phase =
   | { kind: "done"; claimLink: string; fileStatus: "READY" | "PENDING" | "FAILED" | "none"; emailed: boolean }
   | { kind: "error"; message: string; claimLink?: string };
 
-export interface ConsentCopy {
-  version: string;
-  storage: string;
-  contact: string;
-}
-
 function subscribeNever(): () => void {
   return () => {};
 }
 
-export function ShareForm({ consent }: { consent: ConsentCopy }) {
+export function ShareForm() {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [recording, setRecording] = useState<Recording | null>(null);
   const [isRecording, setIsRecording] = useState(false);
@@ -74,7 +69,6 @@ export function ShareForm({ consent }: { consent: ConsentCopy }) {
       place: String(form.get("place") ?? ""),
       note: String(form.get("note") ?? ""),
       visibility: String(form.get("visibility") ?? "FAMILY"),
-      storageConsent: form.get("storageConsent") === "on",
       contactOptIn: form.get("contactOptIn") === "on",
       file: file ? { name: file.name, type: file.type, size: file.size } : null,
       });
@@ -190,12 +184,8 @@ export function ShareForm({ consent }: { consent: ConsentCopy }) {
       </label>
 
       <label className="flex gap-2">
-        <input name="storageConsent" type="checkbox" required />
-        <span>{consent.storage}</span>
-      </label>
-      <label className="flex gap-2">
         <input name="contactOptIn" type="checkbox" />
-        <span>{consent.contact}</span>
+        <span>{CONTACT_OPT_IN_LABEL}</span>
       </label>
 
       {phase.kind === "error" && (
@@ -214,6 +204,7 @@ export function ShareForm({ consent }: { consent: ConsentCopy }) {
       <button type="submit" disabled={busy || isRecording} className="rounded bg-black px-4 py-2 text-white">
         {busy ? (phase.progress ? `Uploading… ${phase.progress}%` : "Saving…") : "Share this memory"}
       </button>
+      <p className="text-sm">{IMPLICIT_CONSENT_NOTE}</p>
     </form>
   );
 }

@@ -31,7 +31,7 @@ beforeEach(() => {
 });
 
 describe("confirmMemory", () => {
-  it("sends the confirmation with the claim link, what was received and the usage sentence", async () => {
+  it("sends the confirmation with the claim link and what was received", async () => {
     const result = await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN });
     expect(result).toEqual({ sent: true, messageId: "m1" });
     expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -40,7 +40,6 @@ describe("confirmMemory", () => {
       name: "Jo",
       received: { type: "PHOTO", fileCount: 1 },
       claimLink: `https://www.jowray.com/m/${TOKEN}`,
-      usageSentence: expect.stringMatching(/.+/),
     }));
     const arg = sendMock.mock.calls[0]?.[0] as unknown as { rotateToClaimTokenHash?: string };
     expect(arg.rotateToClaimTokenHash).toBeUndefined();

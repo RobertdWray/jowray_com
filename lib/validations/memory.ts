@@ -36,7 +36,6 @@ export const createMemoryInputSchema = z
     place: optionalText(200),
     note: z.string().max(10_000).optional().nullable(),
     visibility: z.enum(["PUBLIC", "FAMILY", "PRIVATE"]).default("FAMILY"),
-    storageConsent: z.literal(true),
     contactOptIn: z.boolean().default(false),
     file: fileInputSchema.nullable(),
   })

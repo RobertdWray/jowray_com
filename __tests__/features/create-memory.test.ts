@@ -39,7 +39,6 @@ const valid = {
   approxDateText: "Summer 1998",
   note: "We laughed a lot.",
   visibility: "FAMILY" as const,
-  storageConsent: true,
   contactOptIn: false,
   file: { name: "voice.m4a", type: "audio/mp4", size: 1024 * 1024 },
 };
@@ -103,8 +102,7 @@ describe("createMemory", () => {
     expect(memories).toHaveLength(1);
   });
 
-  it("rejects without storage consent, without note and file, or with a disallowed type", async () => {
-    expect(await createMemory({ ...valid, storageConsent: false })).toMatchObject({ ok: false, code: "invalid" });
+  it("rejects without note and file, or with a disallowed type", async () => {
     expect(await createMemory({ ...valid, note: "", file: null })).toMatchObject({ ok: false, code: "invalid" });
     expect(await createMemory({ ...valid, file: { name: "x.svg", type: "image/svg+xml", size: 10 } })).toMatchObject({ ok: false, code: "unsupported_type" });
     expect(await createMemory({ ...valid, file: { name: "big.mov", type: "video/quicktime", size: 501 * 1024 * 1024 } })).toMatchObject({ ok: false, code: "too_large" });
