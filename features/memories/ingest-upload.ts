@@ -68,13 +68,20 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
 
   const updated = await transition(mediaId, { status: "READY", sizeBytes: head.size, blobUrl: head.url });
   if (updated === "lost_race") {
-    return recordMedia({ mediaId });
+    // Another writer transitioned the row first; report what it decided.
+    const current = await db.media.findUnique({ where: { id: mediaId } });
+    if (!current || current.status === "PENDING") {
+      return { status: "PENDING", mediaId, memoryId: row.memoryId };
+    }
+    return current.status === "READY"
+      ? { status: "READY", mediaId, memoryId: row.memoryId, sizeBytes: current.sizeBytes ?? head.size }
+      : { status: "FAILED", mediaId, memoryId: row.memoryId, reason: "wrong_type" };
   }
   log.info({ action: "ready", mediaId, memoryId: row.memoryId, sizeBytes: head.size }, "upload recorded");
   return { status: "READY", mediaId, memoryId: row.memoryId, sizeBytes: head.size };
 }
 
-/** Conditional PENDING → next-state update; P2002/P2025 mean another writer got there first. */
+/** Conditional PENDING → next-state update; P2025 (no row matched) means another writer got there first. */
 async function transition(
   mediaId: string,
   data: { status: "READY"; sizeBytes: number; blobUrl: string } | { status: "FAILED" }
@@ -83,7 +90,7 @@ async function transition(
     await getDb().media.update({ where: { id: mediaId, status: "PENDING" }, data });
     return "done";
   } catch (error) {
-    if (isPrismaCode(error, "P2002") || isPrismaCode(error, "P2025")) {
+    if (isPrismaCode(error, "P2025")) {
       return "lost_race";
     }
     throw error;

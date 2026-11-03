@@ -8,6 +8,8 @@ import type { Prisma } from "@/generated/prisma/client";
 import { getDb } from "@/server/db/client";
 
 const log = createLogger({ category: "api" });
+/** Neon computes can take a couple of seconds to wake; Prisma's defaults (2 s / 5 s) are too tight. */
+const TX_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;
 
 const optional = (max: number) =>
   z
@@ -119,7 +121,7 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
       },
     });
     return "ok" as const;
-  });
+  }, TX_OPTIONS);
 
   if (result === "not_found") {
     return { ok: false, code: "not_found" };

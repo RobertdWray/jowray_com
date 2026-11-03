@@ -1,7 +1,7 @@
 "use client";
 
 import { upload } from "@vercel/blob/client";
-import { useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import { ACCEPT_ATTRIBUTE } from "@/lib/media-types";
 
@@ -34,6 +34,9 @@ export function ShareForm({ consent }: { consent: ConsentCopy }) {
   // both sides at hydration, then the record button appears where supported.
   const canRecord = useSyncExternalStore(subscribeNever, () => pickRecordingType() !== null, () => false);
 
+  // Release the microphone if the contributor navigates away mid-recording.
+  useEffect(() => () => recorderRef.current?.cancel(), []);
+
   async function toggleRecording() {
     try {
       if (!recorderRef.current) {
@@ -61,7 +64,9 @@ export function ShareForm({ consent }: { consent: ConsentCopy }) {
     const file = recording?.file ?? (picked instanceof File && picked.size > 0 ? picked : null);
     setPhase({ kind: "saving" });
 
-    const created = await createMemory({
+    let created: Awaited<ReturnType<typeof createMemory>>;
+    try {
+      created = await createMemory({
       name: String(form.get("name") ?? ""),
       relationship: String(form.get("relationship") ?? ""),
       email: String(form.get("email") ?? ""),
@@ -72,7 +77,12 @@ export function ShareForm({ consent }: { consent: ConsentCopy }) {
       storageConsent: form.get("storageConsent") === "on",
       contactOptIn: form.get("contactOptIn") === "on",
       file: file ? { name: file.name, type: file.type, size: file.size } : null,
-    });
+      });
+    } catch {
+      // Unknown outcome (network, timeout): do not resubmit automatically.
+      setPhase({ kind: "error", message: "We could not reach the server. Please check your connection and try again." });
+      return;
+    }
     if (!created.ok) {
       setPhase({ kind: "error", message: created.message });
       return;

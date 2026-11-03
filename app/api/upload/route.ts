@@ -12,6 +12,14 @@ import { getDb } from "@/server/db/client";
 
 export const maxDuration = 60;
 
+/**
+ * The ticket's 15-minute expiry bounds when the browser must *start* the
+ * upload; the Blob token itself must outlive the transfer (Blob checks it on
+ * every multipart part), so it gets an hour from the exchange.
+ */
+const BLOB_TOKEN_LIFETIME_MS = 60 * 60 * 1000;
+const EVENT_MAX_ATTEMPTS = 3;
+
 const log = createLogger({ category: "upload" });
 
 class UploadRefused extends Error {
@@ -57,7 +65,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         return {
           allowedContentTypes: [claims.mimeType],
           maximumSizeInBytes: claims.maxBytes,
-          validUntil: claims.expiresAt,
+          validUntil: Date.now() + BLOB_TOKEN_LIFETIME_MS,
           addRandomSuffix: false,
           allowOverwrite: false,
           callbackUrl: `${getSiteUrl()}/api/upload`,
@@ -73,15 +81,17 @@ export async function POST(request: NextRequest): Promise<Response> {
           data: { provider: "vercel-blob", kind: "upload_completed", payload },
         });
         if (!mediaId) {
-          await db.webhookEvent.update({ where: { id: event.id }, data: { attempts: 1, error: "no mediaId in tokenPayload" } });
+          // Unrecoverable payload: never worth a cron retry.
+          await db.webhookEvent.update({ where: { id: event.id }, data: { attempts: EVENT_MAX_ATTEMPTS, error: "no mediaId in tokenPayload" } });
           return;
         }
         afterWithFlush(async () => {
           try {
             const outcome = await recordMedia({ mediaId });
+            // A blob that is not visible yet stays unprocessed so cron step (c) replays it.
             await db.webhookEvent.update({
               where: { id: event.id },
-              data: { processedAt: new Date(), attempts: 1, error: outcome.status === "PENDING" ? "blob not visible yet" : null },
+              data: outcome.status === "PENDING" ? { attempts: 1, error: "blob not visible yet" } : { processedAt: new Date(), attempts: 1, error: null },
             });
           } catch (error) {
             await db.webhookEvent.update({

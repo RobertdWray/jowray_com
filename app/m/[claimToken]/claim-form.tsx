@@ -18,21 +18,26 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     setBusy(true);
-    const result = await updateMemory({
-      claimToken,
-      changes: {
-        name: String(form.get("name") ?? ""),
-        relationship: String(form.get("relationship") ?? ""),
-        approxDateText: String(form.get("approxDateText") ?? ""),
-        place: String(form.get("place") ?? ""),
-        note: String(form.get("note") ?? ""),
-        visibility: String(form.get("visibility") ?? memory.visibility),
-      },
-    });
-    setBusy(false);
-    setMessage(result.ok ? "Saved." : "Could not save. Please check the fields and try again.");
-    if (result.ok) {
-      router.refresh();
+    try {
+      const result = await updateMemory({
+        claimToken,
+        changes: {
+          name: String(form.get("name") ?? ""),
+          relationship: String(form.get("relationship") ?? ""),
+          approxDateText: String(form.get("approxDateText") ?? ""),
+          place: String(form.get("place") ?? ""),
+          note: String(form.get("note") ?? ""),
+          visibility: String(form.get("visibility") ?? memory.visibility),
+        },
+      });
+      setMessage(result.ok ? "Saved." : "Could not save. Please check the fields and try again.");
+      if (result.ok) {
+        router.refresh();
+      }
+    } catch {
+      setMessage("We could not reach the server. Your changes are still in the form; please try again.");
+    } finally {
+      setBusy(false);
     }
   }
 

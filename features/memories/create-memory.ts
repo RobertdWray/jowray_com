@@ -16,6 +16,8 @@ const log = createLogger({ category: "upload" });
 
 export const MAX_FILES_PER_MEMORY = 10;
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** Neon computes can take a couple of seconds to wake; Prisma's defaults (2 s / 5 s) are too tight. */
+const TX_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;
 
 export type UploadGrant = { pathname: string; ticket: UploadTicket };
 
@@ -148,7 +150,7 @@ export async function createMemory(raw: unknown): Promise<CreateMemoryResult> {
     });
     const upload = file ? await createPendingMedia(tx, memory.id, file) : null;
     return { memoryId: memory.id, upload };
-  });
+  }, TX_OPTIONS);
 
   if (!created) {
     log.warn({ action: "budget_refusal" }, "daily budget reached");
@@ -184,7 +186,7 @@ export async function createUploadTicket(raw: unknown): Promise<UploadTicketResu
       return "budget_exceeded" as const;
     }
     return createPendingMedia(tx, memory.id, file);
-  });
+  }, TX_OPTIONS);
   if (typeof result === "string") {
     return { ok: false, code: result };
   }

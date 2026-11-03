@@ -17,8 +17,10 @@ const EMAIL_TYPE = "MEMORY_CONFIRMATION" as const;
 const RECIPIENT_DAILY_CAP = 3;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RETRY_STEP_MS = 15 * 60 * 1000;
-/** Statuses a new send may claim from. SENT and SENDING are never claimed. */
+/** Statuses a new send may claim from; a SENDING row is reclaimed only once its claim is stale. */
 const CLAIMABLE = ["PENDING", "FAILED", "SKIPPED"] as const;
+/** A SENDING row older than this was abandoned by a crashed or timed-out function. */
+const STALE_CLAIM_MS = 15 * 60 * 1000;
 /** Statuses that count against the per-recipient cap: delivered or in flight. FAILED and SKIPPED rows never reached the address, and counting FAILED would lock retries out. */
 const COUNTED = ["SENDING", "SENT"] as const;
 
@@ -55,13 +57,18 @@ export async function sendMemoryConfirmation(input: MemoryConfirmationInput): Pr
   }
 
   const skip = async (reason: "outbound_disabled" | "recipient_capped"): Promise<SendResult> => {
-    if (!existing || existing.status !== "SENDING") {
-      await db.emailLog.upsert({
-        where: key,
-        create: { memoryId: input.memoryId, recipientEmail: recipient, emailType: EMAIL_TYPE, status: "SKIPPED", errorMessage: reason },
-        update: { status: "SKIPPED", errorMessage: reason },
-      });
-    }
+    // Create the terminal row if there is none; otherwise only move rows that
+    // nobody is sending (never SENDING or SENT, which a concurrent caller may
+    // have reached since `existing` was read).
+    await db.emailLog.upsert({
+      where: key,
+      create: { memoryId: input.memoryId, recipientEmail: recipient, emailType: EMAIL_TYPE, status: "SKIPPED", errorMessage: reason },
+      update: {},
+    });
+    await db.emailLog.updateMany({
+      where: { memoryId: input.memoryId, emailType: EMAIL_TYPE, status: { in: ["PENDING", "FAILED", "SKIPPED"] } },
+      data: { status: "SKIPPED", errorMessage: reason },
+    });
     log.info({ action: "skip", memoryId: input.memoryId, reason }, "confirmation skipped");
     return { sent: false, skipped: reason };
   };
@@ -69,10 +76,12 @@ export async function sendMemoryConfirmation(input: MemoryConfirmationInput): Pr
   if (!outboundAllowed(recipient)) {
     return skip("outbound_disabled");
   }
+  // Counted by the last state change (the send), not the row's creation: a
+  // row created days ago and sent today still counts for today.
   const recentToRecipient = await db.emailLog.count({
     where: {
       recipientEmail: recipient,
-      createdAt: { gte: new Date(Date.now() - DAY_MS) },
+      updatedAt: { gte: new Date(Date.now() - DAY_MS) },
       status: { in: [...COUNTED] },
       NOT: { memoryId: input.memoryId },
     },
@@ -87,7 +96,10 @@ export async function sendMemoryConfirmation(input: MemoryConfirmationInput): Pr
     update: {},
   });
   const claimed = await db.emailLog.updateMany({
-    where: { id: row.id, status: { in: [...CLAIMABLE] } },
+    where: {
+      id: row.id,
+      OR: [{ status: { in: [...CLAIMABLE] } }, { status: "SENDING", updatedAt: { lt: new Date(Date.now() - STALE_CLAIM_MS) } }],
+    },
     data: { status: "SENDING" },
   });
   if (claimed.count === 0) {

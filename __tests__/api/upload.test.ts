@@ -14,7 +14,7 @@ let media: MediaRow[] = [];
 const events: Record<string, unknown>[] = [];
 const dbStub = {
   media: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => media.find((m) => m.id === where.id) ?? null) },
-  webhookEvent: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { events.push(data); return { id: "evt_1", ...data }; }), update: vi.fn(async () => ({})) },
+  webhookEvent: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { events.push(data); return { id: "evt_1", ...data }; }), update: vi.fn(async (_arg: unknown) => ({})) },
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 const recordMediaMock = vi.fn(async (_arg: { mediaId: string }) => ({ status: "READY", mediaId: "med_1", memoryId: "mem_1", sizeBytes: 5 }));
@@ -63,11 +63,13 @@ describe("POST /api/upload (token exchange)", () => {
     expect((payload.onUploadCompleted as { tokenPayload: string }).tokenPayload).toBe(JSON.stringify({ mediaId: "med_1" }));
   });
 
-  it("passes the ticket expiry through as validUntil", async () => {
+  it("gives the Blob token a transfer lifetime well beyond the 15-minute ticket exchange window", async () => {
     const ticket = mintUploadTicket(claims);
     const res = await post({ type: "blob.generate-client-token", payload: { pathname: claims.pathname, clientPayload: JSON.stringify(ticket), multipart: false } });
     const body = (await res.json()) as { clientToken: string };
-    expect((getPayloadFromClientToken(body.clientToken) as { validUntil: number }).validUntil).toBe(ticket.expiresAt);
+    const validUntil = (getPayloadFromClientToken(body.clientToken) as { validUntil: number }).validUntil;
+    expect(validUntil).toBeGreaterThanOrEqual(ticket.expiresAt + 45 * 60_000); // ≥ 60 min total
+    expect(validUntil).toBeLessThanOrEqual(Date.now() + 2 * 60 * 60_000);
   });
 
   it("rejects a tampered ticket, an expired ticket, a pathname mismatch, a missing ticket, and a non-PENDING row", async () => {
@@ -91,6 +93,22 @@ describe("POST /api/upload (upload completed callback)", () => {
     expect(afterCalls).toHaveLength(1);
     await afterCalls[0]!();
     expect(recordMediaMock).toHaveBeenCalledWith({ mediaId: "med_1" });
+  });
+
+  it("leaves the event unprocessed when the blob is not visible yet, and abandons payloads without a mediaId", async () => {
+    recordMediaMock.mockResolvedValueOnce({ status: "PENDING", mediaId: "med_1", memoryId: "mem_1" } as never);
+    const body = JSON.stringify({ type: "blob.upload-completed", payload: { blob: { url: "u", downloadUrl: "d", pathname: claims.pathname, contentType: "audio/mp4", contentDisposition: "inline" }, tokenPayload: JSON.stringify({ mediaId: "med_1" }) } });
+    const signature = createHmac("sha256", RW_TOKEN).update(body).digest("hex");
+    await POST(new NextRequest("http://localhost:3000/api/upload", { method: "POST", body, headers: { "content-type": "application/json", "x-vercel-signature": signature } }));
+    await afterCalls[0]!();
+    const update = dbStub.webhookEvent.update.mock.calls.at(-1)?.[0] as unknown as { data: { processedAt?: Date; error?: string | null } };
+    expect(update.data.processedAt).toBeUndefined();
+
+    const body2 = JSON.stringify({ type: "blob.upload-completed", payload: { blob: { url: "u", downloadUrl: "d", pathname: claims.pathname, contentType: "audio/mp4", contentDisposition: "inline" }, tokenPayload: "not json" } });
+    const sig2 = createHmac("sha256", RW_TOKEN).update(body2).digest("hex");
+    await POST(new NextRequest("http://localhost:3000/api/upload", { method: "POST", body: body2, headers: { "content-type": "application/json", "x-vercel-signature": sig2 } }));
+    const update2 = dbStub.webhookEvent.update.mock.calls.at(-1)?.[0] as unknown as { data: { attempts: number } };
+    expect(update2.data.attempts).toBeGreaterThanOrEqual(3);
   });
 
   it("rejects an unsigned callback", async () => {

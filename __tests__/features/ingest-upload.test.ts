@@ -35,7 +35,8 @@ const dbStub = {
       }
       if (p2002Once) {
         p2002Once = false;
-        throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+        row.status = "READY"; row.sizeBytes = 1234; row.blobUrl = "https://blob.test/originals/mem_1/abc.jpg";
+        throw Object.assign(new Error("Record to update not found."), { code: "P2025" });
       }
       Object.assign(row, data);
       return row;
@@ -126,7 +127,7 @@ describe("recordMedia", () => {
     expect(headMock).not.toHaveBeenCalled();
   });
 
-  it("survives a concurrent writer: a lost race re-reads the row and never throws", async () => {
+  it("survives a concurrent writer: a lost race (P2025) re-reads the row once and never throws", async () => {
     p2002Once = true;
     const results = await Promise.all([recordMedia({ mediaId: "med_1" }), recordMedia({ mediaId: "med_1" })]);
     expect(results.map((r) => r.status).sort()).toEqual(["READY", "READY"]);

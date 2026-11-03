@@ -16,7 +16,9 @@ const log = createLogger({ category: "cron" });
 const HOUR_MS = 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
 const CHECKSUM_BATCH = 20;
-/** Step (b) stops starting new files after this; the function's maxDuration is 60 s. */
+/** Shared budget for every step; the function's maxDuration is 60 s. */
+const RUN_DEADLINE_MS = 50_000;
+/** Step (b) stops starting new files after this. */
 const CHECKSUM_DEADLINE_MS = 40_000;
 /** Step (e) leaves very new memories to the request path (finalize may still be running). */
 const CONFIRM_MIN_AGE_MS = 30 * MINUTE_MS;
@@ -61,11 +63,16 @@ export async function GET(request: NextRequest): Promise<Response> {
   const now = Date.now();
 
   // (a) PENDING media older than an hour: re-record; after 24 h with no blob, give up.
+  const outOfTime = (): boolean => Date.now() - now > RUN_DEADLINE_MS;
   const stale = await db.media.findMany({
     where: { status: "PENDING", createdAt: { lt: new Date(now - HOUR_MS) }, memory: { deletedAt: null } },
+    orderBy: { createdAt: "asc" },
     take: 100,
   });
   for (const row of stale) {
+    if (outOfTime()) {
+      break;
+    }
     try {
       const outcome = await recordMedia({ mediaId: row.id });
       counts.pendingRechecked += 1;
@@ -86,14 +93,20 @@ export async function GET(request: NextRequest): Promise<Response> {
     take: 50,
   });
   for (const event of events) {
+    if (outOfTime()) {
+      break;
+    }
     const attempts = event.attempts + 1;
     try {
       const mediaId = mediaIdFromPayload(event.payload);
       if (!mediaId) {
         throw new Error("event has no mediaId");
       }
-      await recordMedia({ mediaId });
-      await db.webhookEvent.update({ where: { id: event.id }, data: { processedAt: new Date(), attempts, error: null } });
+      const outcome = await recordMedia({ mediaId });
+      await db.webhookEvent.update({
+        where: { id: event.id },
+        data: outcome.status === "PENDING" ? { attempts, error: "blob not visible yet" } : { processedAt: new Date(), attempts, error: null },
+      });
       counts.eventsReplayed += 1;
     } catch (error) {
       counts.errors += 1;
@@ -112,12 +125,17 @@ export async function GET(request: NextRequest): Promise<Response> {
       OR: [
         { status: "FAILED", attempts: { lt: EMAIL_MAX_ATTEMPTS }, nextAttemptAt: { lte: new Date(now) } },
         { status: "PENDING", createdAt: { lt: new Date(now - 15 * MINUTE_MS) } },
+        // A claim abandoned by a crashed function; the email service reclaims it.
+        { status: "SENDING", updatedAt: { lt: new Date(now - 15 * MINUTE_MS) } },
       ],
     },
     orderBy: { createdAt: "asc" },
     take: 50,
   });
   for (const row of retryable) {
+    if (outOfTime()) {
+      break;
+    }
     try {
       const result = await confirmMemory({ memoryId: row.memoryId });
       if (result.sent) {
@@ -137,12 +155,15 @@ export async function GET(request: NextRequest): Promise<Response> {
       createdAt: { lt: new Date(now - CONFIRM_MIN_AGE_MS) },
       contributor: { email: { not: null } },
       emails: { none: {} },
-      OR: [{ type: "TEXT" }, { media: { some: { status: "READY" } } }],
+      OR: [{ type: "TEXT" }, { contributorNote: { not: null } }, { media: { some: { status: "READY" } } }],
     },
     orderBy: { createdAt: "asc" },
     take: 50,
   });
   for (const memory of unconfirmed) {
+    if (outOfTime()) {
+      break;
+    }
     try {
       const result = await confirmMemory({ memoryId: memory.id });
       if (result.sent) {
@@ -163,7 +184,7 @@ export async function GET(request: NextRequest): Promise<Response> {
     take: CHECKSUM_BATCH,
   });
   for (const row of unhashed) {
-    if (Date.now() - now > CHECKSUM_DEADLINE_MS) {
+    if (Date.now() - now > CHECKSUM_DEADLINE_MS || outOfTime()) {
       break;
     }
     try {
@@ -184,6 +205,9 @@ export async function GET(request: NextRequest): Promise<Response> {
   });
   const storage = createStorageService();
   for (const row of orphanedBlobs) {
+    if (outOfTime()) {
+      break;
+    }
     try {
       await storage.del(row.storageKey);
       await db.media.update({ where: { id: row.id }, data: { blobUrl: null } });

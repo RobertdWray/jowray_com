@@ -20,6 +20,7 @@ interface Row {
   sendgridMessageId: string | null;
   sentAt: Date | null;
   createdAt: Date;
+  updatedAt: Date;
 }
 const rows: Row[] = [];
 const dbStub = {
@@ -27,8 +28,8 @@ const dbStub = {
     findUnique: vi.fn(async ({ where }: { where: { memoryId_emailType: { memoryId: string } } }) =>
       rows.find((r) => r.memoryId === where.memoryId_emailType.memoryId) ?? null
     ),
-    count: vi.fn(async ({ where }: { where: { recipientEmail: string; createdAt: { gte: Date }; status?: { in: Row["status"][] } } }) =>
-      rows.filter((r) => r.recipientEmail === where.recipientEmail && r.createdAt >= where.createdAt.gte && (!where.status || where.status.in.includes(r.status))).length
+    count: vi.fn(async ({ where }: { where: { recipientEmail: string; createdAt?: { gte: Date }; updatedAt?: { gte: Date }; status?: { in: Row["status"][] } } }) =>
+      rows.filter((r) => r.recipientEmail === where.recipientEmail && (where.updatedAt ?? where.createdAt)!.gte <= r.updatedAt && (!where.status || where.status.in.includes(r.status))).length
     ),
     upsert: vi.fn(async ({ where, create }: { where: { memoryId_emailType: { memoryId: string } }; create: Pick<Row, "memoryId" | "recipientEmail" | "emailType" | "status"> }) => {
       const existing = rows.find((r) => r.memoryId === where.memoryId_emailType.memoryId);
@@ -38,6 +39,7 @@ const dbStub = {
       const row: Row = {
         id: `log_${rows.length + 1}`,
         createdAt: new Date(),
+        updatedAt: new Date(),
         attempts: 0,
         nextAttemptAt: null,
         errorMessage: null,
@@ -53,15 +55,25 @@ const dbStub = {
       if (!row) {
         throw new Error("missing row");
       }
-      Object.assign(row, data);
+      Object.assign(row, data, { updatedAt: new Date() });
       return row;
     }),
-    updateMany: vi.fn(async ({ where, data }: { where: { id: string; status: { in: Row["status"][] } }; data: Partial<Row> }) => {
-      const row = rows.find((r) => r.id === where.id && where.status.in.includes(r.status));
+    updateMany: vi.fn(async ({ where, data }: { where: { id?: string; memoryId?: string; OR?: Array<{ status?: { in: Row["status"][] } | Row["status"]; updatedAt?: { lt: Date } }>; status?: { in: Row["status"][] } }; data: Partial<Row> }) => {
+      const matchesStatus = (r: Row) => {
+        if (where.OR) {
+          return where.OR.some((c) => {
+            const st = c.status === undefined ? true : typeof c.status === "string" ? r.status === c.status : c.status.in.includes(r.status);
+            const stale = c.updatedAt === undefined ? true : r.updatedAt < c.updatedAt.lt;
+            return st && stale;
+          });
+        }
+        return where.status ? where.status.in.includes(r.status) : true;
+      };
+      const row = rows.find((r) => (where.id ? r.id === where.id : r.memoryId === where.memoryId) && matchesStatus(r));
       if (!row) {
         return { count: 0 };
       }
-      Object.assign(row, data);
+      Object.assign(row, data, { updatedAt: new Date() });
       return { count: 1 };
     }),
   },
@@ -156,7 +168,7 @@ describe("sendMemoryConfirmation", () => {
 
   it("does not count FAILED rows against the recipient cap, so retries are never locked out", async () => {
     for (let i = 1; i <= 3; i += 1) {
-      rows.push({ id: `f_${i}`, memoryId: `mem_f${i}`, recipientEmail: base.to, emailType: "MEMORY_CONFIRMATION", status: "FAILED", attempts: 1, nextAttemptAt: new Date(), errorMessage: "x", sendgridMessageId: null, sentAt: null, createdAt: new Date() });
+      rows.push({ id: `f_${i}`, memoryId: `mem_f${i}`, recipientEmail: base.to, emailType: "MEMORY_CONFIRMATION", status: "FAILED", attempts: 1, nextAttemptAt: new Date(), errorMessage: "x", sendgridMessageId: null, sentAt: null, createdAt: new Date(), updatedAt: new Date() });
     }
     expect((await sendMemoryConfirmation({ ...base, memoryId: "mem_new" })).sent).toBe(true);
   });
@@ -209,4 +221,25 @@ describe("transport error hygiene", () => {
     await sendMemoryConfirmation(base);
     expect(sendMock).toHaveBeenCalledTimes(3);
   }, 15_000);
+});
+
+describe("stranded and racing rows", () => {
+  it("reclaims a SENDING row that has been stuck for more than 15 minutes", async () => {
+    rows.push({ id: "stuck", memoryId: base.memoryId, recipientEmail: base.to, emailType: "MEMORY_CONFIRMATION", status: "SENDING", attempts: 0, nextAttemptAt: null, errorMessage: null, sendgridMessageId: null, sentAt: null, createdAt: new Date(Date.now() - 20 * 60_000), updatedAt: new Date(Date.now() - 20 * 60_000) });
+    expect((await sendMemoryConfirmation(base)).sent).toBe(true);
+    expect(rows[0]?.status).toBe("SENT");
+  });
+
+  it("does not reclaim a SENDING row that is fresh", async () => {
+    rows.push({ id: "fresh", memoryId: base.memoryId, recipientEmail: base.to, emailType: "MEMORY_CONFIRMATION", status: "SENDING", attempts: 0, nextAttemptAt: null, errorMessage: null, sendgridMessageId: null, sentAt: null, createdAt: new Date(), updatedAt: new Date() });
+    expect(await sendMemoryConfirmation(base)).toEqual({ sent: false, skipped: "in_progress" });
+  });
+
+  it("a skip never overwrites a row that is SENDING or SENT", async () => {
+    rows.push({ id: "sent", memoryId: "mem_x", recipientEmail: "stranger@example.net", emailType: "MEMORY_CONFIRMATION", status: "SENDING", attempts: 0, nextAttemptAt: null, errorMessage: null, sendgridMessageId: null, sentAt: null, createdAt: new Date(), updatedAt: new Date() });
+    // The service reads `existing` before deciding; simulate the row having moved on by the time skip() runs.
+    const result = await sendMemoryConfirmation({ ...base, memoryId: "mem_x", to: "stranger@example.net" });
+    expect(result.sent).toBe(false);
+    expect(rows[0]?.status).toBe("SENDING");
+  });
 });

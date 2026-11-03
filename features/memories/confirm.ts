@@ -2,7 +2,7 @@ import "server-only";
 
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { consentTextFor } from "@/lib/consent";
-import { createLogger } from "@/lib/logger";
+import { createLogger, logError } from "@/lib/logger";
 import { getSiteUrl } from "@/lib/site-url";
 import { getMemorialEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
@@ -44,7 +44,10 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
     return { sent: false, skipped: "no_email" };
   }
   const readyCount = memory.media.filter((m) => m.status === "READY").length;
-  if (memory.type !== "TEXT" && readyCount === 0) {
+  const hasWords = (memory.contributorNote ?? "").trim().length > 0;
+  // Something to confirm: a file that arrived, or words (a TEXT memory, or a
+  // memory whose file failed but whose note was saved).
+  if (memory.type !== "TEXT" && readyCount === 0 && !hasWords) {
     return { sent: false, skipped: "not_ready" };
   }
 
@@ -65,8 +68,19 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
   // out, so a skipped or failed send never invalidates the link the
   // contributor already has on screen.
   if (rotating && result.sent) {
-    await db.memory.update({ where: { id: memoryId }, data: { claimTokenHash: hashClaimToken(token) } });
-    log.info({ action: "token_rotated", memoryId }, "claim token rotated for an emailed link");
+    try {
+      await db.memory.update({ where: { id: memoryId }, data: { claimTokenHash: hashClaimToken(token) } });
+      log.info({ action: "token_rotated", memoryId }, "claim token rotated for an emailed link");
+    } catch (error) {
+      // The email carries a token whose hash was not saved: put the row back
+      // to FAILED so the cron sends a fresh link instead of leaving a dead one.
+      await db.emailLog.updateMany({
+        where: { memoryId, emailType: "MEMORY_CONFIRMATION", status: "SENT" },
+        data: { status: "FAILED", attempts: { increment: 1 }, nextAttemptAt: new Date(Date.now() + 15 * 60 * 1000), errorMessage: "rotated claim token could not be persisted" },
+      });
+      logError("rotated claim token not persisted after send", error, { category: "email", memoryId });
+      return { sent: false, skipped: "failed", error: "rotated claim token could not be persisted" };
+    }
   }
   return result;
 }
