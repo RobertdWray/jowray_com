@@ -6,6 +6,7 @@ import {
   describeActiveInput,
   resolveSelectedDevice,
   shouldShowPicker,
+  friendlyInputLabel,
 } from "@/lib/recording-devices";
 
 const builtIn = { deviceId: "built-in", label: "Built-in microphone", groupId: "internal" };
@@ -96,7 +97,25 @@ describe("audioConstraintsFor", () => {
   });
 });
 
+describe("friendlyInputLabel", () => {
+  it.each([
+    ["Default - USB Audio Device (0d8c:0005)", "USB Audio Device"],
+    ["Communications - Headset Microphone (Jabra) (0b0e:245e)", "Headset Microphone (Jabra)"],
+    ["MacBook Pro Microphone (Built-in)", "MacBook Pro Microphone (Built-in)"],
+    ["  iPhone Microphone  ", "iPhone Microphone"],
+    ["(0d8c:0005)", ""],
+    ["", ""],
+  ])("turns %j into %j", (raw, expected) => {
+    expect(friendlyInputLabel(raw)).toBe(expected);
+  });
+});
+
 describe("describeActiveInput", () => {
+  it("strips browser noise from the live label and falls back when nothing is left", () => {
+    expect(describeActiveInput({ label: "Default - External Microphone (0d8c:0005)" }, [])).toBe("External Microphone");
+    expect(describeActiveInput({ label: "(0d8c:0005)" }, [])).toBe("your microphone");
+  });
+
   it("prefers the live track label", () => {
     expect(describeActiveInput({ label: "Live input", deviceId: "headset" }, [headset]))
       .toBe("Live input");

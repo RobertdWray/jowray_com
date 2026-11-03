@@ -4,6 +4,7 @@ import { useId, useState } from "react";
 
 import { formatDuration } from "@/lib/format-duration";
 import type { RecorderHelp } from "@/lib/recorder-help";
+import { friendlyInputLabel } from "@/lib/recording-devices";
 
 import { SecondaryButton, TertiaryButton } from "../_components/buttons";
 import { errorClass, helperClass, selectClass } from "../_components/field-classes";
@@ -70,6 +71,7 @@ function buttonLabel(status: UseRecorder["snapshot"]["status"], hasClip: boolean
 export function RecorderPanel({ rec, canRecord, disabled }: { rec: UseRecorder; canRecord: boolean; disabled: boolean }) {
   const reducedMotion = usePrefersReducedMotion();
   const pickerId = useId();
+  const usingId = useId();
   // The microphone list is a desktop power-user control: behind a gear until asked for.
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { status } = rec.snapshot;
@@ -112,10 +114,13 @@ export function RecorderPanel({ rec, canRecord, disabled }: { rec: UseRecorder; 
           </div>
 
           {rec.showPicker && settingsOpen && (
-            <label htmlFor={pickerId} className="flex flex-col gap-2 text-label font-bold">
-              <span>Microphone</span>
+            <div className="flex flex-col gap-2">
+              <label htmlFor={pickerId} className="text-label font-bold">
+                Microphone
+              </label>
               <select
                 id={pickerId}
+                aria-describedby={rec.activeInputLabel ? usingId : undefined}
                 className={selectClass}
                 value={rec.selectedDeviceId ?? ""}
                 onChange={(event) => rec.selectDevice(event.target.value === "" ? null : event.target.value)}
@@ -124,14 +129,14 @@ export function RecorderPanel({ rec, canRecord, disabled }: { rec: UseRecorder; 
                 <option value="">Let the browser choose</option>
                 {rec.inputs.map((input) => (
                   <option key={input.deviceId} value={input.deviceId}>
-                    {input.label}
+                    {friendlyInputLabel(input.label) || input.label}
                   </option>
                 ))}
               </select>
-            </label>
-          )}
-          {rec.activeInputLabel && (
-            <span className="text-small text-walnut-soft">Using: {rec.activeInputLabel}</span>
+              {rec.activeInputLabel && (
+                <p id={usingId} className={`text-small ${helperClass}`}>Using: {rec.activeInputLabel}</p>
+              )}
+            </div>
           )}
           {rec.deviceNotice && (
             <p role="status" className="text-small text-walnut">{rec.deviceNotice}</p>

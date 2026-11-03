@@ -44,10 +44,24 @@ export function audioConstraintsFor(deviceId: string | null): MediaStreamConstra
   return deviceId === null ? { audio: true } : { audio: { deviceId: { exact: deviceId } } };
 }
 
+/**
+ * Browser device labels carry operating-system noise — Chrome's
+ * "Default - " / "Communications - " prefixes and a USB vendor:product pair
+ * such as "(0d8c:0005)". A contributor only needs the human part.
+ */
+export function friendlyInputLabel(label: string): string {
+  return label
+    .replace(/^(default|communications)\s*-\s*/i, "")
+    .replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** Name the live input first so the label reflects what is actually recording. */
 export function describeActiveInput(
   track: { label: string; deviceId?: string },
   inputs: ReadonlyArray<AudioInputInfo>,
 ): string {
-  return track.label || inputs.find((input) => input.deviceId === track.deviceId)?.label || "your microphone";
+  const raw = track.label || inputs.find((input) => input.deviceId === track.deviceId)?.label || "";
+  return friendlyInputLabel(raw) || "your microphone";
 }
