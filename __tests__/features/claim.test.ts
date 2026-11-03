@@ -26,13 +26,15 @@ const tx = {
     updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Partial<MediaRow> }) => { const rows = mediaRows.filter((r) => matchesMedia(r, where)); for (const r of rows) { Object.assign(r, data); } return { count: rows.length }; }),
   },
   memory: {
+    findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { if (!memory || memory.id !== where.id) { throw Object.assign(new Error("not found"), { code: "P2025" }); } return memory; }),
     findUnique: vi.fn(async ({ where, include }: { where: { claimTokenHash?: string; id?: string }; include?: { media?: { where?: Record<string, unknown> } } }) => {
       if (!memory || !(where.claimTokenHash ? memory.claimTokenHash === where.claimTokenHash : memory.id === where.id)) { return null; }
       if (include?.media) {
         const w = include.media.where ?? {};
         return { ...memory, media: mediaRows.filter((r) => r.memoryId === memory!.id && matchesMedia(r, w)).sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.getTime() - b.createdAt.getTime()) };
       }
-      return memory;
+      // A snapshot, like a real pre-lock read: later mutations are only visible through findUniqueOrThrow.
+      return { ...memory };
     }),
     update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { Object.assign(memory!, data); return memory; }),
   },
@@ -111,7 +113,7 @@ describe("removeMediaFromClaim", () => {
   beforeEach(() => { mediaRows[0]!.id = VALID.mediaId; });
 
   it("soft-deletes the file under the memory lock, cancels its pending replacement, recomputes the type and writes a revision", async () => {
-    mediaRows.push({ id: "med_rep", memoryId: "mem_1", status: "PENDING", mimeType: "image/jpeg", originalFilename: "new.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: VALID.mediaId, createdAt: new Date() });
+    mediaRows.push({ id: "med_rep", memoryId: "mem_1", status: "PENDING", mimeType: "image/jpeg", originalFilename: "new.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: VALID.mediaId, createdAt: new Date(), durationSeconds: null });
     memory!.contributorNote = "some words";
     const result = await removeMediaFromClaim(VALID);
     expect(result).toEqual({ ok: true });
@@ -171,5 +173,16 @@ describe("updateMemoryFromClaim non-empty invariant", () => {
     expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "" } })).toEqual({ ok: true });
     expect(memory!.contributorNote).toBeNull();
     expect(memory!.type).toBe("PHOTO");
+  });
+});
+
+describe("invariants are evaluated after the lock", () => {
+  it("sees a note cleared by a concurrent editor and refuses to remove the last file", async () => {
+    const VALID = { claimToken: TOKEN, mediaId: "00000000-0000-4000-8000-000000000001" };
+    mediaRows[0]!.id = VALID.mediaId;
+    memory!.contributorNote = "words that will be gone by the time we hold the lock";
+    tx.$queryRaw.mockImplementationOnce(async (strings: TemplateStringsArray, ...values: unknown[]) => { memory!.contributorNote = null; lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; });
+    expect(await removeMediaFromClaim(VALID)).toEqual({ ok: false, code: "last_file" });
+    expect(mediaRows.find((r) => r.id === VALID.mediaId)!.deletedAt).toBeNull();
   });
 });

@@ -24,6 +24,8 @@ const CHECKSUM_DEADLINE_MS = 40_000;
 const CONFIRM_MIN_AGE_MS = 30 * MINUTE_MS;
 const EMAIL_MAX_ATTEMPTS = 5;
 const EVENT_MAX_ATTEMPTS = 3;
+/** A cancelled reservation may still receive bytes until its Blob client token (1 h) expires; purge it after that plus a margin. */
+const CANCELLED_RESERVATION_GRACE_MS = 75 * MINUTE_MS;
 
 interface Counts {
   pendingRechecked: number;
@@ -222,6 +224,33 @@ export async function GET(request: NextRequest): Promise<Response> {
     } catch (error) {
       counts.errors += 1;
       logError("reconcile: blob deletion failed", error, { category: "cron", mediaId: row.id });
+    }
+  }
+
+  // (f2) Reservations cancelled on the claim page whose upload might have landed
+  // without a callback or finalize: once the Blob token has expired, delete the
+  // pathname (idempotent) and leave PENDING so the row is never selected again.
+  const cancelled = await db.media.findMany({
+    where: {
+      status: "PENDING",
+      deletedAt: { not: null },
+      createdAt: { lt: new Date(now - CANCELLED_RESERVATION_GRACE_MS) },
+      storageKey: { startsWith: storagePrefix() },
+    },
+    orderBy: { id: "asc" },
+    take: 50,
+  });
+  for (const row of cancelled) {
+    if (outOfTime()) {
+      break;
+    }
+    try {
+      await storage.del(row.storageKey);
+      await db.media.update({ where: { id: row.id }, data: { status: "FAILED", blobUrl: null } });
+      counts.deletedBlobsRemoved += 1;
+    } catch (error) {
+      counts.errors += 1;
+      logError("reconcile: cancelled reservation purge failed", error, { category: "cron", mediaId: row.id });
     }
   }
 

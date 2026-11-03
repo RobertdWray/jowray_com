@@ -154,12 +154,10 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
               <video controls src={src} className="max-w-full rounded" />
             )}
             {pending && (
-              <p className="text-body text-walnut-soft">
-                A replacement ({pending.originalFilename ?? "new file"}) has not been received yet.{" "}
-                <button type="button" className={linkClass} onClick={() => onCancel(pending)} disabled={busy}>
-                  Cancel it
-                </button>
-              </p>
+              <div className="flex flex-wrap items-center gap-3">
+                <p className="text-body text-walnut-soft">A replacement ({pending.originalFilename ?? "new file"}) has not been received yet.</p>
+                <SecondaryButton onClick={() => onCancel(pending)} disabled={busy}>Cancel it</SecondaryButton>
+              </div>
             )}
             {confirmingId === item.id ? (
               <div className="flex flex-wrap items-center gap-3">

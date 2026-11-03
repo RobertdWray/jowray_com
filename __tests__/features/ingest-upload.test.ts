@@ -32,7 +32,7 @@ function matches(row: MediaRow, where: Record<string, unknown>): boolean {
 }
 let media: MediaRow[] = [];
 let p2002Once = false;
-const memories = [{ id: "mem_1", claimTokenHash: hashClaimToken(CLAIM), deletedAt: null as Date | null }];
+const memories = [{ id: "mem_1", claimTokenHash: hashClaimToken(CLAIM), deletedAt: null as Date | null, contributorNote: null as string | null }];
 const afterCalls: Array<() => Promise<void>> = [];
 vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
 const dbStub = {
@@ -40,6 +40,7 @@ const dbStub = {
   $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) => fn(dbStub)),
   memory: {
     findUnique: vi.fn(async ({ where }: { where: { claimTokenHash: string } }) => memories.find((m) => m.claimTokenHash === where.claimTokenHash) ?? null),
+    findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { const m = memories.find((x) => x.id === where.id); if (!m) { throw Object.assign(new Error("not found"), { code: "P2025" }); } return m; }),
     update: vi.fn(async ({ where, data }: { where: { id: string }; data: { type: string } }) => { memoryTypes[where.id] = data.type; return { id: where.id, ...data }; }),
   },
   memoryRevision: { create: vi.fn(async ({ data }: { data: { memoryId: string; before: Record<string, unknown>; after: Record<string, unknown> } }) => { revisions.push(data); return data; }) },
@@ -99,6 +100,7 @@ beforeEach(() => {
   process.env.NEXT_PUBLIC_SITE_URL = "https://www.jowray.com";
   afterCalls.length = 0;
   media = [row()];
+  memories[0]!.contributorNote = null;
   memoryTypes.mem_1 = "PHOTO";
   revisions.length = 0;
   lockCalls.length = 0;
@@ -180,6 +182,29 @@ describe("recordMedia", () => {
     expect((await recordMedia({ mediaId: "med_1" })).status).toBe("READY");
     expect(media.find((m) => m.id === "med_1")!.deletedAt).toBeInstanceOf(Date);
     expect(revisions).toHaveLength(0);
+  });
+
+  it("does not let a cancelled replacement retire its target when the upload lands anyway", async () => {
+    media = [
+      row({ id: "med_old", status: "READY", storageKey: "originals/mem_1/old.jpg", sizeBytes: 5, blobUrl: "u" }),
+      row({ id: "med_1", replacesMediaId: "med_old", deletedAt: new Date("2026-11-03T12:00:00Z") }),
+    ];
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("READY");
+    expect(media.find((m) => m.id === "med_old")!.deletedAt).toBeNull();
+    const cancelled = media.find((m) => m.id === "med_1")!;
+    expect(cancelled.status).toBe("READY");
+    expect(cancelled.deletedAt).toBeInstanceOf(Date);
+    expect(cancelled.blobUrl).toBe("https://blob.test/originals/mem_1/abc.jpg");
+    expect(revisions).toHaveLength(0);
+  });
+
+  it("reads the note inside the locked transaction, not from the pre-lock row", async () => {
+    // A concurrent edit that committed words just before our lock must be seen by the type recompute.
+    dbStub.$queryRaw.mockImplementationOnce(async (strings: TemplateStringsArray, ...values: unknown[]) => { memories[0]!.contributorNote = "words added meanwhile"; lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; });
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 10, contentType: "text/html", uploadedAt: new Date() });
+    media = [row()];
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("FAILED");
+    expect(memoryTypes.mem_1).toBe("TEXT");
   });
 
   it("ignores soft-deleted memories and unknown ids", async () => {

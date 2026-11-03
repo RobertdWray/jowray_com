@@ -43,7 +43,7 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
   const db = getDb();
   const row = await db.media.findUnique({
     where: { id: mediaId },
-    include: { memory: { select: { deletedAt: true, contributorNote: true } } },
+    include: { memory: { select: { deletedAt: true } } },
   });
   if (!row || row.memory.deletedAt !== null) {
     return { status: "NOT_FOUND", mediaId };
@@ -93,14 +93,17 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
  * its target (or cancels itself if the target was removed meanwhile).
  */
 async function transition(
-  row: { id: string; memoryId: string; replacesMediaId: string | null; memory: { contributorNote: string | null } },
+  row: { id: string; memoryId: string; replacesMediaId: string | null },
   data: { status: "READY"; sizeBytes: number; blobUrl: string } | { status: "FAILED" }
 ): Promise<"done" | "lost_race"> {
   try {
     await getDb().$transaction(async (tx) => {
       await lockMemory(tx, row.memoryId);
-      await tx.media.update({ where: { id: row.id, status: "PENDING" }, data });
-      if (data.status === "READY" && row.replacesMediaId !== null) {
+      // Everything the swap and the type depend on is read after the lock, never from the pre-lock row.
+      const current = await tx.media.update({ where: { id: row.id, status: "PENDING" }, data });
+      const memory = await tx.memory.findUniqueOrThrow({ where: { id: row.memoryId }, select: { contributorNote: true } });
+      // A replacement cancelled while its upload was in flight is recorded (so purge can delete the blob) but never swaps in.
+      if (data.status === "READY" && row.replacesMediaId !== null && current.deletedAt === null) {
         const before = { mediaIds: await visibleMediaIds(tx, row.memoryId) };
         const now = new Date();
         const retired = await tx.media.updateMany({ where: { id: row.replacesMediaId, deletedAt: null }, data: { deletedAt: now } });
@@ -117,7 +120,7 @@ async function transition(
           log.info({ action: "replacement_cancelled", mediaId: row.id, memoryId: row.memoryId }, "replacement target already removed");
         }
       }
-      await recomputeMemoryType(tx, row.memoryId, row.memory.contributorNote);
+      await recomputeMemoryType(tx, row.memoryId, memory.contributorNote);
     }, TX_OPTIONS);
     return "done";
   } catch (error) {

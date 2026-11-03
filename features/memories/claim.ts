@@ -124,13 +124,18 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
       return "not_found" as const;
     }
     await lockMemory(tx, memory.id);
+    // Re-read under the lock: the invariants below must see what a concurrent editor committed first.
+    const fresh = await tx.memory.findUniqueOrThrow({
+      where: { id: memory.id },
+      select: { approxDateText: true, place: true, contributorNote: true, visibility: true },
+    });
     const before = {
       name: memory.contributor?.name ?? null,
       relationship: memory.contributor?.relationship ?? null,
-      approxDateText: memory.approxDateText,
-      place: memory.place,
-      contributorNote: memory.contributorNote,
-      visibility: memory.visibility,
+      approxDateText: fresh.approxDateText,
+      place: fresh.place,
+      contributorNote: fresh.contributorNote,
+      visibility: fresh.visibility,
     };
     const after = {
       name: input.name === undefined ? before.name : input.name,
@@ -198,21 +203,23 @@ async function retireMedia(raw: unknown, statuses: MediaStatus[], action: "remov
       return "not_found" as const;
     }
     await lockMemory(tx, memory.id);
+    // Re-read under the lock: a note cleared by a concurrent editor must count here.
+    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { contributorNote: true, type: true } });
     const target = await tx.media.findFirst({ where: { id: mediaId, memoryId: memory.id, deletedAt: null, status: { in: statuses } } });
     if (!target) {
       return "not_found" as const;
     }
-    if (target.status === "READY" && !hasWords(memory.contributorNote)) {
+    if (target.status === "READY" && !hasWords(fresh.contributorNote)) {
       const readyFiles = await tx.media.count({ where: { memoryId: memory.id, deletedAt: null, status: "READY" } });
       if (readyFiles <= 1) {
         return "last_file" as const;
       }
     }
-    const before = { mediaIds: await visibleMediaIds(tx, memory.id), type: memory.type };
+    const before = { mediaIds: await visibleMediaIds(tx, memory.id), type: fresh.type };
     const now = new Date();
     await tx.media.update({ where: { id: target.id }, data: { deletedAt: now } });
     await tx.media.updateMany({ where: { memoryId: memory.id, replacesMediaId: target.id, deletedAt: null, status: "PENDING" }, data: { deletedAt: now } });
-    const type = (await recomputeMemoryType(tx, memory.id, memory.contributorNote)) ?? memory.type;
+    const type = (await recomputeMemoryType(tx, memory.id, fresh.contributorNote)) ?? fresh.type;
     const after = { mediaIds: await visibleMediaIds(tx, memory.id), type };
     await tx.memoryRevision.create({
       data: {

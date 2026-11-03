@@ -132,7 +132,10 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(delMock).toHaveBeenCalledWith("dev/originals/mem_1/h");
     expect(delMock).not.toHaveBeenCalledWith("originals/mem_9/f");
     expect(media.find((m) => m.id === "med_removed")?.blobUrl).toBeNull();
-    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 1, confirmationsSent: 1, deletedBlobsRemoved: 2 });
+    // a cancelled reservation older than the Blob token lifetime: its pathname is deleted (idempotent) and the row leaves PENDING
+    expect(delMock).toHaveBeenCalledWith("dev/originals/mem_1/g");
+    expect(media.find((m) => m.id === "med_cancelled")?.status).toBe("FAILED");
+    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 1, confirmationsSent: 1, deletedBlobsRemoved: 3 });
   });
 
   it("is a no-op on a second run", async () => {
