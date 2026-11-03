@@ -28,10 +28,10 @@ Adapted from the EmpathIQ conventions for this repo's root-level `app/` director
 ```
 app/            routes, pages, Server Functions, route handlers (thin; call features)
 features/       use cases (createMemory, recordMedia, confirm); import services and lib
-services/       interfaces + factories (storage, email); import integrations
-integrations/   vendor clients (Vercel Blob, SendGrid); import nothing above them
+services/       interfaces + factories (storage, email, images); import integrations
+integrations/   vendor clients (Vercel Blob, SendGrid, sharp + libheif WASM); import nothing above them
 server/         db client, env sub-schemas (server-only leaves)
-lib/            helpers with no layer above them: logger, validations, claim tokens, media types, site URL, email assets (generated base64 PNG brand marks; `scripts/make-email-assets.ts` regenerates them) (some are server-only)
+lib/            helpers with no layer above them: logger, validations, claim tokens, media types, site URL (storage and derived prefixes), derived keys, image-derive error, HEIC worker thread, email assets (generated base64 PNG brand marks; `scripts/make-email-assets.ts` regenerates them) (some are server-only)
 ```
 
 - `app/ → features/ → services/ → integrations/`. A layer imports only from layers below it plus `lib/` and `server/`. Nothing imports from `app/`. Pages and Server Functions call `features/`; route handlers under `app/api/` may also call `services/` directly (they are the HTTP adapter layer); nothing in `app/` imports `integrations/`. `eslint.config.mjs` enforces this with `no-restricted-imports`. One exception: `integrations/*` may import **types** from `services/*/types` (they implement those interfaces); value imports stay forbidden.

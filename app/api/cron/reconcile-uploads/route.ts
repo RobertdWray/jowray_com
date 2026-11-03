@@ -1,8 +1,10 @@
 import { type NextRequest, NextResponse } from "next/server";
 
 import { confirmMemory } from "@/features/memories/confirm";
+import { DERIVED_KINDS, deriveMedia, MAX_DECODE_ATTEMPTS, MAX_PIXELS, STALE_CLAIM_MS } from "@/features/memories/derive-media";
 import { computeChecksum, recordMedia } from "@/features/memories/ingest-upload";
 import { safeEqualHex } from "@/lib/claim-token";
+import { posterStagingKeyFor } from "@/lib/derived-keys";
 import { createLogger, logError } from "@/lib/logger";
 import { storagePrefix } from "@/lib/site-url";
 import { getCronEnv } from "@/server/config/env";
@@ -26,6 +28,9 @@ const EMAIL_MAX_ATTEMPTS = 5;
 const EVENT_MAX_ATTEMPTS = 3;
 /** A cancelled reservation may still receive bytes until its Blob client token (1 h) expires; purge it after that plus a margin. */
 const CANCELLED_RESERVATION_GRACE_MS = 75 * MINUTE_MS;
+/** Step (g): a few photos per run, each decode bounded; the shared run deadline still applies. */
+const DERIVE_BATCH = 3;
+const DERIVE_DEADLINE_MS = 30_000;
 
 interface Counts {
   pendingRechecked: number;
@@ -35,6 +40,7 @@ interface Counts {
   emailsRetried: number;
   confirmationsSent: number;
   deletedBlobsRemoved: number;
+  derived: number;
   errors: number;
 }
 
@@ -59,6 +65,7 @@ export async function GET(request: NextRequest): Promise<Response> {
     emailsRetried: 0,
     confirmationsSent: 0,
     deletedBlobsRemoved: 0,
+    derived: 0,
     errors: 0,
   };
   const db = getDb();
@@ -203,6 +210,10 @@ export async function GET(request: NextRequest): Promise<Response> {
   // claim page, only those this environment uploaded (preview/dev Neon branches
   // hold copies of production rows and share the store). Only rows with a blob
   // still recorded are selected, so a purged row is never re-selected.
+  // Only rows with outstanding work are selected (a recorded blob, or derived
+  // copies that are not a fresh in-flight claim), so a purged row is never
+  // re-selected and a worker is never raced for a key it is still writing.
+  const staleClaimBefore = new Date(now - STALE_CLAIM_MS);
   const orphanedBlobs = await db.media.findMany({
     where: {
       // A cancelled file's Blob token may still be valid; wait for it to expire so the freed pathname cannot be refilled.
@@ -210,9 +221,18 @@ export async function GET(request: NextRequest): Promise<Response> {
         { memory: { deletedAt: { not: null } } },
         { deletedAt: { not: null }, createdAt: { lt: new Date(now - CANCELLED_RESERVATION_GRACE_MS) } },
       ],
-      blobUrl: { not: null },
+      AND: [
+        {
+          OR: [
+            { blobUrl: { not: null } },
+            { derivatives: { some: { status: { not: "PENDING" } } } },
+            { derivatives: { some: { status: "PENDING", OR: [{ claimedAt: null }, { claimedAt: { lt: staleClaimBefore } }] } } },
+          ],
+        },
+      ],
       storageKey: { startsWith: storagePrefix() },
     },
+    include: { derivatives: { select: { id: true, status: true, claimedAt: true, storageKey: true } } },
     orderBy: { id: "asc" },
     take: 50,
   });
@@ -222,7 +242,20 @@ export async function GET(request: NextRequest): Promise<Response> {
       break;
     }
     try {
-      await storage.del(row.storageKey);
+      if (row.blobUrl !== null) {
+        await storage.del(row.storageKey);
+      }
+      // Derived copies (not a fresh claim: that worker deletes its own candidate) and the poster staging pathname.
+      const copies = row.derivatives.filter((d) => d.status !== "PENDING" || d.claimedAt === null || d.claimedAt < staleClaimBefore);
+      for (const copy of copies) {
+        await storage.del(copy.storageKey);
+      }
+      if (row.mimeType.startsWith("video/")) {
+        await storage.del(posterStagingKeyFor(row.storageKey));
+      }
+      if (copies.length > 0) {
+        await db.derivedMedia.deleteMany({ where: { mediaId: row.id, storageKey: { in: copies.map((c) => c.storageKey) } } });
+      }
       await db.media.update({ where: { id: row.id }, data: { blobUrl: null } });
       counts.deletedBlobsRemoved += 1;
     } catch (error) {
@@ -255,6 +288,48 @@ export async function GET(request: NextRequest): Promise<Response> {
     } catch (error) {
       counts.errors += 1;
       logError("reconcile: cancelled reservation purge failed", error, { category: "cron", mediaId: row.id });
+    }
+  }
+
+  // (g) Derived copies (web image + email thumbnail) for READY photos of this
+  // environment that have none, a stale claim, or a retryable failure. This is
+  // the backfill for photos stored before the pipeline existed and the retry
+  // path for finalize/callback runs that died. Same eligibility as deriveMedia.
+  const candidates = await db.media.findMany({
+    where: {
+      status: "READY",
+      deletedAt: null,
+      mimeType: { startsWith: "image/" },
+      storageKey: { startsWith: storagePrefix() },
+      memory: { deletedAt: null },
+      OR: [
+        { derivatives: { none: { kind: "WEB_IMAGE" } } },
+        { derivatives: { none: { kind: "THUMBNAIL" } } },
+        // Stale claims (a null claimedAt is treated as stale; exhausted ones are retired by deriveMedia).
+        { derivatives: { some: { kind: { in: [...DERIVED_KINDS] }, status: "PENDING", OR: [{ claimedAt: null }, { claimedAt: { lt: new Date(now - STALE_CLAIM_MS) } }] } } },
+        { derivatives: { some: { kind: { in: [...DERIVED_KINDS] }, status: "FAILED", error: { in: ["decode_failed", "timeout"] }, attempts: { lt: MAX_DECODE_ATTEMPTS } } } },
+        // A refusal made under a ceiling other than today's: one retry converges the row.
+        { derivatives: { some: { kind: { in: [...DERIVED_KINDS] }, status: "FAILED", error: { startsWith: "too_many_pixels:", not: `too_many_pixels:${MAX_PIXELS}` } } } },
+      ],
+    },
+    orderBy: { createdAt: "asc" },
+    take: DERIVE_BATCH,
+  });
+  const deriveStart = Date.now();
+  for (const row of candidates) {
+    // Each candidate gets only what is left of the step and of the run, never a fresh budget.
+    const remainingMs = Math.min(DERIVE_DEADLINE_MS - (Date.now() - deriveStart), RUN_DEADLINE_MS - (Date.now() - now));
+    if (remainingMs <= 0) {
+      break;
+    }
+    try {
+      const outcome = await deriveMedia({ mediaId: row.id, deadlineMs: remainingMs });
+      if (Object.values(outcome).includes("derived")) {
+        counts.derived += 1;
+      }
+    } catch (error) {
+      counts.errors += 1;
+      logError("reconcile: derive failed", error, { category: "cron", mediaId: row.id });
     }
   }
 

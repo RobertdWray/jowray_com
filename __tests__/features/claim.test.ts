@@ -6,7 +6,7 @@ const TOKEN = "t".repeat(43);
 interface Rev { memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown> }
 const revisions: Rev[] = [];
 let memory: Record<string, unknown> | null;
-type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; sortOrder: number; deletedAt: Date | null; replacesMediaId: string | null; createdAt: Date; durationSeconds: number | null };
+type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; sortOrder: number; deletedAt: Date | null; replacesMediaId: string | null; createdAt: Date; durationSeconds: number | null; derivatives?: Array<{ kind: string; status: string; mimeType: string | null }> };
 const mediaRows: MediaRow[] = [];
 const lockCalls: string[] = [];
 function matchesMedia(row: MediaRow, where: Record<string, unknown>): boolean {
@@ -54,7 +54,7 @@ beforeEach(() => {
   lockCalls.length = 0;
   mediaRows.length = 0;
   mediaRows.push(
-    { id: "med_1", memoryId: "mem_1", status: "READY", mimeType: "image/heic", originalFilename: "a.heic", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:00Z"), durationSeconds: 24 },
+    { id: "med_1", memoryId: "mem_1", status: "READY", mimeType: "image/heic", originalFilename: "a.heic", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:00Z"), durationSeconds: 24, derivatives: [{ kind: "WEB_IMAGE", status: "READY", mimeType: "image/jpeg" }, { kind: "THUMBNAIL", status: "READY", mimeType: "image/jpeg" }] },
     { id: "med_2", memoryId: "mem_1", status: "PENDING", mimeType: "video/mp4", originalFilename: null, sortOrder: 1, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:01Z"), durationSeconds: null },
     { id: "med_gone", memoryId: "mem_1", status: "READY", mimeType: "image/jpeg", originalFilename: "old.jpg", sortOrder: 2, deletedAt: new Date("2026-11-03T11:00:00Z"), replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:02Z"), durationSeconds: null },
     { id: "med_other", memoryId: "mem_2", status: "READY", mimeType: "image/jpeg", originalFilename: "x.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:03Z"), durationSeconds: null },
@@ -73,6 +73,16 @@ describe("getMemoryForClaim", () => {
     expect(found?.id).toBe("mem_1");
     expect(found?.media.map((m) => [m.id, m.status, m.sortOrder])).toEqual([["med_1", "READY", 0], ["med_2", "PENDING", 1]]);
     expect(found?.media[0]?.durationSeconds).toBe(24);
+  });
+
+  it("reports the state of each file's sanitized web copy", async () => {
+    const found = await getMemoryForClaim(TOKEN);
+    expect(found?.media[0]?.web).toEqual({ status: "ready", mimeType: "image/jpeg" });
+    expect(found?.media[1]?.web).toEqual({ status: "none", mimeType: null });
+    mediaRows[0]!.derivatives = [{ kind: "WEB_IMAGE", status: "FAILED", mimeType: null }];
+    expect((await getMemoryForClaim(TOKEN))?.media[0]?.web).toEqual({ status: "failed", mimeType: null });
+    mediaRows[0]!.derivatives = [{ kind: "WEB_IMAGE", status: "PENDING", mimeType: null }];
+    expect((await getMemoryForClaim(TOKEN))?.media[0]?.web).toEqual({ status: "pending", mimeType: null });
   });
 
   it("returns null for a wrong token or a deleted memory", async () => {
