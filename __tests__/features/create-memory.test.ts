@@ -64,7 +64,7 @@ describe("createMemory", () => {
     expect(memories[0]?.claimTokenHash).toBe(hashClaimToken(result.claimToken));
     expect(memories[0]).toMatchObject({ type: "VOICE", source: "WEB_UPLOAD", status: "PENDING", consentVersion: "2026-11-v1", contributorNote: "We laughed a lot." });
     expect(contributors[0]).toMatchObject({ name: "Jo Friend", email: "jo@example.com", contactOptIn: false, memorialId: "memorial_1" });
-    expect(result.upload?.pathname).toMatch(/^originals\/mem_1\/[0-9a-f-]{36}\.m4a$/);
+    expect(result.upload?.pathname).toMatch(/^dev\/originals\/mem_1\/[0-9a-f-]{36}\.m4a$/);
     expect(medias[0]).toMatchObject({ status: "PENDING", mimeType: "audio/mp4", maxBytes: 100 * 1024 * 1024, storageKey: result.upload?.pathname });
     const verified = verifyUploadTicket(result.upload!.ticket);
     expect(verified.ok).toBe(true);

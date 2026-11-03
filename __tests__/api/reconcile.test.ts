@@ -26,11 +26,12 @@ function matches(row: Record<string, unknown>, where: Record<string, unknown>): 
     if (k === "contributor") { const c = v as { email?: { not: null } }; if (c.email?.not !== null) { return true; } const email = (row.contributor as { email: string | null } | null)?.email; return email !== null && email !== undefined; }
     const actual = row[k];
     if (v !== null && typeof v === "object" && !(v instanceof Date)) {
-      const cond = v as { lt?: Date; lte?: Date; gt?: Date; not?: unknown };
+      const cond = v as { lt?: Date; lte?: Date; gt?: Date; not?: unknown; startsWith?: string };
       if (cond.lt !== undefined && !((actual as Date) < cond.lt)) { return false; }
       if (cond.lte !== undefined && !((actual as Date) <= cond.lte)) { return false; }
       if (cond.gt !== undefined && !((actual as Date) > cond.gt)) { return false; }
       if ("not" in cond && actual === cond.not) { return false; }
+      if ("startsWith" in cond && typeof actual === "string" && !actual.startsWith(cond.startsWith as string)) { return false; }
       return true;
     }
     return actual === v;
@@ -72,7 +73,9 @@ beforeEach(() => {
     { id: "med_fresh", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: new Date(), storageKey: "originals/mem_1/b", memory: { deletedAt: null } },
     { id: "med_orphan", memoryId: "mem_2", status: "PENDING", checksumSha256: null, createdAt: ancient, storageKey: "originals/mem_2/c", memory: { deletedAt: null } },
     { id: "med_nohash", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: old, storageKey: "originals/mem_1/d", memory: { deletedAt: null } },
-    { id: "med_gone", memoryId: "mem_3", status: "READY", checksumSha256: "b".repeat(64), createdAt: old, storageKey: "originals/mem_3/e", memory: { deletedAt: ancient } },
+    { id: "med_gone", memoryId: "mem_3", status: "READY", checksumSha256: "b".repeat(64), createdAt: old, storageKey: "dev/originals/mem_3/e", memory: { deletedAt: ancient } },
+    // A row copied from production into this branch: its blob must never be touched from here.
+    { id: "med_prod_copy", memoryId: "mem_9", status: "READY", checksumSha256: "c".repeat(64), createdAt: old, storageKey: "originals/mem_9/f", memory: { deletedAt: ancient } },
   ];
   events = [{ id: "evt_1", processedAt: null, attempts: 1, error: "boom", payload: { tokenPayload: JSON.stringify({ mediaId: "med_stale" }) } }];
   emails = [
@@ -117,7 +120,8 @@ describe("GET /api/cron/reconcile-uploads", () => {
     // (not one younger than 30 minutes, not one with a terminal SKIPPED row)
     expect(confirmMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5"]);
     // (f) blobs of soft-deleted memories deleted
-    expect(delMock).toHaveBeenCalledWith("originals/mem_3/e");
+    expect(delMock).toHaveBeenCalledWith("dev/originals/mem_3/e");
+    expect(delMock).not.toHaveBeenCalledWith("originals/mem_9/f");
     expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 1, confirmationsSent: 1, deletedBlobsRemoved: 1 });
   });
 

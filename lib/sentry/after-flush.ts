@@ -1,7 +1,7 @@
 import * as Sentry from "@sentry/nextjs";
 import { after } from "next/server";
 
-import { logger } from "@/lib/logger";
+import { logError, logger } from "@/lib/logger";
 
 /**
  * Runs `callback` in `after()` (post-response) and flushes Sentry (up to 5 s)
@@ -17,6 +17,9 @@ export function afterWithFlush(callback: () => Promise<void>): void {
   after(async () => {
     try {
       await callback();
+    } catch (error) {
+      // Record it before the flush below; an uncaught rejection here would be lost.
+      logError("after() callback failed", error, { category: "api" });
     } finally {
       const flushed = await Sentry.flush(5000);
       if (!flushed) {

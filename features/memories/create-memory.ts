@@ -6,6 +6,7 @@ import { confirmQuietly } from "@/features/memories/ingest-upload";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { extensionFor, maxBytesFor, memoryTypeFor, normalizeMime } from "@/lib/media-types";
+import { storagePrefix } from "@/lib/site-url";
 import { mintUploadTicket, type UploadTicket } from "@/lib/upload-ticket";
 import { createMemoryInputSchema, type FileInput, uploadTicketRequestSchema } from "@/lib/validations/memory";
 import { getMemorialEnv, getUploadEnv } from "@/server/config/env";
@@ -67,7 +68,7 @@ async function withinBudget(tx: Tx, addBytes: number, countMemory: boolean): Pro
 }
 
 async function createPendingMedia(tx: Tx, memoryId: string, file: ResolvedFile): Promise<UploadGrant> {
-  const pathname = `originals/${memoryId}/${randomUUID()}.${file.extension}`;
+  const pathname = `${storagePrefix()}${memoryId}/${randomUUID()}.${file.extension}`;
   const media = await tx.media.create({
     data: {
       memoryId,

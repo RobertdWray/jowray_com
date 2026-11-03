@@ -19,8 +19,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const RETRY_STEP_MS = 15 * 60 * 1000;
 /** Statuses a new send may claim from. SENT and SENDING are never claimed. */
 const CLAIMABLE = ["PENDING", "FAILED", "SKIPPED"] as const;
-/** Statuses that count against the per-recipient cap (SKIPPED rows were never sent). */
-const COUNTED = ["PENDING", "SENDING", "SENT", "FAILED"] as const;
+/** Statuses that count against the per-recipient cap: delivered or in flight. FAILED and SKIPPED rows never reached the address, and counting FAILED would lock retries out. */
+const COUNTED = ["SENDING", "SENT"] as const;
 
 let transport: EmailTransport | undefined;
 function getTransport(): EmailTransport {

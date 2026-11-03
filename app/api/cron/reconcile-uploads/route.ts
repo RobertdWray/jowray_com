@@ -4,6 +4,7 @@ import { confirmMemory } from "@/features/memories/confirm";
 import { computeChecksum, recordMedia } from "@/features/memories/ingest-upload";
 import { safeEqualHex } from "@/lib/claim-token";
 import { createLogger, logError } from "@/lib/logger";
+import { storagePrefix } from "@/lib/site-url";
 import { getCronEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 import { createStorageService } from "@/services/storage";
@@ -175,9 +176,10 @@ export async function GET(request: NextRequest): Promise<Response> {
     }
   }
 
-  // (f) Blobs of soft-deleted memories.
+  // (f) Blobs of soft-deleted memories, only those this environment uploaded:
+  // preview/dev Neon branches hold copies of production rows and share the store.
   const orphanedBlobs = await db.media.findMany({
-    where: { memory: { deletedAt: { not: null } }, blobUrl: { not: null } },
+    where: { memory: { deletedAt: { not: null } }, blobUrl: { not: null }, storageKey: { startsWith: storagePrefix() } },
     take: 50,
   });
   const storage = createStorageService();

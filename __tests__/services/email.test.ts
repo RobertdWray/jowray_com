@@ -154,6 +154,13 @@ describe("sendMemoryConfirmation", () => {
     expect(result.sent).toBe(true);
   });
 
+  it("does not count FAILED rows against the recipient cap, so retries are never locked out", async () => {
+    for (let i = 1; i <= 3; i += 1) {
+      rows.push({ id: `f_${i}`, memoryId: `mem_f${i}`, recipientEmail: base.to, emailType: "MEMORY_CONFIRMATION", status: "FAILED", attempts: 1, nextAttemptAt: new Date(), errorMessage: "x", sendgridMessageId: null, sentAt: null, createdAt: new Date() });
+    }
+    expect((await sendMemoryConfirmation({ ...base, memoryId: "mem_new" })).sent).toBe(true);
+  });
+
   it("caps at three confirmations per address per day", async () => {
     for (let i = 1; i <= 3; i += 1) {
       const r = await sendMemoryConfirmation({ ...base, memoryId: `mem_${i}` });
