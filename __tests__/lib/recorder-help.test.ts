@@ -4,6 +4,7 @@ import {
   detectPlatform,
   helpFor,
   problemFromError,
+  type HelpPhase,
   type Platform,
   type RecorderProblem,
 } from "@/lib/recorder-help";
@@ -16,6 +17,7 @@ const problems: RecorderProblem[] = [
   "not-allowed", "not-found", "not-readable", "overconstrained",
   "security", "silent", "unsupported", "unknown",
 ];
+const phases: HelpPhase[] = ["recording", "clip", "error"];
 
 describe("problemFromError", () => {
   const names: [string, RecorderProblem][] = [
@@ -124,10 +126,12 @@ describe("detectPlatform", () => {
 });
 
 describe("helpFor", () => {
-  it.each(problems.flatMap((problem) => platforms.map((platform) => ({ problem, platform }))))(
-    "gives complete help for $problem on $platform",
-    ({ problem, platform }) => {
-      const help = helpFor(problem, platform);
+  it.each(problems.flatMap((problem) => platforms.flatMap((platform) =>
+    (problem === "silent" ? phases : ["clip"] as const).map((phase) => ({ problem, platform, phase })),
+  )))(
+    "gives complete help for $problem on $platform during $phase",
+    ({ problem, platform, phase }) => {
+      const help = helpFor(problem, platform, phase);
       expect(help.title.trim().length).toBeGreaterThan(0);
       expect(help.body.trim().length).toBeGreaterThan(0);
       expect(help.steps.length).toBeGreaterThan(0);
@@ -137,9 +141,10 @@ describe("helpFor", () => {
     },
   );
 
-  it("checks speech, device and Mac input volume before permissions for silence", () => {
-    const { title, body, steps } = helpFor("silent", "mac-chrome");
-    expect(steps[0]).toBe("Say something at your normal volume and watch the bars");
+  it.each(phases)("checks speech, device and Mac input volume before permissions during %s", (phase) => {
+    const { title, body, steps } = helpFor("silent", "mac-chrome", phase);
+    // Silent help now starts with actions available in the current phase.
+    expect(steps[0]).toMatch(/normal volume.*watch the bars/);
     expect(steps[1]).toMatch(/different microphone.*list/i);
     expect(steps[1]).toMatch(/headset/);
     expect(steps[1]).toMatch(/virtual/);
@@ -147,6 +152,40 @@ describe("helpFor", () => {
     const permissionIndex = steps.findIndex((step) => step.includes("Privacy & Security"));
     expect(permissionIndex).toBeGreaterThan(2);
     expect(`${title} ${body}`).not.toMatch(/permission|denied|blocked/i);
+  });
+
+  it("uses the live meter and asks to stop before changing microphone during recording", () => {
+    const help = helpFor("silent", "mac-chrome", "recording");
+    expect(help.title).toBe("We're not hearing anything");
+    expect(help.body).toBe("The microphone may be quiet or the wrong one may be selected. Try these steps.");
+    expect(help.steps[0]).toBe("Keep talking at your normal volume and watch the bars");
+    expect(help.steps[1]).toBe("Stop, then pick a different microphone from the list if one is shown. A headset that is paired but idle, or a virtual input, can record nothing.");
+  });
+
+  it("asks to play the finished clip and record again before watching the bars", () => {
+    const help = helpFor("silent", "mac-chrome", "clip");
+    expect(help.title).toBe("This recording sounds silent");
+    expect(help.body).toBe("We didn't hear anything while you were recording. You can send it anyway, or try these steps and record again.");
+    expect(help.steps[0]).toBe("Play it back. If it is silent, press Record again, say something at your normal volume and watch the bars");
+    expect(help.steps[1]).toBe("Pick a different microphone from the list if one is shown, then record again. A headset that is paired but idle, or a virtual input, can record nothing.");
+    expect(help.steps.some((step) => step.startsWith("Stop, then"))).toBe(false);
+  });
+
+  it.each(platforms)("defaults to clip help for silence on %s", (platform) => {
+    expect(helpFor("silent", platform)).toEqual(helpFor("silent", platform, "clip"));
+  });
+
+  it.each(platforms)("uses clip help for silence in the error phase on %s", (platform) => {
+    expect(helpFor("silent", platform, "error")).toEqual(helpFor("silent", platform, "clip"));
+  });
+
+  it.each(problems.filter((problem) => problem !== "silent").flatMap((problem) =>
+    platforms.map((platform) => ({ problem, platform })),
+  ))("keeps $problem help identical across phases on $platform", ({ problem, platform }) => {
+    const help = helpFor(problem, platform);
+    for (const phase of phases) {
+      expect(helpFor(problem, platform, phase)).toEqual(help);
+    }
   });
 
   it.each([
@@ -225,8 +264,8 @@ describe("helpFor", () => {
     expect(JSON.stringify(helpFor("silent", platform))).not.toContain("Start >");
   });
 
-  it("checks Windows input volume before microphone privacy", () => {
-    const { steps } = helpFor("silent", "windows-chromium");
+  it.each(phases)("checks Windows input volume before microphone privacy during %s", (phase) => {
+    const { steps } = helpFor("silent", "windows-chromium", phase);
     expect(steps[2]).toBe("Start > Settings > System > Sound > Input: choose the device and check its volume");
     expect(steps.findIndex((step) => step.includes("Privacy & security"))).toBeGreaterThan(2);
   });

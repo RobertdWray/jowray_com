@@ -77,6 +77,8 @@ describe("silence judgement", () => {
     expect(state).toStrictEqual({
       startedAt: 1200,
       lastObservedAt: null,
+      // No uninterrupted run exists until the first observation.
+      runStartedAt: null,
       lastLoudAt: null,
       loudMs: 0,
       observedMs: 0,
@@ -88,14 +90,16 @@ describe("silence judgement", () => {
     expect(clipVerdict(state)).toBe("unchecked");
   });
 
-  it("waits until 3000 ms before declaring silence", () => {
+  it("waits for 3000 ms of continuous observations before declaring silence", () => {
     let state = createSilenceState(0);
     for (let i = 1; i <= 29; i++) {
       state = observeLevel(state, -100, i * 100);
     }
     expect(state.observedMs).toBe(2900);
     expect(hearingVerdict(state, 2900)).toBe("listening");
-    expect(hearingVerdict(state, 3000)).toBe("silent");
+    // P1/P17: the grace period starts at the first analysed tick, here t=100.
+    expect(hearingVerdict(state, 3000)).toBe("listening");
+    expect(hearingVerdict(state, 3100)).toBe("silent");
   });
 
   it("hears one loud tick immediately, even at time zero", () => {
@@ -141,6 +145,29 @@ describe("silence judgement", () => {
     expect(clipVerdict(state)).toBe("unchecked");
   });
 
+  it.each([
+    { firstTick: 400, coverageGap: false, verdict: "suspectedSilent" },
+    { firstTick: 500, coverageGap: false, verdict: "suspectedSilent" },
+    { firstTick: 501, coverageGap: true, verdict: "unchecked" },
+    { firstTick: 700, coverageGap: true, verdict: "unchecked" },
+  ])("accounts for leading coverage at t=$firstTick", ({ firstTick, coverageGap, verdict }) => {
+    const state = observeLevel(createSilenceState(0), -100, firstTick);
+    expect(state.coverageGap).toBe(coverageGap);
+    expect(clipVerdict(state)).toBe(verdict);
+  });
+
+  it.each([
+    { stoppedAt: undefined, verdict: "suspectedSilent" },
+    { stoppedAt: 300, verdict: "suspectedSilent" },
+    { stoppedAt: 600, verdict: "suspectedSilent" },
+    { stoppedAt: 601, verdict: "unchecked" },
+    { stoppedAt: 5000, verdict: "unchecked" },
+  ])("accounts for trailing coverage when stoppedAt=$stoppedAt", ({ stoppedAt, verdict }) => {
+    const state = observeLevel(createSilenceState(0), -100, 100);
+    expect(clipVerdict(state, stoppedAt)).toBe(verdict);
+    expect(clipVerdict(state)).toBe("suspectedSilent");
+  });
+
   it("keeps the coverage gap after normal sampling resumes", () => {
     let state = observeLevel(createSilenceState(0), -100, 0);
     state = observeLevel(state, -100, 600);
@@ -164,6 +191,67 @@ describe("silence judgement", () => {
     expect(clipVerdict(state)).toBe("heard");
   });
 
+  it("keeps heard ahead of leading, intervening and trailing coverage gaps", () => {
+    let state = observeLevel(createSilenceState(0), -20, 700);
+    state = observeLevel(state, -20, 1400);
+    expect(state.coverageGap).toBe(true);
+    expect(state.loudMs).toBe(200);
+    expect(clipVerdict(state, 10_000)).toBe("heard");
+  });
+
+  it("restarts the continuous run only when a sampling gap exceeds 500 ms", () => {
+    let state = observeLevel(createSilenceState(0), -100, 100);
+    expect(state.runStartedAt).toBe(100);
+    state = observeLevel(state, -100, 600);
+    expect(state.runStartedAt).toBe(100);
+    state = observeLevel(state, -100, 1200);
+    expect(state.runStartedAt).toBe(1200);
+    state = observeLevel(state, -100, 1300);
+    expect(state.runStartedAt).toBe(1200);
+    expect(state.coverageGap).toBe(true);
+    state = observeLevel(state, -100, 1901);
+    expect(state.runStartedAt).toBe(1901);
+  });
+
+  it("requires a fresh 3000 ms quiet run after a suspension", () => {
+    let state = createSilenceState(0);
+    for (let now = 0; now < 3000; now += 100) {
+      state = observeLevel(state, -100, now);
+    }
+    state = observeLevel(state, -100, 8000);
+    expect(hearingVerdict(state, 8000)).toBe("listening");
+    for (let now = 8100; now < 11_000; now += 100) {
+      state = observeLevel(state, -100, now);
+      expect(hearingVerdict(state, now)).toBe("listening");
+    }
+    expect(hearingVerdict(state, 10_999)).toBe("listening");
+    state = observeLevel(state, -100, 11_000);
+    expect(hearingVerdict(state, 11_000)).toBe("silent");
+    expect(clipVerdict(state, 11_000)).toBe("unchecked");
+  });
+
+  it.each([
+    { delay: 500, verdict: "silent" },
+    { delay: 501, verdict: "listening" },
+    { delay: 600, verdict: "listening" },
+  ])("requires fresh analysis after $delay ms without a tick", ({ delay, verdict }) => {
+    let state = createSilenceState(0);
+    for (let now = 0; now <= 3000; now += 100) {
+      state = observeLevel(state, -100, now);
+    }
+    expect(hearingVerdict(state, 3000)).toBe("silent");
+    expect(hearingVerdict(state, 3000 + delay)).toBe(verdict);
+  });
+
+  it("reports recent sound despite gaps or stale analysis until the loud window expires", () => {
+    let state = observeLevel(createSilenceState(0), -20, 0);
+    state = observeLevel(state, -100, 800);
+    expect(state.coverageGap).toBe(true);
+    expect(hearingVerdict(state, 800)).toBe("hearing");
+    expect(hearingVerdict(state, 2999)).toBe("hearing");
+    expect(hearingVerdict(state, 3000)).toBe("listening");
+  });
+
   it("tracks the highest observed peak and latest loud tick", () => {
     let state = observeLevel(createSilenceState(0), -80, 0);
     state = observeLevel(state, -25, 100);
@@ -181,5 +269,15 @@ describe("silence judgement", () => {
     expect(next).not.toBe(state);
     expect(state).toStrictEqual(before);
     expect(next.observedMs).toBe(100);
+  });
+
+  it("does not mutate earlier evidence when a gap restarts the run", () => {
+    const state = Object.freeze(observeLevel(createSilenceState(0), -100, 100));
+    const before = { ...state };
+    const next = observeLevel(state, -20, 800);
+    expect(next).not.toBe(state);
+    expect(state).toStrictEqual(before);
+    expect(next.runStartedAt).toBe(800);
+    expect(next.coverageGap).toBe(true);
   });
 });

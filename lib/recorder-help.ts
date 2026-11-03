@@ -19,6 +19,8 @@ export type Platform =
   | "windows-firefox"
   | "other";
 
+export type HelpPhase = "recording" | "clip" | "error";
+
 /** Recognise modern and legacy error names without depending on browser objects. */
 export function problemFromError(error: unknown): RecorderProblem {
   if (typeof error !== "object" || error === null || !("name" in error)) {
@@ -159,20 +161,32 @@ function inputCheckFor(platform: Platform): string {
   }
 }
 
-/** Give practical next steps, checking silent inputs before suggesting permission changes. */
-export function helpFor(problem: RecorderProblem, platform: Platform): RecorderHelp {
+/** Match available controls and check silent inputs before suggesting permission changes. */
+export function helpFor(
+  problem: RecorderProblem,
+  platform: Platform,
+  phase: HelpPhase = "clip",
+): RecorderHelp {
   switch (problem) {
-    case "silent":
+    case "silent": {
+      const recording = phase === "recording";
       return {
-        title: "We're not hearing anything",
-        body: "The microphone may be quiet or the wrong one may be selected. Try these steps.",
+        title: recording ? "We're not hearing anything" : "This recording sounds silent",
+        body: recording
+          ? "The microphone may be quiet or the wrong one may be selected. Try these steps."
+          : "We didn't hear anything while you were recording. You can send it anyway, or try these steps and record again.",
         steps: [
-          "Say something at your normal volume and watch the bars",
-          "Pick a different microphone from the list if one is shown. A headset that is paired but idle, or a virtual input, can record nothing.",
+          recording
+            ? "Keep talking at your normal volume and watch the bars"
+            : "Play it back. If it is silent, press Record again, say something at your normal volume and watch the bars",
+          recording
+            ? "Stop, then pick a different microphone from the list if one is shown. A headset that is paired but idle, or a virtual input, can record nothing."
+            : "Pick a different microphone from the list if one is shown, then record again. A headset that is paired but idle, or a virtual input, can record nothing.",
           inputCheckFor(platform),
           ...permissionStepsFor(platform),
         ],
       };
+    }
     case "not-allowed":
       return {
         title: "Allow microphone access",

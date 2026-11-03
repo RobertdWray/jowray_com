@@ -33,6 +33,7 @@ export function levelToBarHeight(dbfs: number, floorDbfs = SILENCE_THRESHOLD_DBF
 export interface SilenceState {
   readonly startedAt: number;
   readonly lastObservedAt: number | null;
+  readonly runStartedAt: number | null;
   readonly lastLoudAt: number | null;
   readonly loudMs: number;
   readonly observedMs: number;
@@ -45,6 +46,7 @@ export function createSilenceState(now: number): SilenceState {
   return {
     startedAt: now,
     lastObservedAt: null,
+    runStartedAt: null,
     lastLoudAt: null,
     loudMs: 0,
     observedMs: 0,
@@ -53,25 +55,25 @@ export function createSilenceState(now: number): SilenceState {
   };
 }
 
-/** Credit one analysed tick, retaining sampling gaps without mutating prior evidence. */
+/** P1/P17: gaps are missing evidence, so restart grace and retain coverage history. */
 export function observeLevel(state: SilenceState, dbfs: number, now: number): SilenceState {
   const loud = dbfs >= SILENCE_THRESHOLD_DBFS;
+  const gap = now - (state.lastObservedAt ?? state.startedAt) > MAX_GAP_MS;
   return {
     ...state,
     lastObservedAt: now,
+    runStartedAt: gap ? now : state.runStartedAt ?? now,
     lastLoudAt: loud ? now : state.lastLoudAt,
     loudMs: state.loudMs + (loud ? TICK_MS : 0),
     observedMs: state.observedMs + TICK_MS,
-    coverageGap: state.coverageGap || (
-      state.lastObservedAt !== null && now - state.lastObservedAt > MAX_GAP_MS
-    ),
+    coverageGap: state.coverageGap || gap,
     peakDbfs: Math.max(state.peakDbfs, dbfs),
   };
 }
 
 export type Hearing = "unknown" | "listening" | "hearing" | "silent";
 
-/** Report recent sound with a grace period before the first silence warning. */
+/** P1/P17: only fresh, continuous evidence can justify a live silence warning. */
 export function hearingVerdict(state: SilenceState, now: number): Hearing {
   if (state.observedMs === 0) {
     return "unknown";
@@ -79,20 +81,29 @@ export function hearingVerdict(state: SilenceState, now: number): Hearing {
   if (state.lastLoudAt !== null && now - state.lastLoudAt < SILENCE_WINDOW_MS) {
     return "hearing";
   }
-  if (state.lastLoudAt === null && now - state.startedAt < SILENCE_GRACE_MS) {
-    return "listening";
+  if (
+    state.lastObservedAt !== null
+    && now - state.lastObservedAt <= MAX_GAP_MS
+    && now - (state.runStartedAt ?? now) >= SILENCE_GRACE_MS
+    && now - state.startedAt >= SILENCE_GRACE_MS
+  ) {
+    return "silent";
   }
-  return "silent";
+  return "listening";
 }
 
 export type ClipVerdict = "heard" | "suspectedSilent" | "unchecked";
 
-/** Warn conservatively: missing analysis can never establish a silent clip. */
-export function clipVerdict(state: SilenceState): ClipVerdict {
+/** P1/P17: missing analysis, including time until Stop, cannot establish silence. */
+export function clipVerdict(state: SilenceState, stoppedAt?: number): ClipVerdict {
   if (state.loudMs >= MIN_LOUD_MS) {
     return "heard";
   }
-  if (state.observedMs === 0 || state.coverageGap) {
+  if (
+    state.observedMs === 0
+    || state.coverageGap
+    || (stoppedAt !== undefined && stoppedAt - (state.lastObservedAt ?? state.startedAt) > MAX_GAP_MS)
+  ) {
     return "unchecked";
   }
   return "suspectedSilent";
