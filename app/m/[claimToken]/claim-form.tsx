@@ -1,11 +1,11 @@
 "use client";
 
-import { upload } from "@vercel/blob/client";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import type { ClaimView } from "@/features/memories/claim";
 import { ACCEPT_ATTRIBUTE } from "@/lib/media-types";
+import { uploadWithTicket } from "@/lib/upload-client";
 
 import { PrimaryButton } from "../../_components/buttons";
 import { fileInputClass, inputClass, labelClass, selectClass, textareaClass } from "../../_components/field-classes";
@@ -56,15 +56,8 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
         setMessage(ticketed.code === "too_many_files" ? "This memory already has the maximum number of files." : "That file cannot be added.");
         return;
       }
-      const { ticket, pathname } = ticketed.upload;
-      await upload(pathname, file, {
-        access: "private",
-        handleUploadUrl: "/api/upload",
-        multipart: true,
-        contentType: ticket.mimeType,
-        clientPayload: JSON.stringify(ticket),
-      });
-      const finalized = await finalizeAddedFile({ ticket, claimToken });
+      await uploadWithTicket(ticketed.upload, file);
+      const finalized = await finalizeAddedFile({ ticket: ticketed.upload.ticket, claimToken });
       setMessage(finalized.status === "READY" ? "File added." : "The file could not be accepted.");
       router.refresh();
     } catch (error) {

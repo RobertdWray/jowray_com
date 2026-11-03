@@ -1,15 +1,12 @@
 import { headers } from "next/headers";
-import Image from "next/image";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { Suspense } from "react";
 
 import { getMemoryForClaim } from "@/features/memories/claim";
-import { formatDuration } from "@/lib/format-duration";
-import { isRenderableIn } from "@/lib/media-types";
 
-import { linkClass } from "../../_components/field-classes";
 import { ClaimForm } from "./claim-form";
+import { MediaList } from "./media-list-client";
 
 // Static shell; the token is read at request time inside <Suspense>.
 // `Referrer-Policy: no-referrer` comes from `next.config.ts` for `/m/*`;
@@ -51,51 +48,7 @@ async function ClaimContent({ params }: { params: PageProps<"/m/[claimToken]">["
         {memory.media.length === 0 && memory.type !== "TEXT" && (
           <p className="text-body text-walnut-soft">No file has been received yet.</p>
         )}
-        {memory.media.map((item) => {
-          const src = `/api/media/${item.id}?t=${encodeURIComponent(claimToken)}`;
-          const download = `${src}&download=1`;
-          if (!isRenderableIn(item.mimeType, userAgent)) {
-            return (
-              <div key={item.id} className="rounded-card border-[3px] border-wood-light bg-paper p-3">
-                <p>
-                  <a className={linkClass} href={download}>Download {item.originalFilename ?? "file"}</a>{" "}
-                  (this browser cannot display {item.mimeType})
-                </p>
-              </div>
-            );
-          }
-          if (item.mimeType.startsWith("image/")) {
-            // Private, token-gated media must not go through the image optimizer (it would cache the bytes).
-            return (
-              <div key={item.id} className="rounded-card border-[3px] border-wood-light bg-paper p-3">
-                <Image
-                  src={src}
-                  alt={item.originalFilename ?? "photo"}
-                  unoptimized
-                  width={0}
-                  height={0}
-                  sizes="100vw"
-                  className="h-auto w-full max-w-full rounded"
-                />
-              </div>
-            );
-          }
-          if (item.mimeType.startsWith("audio/")) {
-            return (
-              <div key={item.id} className="rounded-card border-[3px] border-wood-light bg-paper p-3">
-                <audio controls src={src} className="w-full" />
-                {item.durationSeconds !== null && (
-                  <p className="text-small text-walnut-soft">{formatDuration(item.durationSeconds * 1000)}</p>
-                )}
-              </div>
-            );
-          }
-          return (
-            <div key={item.id} className="rounded-card border-[3px] border-wood-light bg-paper p-3">
-              <video controls src={src} className="max-w-full rounded" />
-            </div>
-          );
-        })}
+        <MediaList claimToken={claimToken} media={memory.media} userAgent={userAgent} />
       </section>
       <ClaimForm claimToken={claimToken} memory={memory} />
       <p className="text-small text-walnut-soft">Keep this link private: anyone who has it can edit this memory.</p>
