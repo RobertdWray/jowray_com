@@ -21,7 +21,7 @@ Authoritative record of what has already happened. Read every copy (main, open P
 | Claim tokens                                                 | Stored as SHA-256 hashes; the raw token exists only in the link and the email | 2026-11-03 | plan           |
 | `MEMORIAL_NAME` / `MEMORIAL_SLUG`                            | TBD (Task 0)                                                 |            | Rob            |
 | `SENDGRID_FROM_EMAIL`                                        | TBD (Task 0; on the authenticated domain)                    |            | Rob            |
-| SendGrid plan status, sender-auth status (not started / pending / verified), key scope | TBD (Task 0) `[C71]`                                         |            | Rob            |
+| SendGrid plan status, sender-auth status (not started / pending / verified), key scope | Paid account; `jowray.com` sender auth **not started**; key has `mail.send` (read via API) `[C71]` | 2026-11-02 | orchestrator   |
 | Consent wording (storage checkbox, optional contact checkbox, email sentence) | TBD (Task 0; committed as `docs/consent/<CONSENT_VERSION>.md`) |            | Rob            |
 | `CONSENT_VERSION`                                            | TBD, e.g. `2026-11-v1` (Task 0)                              |            | Rob            |
 | Rob's test email(s) for `OUTBOUND_ALLOWLIST`                 | TBD (Task 0)                                                 |            | Rob            |
@@ -36,9 +36,11 @@ Authoritative record of what has already happened. Read every copy (main, open P
 - [ ] SendGrid interim single-sender verification added / removed (Task 6): dates
 
 ## Task 0 — Inventory, decisions
-- Status: [ ]   Owner: Rob + orchestrator   Branch/PR: docs/phase1-plan
-- Checks passed: —
-- Notes: SendGrid plan / sender-auth status / key scope: …; Neon CLI auth method: …; EmpathIQ reference cloned at: …
+- Status: [~]   Owner: Rob + orchestrator   Branch/PR: docs/phase1-plan (PR #3)
+- Checks passed (2026-11-02): `docs/custom-domain` merged (PR #2, main `19081c2`, `docs/domain.md` on main); `https://www.jowray.com/` → 200, `https://jowray.com/` → 308 to www; Vercel team `rob-wrays-projects` plan = **pro** (`vercel teams ls`); EmpathIQ cloned at `ac902c9` into `/Users/rob/Documents/active_work/_reference/empathiq`.
+- SendGrid (read via API with the existing key, 2026-11-02): account type **paid** (reputation 100, 500,000 credits/month, hard limit); key has **`mail.send`** plus `whitelabel.*` and `sender_verification_eligible`; `jowray.com` domain authentication **not started** (existing authenticated domains: empathiq.dev, sopheva.com, tray-verify.com, zto1ai.com); `robwray@gmail.com` is an already-verified single sender (usable as the Task 6 interim sender if needed).
+- Neon CLI: `neon` 2.4.0 installed, **not authenticated** (`neonctl auth` needed, or `NEON_API_KEY` in `.env`); auth method: pending Rob.
+- Waiting on Rob: `MEMORIAL_NAME`, `MEMORIAL_SLUG`, `SENDGRID_FROM_EMAIL`, consent sentences + `CONSENT_VERSION`, `OUTBOUND_ALLOWLIST` emails, Vercel Protection Bypass secret, Neon auth.
 
 ## Task 1 — Infra follow-ups
 - Status: [ ]   Owner: orchestrator + Rob   Branch/PR: A
