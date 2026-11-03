@@ -220,7 +220,7 @@ export function useRecorder(): UseRecorder {
     recorder,
     clip,
     inputs,
-    showPicker: shouldShowPicker(inputs),
+    showPicker: shouldShowPicker(inputs, platform),
     selectedDeviceId,
     activeInputLabel,
     deviceNotice,
