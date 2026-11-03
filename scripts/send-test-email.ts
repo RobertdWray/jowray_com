@@ -37,7 +37,7 @@ async function main(): Promise<void> {
     to,
     from: required("SENDGRID_FROM_EMAIL"),
     ...rendered,
-    trackingSettings: { clickTracking: { enable: false, enableText: false } },
+    trackingSettings: { clickTracking: { enable: false, enableText: false }, openTracking: { enable: false } },
   });
   console.log(`status ${response.statusCode}; x-message-id ${String(response.headers["x-message-id"] ?? "")}`);
 }

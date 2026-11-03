@@ -54,8 +54,10 @@ enum EmailType {
 }
 enum EmailStatus {
   PENDING
+  SENDING
   SENT
   FAILED
+  SKIPPED
 }
 model Memorial {
   id                String      @id @default(uuid())
@@ -131,7 +133,7 @@ model Memory {
 model Media {
   id               String      @id @default(uuid())
   memoryId         String
-  storageKey       String      @unique      // Blob pathname: originals/<memoryId>/<uuid>.<ext>; write-once [C1, C9]
+  storageKey       String      @unique      // Blob pathname: <env prefix><memoryId>/<uuid>.<ext> (originals/, preview/originals/, dev/originals/); write-once [C1, C9]
   blobUrl          String?                  // set from head() at READY; served only through /api/media/[id]
   status           MediaStatus @default(PENDING)
   originalFilename String?

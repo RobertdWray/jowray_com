@@ -45,6 +45,16 @@ describe("logger redaction", () => {
     expect(out).toContain("[Redacted]");
   });
 
+  it("redacts two levels down (a Prisma include shape)", () => {
+    const { sink, lines } = capture();
+    const log = buildLogger({ destination: sink, level: "info" });
+    log.info({ memory: { contributor: { email: "deep@example.com", name: "Deep Name" } }, memoryId: "mem_2" }, "shape");
+    const out = lines().join("\n");
+    expect(out).not.toContain("deep@example.com");
+    expect(out).not.toContain("Deep Name");
+    expect(out).toContain("mem_2");
+  });
+
   it("createLogger adds the child context to every line", () => {
     const { sink, lines } = capture();
     const log = buildLogger({ destination: sink, level: "info" });

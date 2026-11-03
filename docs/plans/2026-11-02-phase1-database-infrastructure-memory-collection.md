@@ -1147,7 +1147,7 @@ Project sources are this repository and Rob's other repositories. External quote
 ### [C11] — empathiq `next.config.ts`: externalize native packages for Turbopack
 
 - **Relevant File(s):** `next.config.ts`
-- **Change Summary:** Add `serverExternalPackages` for Pino.
+- **Change Summary:** Not ported; superseded by `[C77]` (Pino is in Next 16.4.4's default list). Originally: add `serverExternalPackages` for Pino.
 - **Source URL:** https://github.com/RobertdWray/empathiq/blob/main/next.config.ts
 - **Verbatim Quote:**
 

@@ -4,7 +4,7 @@ This file lists key **names** and what they're for. It never contains values. Th
 
 ## How env works here
 
-- Next.js loads `.env*` files into `process.env`. Load order: `process.env` → `.env.$(NODE_ENV).local` → `.env.local` → `.env.$(NODE_ENV)` → `.env`. The first match wins, so **`.env.local` overrides `.env`**. ([Next.js docs](https://nextjs.org/docs/app/guides/environment-variables#environment-variable-load-order))
+- Next.js loads `.env*` files into `process.env`. `prisma.config.ts` loads the same files through `@next/env` (`loadEnvConfig`, production file set: `.env.production.local`, `.env.local`, `.env.production`, `.env`; it never reads `.env.development*`). Load order: `process.env` → `.env.$(NODE_ENV).local` → `.env.local` → `.env.$(NODE_ENV)` → `.env`. The first match wins, so **`.env.local` overrides `.env`**. ([Next.js docs](https://nextjs.org/docs/app/guides/environment-variables#environment-variable-load-order))
 - **Every project key lives in `.env`.** The one exception is `VERCEL_OIDC_TOKEN`: `vercel link` writes it to `.env.local`, and it stays only there. ([Vercel changelog](https://vercel.com/changelog/preserve-local-environment-variables-when-linking-with-the-vercel-cli))
 - The Neon values come from the Vercel project. To see the current values, run `vercel env pull <tmpfile> --environment=development` and merge in only the keys that are missing. Don't let the tool overwrite `.env`, because other tooling edits that file too. ([Vercel CLI docs](https://vercel.com/docs/cli/env#exporting-development-environment-variables))
 - **Never commit `.env*`.** The scaffold `.gitignore` already ignores `.env*` and `.vercel`.
@@ -60,6 +60,21 @@ These are used by the agent running the Phase 1 plan and by GitHub Actions, neve
 | `MEMORIAL_NAME` | Display name of the one Phase 1 memorial; the seed creates the `Memorial` and its `Person` row from it (`update: {}`, so later edits in Prisma Studio survive). Production + Preview + local `.env`. |
 | `MEMORIAL_SLUG` | URL-safe identifier of that memorial; the seed's upsert key. Production + Preview + local `.env`. |
 | `CONSENT_VERSION` | Version label of the consent sentences in force (e.g. `2026-11-v1`); stored on every memory. The text lives in `docs/consent/<CONSENT_VERSION>.md`. Production + Preview + local `.env`. |
+| `UPLOAD_TICKET_SECRET` | HMAC key (32+ random bytes) for upload tickets minted by `createMemory()` and verified by `/api/upload` and `finalizeUpload()`. Different random values in Production, Preview and local `.env`. Generate with `openssl rand -base64 48`. |
+| `DAILY_MEMORY_BUDGET` | Maximum memories created per rolling 24 h (default 200); beyond it the form answers "try again later". Production + Preview. Cost ceiling; launch value set in Task 10. |
+| `CRON_SECRET` | Bearer secret Vercel Cron sends to `/api/cron/reconcile-uploads`; the route fails closed when it is unset. Production + Preview (and local `.env` for manual runs). Generate with `openssl rand -hex 32`. |
+| `DAILY_BYTE_BUDGET` | Maximum ticketed upload bytes per rolling 24 h (default 21474836480 = 20 GB), counted from `Media.maxBytes`. Production + Preview. |
+
+## Phase 1: storage and email keys (Task 5)
+
+| Key | Purpose |
+|---|---|
+| `BLOB_READ_WRITE_TOKEN` | Read-write token for the private Vercel Blob store `jowray-media`; set by Vercel in all three environments when the store was connected, merged into local `.env` from a temporary env pull. |
+| `BLOB_STORE_ID` | The store id (`store_…`), the fourth `_` segment of the token. Needed by the Vercel CLI next to `VERCEL_OIDC_TOKEN`. `.env` only. |
+| `SENDGRID_FROM_EMAIL` | The confirmation email's from-address, on the authenticated domain `jowray.com`. Production + Preview + `.env`. |
+| `OUTBOUND_ENABLED` | Strict `"true"`/`"false"`. When false, email goes only to `OUTBOUND_ALLOWLIST`. `true` in Production only. |
+| `OUTBOUND_ALLOWLIST` | Comma-separated addresses that may receive email even when outbound is disabled (lower-cased, trimmed). Production + Preview. |
+| `NEXT_PUBLIC_SITE_URL` | `https://www.jowray.com` in Production only; previews derive their own host from `VERCEL_BRANCH_URL`, local falls back to `http://localhost:3000`. Production refuses to run without it. |
 
 ## Phase 1: DNS automation
 

@@ -10,13 +10,13 @@ features/       use cases (createMemory, recordMedia, confirm); import services 
 services/       interfaces + factories (storage, email); import integrations
 integrations/   vendor clients (Vercel Blob, SendGrid); import nothing above them
 server/         db client, env sub-schemas (server-only leaves)
-lib/            pure helpers: logger, validations, claim tokens, media types, site URL
+lib/            helpers with no layer above them: logger, validations, claim tokens, media types, site URL (some are server-only)
 ```
 
 - `app/ → features/ → services/ → integrations/`. A layer imports only from layers below it plus `lib/` and `server/`. Nothing imports from `app/`. Pages and Server Functions call `features/`; route handlers under `app/api/` may also call `services/` directly (they are the HTTP adapter layer); nothing in `app/` imports `integrations/`. `eslint.config.mjs` enforces this with `no-restricted-imports`. One exception: `integrations/*` may import **types** from `services/*/types` (they implement those interfaces); value imports stay forbidden.
 - `integrations/*`, `server/*` and anything that reads secrets start with `import "server-only"`. Tests import them through the Vitest alias to `__tests__/stubs/server-only.ts`.
 - Client Components (by convention `*-form.tsx`, `*-client.tsx`, `recorder.ts`, `app/global-error.tsx`, `instrumentation-client.ts`) never import `@/server` or `@/integrations`; they call Server Functions.
-- Server code logs with Pino (`lib/logger`), never `console.log`. The logger redacts `email`, `recipientEmail`, `name`, `phone`, cookies and authorization headers at any depth. Log ids (`memoryId`, `mediaId`), never people.
+- Server code logs with Pino (`lib/logger`), never `console.log`. The logger redacts `email`, `recipientEmail`, `name`, `phone` at the top level and up to two levels down (Pino wildcards are one level each), plus cookies and authorization headers. Log ids (`memoryId`, `mediaId`), never Prisma rows or people.
 - Route handlers validate input with zod schemas from `lib/validations` and answer `{ success, data }` or `{ error: { code, message } }`.
 
 ## Cache Components rule (replaces EmpathIQ's `force-dynamic` rule)
@@ -24,7 +24,7 @@ lib/            pure helpers: logger, validations, claim tokens, media types, si
 Next.js 16 with `cacheComponents: true` prerenders whatever it can at build time. A build runs with no database and no `.env`, so:
 
 - Never export `dynamic`, `runtime`, `revalidate` or `fetchCache` from a route file.
-- The **first** thing a dynamic page component or `GET` handler does is a request-time read: `await params`, `await searchParams`, `cookies()`, `headers()`, `request.headers`, `request.nextUrl`, or `await connection()`. Only then touch Prisma or env.
+- The **first** thing a dynamic page component does is `await connection()` (then `params`/`searchParams`/`headers()` as needed); a `GET` handler reads `request.headers` or `request.nextUrl` first. Only then touch Prisma or env. `await params` by itself is not enough: a runtime prefetch prerender knows the URL, and the Neon driver's `randomBytes` on connect then fails the prerender (seen on `/m/[claimToken]`, 2026-11-03).
 - `maxDuration` is allowed; for Server Functions it is set on the page that hosts them.
 - Never construct a `PrismaClient` or parse env at module scope. Use `getDb()` and the lazy `getXEnv()` accessors in `server/config/env.ts`, each of which parses on first call.
 - Each task adds only its own env sub-schema to `server/config/env.ts`; booleans parse strictly (`"true"` / `"false"`), lists are split, trimmed and lower-cased.

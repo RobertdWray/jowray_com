@@ -51,17 +51,39 @@ const blobSchema = z.object({
   BLOB_READ_WRITE_TOKEN: z.string().min(1, "BLOB_READ_WRITE_TOKEN is required"),
 });
 
-const emailSchema = z.object({
-  SENDGRID_API_KEY: z.string().min(1, "SENDGRID_API_KEY is required"),
-  SENDGRID_FROM_EMAIL: z.string().email("SENDGRID_FROM_EMAIL must be an address"),
+/** The outbound guard only; readable even when SendGrid is not configured. */
+const outboundSchema = z.object({
   OUTBOUND_ENABLED: strictBoolean.default(false),
   OUTBOUND_ALLOWLIST: csvList.default([]),
+});
+
+const emailSchema = z.object({
+  SENDGRID_API_KEY: z.string().min(1, "SENDGRID_API_KEY is required"),
+  SENDGRID_FROM_EMAIL: z.email("SENDGRID_FROM_EMAIL must be an address"),
+});
+
+const uploadSchema = z.object({
+  UPLOAD_TICKET_SECRET: z.string().min(32, "UPLOAD_TICKET_SECRET must be at least 32 characters"),
+  DAILY_MEMORY_BUDGET: z.coerce.number().int().positive().default(200),
+  DAILY_BYTE_BUDGET: z.coerce.number().int().positive().default(20 * 1024 ** 3),
+});
+
+const memorialSchema = z.object({
+  MEMORIAL_SLUG: z.string().min(1, "MEMORIAL_SLUG is required"),
   CONSENT_VERSION: z.string().min(1, "CONSENT_VERSION is required"),
 });
 
+const cronSchema = z.object({
+  CRON_SECRET: z.string().min(16).optional(),
+});
+
 export type DbEnv = z.infer<typeof dbSchema>;
+export type CronEnv = z.infer<typeof cronSchema>;
+export type MemorialEnv = z.infer<typeof memorialSchema>;
+export type UploadEnv = z.infer<typeof uploadSchema>;
 export type BlobEnv = z.infer<typeof blobSchema>;
 export type EmailEnv = z.infer<typeof emailSchema>;
+export type OutboundEnv = z.infer<typeof outboundSchema>;
 export type SentryEnv = z.infer<typeof sentrySchema>;
 export type SiteEnv = z.infer<typeof siteSchema>;
 
@@ -90,6 +112,10 @@ export const getSentryEnv = memoized("sentry", sentrySchema);
 export const getSiteEnv = memoized("site", siteSchema);
 export const getBlobEnv = memoized("blob", blobSchema);
 export const getEmailEnv = memoized("email", emailSchema);
+export const getOutboundEnv = memoized("outbound", outboundSchema);
+export const getUploadEnv = memoized("upload", uploadSchema);
+export const getMemorialEnv = memoized("memorial", memorialSchema);
+export const getCronEnv = memoized("cron", cronSchema);
 
 /** Test helper: forget every parsed sub-schema so the next call re-reads `process.env`. */
 export function resetEnvCache(): void {

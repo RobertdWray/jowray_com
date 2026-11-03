@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { getSiteUrl } from "@/lib/site-url";
+import { getSiteUrl, storagePrefix } from "@/lib/site-url";
 import {
   csvList,
   getDbEnv,
@@ -104,6 +104,14 @@ describe("getSiteEnv / getSiteUrl", () => {
     expect(getSiteUrl()).toBe("https://www.jowray.com");
   });
 
+  it("refuses to fall back to localhost in production, and to guess on a preview without a branch url", () => {
+    process.env.VERCEL_ENV = "production";
+    expect(() => getSiteUrl()).toThrow(/NEXT_PUBLIC_SITE_URL/);
+    resetEnvCache();
+    process.env.VERCEL_ENV = "preview";
+    expect(() => getSiteUrl()).toThrow(/VERCEL_BRANCH_URL/);
+  });
+
   it("rejects a NEXT_PUBLIC_SITE_URL that is not an absolute URL", () => {
     process.env.NEXT_PUBLIC_SITE_URL = "www.jowray.com";
     expect(() => getSiteUrl()).toThrow();
@@ -112,5 +120,18 @@ describe("getSiteEnv / getSiteUrl", () => {
   it("strips a trailing slash from NEXT_PUBLIC_SITE_URL", () => {
     process.env.NEXT_PUBLIC_SITE_URL = "https://www.jowray.com/";
     expect(getSiteUrl()).toBe("https://www.jowray.com");
+  });
+});
+
+describe("storagePrefix", () => {
+  it("separates production, preview and local uploads", () => {
+    process.env.VERCEL_ENV = "production";
+    expect(storagePrefix()).toBe("originals/");
+    resetEnvCache();
+    process.env.VERCEL_ENV = "preview";
+    expect(storagePrefix()).toBe("preview/originals/");
+    resetEnvCache();
+    delete process.env.VERCEL_ENV;
+    expect(storagePrefix()).toBe("dev/originals/");
   });
 });
