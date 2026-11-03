@@ -71,6 +71,7 @@ function buttonLabel(status: UseRecorder["snapshot"]["status"], hasClip: boolean
 export function RecorderPanel({ rec, canRecord, disabled }: { rec: UseRecorder; canRecord: boolean; disabled: boolean }) {
   const reducedMotion = usePrefersReducedMotion();
   const pickerId = useId();
+  const usingId = useId();
   // The microphone list is a desktop power-user control: behind a gear until asked for.
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { status } = rec.snapshot;
@@ -113,10 +114,13 @@ export function RecorderPanel({ rec, canRecord, disabled }: { rec: UseRecorder; 
           </div>
 
           {rec.showPicker && settingsOpen && (
-            <label htmlFor={pickerId} className="flex flex-col gap-2 text-label font-bold">
-              <span>Microphone</span>
+            <div className="flex flex-col gap-2">
+              <label htmlFor={pickerId} className="text-label font-bold">
+                Microphone
+              </label>
               <select
                 id={pickerId}
+                aria-describedby={rec.activeInputLabel ? usingId : undefined}
                 className={selectClass}
                 value={rec.selectedDeviceId ?? ""}
                 onChange={(event) => rec.selectDevice(event.target.value === "" ? null : event.target.value)}
@@ -130,9 +134,9 @@ export function RecorderPanel({ rec, canRecord, disabled }: { rec: UseRecorder; 
                 ))}
               </select>
               {rec.activeInputLabel && (
-                <span className={`text-small ${helperClass}`}>Using: {rec.activeInputLabel}</span>
+                <p id={usingId} className={`text-small ${helperClass}`}>Using: {rec.activeInputLabel}</p>
               )}
-            </label>
+            </div>
           )}
           {rec.deviceNotice && (
             <p role="status" className="text-small text-walnut">{rec.deviceNotice}</p>

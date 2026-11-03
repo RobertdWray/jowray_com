@@ -4,6 +4,7 @@ import { detectPlatform, helpFor, type RecorderHelp } from "@/lib/recorder-help"
 import {
   audioInputsFor,
   describeActiveInput,
+  friendlyInputLabel,
   resolveSelectedDevice,
   shouldShowPicker,
   type AudioInputInfo,
@@ -89,7 +90,7 @@ export function useRecorder(): UseRecorder {
     setInputs(next);
     const chosen = selectedRef.current;
     if (chosen !== null && resolveSelectedDevice(chosen, next) === null) {
-      const fallback = next[0]?.label ?? "your microphone";
+      const fallback = friendlyInputLabel(next[0]?.label ?? "") || "your microphone";
       setDeviceNotice(`Your chosen microphone was unplugged — using ${fallback}.`);
       selectedRef.current = null;
       setSelectedDeviceId(null);
