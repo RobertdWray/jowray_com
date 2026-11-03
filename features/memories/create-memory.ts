@@ -130,6 +130,7 @@ export async function createMemory(raw: unknown): Promise<CreateMemoryResult> {
         email: input.email ?? null,
         relationship: input.relationship ?? null,
         contactOptIn: input.contactOptIn,
+        mailingListOptIn: input.mailingListOptIn,
       },
     });
     const memory = await tx.memory.create({
@@ -142,6 +143,7 @@ export async function createMemory(raw: unknown): Promise<CreateMemoryResult> {
         place: input.place ?? null,
         contributorNote: input.note && input.note.trim().length > 0 ? input.note : null,
         visibility: input.visibility,
+        notifyWhenPosted: input.notifyWhenPosted,
         consentVersion: CONSENT_VERSION,
         consentedAt: new Date(),
         status: "PENDING",

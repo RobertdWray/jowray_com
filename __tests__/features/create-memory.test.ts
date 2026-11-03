@@ -4,7 +4,7 @@ import { hashClaimToken } from "@/lib/claim-token";
 import { verifyUploadTicket } from "@/lib/upload-ticket";
 import { resetEnvCache } from "@/server/config/env";
 
-interface MemoryRow { id: string; memorialId: string; contributorId: string; type: string; source: string; status: string; claimTokenHash: string; consentVersion: string; consentedAt: Date; createdAt: Date; deletedAt: Date | null; approxDateText: string | null; contributorNote: string | null; visibility: string }
+interface MemoryRow { id: string; memorialId: string; contributorId: string; type: string; source: string; status: string; claimTokenHash: string; consentVersion: string; consentedAt: Date; createdAt: Date; deletedAt: Date | null; approxDateText: string | null; contributorNote: string | null; visibility: string; notifyWhenPosted: boolean }
 interface MediaRow { id: string; memoryId: string; storageKey: string; mimeType: string; maxBytes: number; status: string; createdAt: Date; originalFilename: string | null }
 const memories: MemoryRow[] = [];
 const medias: MediaRow[] = [];
@@ -40,6 +40,8 @@ const valid = {
   note: "We laughed a lot.",
   visibility: "FAMILY" as const,
   contactOptIn: false,
+  mailingListOptIn: true,
+  notifyWhenPosted: false,
   file: { name: "voice.m4a", type: "audio/mp4", size: 1024 * 1024 },
 };
 
@@ -62,7 +64,8 @@ describe("createMemory", () => {
     expect(result.claimToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(memories[0]?.claimTokenHash).toBe(hashClaimToken(result.claimToken));
     expect(memories[0]).toMatchObject({ type: "VOICE", source: "WEB_UPLOAD", status: "PENDING", consentVersion: "2026-11-v1", contributorNote: "We laughed a lot." });
-    expect(contributors[0]).toMatchObject({ name: "Jo Friend", email: "jo@example.com", contactOptIn: false, memorialId: "memorial_1" });
+    expect(contributors[0]).toMatchObject({ name: "Jo Friend", email: "jo@example.com", contactOptIn: false, mailingListOptIn: true, memorialId: "memorial_1" });
+    expect(memories[0]).toMatchObject({ notifyWhenPosted: false });
     expect(result.upload?.pathname).toMatch(/^dev\/originals\/mem_1\/[0-9a-f-]{36}\.m4a$/);
     expect(medias[0]).toMatchObject({ status: "PENDING", mimeType: "audio/mp4", maxBytes: 100 * 1024 * 1024, storageKey: result.upload?.pathname });
     const verified = verifyUploadTicket(result.upload!.ticket);
