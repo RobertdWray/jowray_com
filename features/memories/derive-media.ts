@@ -54,6 +54,7 @@ export function isEligible(row: ExistingRow | null, now: Date): "eligible" | "cl
     return "eligible";
   }
   if (row.status === "PENDING") {
+    // Every claim sets claimedAt; a null is a hand-edited row and is treated as stale.
     return row.claimedAt === null || row.claimedAt.getTime() < now.getTime() - STALE_CLAIM_MS ? "eligible" : "claimed_elsewhere";
   }
   if (row.status === "FAILED") {
@@ -61,8 +62,10 @@ export function isEligible(row: ExistingRow | null, now: Date): "eligible" | "cl
       return "eligible";
     }
     if (row.error?.startsWith("too_many_pixels:")) {
+      // Retry once under any ceiling other than today's (higher or lower), so the row
+      // converges on the current limit; identical to cron (g)'s `not:` selector.
       const limit = Number(row.error.slice("too_many_pixels:".length));
-      return Number.isFinite(limit) && limit < MAX_PIXELS ? "eligible" : "not_eligible";
+      return Number.isFinite(limit) && limit !== MAX_PIXELS ? "eligible" : "not_eligible";
     }
   }
   return "not_eligible";

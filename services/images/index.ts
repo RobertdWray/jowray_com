@@ -1,3 +1,5 @@
+import "server-only";
+
 import { SharpHeicImageService } from "@/integrations/images/sharp-heic";
 import type { DeriveOptions, ImageService } from "@/services/images/types";
 

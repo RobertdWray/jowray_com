@@ -1,6 +1,5 @@
 import "server-only";
 
-import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
 
 import { ImageDeriveError } from "@/lib/image-derive-error";
@@ -65,13 +64,15 @@ export function runWorker<T>(script: string, options: RunWorkerOptions): Promise
   });
 }
 
-// The worker `require`s heic-decode by absolute path resolved here, so bundling
-// and the function's working directory never matter.
-const heicDecodePath = createRequire(import.meta.url).resolve("heic-decode");
-
+// The worker script runs outside the bundle, so it resolves `heic-decode` by
+// name from the process's working directory (`/var/task` on Vercel, the repo
+// root locally). Nothing in the bundle may reference the package: Turbopack
+// would fold a `require.resolve` into a numeric module id that the worker
+// cannot use (found in review). `next.config.ts` traces the package into the
+// function with `outputFileTracingIncludes` instead.
 const DECODE_SCRIPT = `
 const { parentPort, workerData } = require("node:worker_threads");
-const decode = require(workerData.modulePath);
+const decode = require("heic-decode");
 (async () => {
   const buffer = Buffer.from(workerData.buffer);
   const images = await decode.all({ buffer });
@@ -83,8 +84,8 @@ const decode = require(workerData.modulePath);
       return;
     }
     const { width, height, data } = await first.decode();
-    const out = new Uint8ClampedArray(data);
-    parentPort.postMessage({ width, height, data: out }, [out.buffer]);
+    // \`data\` is a fresh Uint8ClampedArray owned by this thread: transfer it, never copy it.
+    parentPort.postMessage({ width, height, data }, [data.buffer]);
   } finally {
     if (typeof images.dispose === "function") { images.dispose(); }
   }
@@ -108,7 +109,7 @@ export async function decodeHeicInWorker(
   new Uint8Array(bytes).set(input);
   const message = await runWorker<DecodeMessage>(DECODE_SCRIPT, {
     deadlineMs,
-    workerData: { modulePath: heicDecodePath, buffer: bytes, maxPixels },
+    workerData: { buffer: bytes, maxPixels },
     transferList: [bytes],
     maxOldGenerationSizeMb,
   });
@@ -118,5 +119,6 @@ export async function decodeHeicInWorker(
   if ("tooManyPixels" in message) {
     throw new ImageDeriveError("too_many_pixels", { limit: maxPixels });
   }
-  return { width: message.width, height: message.height, data: new Uint8ClampedArray(message.data) };
+  // The transferred view arrives as a Uint8ClampedArray; sharp reads it in place.
+  return { width: message.width, height: message.height, data: message.data };
 }

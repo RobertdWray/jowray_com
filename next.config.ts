@@ -9,6 +9,11 @@ const nextConfig: NextConfig = {
   // required from node_modules instead of being bundled. `sharp` is already on
   // Next's built-in external list.
   serverExternalPackages: ["heic-decode", "libheif-js"],
+  // The decoder is only ever loaded by name from inside the worker thread, so
+  // nothing in the bundle references it and file tracing would drop it.
+  outputFileTracingIncludes: {
+    "/**": ["./node_modules/heic-decode/**", "./node_modules/libheif-js/**"],
+  },
   turbopack: {
     rules: {
       "*.css": {

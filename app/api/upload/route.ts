@@ -98,8 +98,13 @@ export async function POST(request: NextRequest): Promise<Response> {
               data: outcome.status === "PENDING" ? { attempts: 1, error: "blob not visible yet" } : { processedAt: new Date(), attempts: 1, error: null },
             });
             if (outcome.status === "READY") {
-              // Closed-tab backstop for the derived copies; finalize normally gets there first and the claim rows make the race harmless.
-              await deriveMedia({ mediaId, deadlineMs: DERIVE_DEADLINE_CALLBACK_MS });
+              // Closed-tab backstop for the derived copies; finalize normally gets there first and the
+              // claim rows make the race harmless. A failure here is not a callback failure: cron (g) retries.
+              try {
+                await deriveMedia({ mediaId, deadlineMs: DERIVE_DEADLINE_CALLBACK_MS });
+              } catch (error) {
+                logError("derived copies failed after the upload callback", error, { category: "upload", mediaId });
+              }
             }
           } catch (error) {
             await db.webhookEvent.update({

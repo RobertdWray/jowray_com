@@ -150,6 +150,10 @@ describe("deriveMedia", () => {
     expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "derived", THUMBNAIL: "not_eligible" });
     derived = [row("WEB_IMAGE", { status: "FAILED", error: "too_many_pixels:1000", attempts: 1 }), row("THUMBNAIL", { status: "FAILED", error: "too_many_pixels:30000000", attempts: 1 })];
     expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "derived", THUMBNAIL: "not_eligible" });
+    // A refusal recorded under a *different* ceiling (higher or lower) is retried once so the row converges on today's limit;
+    // this keeps the feature's rule identical to cron (g)'s selector (`not: too_many_pixels:<MAX_PIXELS>`).
+    derived = [row("WEB_IMAGE", { status: "FAILED", error: "too_many_pixels:60000000", attempts: 1 }), row("THUMBNAIL", { status: "READY" })];
+    expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "derived", THUMBNAIL: "not_eligible" });
   });
 
   it("records a decode refusal on every claimed row with the ceiling, deleting the unused candidate keys", async () => {

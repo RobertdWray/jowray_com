@@ -42,6 +42,7 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
 
   // While a photo's sanitized copy is still being made (seconds, normally), re-read the page a few times.
   const waiting = media.some((item) => item.status === "READY" && kindOf(item.mimeType) === "photo" && (item.web.status === "pending" || item.web.status === "none"));
+  const [pollExhausted, setPollExhausted] = useState(false);
   useEffect(() => {
     if (!waiting) {
       return;
@@ -49,6 +50,8 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
     let ticks = 0;
     const timer = setInterval(() => {
       ticks += 1;
+      // State changes only from the timer, never synchronously in the effect body.
+      setPollExhausted(ticks >= 10);
       router.refresh();
       if (ticks >= 10) {
         clearInterval(timer);
@@ -56,6 +59,7 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
     }, 3_000);
     return () => clearInterval(timer);
   }, [waiting, router]);
+  const stillPreparing = waiting && pollExhausted;
 
   const replacements = new Map<string, ClaimMediaView>();
   for (const item of media) {
@@ -175,7 +179,10 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
                   <a className={linkClass} href={download}>Download {item.originalFilename ?? "the original"}</a>
                 </p>
               ) : (
-                <p className="text-body text-walnut-soft" role="status">Preparing your photo…</p>
+                <p className="text-body text-walnut-soft" role="status">
+                  {stillPreparing ? "Still preparing your photo; reload this page in a minute." : "Preparing your photo…"}{" "}
+                  <a className={linkClass} href={download}>Download the original</a>
+                </p>
               )
             ) : kind === "photo" && !isRenderableIn(item.web.mimeType ?? item.mimeType, userAgent) ? (
               <p>
