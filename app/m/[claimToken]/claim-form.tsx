@@ -32,7 +32,13 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
           visibility: String(form.get("visibility") ?? memory.visibility),
         },
       });
-      setMessage(result.ok ? "Saved." : "Could not save. Please check the fields and try again.");
+      setMessage(
+        result.ok
+          ? "Saved."
+          : result.code === "last_words"
+            ? "Your words are all this memory has right now. Add a file before clearing them, or keep a few words."
+            : "Could not save. Please check the fields and try again."
+      );
       if (result.ok) {
         router.refresh();
       }

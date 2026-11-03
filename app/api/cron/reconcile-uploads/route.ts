@@ -233,7 +233,7 @@ export async function GET(request: NextRequest): Promise<Response> {
 
   // (f2) Reservations cancelled on the claim page whose upload might have landed
   // without a callback or finalize: once the Blob token has expired, delete the
-  // pathname (idempotent) and leave PENDING so the row is never selected again.
+  // pathname (idempotent) and mark the row FAILED so it is never selected again.
   const cancelled = await db.media.findMany({
     where: {
       status: "PENDING",
