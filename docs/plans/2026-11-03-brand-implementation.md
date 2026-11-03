@@ -37,7 +37,7 @@ This change applies `DESIGN.md` § 2 steps 1–8 so every visitor-facing page ma
 | E5 | Footer on home only | Footer on every page (root layout) | contact line should be reachable from `/share` and the claim page |
 | E6 | No phone type overrides (fluid only) | Display 44px / h2 34px / thank-you h1 44px below the `sm` breakpoint (640px) | `DESIGN.md` § 4 "Phone: display 44, h2 34" |
 | E7 | Pill label 16px | 17px | `DESIGN.md` § 4 17px floor |
-| E8 | "Read the full obituary" links to itself | Omitted | `DESIGN.md` § 9: no placeholders |
+| E8 | "Read the full obituary" links to itself | Omitted | `DESIGN.md` § 9: no placeholders. Superseded 2026-11-03: `/obituary` exists (PR feat/obituary); the story band carries a plain text link under the pull-quote, Rob's choice over the comp's dashed button, plus a footer link. |
 | E9 | `<em>not</em>` and the closer in synthesized italic | True Fraunces italic (`standard-italic.css`) | the comp's Google Fonts link requested no italic |
 | E10 | "Send this page to someone who knew Jo" → `home.html#ways` | Web Share on phones (`navigator.share`), else a `mailto:` link | the comp link only scrolls; this one sends |
 | E11 | `.stitch-rule` (top only) and `.patchwork` classes | `border-y-[3px] border-dashed border-jo-red` utilities; `@utility patchwork` | the band needs both borders; utilities respect the cascade |

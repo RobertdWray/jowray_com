@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { linkClass } from "./field-classes";
 import { StitchedHeart } from "./hearts";
 
@@ -12,6 +14,11 @@ export function SiteFooter() {
           robwray@gmail.com
         </a>
         .
+      </p>
+      <p className="text-[18px] text-walnut-soft">
+        <Link href="/obituary" className={linkClass}>
+          Jo&apos;s obituary
+        </Link>
       </p>
     </footer>
   );

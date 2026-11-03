@@ -190,6 +190,16 @@ circle inside a round `.patchwork` ring. H1 60px "Jo would have loved
 this.", 22px lead, primary "Tell another one" + dashed secondary, and the
 italic closer "Spelling, as promised, did not count."
 
+### 5.9 Obituary page (`/obituary`, added 2026-11-03)
+Rob asked for the obituary on the site but not prominent. One quiet column,
+760px max, the stitched heart (40px) above an uppercase "Obituary" eyebrow and
+the h1 'Velma Josephine "Jo" Wray', then the family's text verbatim at body size
+(the church in the donations line links to tifumc.com). One dashed secondary
+"Leave a memory of Jo" below. Reached only from a plain text link at the end
+of the story band and the footer line "Jo's obituary"; no nav entry, no red
+button. Links keep their resting color on hover (hover thickens the underline);
+#E7F0E3 on lake green is 4.22:1 and fails AA for 20px regular text (see E17).
+
 ## 6. Layout
 - Content max-width 1200px, 5% side padding (≥16px on phones).
 - Section padding 64–72px top and bottom on desktop, 40–48px on phones.
@@ -224,8 +234,9 @@ cover; then write in the same register.
 
 ## 9. Not in Phase 1
 Phone-in voicemail (there is no "Call" card — removed 2026-11-03), the
-obituary page, the memory wall, tag cloud, search, seasonal/Christmas
-variant. Don't build placeholders for them.
+memory wall, tag cloud, search, seasonal/Christmas variant. Don't build
+placeholders for them. (The obituary page left this list on 2026-11-03; see
+§ 5.9.)
 
 ## 10. Placeholders in the comp
 `[PHONE-NUMBER]` on the "Text us" card's `sms:` link — fill from the

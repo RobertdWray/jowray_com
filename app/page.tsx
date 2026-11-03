@@ -173,6 +173,14 @@ export default function HomePage() {
               unless you wanted to get put on the naughty list. Jo Wray stuck to her own name and her
               own story.
             </p>
+            <p className="text-body">
+              <Link
+                href="/obituary"
+                className="text-paper underline underline-offset-4 hover:decoration-2"
+              >
+                Read Jo&apos;s full obituary
+              </Link>
+            </p>
           </div>
         </div>
       </section>
