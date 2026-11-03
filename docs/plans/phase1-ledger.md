@@ -82,9 +82,10 @@ Authoritative record of what has already happened. Read every copy (main, open P
 - Checks passed: `vercel blob list --limit 1 --rw-token …` → "No blobs in this store" (the plain command needs `BLOB_STORE_ID` next to `VERCEL_OIDC_TOKEN` in the same env file, so `--rw-token` is used); no `.env.vercel.tmp`; `.env.local` host is the `dev` branch; `npm run validate`, `npm run test:run` (40/40), offline build without `DATABASE_URL`/`BLOB_READ_WRITE_TOKEN`/`SENDGRID_API_KEY`. Pending: `vercel env ls` shows the four keys (Rob's values).
 
 ## Task 6 — DNS for SendGrid
-- Status: [ ]   Owner: orchestrator + Rob   Branch/PR: C
-- External IDs: Cloudflare record ids …; SendGrid domain authentication id …; verified on: …
-- Checks passed: —
+- Status: [~]   Owner: orchestrator + Rob   Branch/PR: C
+- External IDs (created 2026-11-03 by `scripts/dns-setup.ts`, run with `npx tsx --env-file=.env scripts/dns-setup.ts`): SendGrid domain authentication **id 33798852** (`jowray.com`, subdomain `em4653`, automated security, not default); Cloudflare records (zone `dad5b9fdb1ece5afc4a4224f61a51770`, all DNS-only): CNAME `em4653` → `u46785377.wl128.sendgrid.net` (`496f00c07369a141a68fde36ead9cd71`), CNAME `s1._domainkey` → `s1.domainkey.u46785377.wl128.sendgrid.net` (`ac50b464b68b2414420ea3276500e738`), CNAME `s2._domainkey` → `s2.domainkey.u46785377.wl128.sendgrid.net` (`8931d1c589ebf61c67c588090494d13c`), TXT `_dmarc` → `v=DMARC1; p=none; rua=mailto:dmarc@jowray.com` (`c726c35b037f8ab93d2c9d23f1c827a1`). Verified on: pending (SendGrid validation returned pending for all three CNAMEs right after creation).
+- Ruling: the domain authentication was created through the SendGrid API (the key has `whitelabel.create`) instead of Rob clicking through the UI, and the script reads the records from the API instead of a pasted findings entry; link branding was not set up (click tracking is disabled in the transport). Cost if wrong: one `DELETE /v3/whitelabel/domains/33798852` and four Cloudflare record deletions.
+- Checks passed: Vercel `A`/`CNAME` records verified present and DNS-only before any change; Cloudflare token `active` via `/accounts/{id}/tokens/verify`. Pending: `dig +short CNAME em4653.jowray.com @1.1.1.1`; SendGrid **Verified**; test email with `dkim=pass` (needs `SENDGRID_FROM_EMAIL` and `OUTBOUND_ALLOWLIST` from Rob).
 
 ## Task 7 — Web upload
 - Status: [ ]   Owner: worker   Branch/PR: D   Worktree: …   Head: …

@@ -61,6 +61,12 @@ These are used by the agent running the Phase 1 plan and by GitHub Actions, neve
 | `MEMORIAL_SLUG` | URL-safe identifier of that memorial; the seed's upsert key. Production + Preview + local `.env`. |
 | `CONSENT_VERSION` | Version label of the consent sentences in force (e.g. `2026-11-v1`); stored on every memory. The text lives in `docs/consent/<CONSENT_VERSION>.md`. Production + Preview + local `.env`. |
 
+## Phase 1: DNS automation
+
+| Key | Purpose |
+|---|---|
+| `CLOUDFLARE_ZONE_ID` | The `jowray.com` zone (`dad5b9fdb1ece5afc4a4224f61a51770`), used by `scripts/dns-setup.ts` together with `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_DNS_ONLY_API_TOKEN`. Not a secret. `.env` only. |
+
 ## Placeholders still to fill
 
 | Key | Purpose |

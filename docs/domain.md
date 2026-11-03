@@ -71,3 +71,16 @@ Your machine may say a host doesn't resolve for up to 30 minutes after a record 
 - **Email DNS.** The zone has no MX, SPF, DKIM, or DMARC records. Add them when SendGrid sending is set up, using SendGrid's domain authentication CNAMEs plus a DMARC record. Until then, nothing stops someone from spoofing `@jowray.com` addresses.
 - **The `vercel.app` alias.** `jowraycom.vercel.app` still serves the site instead of redirecting to `www.jowray.com`. That's harmless now. If duplicate indexing ever matters, redirect it.
 - **Absolute URLs in code.** The app doesn't build any yet. When it does (Open Graph `metadataBase`, magic-link callbacks, SMS reply links), use `https://www.jowray.com`.
+
+## Email DNS (SendGrid domain authentication, added 2026-11-03)
+
+Created by `scripts/dns-setup.ts` (idempotent; re-run it to check validation). SendGrid domain authentication id `33798852`, subdomain `em4653`. All records are DNS-only (grey cloud).
+
+| Type | Name | Content | Cloudflare record id |
+|---|---|---|---|
+| CNAME | `em4653` | `u46785377.wl128.sendgrid.net` | `496f00c07369a141a68fde36ead9cd71` |
+| CNAME | `s1._domainkey` | `s1.domainkey.u46785377.wl128.sendgrid.net` | `ac50b464b68b2414420ea3276500e738` |
+| CNAME | `s2._domainkey` | `s2.domainkey.u46785377.wl128.sendgrid.net` | `8931d1c589ebf61c67c588090494d13c` |
+| TXT | `_dmarc` | `v=DMARC1; p=none; rua=mailto:dmarc@jowray.com` | `c726c35b037f8ab93d2c9d23f1c827a1` |
+
+No `MX` record exists; `jowray.com` does not receive mail (`dmarc@jowray.com` reports go nowhere until one is added).
