@@ -92,10 +92,8 @@ export type EmailType = (typeof EmailType)[keyof typeof EmailType]
 
 export const EmailStatus = {
   PENDING: 'PENDING',
-  SENDING: 'SENDING',
   SENT: 'SENT',
-  FAILED: 'FAILED',
-  SKIPPED: 'SKIPPED'
+  FAILED: 'FAILED'
 } as const
 
 export type EmailStatus = (typeof EmailStatus)[keyof typeof EmailStatus]
