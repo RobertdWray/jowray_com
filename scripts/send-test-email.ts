@@ -42,7 +42,7 @@ async function main(): Promise<void> {
       filename: a.filename,
       type: a.contentType,
       disposition: "inline",
-      contentId: a.contentId,
+      content_id: a.contentId,
     })),
     trackingSettings: { clickTracking: { enable: false, enableText: false }, openTracking: { enable: false } },
   });

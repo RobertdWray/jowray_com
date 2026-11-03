@@ -87,7 +87,9 @@ export class SendGridTransport implements EmailTransport {
           subject: message.subject,
           text: message.text,
           html: message.html,
-          // Inline images by Content-ID; the helper library serialises `contentId` as `content_id`.
+          // Inline images by Content-ID. The v3 API field is `content_id`; the helper
+          // library passes attachment objects through as given (it does not
+          // snake-case them), so the API name must be used here, not `contentId`.
           ...(message.attachments && message.attachments.length > 0
             ? {
                 attachments: message.attachments.map((a) => ({
@@ -95,7 +97,7 @@ export class SendGridTransport implements EmailTransport {
                   filename: a.filename,
                   type: a.contentType,
                   disposition: "inline",
-                  contentId: a.contentId,
+                  content_id: a.contentId,
                 })),
               }
             : {}),

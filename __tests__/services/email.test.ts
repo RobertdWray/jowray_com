@@ -392,7 +392,8 @@ describe("transport attachments", () => {
       attachments: [{ filename: "heart.png", contentType: "image/png", contentBase64: "aGVhcnQ=", contentId: "brand-heart" }],
     });
     const msg = sendMock.mock.calls[0]?.[0] as { attachments?: unknown[]; trackingSettings: { openTracking: { enable: boolean }; clickTracking: { enable: boolean } } };
-    expect(msg.attachments).toEqual([{ content: "aGVhcnQ=", filename: "heart.png", type: "image/png", disposition: "inline", contentId: "brand-heart" }]);
+    // `content_id` is the v3 API field name; SendGrid answers 400 "content_id parameter is required if disposition = 'inline'" to `contentId`.
+    expect(msg.attachments).toEqual([{ content: "aGVhcnQ=", filename: "heart.png", type: "image/png", disposition: "inline", content_id: "brand-heart" }]);
     expect(msg.trackingSettings.openTracking.enable).toBe(false);
     expect(msg.trackingSettings.clickTracking.enable).toBe(false);
   });
