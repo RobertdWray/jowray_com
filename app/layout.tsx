@@ -6,8 +6,9 @@ import "@fontsource/atkinson-hyperlegible/700.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Memorial Memories",
-  description: "Share a memory: a voice note, a video, a photo or a few words.",
+  title: "Jo Wray — Leave a memory",
+  description:
+    'Tell us a Jo story. Her family is collecting memories of Velma Josephine "Jo" Wray — a voice recording, a photo, a video, or a few words.',
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
