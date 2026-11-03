@@ -2,6 +2,7 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 
+import { confirmMemory } from "@/features/memories/confirm";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger, logError } from "@/lib/logger";
 import { isAllowedMime } from "@/lib/media-types";
@@ -146,10 +147,14 @@ export async function finalizeUpload({
   if (outcome.status === "NOT_FOUND") {
     return { status: "REJECTED", reason: "not_found" };
   }
-  if (outcome.status === "READY" && outcome.sizeBytes <= INLINE_HASH_MAX_BYTES) {
-    afterWithFlush(async () => {
-      await computeChecksum({ mediaId: outcome.mediaId });
-    });
+  let emailed = false;
+  if (outcome.status === "READY") {
+    emailed = (await confirmMemory({ memoryId: memory.id, claimToken })).sent;
+    if (outcome.sizeBytes <= INLINE_HASH_MAX_BYTES) {
+      afterWithFlush(async () => {
+        await computeChecksum({ mediaId: outcome.mediaId });
+      });
+    }
   }
-  return { status: outcome.status, claimLink: `${getSiteUrl()}/m/${claimToken}`, emailed: false };
+  return { status: outcome.status, claimLink: `${getSiteUrl()}/m/${claimToken}`, emailed };
 }

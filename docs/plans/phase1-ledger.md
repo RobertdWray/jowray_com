@@ -95,8 +95,10 @@ Authoritative record of what has already happened. Read every copy (main, open P
 - Checks passed: `npm run validate`, `npm run test:run` (66/66), offline build with no `DATABASE_URL`/`BLOB_READ_WRITE_TOKEN`/`SENDGRID_API_KEY`/`UPLOAD_TICKET_SECRET`/DSN. Pending (orchestrator, PR D preview with the bypass secret): 20 MB `.mp4` → READY + checksum; repeat finalize → one row; text-only memory; iPhone HEIC/.mov/recording; 21 rapid creates with budget 20; `vercel env ls` shows the three keys (done).
 
 ## Task 8 — Claim links + email
-- Status: [ ]   Owner: worker   Branch/PR: D   Worktree: …   Head: …
-- Checks passed: —
+- Status: [~]   Owner: worker (inline)   Branch/PR: D
+- Code done 2026-11-03 (TDD): `features/memories/confirm.ts` (`confirmMemory`: email only with an address, not deleted, READY media or TEXT; delegates idempotency/guard/cap to the email service), `features/memories/claim.ts` (`getMemoryForClaim`, `updateMemoryFromClaim` + `MemoryRevision(CLAIM_LINK, before, after)`, consent version on the first revision), `app/m/[claimToken]/{page,claim-form,actions}` (static shell, token read in `<Suspense>`, `<meta referrer>`, media via `/api/media/[id]?t=`, download link when `isRenderableIn()` is false, "add another file" through `createUploadTicket`), the `confirm` call in `finalizeUpload()` (READY) and in `createMemory()` (text-only), and the "we emailed you" line only when `emailed` is true. Tests: `__tests__/features/confirm`, `__tests__/features/claim`; the finalize path asserts one `confirm` call.
+- Ruling (plan conflict): the raw claim token is never stored (S6), so the **cron cannot rebuild a claim link** for retries or first sends (plan Task 9 steps d/e). `confirmMemory()` without a raw token therefore **rotates** the token (new hash, email carries the new link); an emailed link supersedes the on-screen one. Cost if wrong: a contributor who kept the on-screen link but whose email failed and was retried by the cron finds the old link dead and uses the emailed one.
+- Checks passed: validate, 76/76 tests, offline build. Pending (orchestrator, preview): edit via claim page → one `MemoryRevision`; wrong token → 404; real confirmation email to an allowlisted address with a working preview link; HEIC download link in Chrome / render in Safari; second file from the claim page → READY.
 
 ## Task 9 — Reconcile cron
 - Status: [ ]   Owner: worker + orchestrator   Branch/PR: D (live checks after merge)

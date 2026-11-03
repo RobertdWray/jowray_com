@@ -50,6 +50,9 @@ vi.mock("@/services/storage", () => ({
   createStorageService: () => ({ head: headMock, del: delMock, get: vi.fn(), put: vi.fn(), presignGet: vi.fn() }),
 }));
 
+const confirmMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m1" }));
+vi.mock("@/features/memories/confirm", () => ({ confirmMemory: (arg: unknown) => confirmMock(arg) }));
+
 import { finalizeUpload, recordMedia } from "@/features/memories/ingest-upload";
 
 function row(over: Partial<MediaRow> = {}): MediaRow {
@@ -136,7 +139,8 @@ describe("finalizeUpload", () => {
 
   it("verifies the ticket and the claim token, records the media and returns the claim link", async () => {
     const result = await finalizeUpload({ ticket: mintUploadTicket(claims), claimToken: CLAIM });
-    expect(result).toEqual({ status: "READY", claimLink: `https://www.jowray.com/m/${CLAIM}`, emailed: false });
+    expect(result).toEqual({ status: "READY", claimLink: `https://www.jowray.com/m/${CLAIM}`, emailed: true });
+    expect(confirmMock).toHaveBeenCalledWith({ memoryId: "mem_1", claimToken: CLAIM });
     expect(media[0]?.status).toBe("READY");
     expect(afterCalls).toHaveLength(1); // inline checksum scheduled for a small file
   });

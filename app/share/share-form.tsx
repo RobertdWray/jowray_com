@@ -11,7 +11,7 @@ import { AudioRecorder, pickRecordingType, type Recording } from "./recorder";
 type Phase =
   | { kind: "idle" }
   | { kind: "saving"; progress?: number }
-  | { kind: "done"; claimLink: string; fileStatus: "READY" | "PENDING" | "FAILED" | "none" }
+  | { kind: "done"; claimLink: string; fileStatus: "READY" | "PENDING" | "FAILED" | "none"; emailed: boolean }
   | { kind: "error"; message: string };
 
 export interface ConsentCopy {
@@ -73,7 +73,7 @@ export function ShareForm({ consent }: { consent: ConsentCopy }) {
     }
 
     if (!created.upload || !file) {
-      setPhase({ kind: "done", claimLink: `${window.location.origin}/m/${created.claimToken}`, fileStatus: "none" });
+      setPhase({ kind: "done", claimLink: `${window.location.origin}/m/${created.claimToken}`, fileStatus: "none", emailed: created.emailed });
       return;
     }
 
@@ -94,7 +94,7 @@ export function ShareForm({ consent }: { consent: ConsentCopy }) {
         setPhase({ kind: "error", message: "The upload could not be confirmed. Please try again." });
         return;
       }
-      setPhase({ kind: "done", claimLink: finalized.claimLink, fileStatus: finalized.status });
+      setPhase({ kind: "done", claimLink: finalized.claimLink, fileStatus: finalized.status, emailed: finalized.emailed });
     } catch (error) {
       setPhase({ kind: "error", message: error instanceof Error ? error.message : "Upload failed" });
     }
@@ -115,6 +115,7 @@ export function ShareForm({ consent }: { consent: ConsentCopy }) {
             {phase.claimLink}
           </a>
         </p>
+        {phase.emailed && <p>We have also emailed you this link.</p>}
         <p className="text-sm">Keep this link private: anyone who has it can edit this memory.</p>
       </section>
     );

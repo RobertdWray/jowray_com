@@ -2,6 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
+import { confirmMemory } from "@/features/memories/confirm";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { extensionFor, maxBytesFor, memoryTypeFor, normalizeMime } from "@/lib/media-types";
@@ -18,7 +19,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export type UploadGrant = { pathname: string; ticket: UploadTicket };
 
 export type CreateMemoryResult =
-  | { ok: true; memoryId: string; claimToken: string; upload: UploadGrant | null }
+  | { ok: true; memoryId: string; claimToken: string; upload: UploadGrant | null; emailed: boolean }
   | { ok: false; code: "invalid" | "unsupported_type" | "too_large" | "budget_exceeded"; message: string };
 
 export type UploadTicketResult =
@@ -153,7 +154,9 @@ export async function createMemory(raw: unknown): Promise<CreateMemoryResult> {
     return { ok: false, code: "budget_exceeded", message: "We are receiving a lot of memories right now. Please try again later." };
   }
   log.info({ action: "memory_created", memoryId: created.memoryId, hasFile: created.upload !== null }, "memory created");
-  return { ok: true, memoryId: created.memoryId, claimToken, upload: created.upload };
+  // A text-only memory is complete now; one with a file is confirmed by finalizeUpload().
+  const emailed = created.upload === null ? (await confirmMemory({ memoryId: created.memoryId, claimToken })).sent : false;
+  return { ok: true, memoryId: created.memoryId, claimToken, upload: created.upload, emailed };
 }
 
 /** Ticket for one more file on an existing memory, from its claim page. */

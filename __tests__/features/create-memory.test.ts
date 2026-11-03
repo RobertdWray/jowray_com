@@ -27,6 +27,9 @@ const tx = {
 const dbStub = { ...tx, $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx)) };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
+const confirmMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m1" }));
+vi.mock("@/features/memories/confirm", () => ({ confirmMemory: (arg: unknown) => confirmMock(arg) }));
+
 import { createMemory, createUploadTicket } from "@/features/memories/create-memory";
 
 const valid = {
@@ -86,6 +89,8 @@ describe("createMemory", () => {
     const result = await createMemory({ ...valid, file: null });
     expect(result.ok).toBe(true);
     expect(result.ok && result.upload).toBeNull();
+    expect(result.ok && result.emailed).toBe(true);
+    expect(confirmMock).toHaveBeenCalledWith({ memoryId: "mem_1", claimToken: result.ok ? result.claimToken : "" });
     expect(memories[0]?.type).toBe("TEXT");
     expect(medias).toHaveLength(0);
   });
