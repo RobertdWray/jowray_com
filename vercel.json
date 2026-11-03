@@ -1,0 +1,5 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npx prisma migrate deploy && npx prisma db seed && npm run build",
+  "crons": [{ "path": "/api/cron/reconcile-uploads", "schedule": "*/10 * * * *" }]
+}
