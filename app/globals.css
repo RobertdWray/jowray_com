@@ -8,7 +8,7 @@
   --color-periwinkle: #5b7db1;    /* decor only: gingham, patchwork, dashed borders */
   --color-periwinkle-deep: #3f5f94; /* periwinkle at text/button size */
   --color-periwinkle-shadow: #26406a;
-  --color-goldenrod: #e8a317;     /* accent + focus ring; never text on muslin */
+  --color-goldenrod: #e8a317;     /* accent (pill, patchwork); never text on muslin; not the focus ring (contrast) */
   --color-sunhat-pink: #e0457b;   /* rare accent */
   --color-plum: #6b3a5b;          /* rare accent; usable as text */
   --color-lake-green: #3f7d4e;    /* section ground (white text on it); not text on muslin */
@@ -48,6 +48,7 @@
 
   /* Shadows: a flat "stitched-on" offset, never a blur, except the photo mount */
   --shadow-button-red: 0 5px 0 #7d0a1e;
+  --shadow-button-periwinkle: 0 5px 0 #26406a;
   --shadow-card-red: 0 6px 0 #7d0a1e;
   --shadow-card: 0 6px 0 #e9d9c0;
   --shadow-form: 0 8px 0 #e9d9c0;
@@ -88,7 +89,7 @@
     color: var(--color-wood);
   }
   :is(input, textarea, select, button, a):focus-visible {
-    outline: 4px solid var(--color-goldenrod);
+    outline: 3px solid var(--color-walnut);
     outline-offset: 2px;
   }
 }

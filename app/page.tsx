@@ -152,7 +152,7 @@ export default function HomePage() {
         <div className="mx-auto flex max-w-[1200px] flex-wrap items-start gap-x-16 gap-y-8">
           <div className="flex min-w-0 flex-[1_1_280px] flex-col gap-[14px]">
             <h2 className="font-display text-h2-sm font-bold sm:text-h2">Jo&apos;s story</h2>
-            <p className="text-body text-[#e7f0e3]">
+            <p className="text-body text-paper">
               Hunt Valley, Maryland, by way of Reisterstown and a lot of summers on Lake George.
             </p>
           </div>

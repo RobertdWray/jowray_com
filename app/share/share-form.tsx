@@ -38,6 +38,8 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
   const clipUrlRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
+  const [recorderError, setRecorderError] = useState<string | null>(null);
   const recorderRef = useRef<AudioRecorder | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
   // Server snapshot is false, client snapshot asks the browser: same markup on
@@ -63,6 +65,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
   }, []);
 
   async function toggleRecording() {
+    setRecorderError(null);
     try {
       if (!recorderRef.current) {
         recorderRef.current = new AudioRecorder();
@@ -75,13 +78,24 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
         }
         setIsRecording(false);
       } else {
-        replaceClip(null);
-        await recorderRef.current.start();
-        setIsRecording(true);
+        if (isStarting) {
+          return;
+        }
+        setIsStarting(true);
+        try {
+          await recorderRef.current.start();
+          replaceClip(null);
+          if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+          }
+          setIsRecording(true);
+        } finally {
+          setIsStarting(false);
+        }
       }
     } catch (error) {
       setIsRecording(false);
-      setPhase({ kind: "error", message: error instanceof Error ? error.message : "Recording failed" });
+      setRecorderError(error instanceof Error ? error.message : "Recording failed");
     }
   }
 
@@ -89,6 +103,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
     recorderRef.current?.cancel();
     recorderRef.current = null;
     setIsRecording(false);
+    setRecorderError(null);
     replaceClip(null);
     setPhase({ kind: "idle" });
   }
@@ -164,7 +179,12 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
           title: "Tell us a Jo story",
           text: "Jo's family is collecting memories of her.",
           url: `${origin}/`,
-        }).catch(() => {});
+        }).catch((error: unknown) => {
+          if (error instanceof Error && error.name === "AbortError") {
+            return;
+          }
+          window.location.assign(mailto);
+        });
       }
     }
 
@@ -190,7 +210,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
             <p>
               Your private link to see, correct or add to this memory:
               <br />
-              <a className={linkClass} href={phase.claimLink}>
+              <a className={`${linkClass} break-all`} href={phase.claimLink}>
                 {phase.claimLink}
               </a>
             </p>
@@ -216,18 +236,21 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
           <span className="font-display text-lead font-bold">Rather say it than type it?</span>
           {canRecord ? (
             <>
-              <TertiaryButton onClick={toggleRecording} disabled={busy}>
+              <TertiaryButton onClick={toggleRecording} disabled={busy || isStarting}>
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" aria-hidden="true" className="flex-none">
                   <rect x="9" y="3" width="6" height="11" rx="3" />
                   <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
                 </svg>
-                {isRecording ? "Stop recording" : clip ? "Record again" : "Start recording"}
+                {isStarting ? "Starting…" : isRecording ? "Stop recording" : clip ? "Record again" : "Start recording"}
               </TertiaryButton>
+              {recorderError && (
+                <p role="alert" className={errorClass}>{recorderError}</p>
+              )}
               {clip && (
                 <>
                   <audio controls src={clip.url} className="w-full min-w-0" />
                   <span className="text-small text-walnut-soft">Recorded {formatDuration(clip.recording.durationMs)}</span>
-                  <SecondaryButton onClick={() => replaceClip(null)} disabled={busy || isRecording} className="min-h-tap text-label">
+                  <SecondaryButton onClick={() => replaceClip(null)} disabled={busy || isRecording || isStarting}>
                     Remove recording
                   </SecondaryButton>
                 </>
@@ -275,7 +298,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
         </label>
         <label className={labelClass}>
           <span>Add a photo, video or voice recording <span className={helperClass}>(optional)</span></span>
-          <input ref={fileInputRef} name="file" type="file" accept={ACCEPT_ATTRIBUTE} className={fileInputClass} disabled={busy || isRecording || clip !== null} />
+          <input ref={fileInputRef} name="file" type="file" accept={ACCEPT_ATTRIBUTE} className={fileInputClass} disabled={busy || isRecording || isStarting || clip !== null} />
         </label>
         <label className={labelClass}>
           <span>Who can see this?</span>
@@ -292,14 +315,14 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
             {phase.claimLink && (
               <>
                 {" "}
-                <a className={linkClass} href={phase.claimLink}>
+                <a className={`${linkClass} break-all`} href={phase.claimLink}>
                   {phase.claimLink}
                 </a>
               </>
             )}
           </p>
         )}
-        <PrimaryButton type="submit" disabled={busy || isRecording}>
+        <PrimaryButton type="submit" disabled={busy || isRecording || isStarting}>
           <SolidHeart size={24} fill="#fff" stitch={false} />
           {busy ? (phase.progress ? `Uploading… ${phase.progress}%` : "Sending…") : "Send this to Jo's family"}
         </PrimaryButton>
