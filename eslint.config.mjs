@@ -136,7 +136,7 @@ const eslintConfig = defineConfig([
     },
   },
   {
-    files: ["scripts/**/*.ts", "prisma/**/*.ts"],
+    files: ["scripts/**/*.{ts,mjs}", "prisma/**/*.ts"],
     rules: {
       // CLI scripts run under tsx and talk to a terminal.
       "no-console": "off",
