@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" role="img" aria-label="Voice recording">
+  <circle cx="12" cy="12" r="11" fill="#C8102E"/>
+  <circle cx="12" cy="12" r="9.6" stroke="#FFFDF8" stroke-width="0.9" stroke-dasharray="1.6 1.4" stroke-linecap="round"/>
+  <rect x="9.6" y="5.6" width="4.8" height="8" rx="2.4" fill="#FFFDF8"/>
+  <path d="M7.4 11.4a4.6 4.6 0 0 0 9.2 0M12 16v2.4M9.8 18.4h4.4" stroke="#FFFDF8" stroke-width="1.6" stroke-linecap="round"/>
+</svg>
