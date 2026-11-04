@@ -168,3 +168,49 @@ describe("runSubmission", () => {
     expect(progressText(1, 1, 0)).toBe("Sending file 1 of 1 · 0% done");
   });
 });
+
+describe("onError hook (plan §8.6: swallowed errors are reported, the outcome is unchanged)", () => {
+  it("reports a create failure with step create and still returns unreachable", async () => {
+    const { deps } = fakeDeps();
+    const failure = new Error("offline");
+    deps.createSubmission = vi.fn(async () => { throw failure; });
+    const onError = vi.fn();
+    const result = await runSubmission({ ...contributor, cards: [card("c1", [])] }, deps, { origin: "https://x", onError });
+    expect(result.ok).toBe(false);
+    expect(onError).toHaveBeenCalledWith(failure, { step: "create" });
+  });
+
+  it("reports each upload failure with step upload and the file, then the retry's outcome", async () => {
+    const { deps } = fakeDeps({ uploadFails: ["med_0_0"] });
+    const onError = vi.fn();
+    await runSubmission({ ...contributor, cards: [card("c1", [media("p1", "PHOTO", 10)])] }, deps, { origin: "https://x", onError });
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(expect.any(Error), { step: "upload", mediaId: "med_0_0", fileName: "p1.bin" });
+  });
+
+  it("reports a file step that throws (ticket or finalize) with step file", async () => {
+    const { deps } = fakeDeps();
+    const failure = new Error("boom");
+    deps.issueUploadTicket = vi.fn(async () => { throw failure; });
+    const onError = vi.fn();
+    await runSubmission({ ...contributor, cards: [card("c1", [media("p1", "PHOTO", 10)])] }, deps, { origin: "https://x", onError });
+    expect(onError.mock.calls).toEqual([[failure, { step: "file", mediaId: "med_0_0", fileName: "p1.bin" }]]);
+  });
+
+  it("reports a completion failure with step complete and the send still counts as not emailed", async () => {
+    const { deps } = fakeDeps();
+    const failure = new Error("gone");
+    deps.completeSubmission = vi.fn(async () => { throw failure; });
+    const onError = vi.fn();
+    const result = await runSubmission({ ...contributor, cards: [card("c1", [media("p1", "PHOTO", 10)])] }, deps, { origin: "https://x", onError });
+    expect(result.ok && result.emailed).toBe(false);
+    expect(onError).toHaveBeenCalledWith(failure, { step: "complete", submissionId: "sub_1" });
+  });
+
+  it("works without the hook", async () => {
+    const { deps } = fakeDeps();
+    deps.completeSubmission = vi.fn(async () => { throw new Error("gone"); });
+    const result = await runSubmission({ ...contributor, cards: [card("c1", [media("p1", "PHOTO", 10)])] }, deps, { origin: "https://x" });
+    expect(result.ok).toBe(true);
+  });
+});

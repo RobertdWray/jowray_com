@@ -34,7 +34,12 @@ let media: MediaRow[] = [];
 let p2002Once = false;
 const memories = [{ id: "mem_1", claimTokenHash: hashClaimToken(CLAIM), deletedAt: null as Date | null, contributorNote: null as string | null, consentVersion: "2026-11-v2", submissionId: null as string | null }];
 const afterCalls: Array<() => Promise<void>> = [];
-vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
+vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (_name: string, cb: () => Promise<void>) => { afterCalls.push(cb); } }));
+const identifyMock = vi.fn();
+const tagIdsMock = vi.fn();
+vi.mock("@/lib/sentry/user", () => ({ identifyContributor: (...a: unknown[]) => identifyMock(...a), tagIds: (...a: unknown[]) => tagIdsMock(...a) }));
+const metricsMock = vi.hoisted(() => ({ memoryCreated: vi.fn(), uploadFinalized: vi.fn(), confirmationSent: vi.fn(), reconcileRun: vi.fn() }));
+vi.mock("@/lib/sentry/metrics", () => metricsMock);
 const dbStub = {
   $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; }),
   $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) => fn(dbStub)),
@@ -358,5 +363,17 @@ describe("finalizeUpload for a memory that belongs to a send (Task 15)", () => {
     } finally {
       memories[0]!.submissionId = null;
     }
+  });
+});
+
+describe("Sentry tags and metrics in finalizeUpload (plan §8.2)", () => {
+  it("tags the memory and the file once the token and ticket check out, and counts the outcome", async () => {
+    tagIdsMock.mockClear(); metricsMock.uploadFinalized.mockClear(); identifyMock.mockClear();
+    const ticket = mintUploadTicket({ mediaId: "med_1", memoryId: "mem_1", pathname: "originals/mem_1/abc.jpg", mimeType: "image/jpeg", maxBytes: 25 * 1024 * 1024 });
+    const result = await finalizeUpload({ ticket, claimToken: CLAIM });
+    expect(result.status).toBe("READY");
+    expect(tagIdsMock).toHaveBeenCalledWith({ memoryId: "mem_1", mediaId: "med_1" });
+    expect(metricsMock.uploadFinalized).toHaveBeenCalledWith("READY");
+    expect(identifyMock).not.toHaveBeenCalled();
   });
 });

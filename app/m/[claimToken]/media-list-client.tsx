@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import type { ClaimMediaView } from "@/features/memories/claim";
 import { formatDuration } from "@/lib/format-duration";
 import { ACCEPT_ATTRIBUTE, isRenderableIn, normalizeMime } from "@/lib/media-types";
+import { reportClientError } from "@/lib/sentry/report";
 import { uploadWithTicket } from "@/lib/upload-client";
 
 import { SecondaryButton, TertiaryButton } from "../../_components/buttons";
@@ -78,7 +79,8 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
     setBusyId(mediaId);
     try {
       setMessage(await work());
-    } catch {
+    } catch (error) {
+      reportClientError(error, { surface: "media-list", step: "action", mediaId });
       setMessage("We could not reach the server. Please check your connection and try again.");
     } finally {
       setBusyId(null);
@@ -144,7 +146,8 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
         setMessage("Uploading…");
         try {
           await uploadWithTicket(ticketed.upload, file);
-        } catch {
+        } catch (error) {
+          reportClientError(error, { surface: "media-list", step: "upload", mediaId: ticketed.upload.ticket.mediaId });
           return "The upload did not finish. Check your connection and try again.";
         }
         const finalized = await finalizeAddedFile({ ticket: ticketed.upload.ticket, claimToken });
@@ -185,9 +188,12 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
         setMessage("Uploading the replacement…");
         try {
           await uploadWithTicket(ticketed.upload, file);
-        } catch {
+        } catch (error) {
+          reportClientError(error, { surface: "media-list", step: "replace-upload", mediaId: ticketed.upload.ticket.mediaId });
           // The reservation exists on the server; free it so the next try is not refused as "already on its way".
-          await cancelReservation({ claimToken, mediaId: ticketed.upload.ticket.mediaId }).catch(() => undefined);
+          await cancelReservation({ claimToken, mediaId: ticketed.upload.ticket.mediaId }).catch((cancelError: unknown) => {
+            reportClientError(cancelError, { surface: "media-list", step: "cancel", mediaId: ticketed.upload.ticket.mediaId });
+          });
           return "The upload did not finish; nothing was changed. Please try again.";
         }
         const finalized = await finalizeAddedFile({ ticket: ticketed.upload.ticket, claimToken });

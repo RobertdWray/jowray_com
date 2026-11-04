@@ -34,6 +34,7 @@ import {
 import { problemFromError, type RecorderProblem } from "@/lib/recorder-help";
 import { audioConstraintsFor } from "@/lib/recording-devices";
 import { IDLE, reduceRecorder, type RecorderStatus } from "@/lib/recorder-state";
+import { reportClientError } from "@/lib/sentry/report";
 
 const CANDIDATES = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"];
 
@@ -309,8 +310,9 @@ export class AudioRecorder {
       if (recorder.state !== "inactive") {
         try {
           recorder.stop();
-        } catch {
+        } catch (error) {
           // Already stopping; nothing to release here.
+          reportClientError(error, { surface: "recorder", step: "release-stop" });
         }
       }
     }
@@ -494,7 +496,8 @@ export class AudioRecorder {
         // The library also swallows its own failures and returns the original
         // blob; either way playback works, only the timeline may stay odd.
         blob = await fixWebmDuration(source, durationMs, { logger: false });
-      } catch {
+      } catch (error) {
+        reportClientError(error, { surface: "recorder", step: "fix-webm-duration" });
         blob = source;
       }
     }
@@ -520,8 +523,9 @@ export class AudioRecorder {
     this.nodes.forEach((node) => {
       try {
         node.disconnect();
-      } catch {
+      } catch (error) {
         // Already disconnected.
+        reportClientError(error, { surface: "recorder", step: "disconnect" });
       }
     });
     this.nodes = [];

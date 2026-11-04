@@ -7,6 +7,7 @@ import { appendClaimRevision, hasWords, LIVE_MEDIA_ORDER, recomputeMemoryType, v
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { claimMediaRefSchema, mediaWordsRequestSchema } from "@/lib/validations/media";
+import { identifyContributor, tagIds } from "@/lib/sentry/user";
 import { getMemorialEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 
@@ -99,7 +100,7 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
   const memory = await getDb().memory.findUnique({
     where: { claimTokenHash: hashClaimToken(claimToken) },
     include: {
-      contributor: { select: { name: true, relationship: true, email: true, contactOptIn: true } },
+      contributor: { select: { id: true, name: true, relationship: true, email: true, contactOptIn: true } },
       media: {
         where: { deletedAt: null },
         select: {
@@ -123,6 +124,9 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
   if (!memory || memory.deletedAt !== null) {
     return null;
   }
+  // The contributor row is loaded here anyway (ruling 6): identity and the memory tag.
+  identifyContributor({ id: memory.contributor?.id, email: memory.contributor?.email, name: memory.contributor?.name });
+  tagIds({ memoryId: memory.id });
   const submission =
     memory.submissionId !== null
       ? { position: (memory.submissionIndex ?? 0) + 1, count: await getDb().memory.count({ where: { submissionId: memory.submissionId, deletedAt: null } }) }
@@ -201,13 +205,15 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
         contributorNote: true,
         visibility: true,
         notifyWhenPosted: true,
-        contributor: { select: { id: true, name: true, relationship: true, contactOptIn: true } },
+        contributor: { select: { id: true, name: true, relationship: true, email: true, contactOptIn: true } },
       },
     });
     // A link rotated while this request waited for the lock (an admin reissue) must not act.
     if (fresh.deletedAt !== null || fresh.claimTokenHash !== claimTokenHash) {
       return "not_found" as const;
     }
+    identifyContributor({ id: fresh.contributor?.id, email: fresh.contributor?.email, name: fresh.contributor?.name });
+    tagIds({ memoryId: memory.id });
     const sharing = fresh.status === "DRAFT" && input.share === true;
     // On a DRAFT the preferences are given by pressing Share, never by a plain edit.
     const preferencesEditable = sharing || fresh.status !== "DRAFT";
@@ -301,6 +307,7 @@ async function retireMedia(raw: unknown, statuses: MediaStatus[], action: "remov
     if (fresh.deletedAt !== null || fresh.claimTokenHash !== claimTokenHash) {
       return "not_found" as const;
     }
+    tagIds({ memoryId: memory.id, mediaId });
     const target = await tx.media.findFirst({ where: { id: mediaId, memoryId: memory.id, deletedAt: null, status: { in: statuses } } });
     if (!target) {
       return "not_found" as const;
@@ -365,6 +372,7 @@ export async function updateMediaFromClaim(raw: unknown): Promise<ClaimMediaResu
     if (fresh.deletedAt !== null || fresh.claimTokenHash !== claimTokenHash) {
       return "not_found" as const;
     }
+    tagIds({ memoryId: memory.id, mediaId });
     const target = await tx.media.findFirst({ where: { id: mediaId, memoryId: memory.id, deletedAt: null, status: "READY" } });
     if (!target) {
       return "not_found" as const;
