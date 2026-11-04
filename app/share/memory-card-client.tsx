@@ -129,8 +129,10 @@ export function MemoryCardSection({
           />
         </div>
 
-        <div className="flex flex-col gap-[22px]">
-          <label htmlFor={ids.note} className={`${labelClass} roomy:flex-1`} data-field>
+        {/* `data-field` on the cell, not the label, so the reveal centres label, words and error line together (a 515px
+            textarea at a 560px-high window otherwise leaves the line below the fold). */}
+        <div className="flex flex-col gap-[22px]" data-field>
+          <label htmlFor={ids.note} className={`${labelClass} roomy:flex-1`}>
             <span>Your memory of Jo</span>
             <textarea
               id={ids.note}
