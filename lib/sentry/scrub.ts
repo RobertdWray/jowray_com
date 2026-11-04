@@ -57,19 +57,37 @@ export function isSecretKey(key: string): boolean {
 }
 
 // Server Function inputs and results reach Sentry as serialized text too
-// (`request.data`, recorded responses, replay network bodies). This matches a
-// JSON member whose key is a secret and whose value is a string, array,
-// object or scalar, each possibly cut off by truncation, and replaces the value.
-const JSON_SECRET_KEY = `(?:${SECRET_FIELD_KEYS.join("|")}|[^"]*(?:${SECRET_KEY_FRAGMENTS.join("|")})[^"]*)`;
-const JSON_SECRET_MEMBER = new RegExp(`"(${JSON_SECRET_KEY})"\\s*:\\s*(?:"[^"]*"?|\\[[^\\]]*\\]?|\\{[^}]*\\}?|[^,}\\]\\s]*)`, "gi");
+// (`request.data`, recorded responses, replay network bodies), sometimes
+// double-encoded (the Blob client's `clientPayload` is a JSON string inside
+// JSON). Text that parses as JSON is scrubbed as a value, which handles any
+// nesting and any encoding depth; text that does not parse (truncated bodies,
+// `key=value` fragments) goes through this regex, which matches a JSON member
+// whose key is a secret, quotes escaped or not, and replaces its value up to
+// the next unescaped quote, bracket or brace, or the end of the text.
+const JSON_SECRET_KEY = `(?:${SECRET_FIELD_KEYS.join("|")}|[^"\\\\]*(?:${SECRET_KEY_FRAGMENTS.join("|")})[^"\\\\]*)`;
+const JSON_SECRET_MEMBER = new RegExp(
+  `\\\\?"(${JSON_SECRET_KEY})\\\\?"\\s*:\\s*(?:\\\\?"(?:[^"\\\\]|\\\\.)*"?|\\[[^\\]]*\\]?|\\{[^}]*\\}?|[^,}\\]\\s]*)`,
+  "gi"
+);
 
-function scrubText(text: string): string {
+function scrubText(text: string, depth: number): string {
+  if (text.length > 1 && (text[0] === "{" || text[0] === "[") && depth <= MAX_DEPTH) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text) as unknown;
+    } catch {
+      parsed = undefined; // not JSON (or cut off): the regex below is the fallback
+    }
+    if (parsed !== undefined && typeof parsed === "object" && parsed !== null) {
+      return JSON.stringify(scrubValue(parsed, depth + 1));
+    }
+  }
   return scrubUrl(text.replace(JSON_SECRET_MEMBER, `"$1":"${FILTERED}"`));
 }
 
 function scrubValue(value: unknown, depth: number): unknown {
   if (typeof value === "string") {
-    return scrubText(value);
+    return scrubText(value, depth);
   }
   if (depth > MAX_DEPTH || value === null || typeof value !== "object") {
     return value;
@@ -203,19 +221,21 @@ export function scrubLog<L extends ScrubbableLog>(log: L): L {
   return log;
 }
 
-/** The replay metadata event (`replay_event`) carries the page URLs visited during the segment. */
-interface ReplayEventLike {
-  type?: string;
-  urls?: string[];
-}
+/** Any browser event; the replay metadata event (`replay_event`) also carries the page URLs visited during the segment. */
+type AnyBrowserEvent = Event & { urls?: string[] };
 
 /**
- * Event processor for the browser: `beforeSend` never sees replay events, so
- * the `/m/<token>` URL would otherwise reach the replay's metadata. Other
- * events are returned as they are (returning nothing would drop them).
+ * Global event processor for the browser. `beforeSend` runs only for error
+ * and message events: replay metadata (`replay_event`) and feedback
+ * (`feedback`) events skip it, yet both carry `request.url` (the page URL,
+ * `/m/<token>` on a claim page) and feedback carries `contexts.feedback.url`.
+ * So every event goes through `scrubEvent` here (idempotent, so the
+ * `beforeSend` pass is harmless) and a replay event's `urls` list as well.
+ * Events are always returned (returning nothing would drop them).
  */
-export function scrubReplayEvent<E extends ReplayEventLike>(event: E): E {
-  if (event.type === "replay_event" && event.urls) {
+export function scrubReplayEvent<E extends AnyBrowserEvent>(event: E): E {
+  scrubEvent(event);
+  if (event.urls) {
     event.urls = event.urls.map(scrubUrl);
   }
   return event;
