@@ -11,6 +11,7 @@ import {
   fileInputSchema,
   memoryFileInputSchema,
   NAME_REQUIRED_MESSAGE,
+  NAME_TOO_LONG_MESSAGE,
   submissionIssueLocation,
   submissionMemorySchema,
   uploadTicketRequestSchema,
@@ -178,9 +179,9 @@ describe("required name and email (Rob's items 1 and 6, ruling 2, 2026-11-04)", 
     expect(parsed.email).toBe("jane@example.com");
   });
 
-  it("keeps the length ceilings: 254 characters of email, 120 of name", () => {
+  it("keeps the length ceilings: 254 characters of email, 120 of name, each in the house voice", () => {
     expect(messageFor({ ...base, email: `${"a".repeat(243)}@example.com` }, "email")).toBe(EMAIL_INVALID_MESSAGE);
-    expect(createSubmissionInputSchema.safeParse({ ...base, name: "x".repeat(121) }).success).toBe(false);
+    expect(messageFor({ ...base, name: "x".repeat(121) }, "name")).toBe(NAME_TOO_LONG_MESSAGE);
     expect(createSubmissionInputSchema.safeParse({ ...base, name: "x".repeat(120) }).success).toBe(true);
   });
 
