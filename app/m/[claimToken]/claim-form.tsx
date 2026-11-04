@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import type { ClaimView } from "@/features/memories/claim";
+import { CONTACT_OPT_IN_LABEL, IMPLICIT_CONSENT_NOTE, NOTIFY_WHEN_POSTED_LABEL } from "@/lib/consent";
 import { ACCEPT_ATTRIBUTE } from "@/lib/media-types";
 import { uploadWithTicket } from "@/lib/upload-client";
 
@@ -15,6 +16,8 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
   const router = useRouter();
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // A DRAFT was saved by the family admin on this person's behalf: one button, Share, which is the act of sharing.
+  const draft = memory.status === "DRAFT";
 
   async function onSave(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -30,13 +33,22 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
           place: String(form.get("place") ?? ""),
           note: String(form.get("note") ?? ""),
           visibility: String(form.get("visibility") ?? memory.visibility),
+          ...(draft && {
+            share: true,
+            notifyWhenPosted: form.get("notifyWhenPosted") === "on",
+            contactOptIn: form.get("contactOptIn") === "on",
+          }),
         },
       });
       setMessage(
         result.ok
-          ? "Saved."
+          ? result.shared
+            ? "Thank you. Your memory is with the family."
+            : "Saved."
           : result.code === "last_words"
-            ? "Your words are all this memory has right now. Add a file before clearing them, or keep a few words."
+            ? draft
+              ? "Keep a few words, or add a photo or a recording first: a memory cannot be empty."
+              : "Your words are all this memory has right now. Add a file before clearing them, or keep a few words."
             : "Could not save. Please check the fields and try again."
       );
       if (result.ok) {
@@ -109,10 +121,25 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
             <option value="PRIVATE">Only me and the family admins</option>
           </select>
         </label>
-        <PrimaryButton type="submit" disabled={busy}>Save changes</PrimaryButton>
+        {draft ? (
+          <>
+            <label className="flex items-start gap-3 text-small">
+              <input name="notifyWhenPosted" type="checkbox" defaultChecked={memory.notifyWhenPosted} className="mt-1 size-6 accent-jo-red" />
+              <span>{NOTIFY_WHEN_POSTED_LABEL}</span>
+            </label>
+            <label className="flex items-start gap-3 text-small">
+              <input name="contactOptIn" type="checkbox" defaultChecked={memory.contributor?.contactOptIn ?? true} className="mt-1 size-6 accent-jo-red" />
+              <span>{CONTACT_OPT_IN_LABEL}</span>
+            </label>
+            <PrimaryButton type="submit" disabled={busy}>Share this memory</PrimaryButton>
+            <p className="text-small text-walnut-soft">{IMPLICIT_CONSENT_NOTE}</p>
+          </>
+        ) : (
+          <PrimaryButton type="submit" disabled={busy}>Save changes</PrimaryButton>
+        )}
       </form>
       <label className={labelClass}>
-        <span>Add another photo, video or recording</span>
+        <span>{draft ? "Add a photo, video or recording" : "Add another photo, video or recording"}</span>
         <input type="file" accept={ACCEPT_ATTRIBUTE} onChange={onAddFile} disabled={busy} className={fileInputClass} />
       </label>
       {message && <p role="status" className="text-body">{message}</p>}
