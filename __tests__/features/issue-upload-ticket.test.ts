@@ -26,6 +26,9 @@ const dbStub = {
   },
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
+const identifyMock = vi.fn();
+const tagIdsMock = vi.fn();
+vi.mock("@/lib/sentry/user", () => ({ identifyContributor: (...a: unknown[]) => identifyMock(...a), tagIds: (...a: unknown[]) => tagIdsMock(...a) }));
 
 import { issueUploadTicket } from "@/features/memories/issue-upload-ticket";
 
@@ -82,5 +85,18 @@ describe("issueUploadTicket", () => {
     expect(result.ok).toBe(true);
     expect(dbStub.memory.updateMany).not.toHaveBeenCalled();
     expect(memories.every((m) => m.id !== "mem_legacy" || m.uploadLeaseUntil === null)).toBe(true);
+  });
+});
+
+describe("Sentry tags (plan §8.2)", () => {
+  it("tags the memory and the file of an issued ticket, and nothing for a refused request", async () => {
+    tagIdsMock.mockClear();
+    const issued = await issueUploadTicket({ claimToken: SECOND_TOKEN, mediaId: "med_1" });
+    expect(issued.ok).toBe(true);
+    expect(tagIdsMock).toHaveBeenCalledWith({ memoryId: "mem_second", mediaId: "med_1" });
+    tagIdsMock.mockClear();
+    await issueUploadTicket({ claimToken: "x".repeat(43), mediaId: "med_1" });
+    expect(tagIdsMock).not.toHaveBeenCalled();
+    expect(identifyMock).not.toHaveBeenCalled();
   });
 });

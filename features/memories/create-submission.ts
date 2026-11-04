@@ -6,6 +6,8 @@ import { completeSubmission } from "@/features/memories/complete-submission";
 import { createPendingMediaRow, resolveFile, type ResolvedFile, TX_OPTIONS, withinBudget } from "@/features/memories/create-memory";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
+import { memoryCreated } from "@/lib/sentry/metrics";
+import { identifyContributor, tagIds } from "@/lib/sentry/user";
 import { summarizeMemoryType } from "@/lib/media-types";
 import { UPLOAD_LEASE_MS } from "@/lib/upload-ticket";
 import { createSubmissionInputSchema, type SubmissionIssueField, submissionIssueLocation, type SubmissionMemoryInput } from "@/lib/validations/memory";
@@ -72,6 +74,8 @@ export async function createSubmission(raw: unknown): Promise<CreateSubmissionRe
     return { ok: false, code: "invalid", message: where.message, memoryIndex: where.memoryIndex, fileIndex: where.fileIndex, field: where.field };
   }
   const input = parsed.data;
+  // Identity as soon as it is known (plan 2026-11-04 §8.2); the id follows once the row exists.
+  identifyContributor({ email: input.email, name: input.name });
 
   const resolved: ResolvedMemory[] = [];
   for (const [memoryIndex, memory] of input.memories.entries()) {
@@ -113,6 +117,7 @@ export async function createSubmission(raw: unknown): Promise<CreateSubmissionRe
         mailingListOptIn: input.mailingListOptIn,
       },
     });
+    identifyContributor({ id: contributor.id, email: contributor.email, name: contributor.name });
     const consentedAt = new Date();
     const memories: SubmissionMemory[] = [];
     for (const [index, memory] of resolved.entries()) {
@@ -151,6 +156,8 @@ export async function createSubmission(raw: unknown): Promise<CreateSubmissionRe
     log.warn({ action: "budget_refusal", memories: resolved.length }, "daily budget reached");
     return { ok: false, code: "budget_exceeded", message: "We are receiving a lot of memories right now. Please try again later.", memoryIndex: null, fileIndex: null, field: null };
   }
+  tagIds({ submissionId });
+  memoryCreated(created.length);
   log.info({ action: "submission_created", submissionId, memories: created.length, files: created.reduce((n, m) => n + m.files.length, 0) }, "submission created");
   // A send with no files is complete now: the receipt goes out while this
   // request still holds every raw token, and the admin alerts follow the

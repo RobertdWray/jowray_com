@@ -50,7 +50,10 @@ vi.mock("@/features/memories/confirm", () => ({ confirmMemory: (arg: unknown) =>
 const notifyMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m2" }));
 vi.mock("@/features/memories/notify-admins", () => ({ notifyAdminsOfMemory: (arg: unknown) => notifyMock(arg) }));
 const afterCalls: Array<() => Promise<void>> = [];
-vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
+vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (_name: string, cb: () => Promise<void>) => { afterCalls.push(cb); } }));
+const identifyMock = vi.fn();
+const tagIdsMock = vi.fn();
+vi.mock("@/lib/sentry/user", () => ({ identifyContributor: (...a: unknown[]) => identifyMock(...a), tagIds: (...a: unknown[]) => tagIdsMock(...a) }));
 
 import { createReplacementTicket, createUploadTicket } from "@/features/memories/create-memory";
 
@@ -192,5 +195,21 @@ describe("claim-page tickets on a memory that belongs to a send (Task 15)", () =
     await createUploadTicket({ claimToken: created.claimToken, file: { name: "p.jpg", type: "image/jpeg", size: 1 } });
     expect(lockCalls).toEqual([expect.stringContaining("FOR UPDATE|mem_1")]);
     expect(memories[0]!.uploadLeaseUntil ?? null).toBeNull();
+  });
+});
+
+describe("Sentry tags (plan §8.2)", () => {
+  it("tags the memory and the new file for an added file and for a replacement", async () => {
+    tagIdsMock.mockClear();
+    const { claimToken: TOKEN } = await seedMemory();
+    const added = await createUploadTicket({ claimToken: TOKEN, file: { name: "b.jpg", type: "image/jpeg", size: 10 } });
+    expect(added.ok).toBe(true);
+    expect(tagIdsMock).toHaveBeenLastCalledWith({ memoryId: "mem_1", mediaId: added.ok ? added.upload.ticket.mediaId : "" });
+    medias[0]!.status = "READY";
+    medias[0]!.id = "00000000-0000-4000-8000-000000000001";
+    const replaced = await createReplacementTicket({ claimToken: TOKEN, mediaId: medias[0]!.id, file: { name: "c.jpg", type: "image/jpeg", size: 10 } });
+    expect(replaced.ok).toBe(true);
+    expect(tagIdsMock).toHaveBeenLastCalledWith({ memoryId: "mem_1", mediaId: replaced.ok ? replaced.upload.ticket.mediaId : "" });
+    expect(identifyMock).not.toHaveBeenCalled();
   });
 });

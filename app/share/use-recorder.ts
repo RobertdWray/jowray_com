@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { detectPlatform, helpFor, type RecorderHelp } from "@/lib/recorder-help";
+import { reportClientError } from "@/lib/sentry/report";
 import {
   audioInputsFor,
   describeActiveInput,
@@ -97,7 +98,8 @@ export function useRecorder(options: UseRecorderOptions = {}): UseRecorder {
     let devices: MediaDeviceInfo[];
     try {
       devices = await navigator.mediaDevices.enumerateDevices();
-    } catch {
+    } catch (error) {
+      reportClientError(error, { surface: "recorder", step: "enumerate-devices" });
       return;
     }
     const next = audioInputsFor(devices);
@@ -181,8 +183,9 @@ export function useRecorder(options: UseRecorderOptions = {}): UseRecorder {
     // tap. A device that vanished since the last refresh falls back in acquire().
     try {
       await recorder.start({ deviceId: selectedRef.current });
-    } catch {
+    } catch (error) {
       // The engine already published the error status and help copy.
+      reportClientError(error, { surface: "recorder", step: "start" });
       return;
     }
     setGranted(true);
@@ -192,8 +195,9 @@ export function useRecorder(options: UseRecorderOptions = {}): UseRecorder {
   const stop = useCallback(async () => {
     try {
       await recorder.stop();
-    } catch {
+    } catch (error) {
       // A failed take keeps the previous accepted clip; the status shows the error.
+      reportClientError(error, { surface: "recorder", step: "stop" });
     }
     // The clip itself is published by the status effect above.
   }, [recorder]);

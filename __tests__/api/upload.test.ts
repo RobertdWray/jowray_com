@@ -22,7 +22,10 @@ vi.mock("@/features/memories/ingest-upload", () => ({ recordMedia: (arg: { media
 const deriveMock = vi.fn(async (_arg: unknown) => ({ WEB_IMAGE: "derived", THUMBNAIL: "derived" }));
 vi.mock("@/features/memories/derive-media", () => ({ deriveMedia: (arg: unknown) => deriveMock(arg) }));
 const afterCalls: Array<() => Promise<void>> = [];
-vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
+vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (_name: string, cb: () => Promise<void>) => { afterCalls.push(cb); } }));
+const identifyMock = vi.fn();
+const tagIdsMock = vi.fn();
+vi.mock("@/lib/sentry/user", () => ({ identifyContributor: (...a: unknown[]) => identifyMock(...a), tagIds: (...a: unknown[]) => tagIdsMock(...a) }));
 
 import { POST } from "@/app/api/upload/route";
 
@@ -138,5 +141,17 @@ describe("cancelled reservations", () => {
     const res = await tokenRequest();
     expect(res.status).toBe(403);
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe("not_pending");
+  });
+});
+
+describe("Sentry tags (plan §8.2)", () => {
+  it("the upload-completed callback tags the file it records", async () => {
+    tagIdsMock.mockClear();
+    const body = JSON.stringify({ type: "blob.upload-completed", payload: { blob: { url: "https://blob.test/originals/mem_1/abc.m4a", downloadUrl: "https://blob.test/x", pathname: claims.pathname, contentType: "audio/mp4", contentDisposition: "inline" }, tokenPayload: JSON.stringify({ mediaId: "med_1" }) } });
+    const signature = createHmac("sha256", RW_TOKEN).update(body).digest("hex");
+    const res = await POST(new NextRequest("http://localhost:3000/api/upload", { method: "POST", body, headers: { "content-type": "application/json", "x-vercel-signature": signature } }));
+    expect(res.status).toBe(200);
+    expect(tagIdsMock).toHaveBeenCalledWith({ mediaId: "med_1" });
+    expect(identifyMock).not.toHaveBeenCalled();
   });
 });

@@ -11,6 +11,8 @@ import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger, logError, logErrorAndFlush } from "@/lib/logger";
 import { isAllowedMime } from "@/lib/media-types";
 import { afterWithFlush } from "@/lib/sentry/after-flush";
+import { uploadFinalized } from "@/lib/sentry/metrics";
+import { tagIds } from "@/lib/sentry/user";
 import { getSiteUrl } from "@/lib/site-url";
 import { type UploadTicket, verifyUploadTicket } from "@/lib/upload-ticket";
 import { getDb } from "@/server/db/client";
@@ -204,10 +206,12 @@ export async function finalizeUpload({
   if (!memory || memory.deletedAt !== null || memory.id !== verified.claims.memoryId) {
     return { status: "REJECTED", reason: "not_found" };
   }
+  tagIds({ memoryId: memory.id, mediaId: verified.claims.mediaId });
   const outcome = await recordMedia({ mediaId: verified.claims.mediaId });
   if (outcome.status === "NOT_FOUND") {
     return { status: "REJECTED", reason: "not_found" };
   }
+  uploadFinalized(outcome.status);
   let emailed = false;
   if (outcome.status === "READY") {
     // A memory sent with others is confirmed and announced by completeSubmission,
@@ -216,11 +220,11 @@ export async function finalizeUpload({
       emailed = await confirmQuietly(memory.id, claimToken);
       // After the response: the admin alert, then the checksum (small files) and
       // the web copy and thumbnail (photos; other kinds return not_eligible at once).
-      afterWithFlush(async () => {
+      afterWithFlush("finalize.admin_alert", async () => {
         await notifyAdminsQuietly(memory.id);
       });
     }
-    afterWithFlush(async () => {
+    afterWithFlush("finalize.checksum_and_derive", async () => {
       if (outcome.sizeBytes <= INLINE_HASH_MAX_BYTES) {
         await computeChecksum({ mediaId: outcome.mediaId });
       }

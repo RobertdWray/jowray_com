@@ -27,6 +27,8 @@ import {
 } from "@/lib/remembered-contributor";
 import type { ShareDraft } from "@/lib/share-draft";
 import { revealScrollDelta, unionRect } from "@/lib/reveal-scroll";
+import { reportClientError } from "@/lib/sentry/report";
+import { identifyContributor } from "@/lib/sentry/user";
 import { type PipelineProgress, runSubmission } from "@/lib/submission-pipeline";
 import { uploadWithTicket } from "@/lib/upload-client";
 import { contributorVisibilityOptions, isContributorVisibility } from "@/lib/visibility";
@@ -140,6 +142,12 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
 
   // Name, email and relationship from an earlier memory on this device; null on the server and until hydration.
   const remembered = useSyncExternalStore(subscribeRemembered, getRememberedSnapshot, getRememberedServerSnapshot);
+  // Sentry knows who this is as soon as the device does (plan 2026-11-04 §8.3; Rob's authorization in lib/sentry/data-collection.ts).
+  useEffect(() => {
+    if (remembered) {
+      identifyContributor(remembered);
+    }
+  }, [remembered]);
   // Server snapshot is false, client snapshot asks the browser: same markup on both sides at hydration (C9).
   const canRecord = useSyncExternalStore(subscribeNever, () => pickRecordingType() !== null, () => false);
 
@@ -278,6 +286,8 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
     }
     setConfirmSilent(null);
     const form = new FormData(event.currentTarget);
+    // Sentry learns who is sending only once a send actually starts (plan 2026-11-04 §8.3).
+    identifyContributor(contributor);
     const visibility = String(form.get("visibility") ?? "PUBLIC");
     const sendInput = {
       ...contributor,
@@ -328,6 +338,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
           origin: window.location.origin,
           onProgress,
           onFileDone: (_cardId, mediaId, ok) => setProgress((prev) => ({ ...prev, [mediaId]: ok ? 100 : prev[mediaId] ?? 0 })),
+          onError: (error, context) => reportClientError(error, { surface: "share-form", ...context }),
         },
       );
       if (!result.ok) {

@@ -123,3 +123,12 @@
   background-size: 32px 32px;
   background-position: 0 0, 16px 16px;
 }
+
+/* Sentry's "Report a problem" button and form (plan 2026-11-04 §9.4): the SDK injects
+   a <div id="sentry-feedback"> and reads its look from these variables. */
+#sentry-feedback {
+  --accent-background: var(--color-jo-red);
+  --accent-foreground: #ffffff;
+  --font-family: var(--font-body);
+  --font-size: 16px;
+}

@@ -38,7 +38,7 @@ vi.mock("@/services/email", () => ({ sendMemoryConfirmation: (arg: unknown) => s
 const notifyMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m2" }));
 vi.mock("@/features/memories/notify-admins", () => ({ notifyAdminsOfMemory: (arg: unknown) => notifyMock(arg) }));
 const afterCalls: Array<() => Promise<void>> = [];
-vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
+vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (_name: string, cb: () => Promise<void>) => { afterCalls.push(cb); } }));
 
 import { confirmMemory } from "@/features/memories/confirm";
 

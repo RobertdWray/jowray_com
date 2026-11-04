@@ -28,6 +28,12 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
+        // Browser profiling (Sentry, plan 2026-11-04 §9.3): the JS Self-Profiling API only
+        // runs when the document carries this policy. Chromium only; harmless elsewhere.
+        source: "/:path*",
+        headers: [{ key: "Document-Policy", value: "js-profiling" }],
+      },
+      {
         // Claim links carry the raw token in the path; never leak it through Referer,
         // not even to same-origin requests (they would land in request logs).
         source: "/m/:path*",
@@ -50,7 +56,16 @@ export default withSentryConfig(nextConfig, {
   org: "med3ai",
   project: "jowray_com",
   // Route browser events through this app so ad blockers do not drop them.
-  tunnelRoute: "/monitoring",
+  // Handler mode: app/sentry-tunnel/route.ts forwards only the envelope body
+  // and works behind Vercel Deployment Protection (rewrite mode does not on
+  // SDK 11.9+). The build prints the "tunnel route sends events through" line.
+  tunnelRoute: "/sentry-tunnel",
+  // Readable frames inside Next.js and React internals (longer builds, fine for the alpha).
+  widenClientFileUpload: true,
+  // data-sentry-component on every element, so replays and breadcrumbs name the component (Turbopack, Next 16+).
+  reactComponentAnnotation: { enabled: true },
+  // Paired with thirdPartyErrorFilterIntegration in instrumentation-client.ts: our frames vs. extensions.
+  applicationKey: "jowray_com",
   telemetry: false,
   // Only CI and Vercel builds print upload logs.
   silent: !process.env.CI,

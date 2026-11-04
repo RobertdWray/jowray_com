@@ -71,6 +71,16 @@ const dbStub = {
   memory: { findMany: finder(() => memories.map((m) => shareMemory({ submissionId: null, submissionIndex: null, uploadLeaseUntil: null, ...m })) as unknown as Record<string, unknown>[]) },
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
+const checkInMock = vi.fn((checkIn: { status: string; checkInId?: string }) => checkIn.checkInId ?? "checkin_1");
+const isolationCalls: unknown[] = [];
+vi.mock("@sentry/nextjs", () => ({
+  captureException: vi.fn(),
+  flush: vi.fn(async () => true),
+  captureCheckIn: (...a: unknown[]) => checkInMock(...(a as [{ status: string; checkInId?: string }])),
+  withIsolationScope: (cb: (scope: unknown) => unknown) => { const scope = { id: isolationCalls.length }; isolationCalls.push(scope); return cb(scope); },
+}));
+const reconcileRunMock = vi.fn();
+vi.mock("@/lib/sentry/metrics", () => ({ reconcileRun: (...a: unknown[]) => reconcileRunMock(...a) }));
 
 type RecordOutcome = { status: "READY"; mediaId: string; memoryId: string; sizeBytes: number } | { status: "PENDING"; mediaId: string; memoryId: string };
 const recordMediaMock = vi.fn(async ({ mediaId }: { mediaId: string }): Promise<RecordOutcome> => ({ status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 }));
@@ -398,6 +408,73 @@ describe("step (g) budget", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("Sentry cron monitor (plan §8.8)", () => {
+  beforeEach(() => { checkInMock.mockClear(); isolationCalls.length = 0; reconcileRunMock.mockClear(); delete process.env.VERCEL_ENV; });
+
+  it("the schedule constant is the one vercel.json runs", async () => {
+    const { RECONCILE_SCHEDULE } = await import("@/app/api/cron/reconcile-uploads/route");
+    const { readFileSync } = await import("node:fs");
+    const vercel = JSON.parse(readFileSync("vercel.json", "utf8")) as { crons: Array<{ path: string; schedule: string }> };
+    expect(vercel.crons[0]).toEqual({ path: "/api/cron/reconcile-uploads", schedule: RECONCILE_SCHEDULE });
+  });
+
+  it("in production a healthy run checks in in_progress then ok with the monitor config, and records the run metric", async () => {
+    process.env.VERCEL_ENV = "production";
+    const res = await run(`Bearer ${SECRET}`);
+    expect(res.status).toBe(200);
+    expect(checkInMock.mock.calls).toHaveLength(2);
+    expect(checkInMock.mock.calls[0]).toEqual([
+      { monitorSlug: "reconcile-uploads", status: "in_progress" },
+      { schedule: { type: "crontab", value: "*/10 * * * *" }, checkinMargin: 5, maxRuntime: 2, timezone: "UTC", failureIssueThreshold: 2, recoveryThreshold: 1 },
+    ]);
+    expect(checkInMock.mock.calls[1]).toEqual([{ checkInId: "checkin_1", monitorSlug: "reconcile-uploads", status: "ok" }]);
+    expect(reconcileRunMock).toHaveBeenCalledWith(expect.any(Number), 0);
+  });
+
+  it("reports error when any item failed, even though the run itself answers 200", async () => {
+    process.env.VERCEL_ENV = "production";
+    checksumMock.mockRejectedValueOnce(new Error("hash failed"));
+    const res = await run(`Bearer ${SECRET}`);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { data: { errors: number } }).data.errors).toBe(1);
+    expect(checkInMock.mock.calls[1]).toEqual([{ checkInId: "checkin_1", monitorSlug: "reconcile-uploads", status: "error" }]);
+    expect(reconcileRunMock).toHaveBeenCalledWith(expect.any(Number), 1);
+  });
+
+  it("reports error and rethrows when the run itself throws", async () => {
+    process.env.VERCEL_ENV = "production";
+    dbStub.media.findMany.mockRejectedValueOnce(new Error("database down"));
+    await expect(run(`Bearer ${SECRET}`)).rejects.toThrow("database down");
+    expect(checkInMock.mock.calls[1]).toEqual([{ checkInId: "checkin_1", monitorSlug: "reconcile-uploads", status: "error" }]);
+  });
+
+  it("never checks in outside production (previews and manual runs create no monitor)", async () => {
+    process.env.VERCEL_ENV = "preview";
+    await run(`Bearer ${SECRET}`);
+    delete process.env.VERCEL_ENV;
+    await run(`Bearer ${SECRET}`);
+    expect(checkInMock).not.toHaveBeenCalled();
+    expect(reconcileRunMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("runs every item in its own isolation scope so one contributor's identity never leaks into the next item", async () => {
+    const old = new Date(Date.now() - 2 * HOUR);
+    media = []; events = [];
+    emails = [
+      { id: "log_a", memoryId: "mem_a", emailType: "MEMORY_CONFIRMATION", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: null } },
+      { id: "log_b", memoryId: "mem_b", emailType: "MEMORY_CONFIRMATION", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: null } },
+    ];
+    memories = [];
+    const seen: unknown[] = [];
+    confirmMock.mockImplementation(async ({ memoryId }) => { seen.push(isolationCalls.at(-1)); return recordSent(memoryId, "MEMORY_CONFIRMATION"); });
+    await run(`Bearer ${SECRET}`);
+    expect(confirmMock).toHaveBeenCalledTimes(2);
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).not.toBe(seen[1]);
+    expect(isolationCalls.length).toBeGreaterThanOrEqual(2);
   });
 });
 

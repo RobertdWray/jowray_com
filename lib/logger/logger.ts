@@ -1,6 +1,8 @@
 import * as Sentry from "@sentry/nextjs";
 import pino, { type DestinationStream, type Logger, type LoggerOptions } from "pino";
 
+import { SECRET_HEADER_KEYS } from "@/lib/sentry/secrets";
+
 /**
  * Keys that must never reach a log line. Contributors' identities live in
  * the database, not in Vercel logs or Sentry breadcrumbs.
@@ -19,7 +21,6 @@ const PII_KEYS = [
   "originalFilename",
   "claimLink",
 ];
-const SECRET_HEADER_KEYS = ["cookie", "authorization", "x-vercel-protection-bypass", "x-vercel-signature"];
 // Pino wildcards match one level each; these paths cover the top level and
 // three levels down (enough for a Prisma `include` shape). Log ids, never rows.
 export const REDACT_PATHS = [
