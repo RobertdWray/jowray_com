@@ -115,6 +115,15 @@ describe("runSubmission", () => {
     expect(calls.at(-1)).toBe("complete:2");
   });
 
+  it("a retry that finds the row already READY (the first upload landed late) counts as a success", async () => {
+    const { deps, calls } = fakeDeps({ uploadFails: ["med_0_0"] });
+    const issue = deps.issueUploadTicket;
+    deps.issueUploadTicket = vi.fn(async (input: { claimToken: string; mediaId: string }) => (calls.some((c) => c.startsWith("ticket:med_0_0")) ? { ok: false as const, code: "not_pending" } : issue(input)));
+    const result = await runSubmission({ ...contributor, cards: [card("c1", [media("p1", "PHOTO", 10)])] }, deps, { origin: "https://x" });
+    expect(result.ok && result.memories[0]!.failedFiles).toEqual([]);
+    expect(calls.at(-1)).toBe("complete:1");
+  });
+
   it("completes exactly once even when a step throws unexpectedly", async () => {
     const { deps, calls } = fakeDeps();
     deps.issueUploadTicket = vi.fn(async () => { throw new Error("boom"); });

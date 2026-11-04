@@ -99,10 +99,11 @@ interface Job {
 }
 
 /** One attempt: ticket, upload, finalize. Returns the file's status, or null when the upload failed and the file is not there. */
-async function attempt(job: Job, deps: PipelineDeps, onProgress: (pct: number) => void): Promise<"READY" | "PENDING" | "FAILED" | "REJECTED" | "no_ticket" | "not_there"> {
+async function attempt(job: Job, deps: PipelineDeps, onProgress: (pct: number) => void): Promise<"READY" | "PENDING" | "FAILED" | "REJECTED" | "no_ticket" | "not_pending" | "not_there"> {
   const ticketed = await deps.issueUploadTicket({ claimToken: job.claimToken, mediaId: job.mediaId });
   if (!ticketed.ok) {
-    return "no_ticket";
+    // `not_pending` on a retry means the first upload landed after all and the callback recorded it.
+    return ticketed.code === "not_pending" ? "not_pending" : "no_ticket";
   }
   let uploaded = true;
   try {
@@ -174,6 +175,9 @@ export async function runSubmission(input: PipelineInput, deps: PipelineDeps, ho
         let status = await attempt(job, deps, (pct) => report(job, index, pct));
         if (status === "not_there") {
           status = await attempt(job, deps, (pct) => report(job, index, pct));
+          if (status === "not_pending") {
+            status = "READY";
+          }
         }
         ok = status === "READY" || status === "PENDING";
       } catch {

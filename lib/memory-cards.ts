@@ -222,8 +222,14 @@ function updateCard(state: CardsState, id: string, change: (card: MemoryCard) =>
 
 export function cardsReducer(state: CardsState, action: CardsAction): CardsState {
   switch (action.type) {
-    case "open":
-      return updateCard(state, action.id, (card) => ({ ...card, open: true }));
+    case "open": {
+      // Opening a later placeholder opens the waiting ones before it too, so open cards never straddle a closed one and no heading repeats.
+      const index = state.cards.findIndex((card) => card.id === action.id);
+      if (index === -1) {
+        return state;
+      }
+      return { ...state, cards: state.cards.map((card, i) => (i <= index && !card.open ? { ...card, open: true } : card)) };
+    }
     case "add": {
       // A placeholder still waiting opens before a new card is appended, so open cards never straddle a closed one.
       const waiting = state.cards.find((card) => !card.open);
@@ -243,8 +249,10 @@ export function cardsReducer(state: CardsState, action: CardsAction): CardsState
         return state;
       }
       const cards = state.cards.filter((card) => card.id !== action.id);
-      const position = index + 1;
-      return { ...state, cards, notice: `Memory ${position} removed. You now have ${cards.length} ${cards.length === 1 ? "memory" : "memories"}.`, focusId: state.cards[index - 1]!.id };
+      // Headings count open cards only, so the announcement does too.
+      const position = state.cards.slice(0, index).filter((card) => card.open).length + 1;
+      const remaining = cards.filter((card) => card.open).length;
+      return { ...state, cards, notice: `Memory ${position} removed. You now have ${remaining} ${remaining === 1 ? "memory" : "memories"}.`, focusId: state.cards[index - 1]!.id };
     }
     case "clear":
       return updateCard(state, action.id, (card) => blankCard(card.id, true));

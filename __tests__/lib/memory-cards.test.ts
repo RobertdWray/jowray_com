@@ -122,6 +122,20 @@ describe("cardsReducer", () => {
     expect(full.notice).toBe("That's the most we can take at once. Send these, then add more.");
   });
 
+  it("opening a later placeholder opens the waiting ones before it, so headings never repeat on the page", () => {
+    const state = cardsReducer(start, { type: "open", id: "c3" });
+    expect(state.cards.map((c) => [c.id, c.open])).toEqual([["c1", true], ["c2", true], ["c3", true]]);
+  });
+
+  it("counts only open cards when announcing a removal", () => {
+    // c2 opened and filled, c3 still a placeholder, c4 added: removing c4 leaves two open cards.
+    let state = cardsReducer(start, { type: "open", id: "c2" });
+    state = cardsReducer(state, { type: "field", id: "c2", field: "note", value: "second" });
+    state = { ...state, cards: [...state.cards, { id: "c4", open: true, approxDateText: "", place: "", note: "", media: [] }], nextId: 5 };
+    state = cardsReducer(state, { type: "remove", id: "c4" });
+    expect(state.notice).toBe("Memory 3 removed. You now have 2 memories.");
+  });
+
   it("edits fields, adds and removes media, on the right card only", () => {
     let state = cardsReducer(start, { type: "field", id: "c1", field: "note", value: "hello" });
     state = cardsReducer(state, { type: "field", id: "c1", field: "approxDateText", value: "1985" });

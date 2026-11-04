@@ -41,11 +41,11 @@ function subscribeNever(): () => void {
   return () => {};
 }
 
+/** Reads the elements themselves, not FormData, which leaves disabled fields out: a draft saved while sending must keep the name. */
 function readContributor(form: HTMLFormElement | null) {
-  const data = form ? new FormData(form) : null;
   const text = (name: string) => {
-    const value = data?.get(name);
-    return typeof value === "string" ? value : "";
+    const element = form?.elements.namedItem(name);
+    return element instanceof HTMLInputElement ? element.value : "";
   };
   return { name: text("name"), relationship: text("relationship"), email: text("email") };
 }
@@ -249,6 +249,8 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
         },
       );
       if (!result.ok) {
+        // Back to editable rows: a stuck progress bar would hide every Remove button.
+        setProgress({});
         setPhase({ kind: "error", message: result.message });
         if (result.memoryIndex !== null) {
           const card = cards[result.memoryIndex];

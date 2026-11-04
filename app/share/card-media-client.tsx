@@ -140,7 +140,8 @@ export function CardMedia({
     cameraRef.current?.click();
   }
 
-  const captureDisabled = disabled || recording.isHere;
+  // Every capture control on the page waits while any card is recording (here or elsewhere).
+  const captureDisabled = disabled || recording.isHere || recording.elsewhere !== null;
 
   return (
     <div id={isFirst ? "record" : undefined} className="flex flex-col gap-3">
@@ -228,7 +229,9 @@ export function CardMedia({
           Upload photos, videos or recordings
         </SecondaryButton>
       </div>
-      {recording.isHere && <span className={`text-small ${helperClass}`}>Finish the recording in {heading} first.</span>}
+      {(recording.isHere || recording.elsewhere !== null) && (
+        <span className={`text-small ${helperClass}`}>Finish the recording in {recording.isHere ? heading : recording.elsewhere} first.</span>
+      )}
 
       {refused.length > 0 && (
         <p role="status" className={errorClass}>

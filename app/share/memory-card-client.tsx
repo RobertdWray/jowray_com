@@ -70,6 +70,8 @@ export function MemoryCardSection({
   const heading = headingFor(position);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const filled = hasContent(card);
+  // A recording cannot be picked again, so clearing or removing a card that holds one always asks first.
+  const holdsRecording = card.media.some((item) => item.source === "recording");
 
   return (
     <section aria-labelledby={ids.heading} className="flex flex-col gap-[22px] rounded-form border-[3px] border-wood-light bg-paper p-6 shadow-form sm:p-8">
@@ -144,11 +146,20 @@ export function MemoryCardSection({
       )}
 
       {isFirst
-        ? filled && (
-            <div>
-              <SecondaryButton onClick={onClear} disabled={disabled || recording.isHere}>Clear this memory</SecondaryButton>
+        ? filled &&
+          (confirmingRemove ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-body">Clear this memory, recording included?</span>
+              <TertiaryButton onClick={() => { setConfirmingRemove(false); onClear(); }} disabled={disabled}>Yes, clear it</TertiaryButton>
+              <SecondaryButton onClick={() => setConfirmingRemove(false)} disabled={disabled}>Keep it</SecondaryButton>
             </div>
-          )
+          ) : (
+            <div>
+              <SecondaryButton onClick={() => (holdsRecording ? setConfirmingRemove(true) : onClear())} disabled={disabled || recording.isHere}>
+                Clear this memory
+              </SecondaryButton>
+            </div>
+          ))
         : confirmingRemove ? (
             <div className="flex flex-wrap items-center gap-3">
               <span className="text-body">Remove {heading}?</span>
