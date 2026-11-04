@@ -13,7 +13,7 @@ interface Row {
   id: string;
   memoryId: string;
   recipientEmail: string;
-  emailType: "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY";
+  emailType: "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY" | "SUBMISSION_CONFIRMATION";
   status: "PENDING" | "SENDING" | "SENT" | "FAILED" | "SKIPPED";
   attempts: number;
   nextAttemptAt: Date | null;
@@ -32,11 +32,11 @@ const dbStub = {
     findUnique: vi.fn(async ({ where }: { where: { memoryId_emailType: { memoryId: string; emailType: Row["emailType"] } } }) =>
       rows.find((r) => r.memoryId === where.memoryId_emailType.memoryId && r.emailType === where.memoryId_emailType.emailType) ?? null
     ),
-    count: vi.fn(async ({ where }: { where: { recipientEmail: string; emailType?: Row["emailType"]; createdAt?: { gte: Date }; updatedAt?: { gte: Date }; status?: { in: Row["status"][] }; NOT?: { memoryId: string } } }) =>
+    count: vi.fn(async ({ where }: { where: { recipientEmail: string; emailType?: Row["emailType"] | { in: Row["emailType"][] }; createdAt?: { gte: Date }; updatedAt?: { gte: Date }; status?: { in: Row["status"][] }; NOT?: { memoryId: string } } }) =>
       rows.filter(
         (r) =>
           r.recipientEmail === where.recipientEmail &&
-          (!where.emailType || r.emailType === where.emailType) &&
+          (!where.emailType || (typeof where.emailType === "string" ? r.emailType === where.emailType : where.emailType.in.includes(r.emailType))) &&
           (where.updatedAt ?? where.createdAt)!.gte <= r.updatedAt &&
           (!where.status || where.status.in.includes(r.status)) &&
           (!where.NOT || r.memoryId !== where.NOT.memoryId)
@@ -99,8 +99,8 @@ const dbStub = {
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
-import { sendAdminNewMemory, sendMemoryConfirmation } from "@/services/email";
-import type { AdminNewMemoryContent } from "@/services/email/types";
+import { sendAdminNewMemory, sendMemoryConfirmation, sendSubmissionConfirmation } from "@/services/email";
+import type { AdminNewMemoryContent, SubmissionConfirmationInput } from "@/services/email/types";
 
 const base = {
   memoryId: "mem_1",
@@ -218,15 +218,15 @@ describe("sendMemoryConfirmation", () => {
     expect((await sendMemoryConfirmation({ ...base, memoryId: "mem_new" })).sent).toBe(true);
   });
 
-  it("caps at three confirmations per address per day", async () => {
-    for (let i = 1; i <= 3; i += 1) {
+  it("caps at fifteen confirmations per address per day (D15)", async () => {
+    for (let i = 1; i <= 15; i += 1) {
       const r = await sendMemoryConfirmation({ ...base, memoryId: `mem_${i}` });
       expect(r.sent).toBe(true);
     }
-    const fourth = await sendMemoryConfirmation({ ...base, memoryId: "mem_4" });
-    expect(fourth).toEqual({ sent: false, skipped: "recipient_capped" });
-    expect(sendMock).toHaveBeenCalledTimes(3);
-    expect(rows.find((r) => r.memoryId === "mem_4")).toMatchObject({ status: "SKIPPED", errorMessage: "recipient_capped" });
+    const sixteenth = await sendMemoryConfirmation({ ...base, memoryId: "mem_16" });
+    expect(sixteenth).toEqual({ sent: false, skipped: "recipient_capped" });
+    expect(sendMock).toHaveBeenCalledTimes(15);
+    expect(rows.find((r) => r.memoryId === "mem_16")).toMatchObject({ status: "SKIPPED", errorMessage: "recipient_capped" });
   });
 
   it("escapes the name in the HTML part and strips control characters in the text part", async () => {
@@ -494,5 +494,70 @@ describe("rotated token bookkeeping", () => {
     const result = await sendMemoryConfirmation(base);
     expect(result.sent).toBe(true);
     expect(rows[0]?.status).toBe("SENT");
+  });
+});
+
+describe("sendSubmissionConfirmation (Task 15)", () => {
+  const send: SubmissionConfirmationInput = {
+    anchorMemoryId: "mem_anchor",
+    to: "person@example.com",
+    name: "Kay",
+    relationship: "former student",
+    memories: [
+      { position: 1, approxDateText: "Summer 1985", place: null, note: "First.", media: [], claimLink: "https://www.jowray.com/m/aaaa", missingFiles: [] },
+      { position: 2, approxDateText: null, place: null, note: "Second.", media: [], claimLink: "https://www.jowray.com/m/bbbb", missingFiles: [] },
+    ],
+  };
+  function submissionRow(memoryId = "mem_anchor") {
+    return rows.find((r) => r.memoryId === memoryId && r.emailType === "SUBMISSION_CONFIRMATION");
+  }
+
+  it("writes one SUBMISSION_CONFIRMATION row on the anchor, idempotent and independent of per-memory rows", async () => {
+    expect((await sendSubmissionConfirmation(send)).sent).toBe(true);
+    expect(submissionRow()).toMatchObject({ status: "SENT", recipientEmail: "person@example.com" });
+    expect(await sendSubmissionConfirmation(send)).toEqual({ sent: false, skipped: "already_sent" });
+    // A per-memory confirmation row on the same anchor is a different key: both can exist.
+    expect((await sendMemoryConfirmation({ ...base, memoryId: "mem_anchor" })).sent).toBe(true);
+    expect(confirmationRow("mem_anchor")?.status).toBe("SENT");
+    expect(rows).toHaveLength(2);
+    expect(sendMock).toHaveBeenCalledTimes(2);
+    const [message] = sendMock.mock.calls[0] as [{ subject: string }];
+    expect(message.subject).toBe("Thank you for sharing 2 memories");
+  });
+
+  it("the cap counts both confirmation types and a send once: the 15th is allowed, the 16th capped, admin alerts stay uncapped", async () => {
+    for (let i = 1; i <= 7; i += 1) {
+      expect((await sendMemoryConfirmation({ ...base, memoryId: `mem_${i}` })).sent).toBe(true);
+    }
+    for (let i = 8; i <= 14; i += 1) {
+      expect((await sendSubmissionConfirmation({ ...send, anchorMemoryId: `anchor_${i}` })).sent).toBe(true);
+    }
+    expect((await sendSubmissionConfirmation({ ...send, anchorMemoryId: "anchor_15" })).sent).toBe(true);
+    expect(await sendSubmissionConfirmation({ ...send, anchorMemoryId: "anchor_16" })).toEqual({ sent: false, skipped: "recipient_capped" });
+    expect(await sendMemoryConfirmation({ ...base, memoryId: "mem_16" })).toEqual({ sent: false, skipped: "recipient_capped" });
+    process.env.OUTBOUND_ENABLED = "true"; process.env.ADMIN_ALERT_EMAILS = "person@example.com"; resetEnvCache();
+    expect((await sendAdminNewMemory({ ...adminContent, memoryId: "mem_admin" })).sent).toBe(true);
+  });
+
+  it("writes SENT, then the anchor's hash, then the others in the order given, in one transaction; nothing on skip or failure", async () => {
+    memoryUpdateMock.mockClear();
+    const order: string[] = [];
+    memoryUpdateMock.mockImplementation(async (arg: unknown) => { order.push((arg as { where: { id: string } }).where.id); return {}; });
+    const rotations = [{ memoryId: "mem_anchor", claimTokenHash: "a".repeat(64) }, { memoryId: "mem_1", claimTokenHash: "b".repeat(64) }, { memoryId: "mem_2", claimTokenHash: "c".repeat(64) }];
+    expect((await sendSubmissionConfirmation({ ...send, rotations })).sent).toBe(true);
+    expect(dbStub.$transaction).toHaveBeenCalled();
+    const batch = dbStub.$transaction.mock.calls.at(-1)![0] as unknown[];
+    expect(Array.isArray(batch)).toBe(true);
+    expect(batch).toHaveLength(4);
+    expect(order).toEqual(["mem_anchor", "mem_1", "mem_2"]);
+    expect(memoryUpdateMock).toHaveBeenNthCalledWith(1, { where: { id: "mem_anchor" }, data: { claimTokenHash: "a".repeat(64) } });
+    expect(submissionRow()?.status).toBe("SENT");
+
+    memoryUpdateMock.mockClear();
+    sendMock.mockRejectedValueOnce(Object.assign(new Error("boom"), { code: 400 }));
+    expect((await sendSubmissionConfirmation({ ...send, anchorMemoryId: "anchor_fail", rotations })).sent).toBe(false);
+    expect(memoryUpdateMock).not.toHaveBeenCalled();
+    expect(await sendSubmissionConfirmation({ ...send, anchorMemoryId: "anchor_skip", to: "stranger@example.net", rotations })).toEqual({ sent: false, skipped: "outbound_disabled" });
+    expect(memoryUpdateMock).not.toHaveBeenCalled();
   });
 });
