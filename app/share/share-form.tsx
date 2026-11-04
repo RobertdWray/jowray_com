@@ -97,6 +97,9 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
   // A request to show one field. The DOM work runs in an effect, after React has committed the render that
   // re-enabled the inputs and mounted the error line; a synchronous focus() in the handler would find them disabled.
   const [reveal, setReveal] = useState<{ id: string; n: number } | null>(null);
+  // The request already carried out, so a later change of phase (a send that fails with no field named) never
+  // re-runs it and pulls focus to a field that is no longer wrong (review finding, 2026-11-04).
+  const revealed = useRef<{ id: string; n: number } | null>(null);
   const [confirmSilent, setConfirmSilent] = useState<string[] | null>(null);
   const [live, setLive] = useState("");
   const [progress, setProgress] = useState<Record<string, number>>({});
@@ -173,9 +176,10 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
   const activeRecordingCardId = rec.snapshot.status.kind === "idle" ? null : recordingCardId;
 
   useEffect(() => {
-    if (!reveal || phase.kind === "sending") {
+    if (!reveal || reveal === revealed.current || phase.kind === "sending") {
       return;
     }
+    revealed.current = reveal;
     const input = document.getElementById(reveal.id);
     if (!input) {
       return;
