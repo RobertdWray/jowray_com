@@ -23,8 +23,10 @@ function withIncludes(row: MemoryRow, include: Record<string, unknown> | undefin
     });
   return { ...row, media: rows };
 }
+let receiptRow: { status: string } | null = null;
 const dbStub = {
   $transaction: vi.fn(async (ops: unknown) => { transactions.push(ops); return Array.isArray(ops) ? Promise.all(ops) : (ops as (t: unknown) => Promise<unknown>)(dbStub); }),
+  emailLog: { findUnique: vi.fn(async () => receiptRow) },
   memory: {
     findUnique: vi.fn(async ({ where, include }: { where: { id?: string; claimTokenHash?: string }; include?: Record<string, unknown> }) => {
       const row = memories.find((m) => (where.id ? m.id === where.id : m.claimTokenHash === where.claimTokenHash));
@@ -88,6 +90,7 @@ const lastSend = () => sendMock.mock.calls.at(-1)?.[0] as SendArg;
 beforeEach(() => {
   memories = [mem(0), mem(1), mem(2)];
   media = [];
+  receiptRow = null;
   transactions.length = 0; afterCalls.length = 0;
   sendMock.mockClear(); skipMock.mockClear(); recordMediaMock.mockReset(); recordMediaMock.mockImplementation(recordMediaAsIs); notifyMock.mockClear(); storageGetMock.mockClear();
   dbStub.$transaction.mockClear(); dbStub.memory.updateMany.mockClear();
@@ -158,6 +161,15 @@ describe("completeSubmission (request path)", () => {
     const noSleep = vi.fn(async () => {});
     await completeSubmission({ claimTokens: [T(0), T(1), T(2)] }, { thumbnailWaitMs: 10_000, sleep: noSleep, now: () => 0 });
     expect(noSleep).not.toHaveBeenCalled();
+  });
+
+  it("answers already_sent before fetching any thumbnail when the receipt row is already SENT", async () => {
+    media = [photo("p1", "mem_0", { derivatives: [thumb("p1")] })];
+    receiptRow = { status: "SENT" };
+    expect(await completeSubmission({ claimTokens: [T(0), T(1), T(2)] }, { thumbnailWaitMs: 0 })).toEqual({ ok: true, emailed: true });
+    expect(await confirmSubmission({ anchorId: "mem_0" })).toEqual({ sent: false, skipped: "already_sent" });
+    expect(storageGetMock).not.toHaveBeenCalled();
+    expect(sendMock).not.toHaveBeenCalled();
   });
 
   it("fetches at most four thumbnails per send", async () => {

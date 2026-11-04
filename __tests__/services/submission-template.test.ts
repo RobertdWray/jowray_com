@@ -120,6 +120,17 @@ describe("buildSubmissionConfirmation: several memories", () => {
     expect(small.html).toContain("Spelling &lt;doesn&#39;t&gt; count");
   });
 
+  it("never cuts an emoji in half when shortening the words", () => {
+    // Every note ends in emoji so that any cap lands on, or next to, a surrogate pair.
+    const note = `${"x".repeat(151)}${"😊".repeat(5_000)}`;
+    const { html, text } = build(Array.from({ length: 10 }, (_, n) => memory(n, { note })));
+    expect(html).toContain("read it all from its link");
+    for (const part of [html, text]) {
+      expect(part).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+      expect(part).not.toContain("\uFFFD");
+    }
+  });
+
   it("names the files that did not arrive, with the link to add them again", () => {
     const { html, text } = build([memory(0, { missingFiles: ["IMG_2231.MOV"] }), memory(1)]);
     expect(text).toContain("IMG_2231.MOV");
