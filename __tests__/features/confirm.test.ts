@@ -9,6 +9,7 @@ interface MemoryRow {
   id: string;
   type: "VOICE" | "VIDEO" | "PHOTO" | "TEXT";
   deletedAt: Date | null;
+  submissionId: string | null;
   claimTokenHash: string;
   contributorNote: string | null;
   approxDateText: string | null;
@@ -37,7 +38,7 @@ vi.mock("@/features/memories/notify-admins", () => ({ notifyAdminsOfMemory: (arg
 const afterCalls: Array<() => Promise<void>> = [];
 vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
 
-import { completeSubmission, confirmMemory } from "@/features/memories/confirm";
+import { confirmMemory } from "@/features/memories/confirm";
 
 function readyPhoto(over: Partial<MediaRow> = {}): MediaRow {
   return { id: "med_1", status: "READY", mimeType: "image/jpeg", originalFilename: "IMG_0001.jpg", durationSeconds: null, createdAt: new Date(Date.now() - 60 * 60_000), ...over };
@@ -48,6 +49,7 @@ beforeEach(() => {
     id: "mem_1",
     type: "PHOTO",
     deletedAt: null,
+    submissionId: null,
     claimTokenHash: hashClaimToken(TOKEN),
     contributorNote: null,
     approxDateText: "Summer 1985",
@@ -179,6 +181,16 @@ describe("removed files", () => {
   });
 });
 
+describe("memories that belong to a send (Task 15)", () => {
+  it("returns in_submission for any memory with a submissionId, the anchor included, and sends nothing", async () => {
+    memory!.submissionId = "sub_1";
+    expect(await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).toEqual({ sent: false, skipped: "in_submission" });
+    expect(await confirmMemory({ memoryId: "mem_1" })).toEqual({ sent: false, skipped: "in_submission" });
+    expect(sendMock).not.toHaveBeenCalled();
+    expect(dbStub.memory.update).not.toHaveBeenCalled();
+  });
+});
+
 describe("multi-file submissions", () => {
   it("waits while a file of this submission is still on its way, unless the submission is being settled", async () => {
     memory!.media = [readyPhoto(), { id: "med_2", status: "PENDING", mimeType: "image/jpeg", originalFilename: "b.jpg", durationSeconds: null, createdAt: new Date() }];
@@ -205,46 +217,5 @@ describe("multi-file submissions", () => {
     expect(await confirmMemory({ memoryId: "mem_1" })).toEqual({ sent: false, skipped: "leased" });
     memory!.uploadLeaseUntil = new Date(Date.now() - 1_000);
     expect((await confirmMemory({ memoryId: "mem_1" })).sent).toBe(true);
-  });
-
-  it("completeSubmission closes the lease and sends with the raw token (no rotation), ignoring young reservations", async () => {
-    memory!.uploadLeaseUntil = new Date(Date.now() + 60 * 60_000);
-    memory!.media = [readyPhoto(), { id: "med_2", status: "PENDING", mimeType: "image/jpeg", originalFilename: "b.jpg", durationSeconds: null, createdAt: new Date() }];
-    let leaseAtSend: Date | null | undefined;
-    sendMock.mockImplementationOnce(async () => { leaseAtSend = memory!.uploadLeaseUntil; return { sent: true, messageId: "m1" }; });
-    const result = await completeSubmission({ claimToken: TOKEN });
-    expect(result.sent).toBe(true);
-    // The lease closes only after the email operation is claimed: cron cannot slip into a gap and rotate the link.
-    expect(leaseAtSend).not.toBeNull();
-    expect(memory!.uploadLeaseUntil).toBeNull();
-    const arg = sendMock.mock.calls.at(-1)?.[0] as unknown as { claimLink: string; rotateToClaimTokenHash?: string };
-    expect(arg.claimLink.endsWith(`/m/${TOKEN}`)).toBe(true);
-    expect(arg.rotateToClaimTokenHash).toBeUndefined();
-    expect(await completeSubmission({ claimToken: "x".repeat(43) })).toEqual({ sent: false, skipped: "not_found" });
-  });
-
-  it("completeSubmission closes the lease even when nothing can be sent yet, and answers not_found to garbage input", async () => {
-    memory!.uploadLeaseUntil = new Date(Date.now() + 60 * 60_000);
-    memory!.contributor = { name: "Jo", email: null, relationship: null };
-    expect(await completeSubmission({ claimToken: TOKEN })).toEqual({ sent: false, skipped: "no_email" });
-    expect(memory!.uploadLeaseUntil).toBeNull();
-    expect(await completeSubmission(null)).toEqual({ sent: false, skipped: "not_found" });
-    expect(await completeSubmission({ claimToken: 42 })).toEqual({ sent: false, skipped: "not_found" });
-  });
-
-  it("completeSubmission alerts the admins after the response with the whole submission, and closes the lease even when sending throws", async () => {
-    afterCalls.length = 0;
-    notifyMock.mockClear();
-    memory!.uploadLeaseUntil = new Date(Date.now() + 60 * 60_000);
-    await completeSubmission({ claimToken: TOKEN });
-    expect(notifyMock).not.toHaveBeenCalled();
-    expect(afterCalls).toHaveLength(1);
-    await afterCalls[0]!();
-    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_1", settleNow: true });
-
-    memory!.uploadLeaseUntil = new Date(Date.now() + 60 * 60_000);
-    sendMock.mockRejectedValueOnce(new Error("db down"));
-    await expect(completeSubmission({ claimToken: TOKEN })).rejects.toThrow("db down");
-    expect(memory!.uploadLeaseUntil).toBeNull();
   });
 });

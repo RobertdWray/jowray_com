@@ -6,12 +6,12 @@ import { useEffect, useState } from "react";
 
 import type { ClaimMediaView } from "@/features/memories/claim";
 import { formatDuration } from "@/lib/format-duration";
-import { ACCEPT_ATTRIBUTE, isRenderableIn } from "@/lib/media-types";
+import { ACCEPT_ATTRIBUTE, isRenderableIn, normalizeMime } from "@/lib/media-types";
 import { uploadWithTicket } from "@/lib/upload-client";
 
 import { SecondaryButton, TertiaryButton } from "../../_components/buttons";
 import { fileInputClass, inputClass, labelClass, linkClass, textareaClass } from "../../_components/field-classes";
-import { cancelReservation, finalizeAddedFile, removeFile, replaceFileTicket, updateMediaWords } from "./actions";
+import { cancelReservation, finalizeAddedFile, removeFile, replaceFileTicket, retryUploadTicket, updateMediaWords } from "./actions";
 
 const cardClass = "flex flex-col gap-3 rounded-card border-[3px] border-wood-light bg-paper p-3";
 
@@ -31,8 +31,9 @@ function kindOf(mimeType: string): "photo" | "recording" | "video" | "file" {
 /**
  * One card per live file on the claim page: the picture or player, Remove
  * (two-step, inline: the design has no modals), Replace, and for files that
- * never arrived a "not received" note with Cancel. Pending replacements are
- * shown on their target's card. Every change refreshes the server-rendered page.
+ * never arrived a "not received" note with "Try again" (the same file, into
+ * the same reservation, with a fresh ticket) and Cancel. Pending replacements
+ * are shown on their target's card. Every change refreshes the server-rendered page.
  */
 export function MediaList({ claimToken, media, userAgent }: { claimToken: string; media: ClaimMediaView[]; userAgent: string | null }) {
   const router = useRouter();
@@ -124,6 +125,42 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
     });
   }
 
+  function onRetry(item: ClaimMediaView, event: React.ChangeEvent<HTMLInputElement>) {
+    const input = event.target;
+    const file = input.files?.[0];
+    if (!file) {
+      return;
+    }
+    return run(item.id, async () => {
+      try {
+        // The reservation pins the file's type and size, so only the same file (or one just like it) fits it.
+        if (normalizeMime(file.type, file.name) !== item.mimeType || file.size > item.maxBytes) {
+          return `Please choose the same file again${item.originalFilename ? ` (${item.originalFilename})` : ""}, or cancel this one and add the new file below.`;
+        }
+        const ticketed = await retryUploadTicket({ claimToken, mediaId: item.id });
+        if (!ticketed.ok) {
+          return ticketed.code === "not_pending" ? "This file has arrived after all; reload the page to see it." : "That file cannot be retried right now. Please reload the page.";
+        }
+        setMessage("Uploading…");
+        try {
+          await uploadWithTicket(ticketed.upload, file);
+        } catch {
+          return "The upload did not finish. Check your connection and try again.";
+        }
+        const finalized = await finalizeAddedFile({ ticket: ticketed.upload.ticket, claimToken });
+        if (finalized.status === "READY") {
+          return "File added.";
+        }
+        if (finalized.status === "PENDING") {
+          return "The file is still being checked; it will appear shortly.";
+        }
+        return "The file could not be accepted (wrong type or too large).";
+      } finally {
+        input.value = "";
+      }
+    });
+  }
+
   function onReplace(item: ClaimMediaView, event: React.ChangeEvent<HTMLInputElement>) {
     const input = event.target;
     const file = input.files?.[0];
@@ -181,7 +218,13 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
                   ? `${item.originalFilename ?? "This file"} has not been received yet.`
                   : `${item.originalFilename ?? "This file"} could not be received (wrong type or too large).`}
               </p>
-              <div className="flex flex-wrap gap-3">
+              <div className="flex flex-wrap items-end gap-3">
+                {item.status === "PENDING" && (
+                  <label className={`${labelClass} flex-1 basis-[240px]`}>
+                    <span>Try again with the same file</span>
+                    <input type="file" accept={item.mimeType} onChange={(event) => onRetry(item, event)} disabled={busy} className={fileInputClass} />
+                  </label>
+                )}
                 <SecondaryButton onClick={() => onCancel(item)} disabled={busy}>
                   {item.status === "PENDING" ? "Cancel this upload" : "Clear it"}
                 </SecondaryButton>

@@ -23,8 +23,3 @@ export type MediaChanges = z.infer<typeof mediaChangesSchema>;
 export const mediaWordsRequestSchema = claimMediaRefSchema.extend({
   changes: mediaChangesSchema,
 });
-
-/** The browser closing its submission: only the raw token. */
-export const completeSubmissionSchema = z.object({
-  claimToken: z.string().min(16).max(128),
-});

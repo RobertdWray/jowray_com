@@ -7,10 +7,12 @@ import { getDb } from "@/server/db/client";
 
 import { buildAdminNewMemory } from "./templates/admin-new-memory";
 import { buildMemoryConfirmation } from "./templates/memory-confirmation";
-import type { AdminNewMemoryContent, EmailAttachment, EmailTransport, MemoryConfirmationInput, SendResult } from "./types";
+import { buildSubmissionConfirmation } from "./templates/submission-confirmation";
+import type { AdminNewMemoryContent, ClaimRotation, EmailAttachment, EmailTransport, MemoryConfirmationInput, SendResult, SubmissionConfirmationInput } from "./types";
 
 export type {
   AdminNewMemoryContent,
+  ClaimRotation,
   EmailAttachment,
   EmailTransport,
   MediaKind,
@@ -21,17 +23,26 @@ export type {
   OutboundEmail,
   SendResult,
   SkipReason,
+  SubmissionConfirmationContent,
+  SubmissionConfirmationInput,
+  SubmissionMemoryContent,
 } from "./types";
 export { ADMIN_TIME_ZONE, adminNewMemorySubject, buildAdminNewMemory } from "./templates/admin-new-memory";
 export { buildMemoryConfirmation, MEMORY_CONFIRMATION_SUBJECT } from "./templates/memory-confirmation";
+export { buildSubmissionConfirmation, memoryLabel, submissionConfirmationSubject } from "./templates/submission-confirmation";
 
 const log = createLogger({ category: "email" });
 
-type EmailType = "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY";
+type EmailType = "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY" | "SUBMISSION_CONFIRMATION";
 
-/** Contributor confirmations only: a contributor address gets at most this many in a rolling day. Admin alerts are exempt (ruling R4). */
-const RECIPIENT_DAILY_CAP = 3;
-const CAPPED_EMAIL_TYPE: EmailType = "MEMORY_CONFIRMATION";
+/**
+ * Contributor receipts only: an address gets at most this many in a rolling
+ * day (D15: raised from 3 so a phone user sending one memory at a time still
+ * gets every email; abuse control is the firewall rule). A send of several
+ * memories is one receipt, so it counts once. Admin alerts are exempt (R4).
+ */
+const RECIPIENT_DAILY_CAP = 15;
+const CAPPED_EMAIL_TYPES: readonly EmailType[] = ["MEMORY_CONFIRMATION", "SUBMISSION_CONFIRMATION"];
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RETRY_STEP_MS = 15 * 60 * 1000;
 /** Statuses a new send may claim from; a SENDING row is reclaimed only once its claim is stale. */
@@ -68,8 +79,8 @@ interface Delivery {
   rendered: Rendered;
   /** Apply the per-recipient daily cap (contributor confirmations only). */
   enforceCap: boolean;
-  /** Cron path of the confirmation: write this claim hash together with SENT in one transaction. */
-  rotateToClaimTokenHash?: string;
+  /** Cron path of a receipt: write these claim hashes together with SENT in one transaction, in this order (anchor first). */
+  rotations?: ClaimRotation[];
   /** For log lines and Sentry messages. */
   label: string;
 }
@@ -134,7 +145,7 @@ async function deliver(delivery: Delivery): Promise<SendResult> {
     const recentToRecipient = await db.emailLog.count({
       where: {
         recipientEmail: recipientField,
-        emailType: CAPPED_EMAIL_TYPE,
+        emailType: { in: [...CAPPED_EMAIL_TYPES] },
         updatedAt: { gte: new Date(Date.now() - DAY_MS) },
         status: { in: [...COUNTED] },
         NOT: { memoryId },
@@ -182,17 +193,19 @@ async function deliver(delivery: Delivery): Promise<SendResult> {
     return { sent: false, skipped: "failed", error: message };
   }
 
-  // The email is out. Record SENT (and the rotated claim hash, atomically);
-  // retry the bookkeeping a few times before leaving the row SENDING, which
-  // the stale-claim rule would otherwise re-send after 15 minutes.
+  // The email is out. Record SENT (and the rotated claim hashes, atomically
+  // and in the order given, so every writer takes the anchor first); retry
+  // the bookkeeping a few times before leaving the row SENDING, which the
+  // stale-claim rule would otherwise re-send after 15 minutes.
   const sentData = { status: "SENT" as const, sentAt: new Date(), sendgridMessageId: messageId ?? null, errorMessage: null };
+  const rotations = delivery.rotations ?? [];
   let recorded = false;
   for (let attempt = 1; attempt <= 3 && !recorded; attempt += 1) {
     try {
-      if (delivery.rotateToClaimTokenHash) {
+      if (rotations.length > 0) {
         await db.$transaction([
           db.emailLog.update({ where: { id: row.id }, data: sentData }),
-          db.memory.update({ where: { id: memoryId }, data: { claimTokenHash: delivery.rotateToClaimTokenHash } }),
+          ...rotations.map((r) => db.memory.update({ where: { id: r.memoryId }, data: { claimTokenHash: r.claimTokenHash } })),
         ]);
       } else {
         await db.emailLog.update({ where: { id: row.id }, data: sentData });
@@ -210,7 +223,7 @@ async function deliver(delivery: Delivery): Promise<SendResult> {
   return { sent: true, messageId };
 }
 
-/** Send the one confirmation email for a memory to its contributor (capped at three per address per day). */
+/** Send the one confirmation email for a memory to its contributor (capped per address per day). */
 export async function sendMemoryConfirmation(input: MemoryConfirmationInput): Promise<SendResult> {
   return deliver({
     memoryId: input.memoryId,
@@ -218,8 +231,25 @@ export async function sendMemoryConfirmation(input: MemoryConfirmationInput): Pr
     recipients: [input.to.trim().toLowerCase()],
     rendered: buildMemoryConfirmation(input),
     enforceCap: true,
-    rotateToClaimTokenHash: input.rotateToClaimTokenHash,
+    rotations: input.rotateToClaimTokenHash ? [{ memoryId: input.memoryId, claimTokenHash: input.rotateToClaimTokenHash }] : undefined,
     label: "confirmation",
+  });
+}
+
+/**
+ * Send the one receipt for a whole send of memories (Task 15). The row hangs
+ * off the anchor under its own type, so it is independent of any per-memory
+ * confirmation row; the cap counts it once however many memories it lists.
+ */
+export async function sendSubmissionConfirmation(input: SubmissionConfirmationInput): Promise<SendResult> {
+  return deliver({
+    memoryId: input.anchorMemoryId,
+    emailType: "SUBMISSION_CONFIRMATION",
+    recipients: [input.to.trim().toLowerCase()],
+    rendered: buildSubmissionConfirmation(input),
+    enforceCap: true,
+    rotations: input.rotations,
+    label: "send receipt",
   });
 }
 
@@ -243,6 +273,30 @@ export async function sendAdminNewMemory(content: AdminNewMemoryContent): Promis
     enforceCap: false,
     label: "admin alert",
   });
+}
+
+/**
+ * Record that there is nothing to send for this memory and type, as a
+ * terminal SKIPPED row, so the reconcile cron stops selecting it. A SENT or
+ * SENDING row is never touched (a send of several memories whose anchor was
+ * removed is still emailed for its live siblings; this is only for a send
+ * with no live memory at all).
+ */
+export async function skipDelivery({ memoryId, emailType, reason }: { memoryId: string; emailType: EmailType; reason: "nothing_to_send" }): Promise<SendResult> {
+  const db = getDb();
+  const existing = await db.emailLog.findUnique({ where: { memoryId_emailType: { memoryId, emailType } } });
+  if (existing?.status === "SENT") {
+    return { sent: false, skipped: "already_sent" };
+  }
+  if (!existing) {
+    await createOrLoad(memoryId, emailType, "");
+  }
+  await db.emailLog.updateMany({
+    where: { memoryId, emailType, status: { in: ["PENDING", "FAILED", "SKIPPED"] } },
+    data: { status: "SKIPPED", errorMessage: reason },
+  });
+  log.info({ action: "skip", memoryId, emailType, reason }, "nothing to send");
+  return { sent: false, skipped: reason };
 }
 
 /** The row for this memory and type, creating it when absent; a concurrent creator's row is loaded instead. */

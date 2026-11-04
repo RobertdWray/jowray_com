@@ -30,6 +30,40 @@ export interface MemoryConfirmationInput extends MemoryConfirmationContent {
   rotateToClaimTokenHash?: string;
 }
 
+/** One memory of a send as the receipt shows it (Task 15). Every field but `position`, `claimLink` and `media[].preview` is untrusted contributor input. */
+export interface SubmissionMemoryContent {
+  /** 1-based place in the send: the stable "Memory N" heading. */
+  position: number;
+  approxDateText?: string | null;
+  place?: string | null;
+  note?: string | null;
+  media: MemoryMediaSummary[];
+  claimLink: string;
+  /** Original filenames of files that never arrived (cron path), so the person can add them again from the link. */
+  missingFiles: string[];
+}
+
+/** Everything the send receipt renders: the contributor once, then every memory in order. */
+export interface SubmissionConfirmationContent {
+  name?: string | null;
+  relationship?: string | null;
+  memories: SubmissionMemoryContent[];
+}
+
+/** A claim-token rotation to commit together with SENT; the caller pins the order (anchor first, then ascending index). */
+export interface ClaimRotation {
+  memoryId: string;
+  claimTokenHash: string;
+}
+
+export interface SubmissionConfirmationInput extends SubmissionConfirmationContent {
+  /** The send's index-0 memory: the one `EmailLog` row for the receipt hangs off it. */
+  anchorMemoryId: string;
+  to: string;
+  /** Cron path only: every link in this email carries a fresh token; the hashes are written with SENT in one transaction. */
+  rotations?: ClaimRotation[];
+}
+
 export type MemoryVisibility = "PUBLIC" | "FAMILY" | "PRIVATE";
 
 /**
@@ -62,6 +96,7 @@ export type SkipReason =
   | "outbound_disabled"
   | "recipient_capped"
   | "no_recipients"
+  | "nothing_to_send"
   | "failed";
 
 export type SendResult =

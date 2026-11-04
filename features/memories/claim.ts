@@ -53,6 +53,8 @@ export interface ClaimMediaView {
   originalFilename: string | null;
   sortOrder: number;
   durationSeconds: number | null;
+  /** The reservation's ceiling (the kind's maximum, or the declared size for a send): a "Try again" file must fit it. */
+  maxBytes: number;
   /** The contributor's words for this file; the memory's note is the shared story. */
   caption: string | null;
   approxDateText: string | null;
@@ -71,6 +73,8 @@ export interface ClaimView {
   contributor: { name: string | null; relationship: string | null; email: string | null } | null;
   /** Every live file (not removed), whatever its status, in display order. */
   media: ClaimMediaView[];
+  /** Set when the memory was sent together with others (Task 15): its 1-based place and how many of them are still live. */
+  submission: { position: number; count: number } | null;
 }
 
 function webCopyState(row: { status: "PENDING" | "READY" | "FAILED"; mimeType: string | null } | null): WebCopyState {
@@ -96,6 +100,7 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
           sortOrder: true,
           replacesMediaId: true,
           durationSeconds: true,
+          maxBytes: true,
           caption: true,
           approxDateText: true,
           place: true,
@@ -108,6 +113,10 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
   if (!memory || memory.deletedAt !== null) {
     return null;
   }
+  const submission =
+    memory.submissionId !== null
+      ? { position: (memory.submissionIndex ?? 0) + 1, count: await getDb().memory.count({ where: { submissionId: memory.submissionId, deletedAt: null } }) }
+      : null;
   return {
     id: memory.id,
     type: memory.type,
@@ -116,7 +125,8 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
     contributorNote: memory.contributorNote,
     visibility: memory.visibility,
     contributor: memory.contributor,
-    media: memory.media.map(({ id, status, mimeType, originalFilename, sortOrder, replacesMediaId, durationSeconds, caption, approxDateText, place, derivatives }) => ({
+    submission,
+    media: memory.media.map(({ id, status, mimeType, originalFilename, sortOrder, replacesMediaId, durationSeconds, maxBytes, caption, approxDateText, place, derivatives }) => ({
       id,
       status,
       web: webCopyState(derivatives?.[0] ?? null),
@@ -125,6 +135,7 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
       sortOrder,
       replacesMediaId,
       durationSeconds,
+      maxBytes,
       caption,
       approxDateText,
       place,

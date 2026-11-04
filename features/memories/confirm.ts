@@ -1,32 +1,27 @@
 import "server-only";
 
-import { lockMemory } from "@/features/memories/lock";
 import { submissionInFlight, summarizeReadyMedia } from "@/features/memories/media-summary";
-import { notifyAdminsOfMemory } from "@/features/memories/notify-admins";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
-import { createLogger, logErrorAndFlush } from "@/lib/logger";
-import { afterWithFlush } from "@/lib/sentry/after-flush";
+import { createLogger } from "@/lib/logger";
 import { getSiteUrl } from "@/lib/site-url";
-import { completeSubmissionSchema } from "@/lib/validations/media";
 import { getDb } from "@/server/db/client";
 import { sendMemoryConfirmation, type SendResult } from "@/services/email";
 
 const log = createLogger({ category: "email" });
 
-export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "no_email" | "not_ready" | "leased" };
-/** Neon computes can take a couple of seconds to wake; Prisma's defaults (2 s / 5 s) are too tight. */
-const TX_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;
+export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "no_email" | "not_ready" | "in_submission" | "leased" };
 
 /**
  * Send the one confirmation email for a memory, if there is an address and
- * something READY to confirm (or the memory is TEXT). Idempotency, the
+ * something READY to confirm (or the memory is TEXT). Memories that belong to
+ * a send are left to `confirmSubmission` (`in_submission`). Idempotency, the
  * outbound guard and the per-recipient cap live in the email service.
  *
  * The email echoes the contributor's words and details (ruling R1) and lists
  * every READY file in upload order.
  *
  * The claim link needs the raw token, which is never stored. Request-time
- * callers (createMemory, finalizeUpload) pass it in. The reconcile cron has
+ * callers (finalizeUpload) pass it in. The reconcile cron has
  * only the hash, so when `claimToken` is omitted the token is rotated: a
  * fresh one is minted, the email carries the new link, and its hash replaces
  * the old one in the same transaction that records SENT. An emailed link
@@ -60,6 +55,11 @@ export async function confirmMemory({
   }
   if (memory.deletedAt !== null) {
     return { sent: false, skipped: "deleted" };
+  }
+  // A memory sent with others gets one receipt for the whole send (Task 15,
+  // `confirmSubmission`), never a per-memory email, the anchor included.
+  if (memory.submissionId !== null) {
+    return { sent: false, skipped: "in_submission" };
   }
   if (claimToken !== undefined && hashClaimToken(claimToken) !== memory.claimTokenHash) {
     return { sent: false, skipped: "not_found" };
@@ -106,49 +106,5 @@ export async function confirmMemory({
   if (rotating && result.sent) {
     log.info({ action: "token_rotated", memoryId }, "claim token rotated for an emailed link");
   }
-  return result;
-}
-
-/**
- * The browser calls this when its batch of uploads has finished (or given up):
- * send the one confirmation with whatever is READY, using the raw token so the
- * on-screen link stays valid, then close the submission lease.
- *
- * Order matters: the lease is what keeps the cron's rotate-and-send away.
- * Sending first (settleNow ignores the lease on the request path) means the
- * email operation is already claimed in EmailLog when the lease closes, so the
- * cron can never slip into a gap, win the send, and rotate the link on screen.
- */
-export async function completeSubmission(raw: unknown): Promise<ConfirmResult> {
-  const parsed = completeSubmissionSchema.safeParse(raw);
-  if (!parsed.success) {
-    return { sent: false, skipped: "not_found" };
-  }
-  const { claimToken } = parsed.data;
-  const claimTokenHash = hashClaimToken(claimToken);
-  const db = getDb();
-  const memory = await db.memory.findUnique({ where: { claimTokenHash }, select: { id: true, deletedAt: true } });
-  if (!memory || memory.deletedAt !== null) {
-    return { sent: false, skipped: "not_found" };
-  }
-  let result: ConfirmResult;
-  try {
-    result = await confirmMemory({ memoryId: memory.id, claimToken, settleNow: true });
-  } finally {
-    // Whatever happened to the send, the submission is over: the cron may reconcile from here.
-    await db.$transaction(async (tx) => {
-      await lockMemory(tx, memory.id);
-      await tx.memory.update({ where: { id: memory.id }, data: { uploadLeaseUntil: null } });
-    }, TX_OPTIONS);
-  }
-  log.info({ action: "submission_completed", memoryId: memory.id, sent: result.sent }, "submission closed by the contributor");
-  // The family-admin alert for the whole submission runs after the response; on failure the cron (e2) retries it.
-  afterWithFlush(async () => {
-    try {
-      await notifyAdminsOfMemory({ memoryId: memory.id, settleNow: true });
-    } catch (error) {
-      await logErrorAndFlush("admin alert failed after submission", error, { category: "email", memoryId: memory.id });
-    }
-  });
   return result;
 }

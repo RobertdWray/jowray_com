@@ -1,26 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 
-import {
-  EMPTY_SHARE_DRAFT,
-  isShareDraftEmpty,
-  parseShareDraft,
-  serializeShareDraft,
-  SHARE_DRAFT_KEY,
-  type ShareDraft,
-} from "@/lib/share-draft";
+import { isShareDraftEmpty, readShareDraft, serializeShareDraft, SHARE_DRAFT_KEY, type ShareDraft } from "@/lib/share-draft";
 
 const SAVE_DELAY_MS = 500;
-const FIELDS = Object.keys(EMPTY_SHARE_DRAFT) as Array<keyof ShareDraft>;
-
-function readFields(form: HTMLFormElement): ShareDraft {
-  const data = new FormData(form);
-  const draft = { ...EMPTY_SHARE_DRAFT };
-  for (const field of FIELDS) {
-    const value = data.get(field);
-    draft[field] = typeof value === "string" ? value : "";
-  }
-  return draft;
-}
 
 function storage(): Storage | null {
   try {
@@ -31,107 +13,102 @@ function storage(): Storage | null {
   }
 }
 
+// Read once per page: a stable snapshot keeps useSyncExternalStore quiet, and
+// the live form state is the source of truth after the restore.
+let snapshot: ShareDraft | null | undefined;
+function readDraftOnce(): ShareDraft | null {
+  if (snapshot === undefined) {
+    const store = storage();
+    snapshot = store ? readShareDraft(store, Date.now()) : null;
+    if (snapshot && isShareDraftEmpty(snapshot)) {
+      snapshot = null;
+    }
+  }
+  return snapshot;
+}
+function subscribeNever(): () => void {
+  return () => {};
+}
+
 /**
- * Keeps the typed story on this device while the contributor follows
- * microphone help that may close the tab ("quit and reopen the browser").
- * Restores into the uncontrolled inputs on mount, saves on input (debounced),
- * and is cleared on a successful send.
+ * Keeps the typed words on this device (C58): restored once from storage (null
+ * on the server and during hydration, C9), saved debounced as the person types,
+ * saved at once when the page is hidden (the camera app, a switched tab: the
+ * last reliably observable moment on a phone, C45) and on unmount, and cleared
+ * on a successful send.
  */
-export function useShareDraft(): {
-  /** Pass as the form's `ref`; restores the draft when the form mounts. */
-  attachForm: (form: HTMLFormElement | null) => void;
-  restored: boolean;
-  onInput: () => void;
+export function useShareDraft(getCurrent: () => ShareDraft): {
+  /** The draft found in storage, applied once by the cards reducer and the contributor fields. */
+  draft: ShareDraft | null;
+  /** Save soon (debounced); for every input. */
+  save: () => void;
+  /** Save now; before the camera opens or the page is hidden. */
+  saveNow: () => void;
   clear: () => void;
 } {
-  const [restored, setRestored] = useState(false);
-  const formElement = useRef<HTMLFormElement | null>(null);
+  const draft = useSyncExternalStore(subscribeNever, readDraftOnce, () => null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const getCurrentRef = useRef(getCurrent);
+  useEffect(() => {
+    getCurrentRef.current = getCurrent;
+  }, [getCurrent]);
 
-  // A ref callback (not an effect): it runs once the inputs exist, fills them
-  // in place and may flag the restore without a cascading re-render.
-  const attachForm = useCallback((form: HTMLFormElement | null) => {
-    formElement.current = form;
-    const store = storage();
-    if (!form || !store) {
-      return;
-    }
-    let raw: string | null = null;
-    try {
-      raw = store.getItem(SHARE_DRAFT_KEY);
-    } catch {
-      return;
-    }
-    const draft = parseShareDraft(raw, Date.now());
-    if (!draft || isShareDraftEmpty(draft)) {
-      return;
-    }
-    let filled = false;
-    for (const field of FIELDS) {
-      const element = form.elements.namedItem(field);
-      if ((element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) && element.value === "" && draft[field] !== "") {
-        element.value = draft[field];
-        filled = true;
-      }
-    }
-    if (filled) {
-      setRestored(true);
-    }
-  }, []);
-
-  /** Write the fields now; the debounce only decides when this runs. */
-  const flush = useCallback(() => {
+  const saveNow = useCallback(() => {
     if (timerRef.current !== null) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
-    const form = formElement.current;
     const store = storage();
-    if (!form || !store) {
+    if (!store) {
       return;
     }
-    const draft = readFields(form);
+    const current = getCurrentRef.current();
     try {
-      if (isShareDraftEmpty(draft)) {
+      if (isShareDraftEmpty(current)) {
         store.removeItem(SHARE_DRAFT_KEY);
       } else {
-        store.setItem(SHARE_DRAFT_KEY, serializeShareDraft(draft, Date.now()));
+        store.setItem(SHARE_DRAFT_KEY, serializeShareDraft(current, Date.now()));
       }
     } catch {
       // Quota or blocked storage: the form still works without a draft.
     }
   }, []);
 
-  // Closing the tab inside the debounce window must not lose the last words:
-  // flush on pagehide (the reliable "leaving" signal on phones) and on unmount.
-  useEffect(() => {
-    const onPageHide = () => {
-      if (timerRef.current !== null) {
-        flush();
-      }
-    };
-    window.addEventListener("pagehide", onPageHide);
-    return () => {
-      window.removeEventListener("pagehide", onPageHide);
-      if (timerRef.current !== null) {
-        flush();
-      }
-    };
-  }, [flush]);
-
-  const onInput = useCallback(() => {
+  const save = useCallback(() => {
     if (timerRef.current !== null) {
       clearTimeout(timerRef.current);
     }
-    timerRef.current = setTimeout(flush, SAVE_DELAY_MS);
-  }, [flush]);
+    timerRef.current = setTimeout(saveNow, SAVE_DELAY_MS);
+  }, [saveNow]);
+
+  useEffect(() => {
+    const onHidden = () => {
+      if (document.visibilityState === "hidden" && timerRef.current !== null) {
+        saveNow();
+      }
+    };
+    const onPageHide = () => {
+      if (timerRef.current !== null) {
+        saveNow();
+      }
+    };
+    document.addEventListener("visibilitychange", onHidden);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onHidden);
+      window.removeEventListener("pagehide", onPageHide);
+      if (timerRef.current !== null) {
+        saveNow();
+      }
+    };
+  }, [saveNow]);
 
   const clear = useCallback(() => {
     if (timerRef.current !== null) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
-    setRestored(false);
+    snapshot = null;
     try {
       storage()?.removeItem(SHARE_DRAFT_KEY);
     } catch {
@@ -139,5 +116,5 @@ export function useShareDraft(): {
     }
   }, []);
 
-  return { attachForm, restored, onInput, clear };
+  return { draft, save, saveNow, clear };
 }

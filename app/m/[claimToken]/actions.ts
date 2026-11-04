@@ -14,6 +14,7 @@ import {
   type UploadTicketResult,
 } from "@/features/memories/create-memory";
 import { finalizeUpload as finalizeUploadFeature, type FinalizeResult } from "@/features/memories/ingest-upload";
+import { issueUploadTicket as issueUploadTicketFeature, type IssueTicketResult } from "@/features/memories/issue-upload-ticket";
 import type { UploadTicket } from "@/lib/upload-ticket";
 
 // Thin wrappers: validation and authorization (the claim-token check) live in features/.
@@ -41,6 +42,11 @@ export async function removeFile(input: unknown): Promise<ClaimMediaResult> {
 
 export async function cancelReservation(input: unknown): Promise<ClaimMediaResult> {
   return cancelReservationFeature(input);
+}
+
+/** A fresh ticket for a file that was reserved but never arrived ("Try again"); the same path the share page uses per file. */
+export async function retryUploadTicket(input: unknown): Promise<IssueTicketResult> {
+  return issueUploadTicketFeature(input);
 }
 
 export async function updateMediaWords(input: unknown): Promise<ClaimMediaResult> {

@@ -46,17 +46,31 @@ export { cleanNote, escapeHtml, formatSeconds, stripControl } from "./shared";
 
 export const MEMORY_CONFIRMATION_SUBJECT = "Thank you for sharing a memory";
 
-const PREHEADER = "Your memory of Jo is safe with the family. Here is what you sent.";
-const HEADLINE = "Jo would have loved this.";
-const LEAD_REST = "Your memory is on its way to Richard, Rob and Tracy. We read every single one, usually more than once.";
-const BUTTON = "See or add to your memory";
-const PRIVACY = "Keep this link private: anyone who has it can edit this memory.";
-const CLOSER = "Spelling, as promised, did not count.";
-const MADE_WITH_LOVE = "Made with love by Richard, Rob, Tracy and Ava.";
-const QUESTIONS = "Questions, or a memory that won't fit in a box? Email robwray@gmail.com.";
+/** The approved copy, shared with the send receipt (`./submission-confirmation`) so the two never drift. */
+export const CONFIRMATION_COPY = {
+  preheader: "Your memory of Jo is safe with the family. Here is what you sent.",
+  headline: "Jo would have loved this.",
+  leadRest: "Your memory is on its way to Richard, Rob and Tracy. We read every single one, usually more than once.",
+  button: "See or add to your memory",
+  privacy: "Keep this link private: anyone who has it can edit this memory.",
+  closer: "Spelling, as promised, did not count.",
+  madeWithLove: "Made with love by Richard, Rob, Tracy and Ava.",
+  questions: "Questions, or a memory that won't fit in a box? Email robwray@gmail.com.",
+  questionsHtml: (bodyFont: string, linkColor: string) =>
+    `<tr><td align="center" style="font-family:${bodyFont};font-size:17px;line-height:1.5;color:${WALNUT_SOFT};">Questions, or a memory that won&#39;t fit in a box? Email <a href="mailto:robwray@gmail.com" style="color:${linkColor};text-decoration:underline;">robwray@gmail.com</a>.</td></tr>`,
+} as const;
+
+const PREHEADER = CONFIRMATION_COPY.preheader;
+const HEADLINE = CONFIRMATION_COPY.headline;
+const LEAD_REST = CONFIRMATION_COPY.leadRest;
+const BUTTON = CONFIRMATION_COPY.button;
+const PRIVACY = CONFIRMATION_COPY.privacy;
+const CLOSER = CONFIRMATION_COPY.closer;
+const MADE_WITH_LOVE = CONFIRMATION_COPY.madeWithLove;
+const QUESTIONS = CONFIRMATION_COPY.questions;
 
 /** "your words and a photo", "2 videos", "a voice recording and a photo". */
-function describeReceived(media: MemoryMediaSummary[], hasWords: boolean): string {
+export function describeReceived(media: MemoryMediaSummary[], hasWords: boolean): string {
   const counts = new Map<MediaKind, number>();
   for (const item of media) {
     counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
@@ -182,7 +196,7 @@ export function buildMemoryConfirmation(input: MemoryConfirmationContent): Rende
     "",
     STITCHED_HEART_ROW,
     `<tr><td align="center" style="padding:0 0 8px 0;font-family:${DISPLAY_FONT};font-size:20px;line-height:1.4;color:${WALNUT};">${escapeHtml(MADE_WITH_LOVE)}</td></tr>`,
-    `<tr><td align="center" style="font-family:${BODY_FONT};font-size:17px;line-height:1.5;color:${WALNUT_SOFT};">Questions, or a memory that won&#39;t fit in a box? Email <a href="mailto:robwray@gmail.com" style="color:${JO_RED_DEEP};text-decoration:underline;">robwray@gmail.com</a>.</td></tr>`,
+    CONFIRMATION_COPY.questionsHtml(BODY_FONT, JO_RED_DEEP),
   ].join("\n");
 
   const html = renderDocument({ title: MEMORY_CONFIRMATION_SUBJECT, preheader: PREHEADER, body });

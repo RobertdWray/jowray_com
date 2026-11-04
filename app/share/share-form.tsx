@@ -1,167 +1,177 @@
 "use client";
 
-import Image from "next/image";
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
 import { CONTACT_OPT_IN_LABEL, IMPLICIT_CONSENT_NOTE, MAILING_LIST_LABEL, NOTIFY_WHEN_POSTED_LABEL } from "@/lib/consent";
 import { durationSecondsFor } from "@/lib/format-duration";
-import { ACCEPT_ATTRIBUTE, MAX_FILES_PER_MEMORY } from "@/lib/media-types";
-import { uploadWithTicket } from "@/lib/upload-client";
+import { type CardMediaItem, type CardsAction, type CardsState, cardsReducer, contentCards, hasContent, labelFor, MAX_CARDS, type SendIssue, validateForSend } from "@/lib/memory-cards";
 import {
   getRememberedServerSnapshot,
   getRememberedSnapshot,
   rememberContributor,
   subscribeRemembered,
 } from "@/lib/remembered-contributor";
+import type { ShareDraft } from "@/lib/share-draft";
+import { type PipelineProgress, runSubmission } from "@/lib/submission-pipeline";
+import { uploadWithTicket } from "@/lib/upload-client";
+import { VISIBILITY_OPTIONS } from "@/lib/visibility";
 
-import { PrimaryButton, SecondaryButton, secondaryButtonClass } from "../_components/buttons";
-import {
-  errorClass,
-  fileInputClass,
-  helperClass,
-  inputClass,
-  labelClass,
-  linkClass,
-  selectClass,
-  textareaClass,
-} from "../_components/field-classes";
+import { PrimaryButton, SecondaryButton } from "../_components/buttons";
+import { errorClass, helperClass, inputClass, labelClass, linkClass, selectClass } from "../_components/field-classes";
 import { SolidHeart } from "../_components/hearts";
-import { cancelReservation, completeSubmission, createMemory, finalizeUpload, issueUploadTicket } from "./actions";
-import { pickRecordingType } from "./recorder";
-import { RecorderPanel } from "./recorder-panel-client";
+import { completeSubmission, createSubmission, finalizeUpload, issueUploadTicket } from "./actions";
+import { cardIds, headingFor, MemoryCardSection, MemoryPlaceholder } from "./memory-card-client";
+import { pickRecordingType, type Recording } from "./recorder";
+import { type SentMemory, ThankYou } from "./thank-you-client";
+import { useMemoryCards } from "./use-memory-cards";
 import { useRecorder } from "./use-recorder";
 import { useShareDraft } from "./use-share-draft";
 
-/** One file the contributor chose, with the words that belong to that file. */
-interface FileRow {
-  id: string;
-  file: File;
-  /** Object URL for a browser-renderable image; null for everything else (HEIC previews only draw in Safari). */
-  previewUrl: string | null;
-  caption: string;
-  approxDateText: string;
-  place: string;
-}
-
-type FileOutcome = "READY" | "PENDING" | "FAILED" | "ERROR";
-
 type Phase =
   | { kind: "idle" }
-  /** `claimLink` is set as soon as the memory exists: it survives every later failure and a closed tab. */
-  | { kind: "saving"; claimLink?: string; current?: number; total?: number; progress?: number }
-  | { kind: "done"; claimLink: string; emailed: boolean; hadWords: boolean; outcomes: Array<{ name: string; status: FileOutcome }> }
-  | { kind: "error"; message: string; claimLink?: string };
+  | { kind: "sending"; text: string }
+  | { kind: "done"; memories: SentMemory[]; emailed: boolean; hasEmail: boolean }
+  | { kind: "error"; message: string };
+
+const KEEP_OPEN = "Please keep this page open. Videos can take a few minutes on a phone.";
+const STILL_GOING = "Still going. Big files take a while.";
+const STALL_MS = 20_000;
 
 function subscribeNever(): () => void {
   return () => {};
 }
 
-function canPreview(file: File): boolean {
-  const type = file.type.toLowerCase();
-  return type.startsWith("image/") && type !== "image/heic" && type !== "image/heif";
+/** Reads the elements themselves, not FormData, which leaves disabled fields out: a draft saved while sending must keep the name. */
+function readContributor(form: HTMLFormElement | null) {
+  const text = (name: string) => {
+    const element = form?.elements.namedItem(name);
+    return element instanceof HTMLInputElement ? element.value : "";
+  };
+  return { name: text("name"), relationship: text("relationship"), email: text("email") };
 }
 
-function formatSize(bytes: number): string {
-  if (bytes >= 1024 * 1024) {
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-}
-
+/**
+ * The /share form as memory cards (Task 15): the contributor once, then one
+ * card on phones or several on computers (the split is CSS only, D1), one
+ * recorder for the whole form (C12), a draft on this device, and a sequential
+ * send with progress. Everything the person typed survives a failed send.
+ */
 export function ShareForm({ intro }: { intro: ReactNode }) {
+  const formRef = useRef<HTMLFormElement>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
-  const [rows, setRows] = useState<FileRow[]>([]);
-  const [rowsError, setRowsError] = useState<string | null>(null);
-  // Mirror of `rows` for the unmount cleanup (refs are not read during render).
-  const rowsRef = useRef<FileRow[]>([]);
-  // Row keys: a counter, not crypto.randomUUID(), which is missing outside secure contexts (a phone on a LAN address during the device pass).
-  const nextRowId = useRef(0);
+  const [issues, setIssues] = useState<SendIssue[]>([]);
+  const [confirmSilent, setConfirmSilent] = useState<string[] | null>(null);
+  const [live, setLive] = useState("");
+  const [progress, setProgress] = useState<Record<string, number>>({});
+  const [recordingCardId, setRecordingCardId] = useState<string | null>(null);
+
+  // The cards, with the saved draft applied once during render (C10). The
+  // draft hook reads the latest cards through a ref written in an effect.
+  const cardsRef = useRef<CardsState["cards"]>([]);
+  const getCurrentDraft = useCallback(
+    (): ShareDraft => ({
+      contributor: { name: readContributor(formRef.current).name, relationship: readContributor(formRef.current).relationship },
+      cards: cardsRef.current.filter((card) => card.open).map((card) => ({ approxDateText: card.approxDateText, place: card.place, note: card.note })),
+    }),
+    [],
+  );
+  const { draft, save: saveDraft, saveNow: saveDraftNow, clear: clearDraft } = useShareDraft(getCurrentDraft);
+  const { state, dispatch, restored } = useMemoryCards(draft);
   useEffect(() => {
-    rowsRef.current = rows;
-  }, [rows]);
-  const rec = useRecorder();
-  // Destructured: a value passed as `ref` is treated as a ref by the React Compiler.
-  const { attachForm, restored: draftRestored, onInput: saveDraft, clear: clearDraft } = useShareDraft();
-  // A clip that sounds silent needs a second press of the send button; the
-  // acknowledgement is tied to that clip's URL so a new take resets it.
-  const [acknowledgedClipUrl, setAcknowledgedClipUrl] = useState<string | null>(null);
-  // Server snapshot is false, client snapshot asks the browser: same markup on
-  // both sides at hydration, then the record button appears where supported.
-  const canRecord = useSyncExternalStore(subscribeNever, () => pickRecordingType() !== null, () => false);
+    cardsRef.current = state.cards;
+  }, [state.cards]);
+
+  /** Dispatch, then carry out the reducer's announcement and focus request and clear them (C46, C48). */
+  function apply(action: CardsAction) {
+    const next = cardsReducer(state, action);
+    dispatch(action);
+    if (next.notice) {
+      setLive(next.notice);
+    }
+    const target = next.lastAddedId ?? next.focusId;
+    if (target) {
+      requestAnimationFrame(() => document.getElementById(cardIds(target).heading)?.focus());
+    }
+    if (next.notice || next.focusId || next.lastAddedId) {
+      dispatch({ type: "ack" });
+    }
+  }
+
   // Name, email and relationship from an earlier memory on this device; null on the server and until hydration.
   const remembered = useSyncExternalStore(subscribeRemembered, getRememberedSnapshot, getRememberedServerSnapshot);
+  // Server snapshot is false, client snapshot asks the browser: same markup on both sides at hydration (C9).
+  const canRecord = useSyncExternalStore(subscribeNever, () => pickRecordingType() !== null, () => false);
 
-  const clip = rec.clip;
-  const confirmSilent = clip !== null && clip.recording.verdict === "suspectedSilent" && acknowledgedClipUrl === clip.url;
-  const recorderActive =
-    rec.snapshot.status.kind === "requesting" || rec.snapshot.status.kind === "recording" || rec.snapshot.status.kind === "finishing";
-  const saving = phase.kind === "saving";
-  const busy = saving || recorderActive;
-  // The recording is one more file; it counts against the same cap.
-  const fileCount = rows.length + (clip ? 1 : 0);
-  const slotsLeft = Math.max(0, MAX_FILES_PER_MEMORY - fileCount);
-
-  // Object URLs are released when the component goes away; removal and reset release theirs as they go.
-  useEffect(() => {
-    return () => {
-      for (const row of rowsRef.current) {
-        if (row.previewUrl) {
-          URL.revokeObjectURL(row.previewUrl);
-        }
+  // One recorder for the whole form; a finished take becomes a row on the card that started it.
+  const recordingCardRef = useRef<string | null>(null);
+  const onClip = useCallback(
+    (recording: Recording) => {
+      const cardId = recordingCardRef.current;
+      recordingCardRef.current = null;
+      setRecordingCardId(null);
+      if (!cardId) {
+        return;
       }
-    };
-  }, []);
+      const item: CardMediaItem = {
+        id: `${cardId}-${crypto.randomUUID()}`,
+        kind: "VOICE",
+        name: recording.file.name,
+        size: recording.file.size,
+        mimeType: recording.mimeType.split(";")[0] ?? recording.mimeType,
+        source: "recording",
+        durationSeconds: durationSecondsFor(recording.durationMs) ?? null,
+        file: recording.file,
+        verdict: recording.verdict,
+      };
+      dispatch({ type: "addMedia", id: cardId, items: [item] });
+    },
+    [dispatch],
+  );
+  const rec = useRecorder({ onClip });
+  const recorderActive = rec.snapshot.status.kind === "requesting" || rec.snapshot.status.kind === "recording" || rec.snapshot.status.kind === "finishing";
+  const sending = phase.kind === "sending";
+  const busy = sending || recorderActive;
+  // The card showing the recorder: the one that started it, for as long as the engine is not idle
+  // (an error keeps the panel and its help on that card until the person moves on).
+  const activeRecordingCardId = rec.snapshot.status.kind === "idle" ? null : recordingCardId;
 
-  function addFiles(list: FileList | null) {
-    if (!list || list.length === 0) {
+  // A desktop safeguard only while unsent media exists (C44); phones rely on the draft instead.
+  const hasUnsentMedia = phase.kind !== "done" && state.cards.some((card) => card.media.length > 0);
+  useEffect(() => {
+    if (!hasUnsentMedia) {
       return;
     }
-    const picked = Array.from(list).filter((f) => f.size > 0);
-    const room = slotsLeft;
-    const accepted = picked.slice(0, room);
-    setRowsError(picked.length > room ? `You can add up to ${MAX_FILES_PER_MEMORY} files to one memory; the first ${room} were kept.` : null);
-    // Ids and object URLs are made here, outside the updater (updaters may run twice in development).
-    const added: FileRow[] = accepted.map((file) => ({
-      id: `row_${(nextRowId.current += 1)}`,
-      file,
-      previewUrl: canPreview(file) ? URL.createObjectURL(file) : null,
-      caption: "",
-      approxDateText: "",
-      place: "",
-    }));
-    setRows((current) => [...current, ...added]);
-  }
-
-  function removeRow(id: string) {
-    // Side effects stay outside the state updater (which may run twice in development).
-    const row = rows.find((r) => r.id === id);
-    if (row?.previewUrl) {
-      URL.revokeObjectURL(row.previewUrl);
-    }
-    setRows((current) => current.filter((r) => r.id !== id));
-    setRowsError(null);
-  }
-
-  function updateRow(id: string, patch: Partial<Pick<FileRow, "caption" | "approxDateText" | "place">>) {
-    setRows((current) => current.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-  }
-
-  function clearRows() {
-    for (const row of rowsRef.current) {
-      if (row.previewUrl) {
-        URL.revokeObjectURL(row.previewUrl);
-      }
-    }
-    setRows([]);
-    setRowsError(null);
-  }
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [hasUnsentMedia]);
 
   function resetForm() {
     rec.discard();
+    recordingCardRef.current = null;
+    setRecordingCardId(null);
     clearDraft();
-    clearRows();
-    setAcknowledgedClipUrl(null);
+    dispatch({ type: "reset" });
+    setIssues([]);
+    setConfirmSilent(null);
+    setProgress({});
+    setLive("");
     setPhase({ kind: "idle" });
+    formRef.current?.reset();
+  }
+
+  function startRecording(cardId: string) {
+    // Set and start in the same tap: iOS only grants the microphone inside a user gesture.
+    recordingCardRef.current = cardId;
+    setRecordingCardId(cardId);
+    void rec.start();
+  }
+
+  function openPlaceholder(cardId: string) {
+    apply({ type: "open", id: cardId });
+    requestAnimationFrame(() => document.getElementById(cardIds(cardId).date)?.focus());
   }
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -169,366 +179,268 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
     if (busy) {
       return;
     }
-    if (clip?.recording.verdict === "suspectedSilent" && !confirmSilent) {
-      setAcknowledgedClipUrl(clip.url);
+    const found = validateForSend(state.cards);
+    setIssues(found);
+    if (found.length > 0) {
+      document.getElementById(cardIds(found[0]!.cardId).note)?.focus();
       return;
     }
+    const cards = contentCards(state);
+    const silent = cards
+      .filter((card) => card.media.some((item) => item.verdict === "suspectedSilent"))
+      .map((card) => headingFor(state.cards.filter((c) => c.open).indexOf(card) + 1));
+    if (silent.length > 0 && confirmSilent === null) {
+      setConfirmSilent(silent);
+      return;
+    }
+    setConfirmSilent(null);
     const form = new FormData(event.currentTarget);
-    const contributor = {
-      name: String(form.get("name") ?? ""),
-      relationship: String(form.get("relationship") ?? ""),
-      email: String(form.get("email") ?? ""),
+    const contributor = readContributor(event.currentTarget);
+    const visibility = String(form.get("visibility") ?? "PUBLIC");
+    const sendInput = {
+      ...contributor,
+      visibility: (VISIBILITY_OPTIONS.some((o) => o.value === visibility) ? visibility : "PUBLIC") as "PUBLIC" | "FAMILY" | "PRIVATE",
+      contactOptIn: form.get("contactOptIn") === "on",
+      notifyWhenPosted: form.get("notifyWhenPosted") === "on",
+      mailingListOptIn: form.get("mailingListOptIn") === "on",
+      cards,
     };
-    // Snapshot of what will be sent, in order: picked files first, then the recording.
-    const batch: Array<{ file: File; caption: string; approxDateText: string; place: string; durationSeconds?: number }> = rows.map((r) => ({
-      file: r.file,
-      caption: r.caption,
-      approxDateText: r.approxDateText,
-      place: r.place,
-    }));
-    if (clip) {
-      batch.push({ file: clip.recording.file, caption: "", approxDateText: "", place: "", durationSeconds: durationSecondsFor(clip.recording.durationMs) });
-    }
-    setPhase({ kind: "saving" });
-
-    let created: Awaited<ReturnType<typeof createMemory>>;
-    try {
-      created = await createMemory({
-        ...contributor,
-        approxDateText: String(form.get("approxDateText") ?? ""),
-        place: String(form.get("place") ?? ""),
-        note: String(form.get("note") ?? ""),
-        visibility: String(form.get("visibility") ?? "PUBLIC"),
-        contactOptIn: form.get("contactOptIn") === "on",
-        notifyWhenPosted: form.get("notifyWhenPosted") === "on",
-        mailingListOptIn: form.get("mailingListOptIn") === "on",
-        files: batch.map((b) => ({
-          name: b.file.name,
-          type: b.file.type,
-          size: b.file.size,
-          durationSeconds: b.durationSeconds,
-          caption: b.caption,
-          approxDateText: b.approxDateText,
-          place: b.place,
-        })),
-      });
-    } catch {
-      // Unknown outcome (network, timeout): do not resubmit automatically.
-      setPhase({ kind: "error", message: "We could not reach the server. Please check your connection and try again." });
-      return;
-    }
-    if (!created.ok) {
-      setPhase({ kind: "error", message: created.message });
-      return;
-    }
-    rememberContributor(contributor);
-    const claimLink = `${window.location.origin}/m/${created.claimToken}`;
-    const hadWords = String(form.get("note") ?? "").trim().length > 0;
-    // The memory is saved: whatever happens to the files now, the link survives and is shown from here on.
-    clearDraft();
-    setPhase({ kind: "saving", claimLink });
-
-    if (created.media.length === 0) {
-      setPhase({ kind: "done", claimLink, emailed: created.emailed, hadWords, outcomes: [] });
-      return;
+    const fileCount = cards.reduce((n, card) => n + card.media.length, 0);
+    setPhase({ kind: "sending", text: "Sending…" });
+    setProgress(Object.fromEntries(cards.flatMap((card) => card.media.map((item) => [item.id, 0]))));
+    if (fileCount > 0) {
+      setLive(KEEP_OPEN);
     }
 
-    // One file at a time: ticket just before the upload (tickets expire), then upload, then finalize.
-    const outcomes: Array<{ name: string; status: FileOutcome }> = [];
-    let emailed = created.emailed;
-    const byOrder = [...created.media].sort((a, b) => a.sortOrder - b.sortOrder);
-    for (const [index, entry] of byOrder.entries()) {
-      const item = batch[index];
-      if (!item) {
-        break;
+    let lastStep = 0;
+    let lastChangeAt = Date.now();
+    const stall = fileCount > 0 ? setInterval(() => {
+      if (Date.now() - lastChangeAt > STALL_MS) {
+        setLive(STILL_GOING);
+        lastChangeAt = Date.now();
       }
-      setPhase({ kind: "saving", claimLink, current: index + 1, total: byOrder.length });
-      // A reservation whose bytes never left this browser is cancelled so it does not sit on the claim page or hold a slot;
-      // one whose upload finished (finalize may still have failed) is left for the reconcile cron to record.
-      let uploaded = false;
-      try {
-        const ticketed = await issueUploadTicket({ claimToken: created.claimToken, mediaId: entry.mediaId });
-        if (!ticketed.ok) {
-          outcomes.push({ name: item.file.name, status: "ERROR" });
-          await cancelReservation({ claimToken: created.claimToken, mediaId: entry.mediaId });
-          continue;
-        }
-        await uploadWithTicket(ticketed.upload, item.file, (percentage) => setPhase({ kind: "saving", claimLink, current: index + 1, total: byOrder.length, progress: percentage }));
-        uploaded = true;
-        const finalized = await finalizeUpload({ ticket: ticketed.upload.ticket, claimToken: created.claimToken });
-        outcomes.push({ name: item.file.name, status: finalized.status === "REJECTED" ? "ERROR" : finalized.status });
-        emailed = emailed || (finalized.status !== "REJECTED" && finalized.emailed);
-      } catch {
-        outcomes.push({ name: item.file.name, status: "ERROR" });
-        if (!uploaded) {
-          try {
-            await cancelReservation({ claimToken: created.claimToken, mediaId: entry.mediaId });
-          } catch {
-            // The cron retires an untouched reservation after 24 h; the claim page offers Cancel meanwhile.
+    }, 5_000) : null;
+    const onProgress = (p: PipelineProgress) => {
+      lastChangeAt = Date.now();
+      setPhase({ kind: "sending", text: p.text });
+      setProgress((prev) => ({ ...prev, [p.mediaId]: p.percent }));
+      // Announce at file boundaries and about every 25%, never every percent (C47).
+      const step = Math.floor(p.percent / 25) + p.fileNumber * 10;
+      if (step !== lastStep) {
+        lastStep = step;
+        setLive(`${p.text}. ${KEEP_OPEN}`);
+      }
+    };
+
+    try {
+      const result = await runSubmission(
+        sendInput,
+        {
+          createSubmission,
+          issueUploadTicket,
+          upload: (grant, file, onPct) => uploadWithTicket(grant, file, onPct),
+          finalizeUpload,
+          completeSubmission,
+        },
+        {
+          origin: window.location.origin,
+          onProgress,
+          onFileDone: (_cardId, mediaId, ok) => setProgress((prev) => ({ ...prev, [mediaId]: ok ? 100 : prev[mediaId] ?? 0 })),
+        },
+      );
+      if (!result.ok) {
+        // Back to editable rows: a stuck progress bar would hide every Remove button.
+        setProgress({});
+        setPhase({ kind: "error", message: result.message });
+        if (result.memoryIndex !== null) {
+          const card = cards[result.memoryIndex];
+          if (card) {
+            setIssues([{ cardId: card.id, position: result.memoryIndex + 1, field: "note", message: result.message }]);
           }
         }
+        setLive("");
+        return;
+      }
+      rememberContributor(contributor);
+      clearDraft();
+      const openCards = state.cards.filter((card) => card.open);
+      const memories: SentMemory[] = result.memories.map((memory) => {
+        const card = cards.find((c) => c.id === memory.cardId)!;
+        return { position: memory.position, label: labelFor(card, openCards.indexOf(card) + 1), claimLink: memory.claimLink, failedFiles: memory.failedFiles };
+      });
+      setLive("");
+      setPhase({ kind: "done", memories, emailed: result.emailed, hasEmail: contributor.email.trim().length > 0 });
+    } finally {
+      if (stall) {
+        clearInterval(stall);
       }
     }
-    try {
-      // Closes the submission and sends the one email with everything that arrived; the link is never rotated here.
-      // "already_sent" means the last finalize sent it a moment ago.
-      const completed = await completeSubmission({ claimToken: created.claimToken });
-      emailed = emailed || completed.sent || (!completed.sent && completed.skipped === "already_sent");
-    } catch {
-      // The reconcile cron sends later; the contributor keeps the link either way.
-    }
-    clearRows();
-    // Anything typed into the story during the upload belongs to a memory that is already sent.
-    clearDraft();
-    setPhase({ kind: "done", claimLink, emailed, hadWords, outcomes });
   }
 
   if (phase.kind === "done") {
-    const origin = window.location.origin;
-    const mailto = `mailto:?subject=${encodeURIComponent("Tell a Jo story")}&body=${encodeURIComponent(`Jo's family is collecting memories of her. If you knew Jo, tell yours here: ${origin}/`)}`;
-    const pending = phase.outcomes.filter((o) => o.status === "PENDING");
-    const failed = phase.outcomes.filter((o) => o.status === "FAILED" || o.status === "ERROR");
-    // Files only, and none of them arrived: nothing is on its way yet; the link is how they try again.
-    const nothingArrived = phase.outcomes.length > 0 && failed.length === phase.outcomes.length && !phase.hadWords;
-
-    function share(event: React.MouseEvent<HTMLAnchorElement>) {
-      if (typeof navigator.share === "function") {
-        event.preventDefault();
-        void navigator.share({
-          title: "Tell us a Jo story",
-          text: "Jo's family is collecting memories of her.",
-          url: `${origin}/`,
-        }).catch((error: unknown) => {
-          if (error instanceof Error && error.name === "AbortError") {
-            return;
-          }
-          window.location.assign(mailto);
-        });
-      }
-    }
-
-    return (
-      <section className="flex flex-1 flex-col items-center justify-center px-[max(16px,5%)] pb-20 pt-10">
-        <div className="flex w-full max-w-[760px] flex-col items-center gap-7 text-center">
-          <div className="patchwork rounded-full p-[14px] shadow-[0_12px_26px_rgb(46_36_32/0.18)]">
-            <div className="flex size-[150px] items-center justify-center rounded-full bg-paper">
-              <SolidHeart size={96} stitchColor="#fffdf8" label="A stitched red heart" />
-            </div>
-          </div>
-          <h1 className="font-display text-display-sm font-extrabold sm:text-thanks">{nothingArrived ? "Almost there." : "Jo would have loved this."}</h1>
-          <p className="max-w-[30em] text-lead">
-            {nothingArrived
-              ? "Your memory was saved, but none of the files arrived. Open your private link below to add them again; nothing else is needed."
-              : "Thank you. Your memory is on its way to Richard, Rob and Tracy. We read every single one, usually more than once."}
-          </p>
-          <p className="max-w-[30em] text-body">
-            On November 10th, after we have some stories, photos and videos collected, we&apos;ll be sharing them with
-            everyone and will email an update to all who have contributed.
-          </p>
-          <div className="flex flex-wrap justify-center gap-4">
-            <PrimaryButton onClick={resetForm}>Tell another one</PrimaryButton>
-            <a href={mailto} onClick={share} className={secondaryButtonClass}>
-              Send this page to someone who knew Jo
-            </a>
-          </div>
-          <div className="flex flex-col gap-3 text-body">
-            <p>
-              Your private link to see, correct or add to this memory:
-              <br />
-              <a className={`${linkClass} break-all`} href={phase.claimLink}>
-                {phase.claimLink}
-              </a>
-            </p>
-            {phase.emailed && <p>We have also emailed you this link.</p>}
-            {pending.length > 0 && (
-              <p>
-                {pending.length === 1 ? "One file is" : `${pending.length} files are`} still being checked; they will appear on your page shortly.
-              </p>
-            )}
-            {failed.length > 0 && !nothingArrived && (
-              <p>
-                {failed.length === 1 ? "One file could not be received" : `${failed.length} files could not be received`} ({failed.map((f) => f.name).join(", ")}).
-                {phase.hadWords ? " Your words were saved;" : ""} use your link to try again.
-              </p>
-            )}
-            <p className="text-small text-walnut-soft">Keep this link private: anyone who has it can edit this memory.</p>
-          </div>
-          <p className="font-display text-body italic text-walnut-soft">Spelling, as promised, did not count.</p>
-        </div>
-      </section>
-    );
+    return <ThankYou memories={phase.memories} emailed={phase.emailed} hasEmail={phase.hasEmail} onAnother={resetForm} />;
   }
 
-  const sendLabel = saving
-    ? phase.total
-      ? `Uploading ${phase.current ?? 1} of ${phase.total}…${phase.progress ? ` ${phase.progress}%` : ""}`
-      : "Sending…"
+  const openCards = state.cards.filter((card) => card.open);
+  const filledCount = contentCards(state).length;
+  const several = filledCount > 1;
+  const sendLabel = sending
+    ? phase.text
     : confirmSilent
       ? "Send anyway"
-      : "Send this to Jo's family";
+      : several
+        ? `Send these ${filledCount} memories to Jo's family`
+        : "Send this to Jo's family";
+  const recordingHeading = activeRecordingCardId ? headingFor(openCards.findIndex((c) => c.id === activeRecordingCardId) + 1) : null;
 
   return (
-    <section id="form" className="mx-auto flex w-full max-w-[1200px] flex-wrap items-start gap-x-16 gap-y-10 px-[max(16px,5%)] py-[72px]">
-      <div className="flex min-w-0 flex-[1_1_300px] flex-col gap-[18px]">
-        {intro}
-        <RecorderPanel rec={rec} canRecord={canRecord} disabled={saving || (slotsLeft === 0 && clip === null)} />
-      </div>
-      <form
-        ref={attachForm}
-        onSubmit={onSubmit}
-        onInput={saveDraft}
-        className="flex min-w-0 flex-[1_1_440px] flex-col gap-[22px] rounded-form border-[3px] border-wood-light bg-paper p-8 shadow-form"
-        aria-busy={busy}
-      >
-        {draftRestored && (
+    <section id="form" className="mx-auto flex w-full max-w-[860px] flex-col gap-8 px-[max(16px,5%)] py-[56px]">
+      <div className="flex flex-col gap-[18px]">{intro}</div>
+      <form ref={formRef} onSubmit={onSubmit} onInput={saveDraft} className="flex flex-col gap-8" aria-busy={busy} noValidate>
+        <p aria-live="polite" className={live ? "text-body text-walnut-soft" : "sr-only"}>
+          {live}
+        </p>
+        {restored && (
           <p role="status" className="text-small text-walnut-soft">
             We kept the words you typed last time. Change anything you like before you send.
           </p>
         )}
-        <fieldset disabled={saving} className="contents">
-        <div className="flex flex-wrap gap-5">
-          <label className={`${labelClass} flex-[1_1_200px]`}>
-            <span>Your name</span>
-            <input name="name" maxLength={120} className={inputClass} autoComplete="name" placeholder="Kay Bartholomew" defaultValue={remembered?.name} />
-          </label>
-          <label className={`${labelClass} flex-[1_1_200px]`}>
-            <span>Email <span className={helperClass}>(optional · so we can say thank you and send your private link)</span></span>
-            <input name="email" type="email" maxLength={254} className={inputClass} autoComplete="email" placeholder="So we can say thank you" defaultValue={remembered?.email} />
-          </label>
-        </div>
-        <label className={labelClass}>
-          <span>How you knew Jo</span>
-          <input name="relationship" maxLength={120} className={inputClass} placeholder="former student · church friend · neighbor · family" defaultValue={remembered?.relationship} />
-        </label>
-        <label className={labelClass}>
-          <span>When is this memory from? <span className={helperClass}>(roughly is fine)</span></span>
-          <input name="approxDateText" maxLength={120} className={inputClass} placeholder="Summer 1985 · Lake George, late 90s · her classroom" />
-        </label>
-        <label className={labelClass}>
-          <span>Where? <span className={helperClass}>(optional)</span></span>
-          <input name="place" maxLength={200} className={inputClass} placeholder="her classroom · Lake George · Broadmead" />
-        </label>
-        <label className={labelClass}>
-          <span>Your memory of Jo</span>
-          <textarea name="note" rows={7} maxLength={10_000} className={textareaClass} placeholder="She once…" />
-        </label>
 
-        <div className="flex flex-col gap-3">
+        <section aria-labelledby="about-you" className="flex flex-col gap-[22px] rounded-form border-[3px] border-wood-light bg-paper p-6 shadow-form sm:p-8">
+          <h2 id="about-you" className="font-display text-card-title font-bold">
+            About you
+          </h2>
+          <div className="flex flex-wrap gap-5">
+            <label className={`${labelClass} flex-[1_1_200px]`}>
+              <span>Your name</span>
+              <input name="name" maxLength={120} className={inputClass} autoComplete="name" placeholder="Kay Bartholomew" defaultValue={draft?.contributor.name || remembered?.name} disabled={sending} />
+            </label>
+            <label className={`${labelClass} flex-[1_1_200px]`}>
+              <span>
+                Email <span className={helperClass}>(optional · so we can say thank you and send your private link)</span>
+              </span>
+              <input name="email" type="email" maxLength={254} className={inputClass} autoComplete="email" placeholder="So we can say thank you" defaultValue={remembered?.email} disabled={sending} />
+            </label>
+          </div>
           <label className={labelClass}>
-            <span>
-              Add photos, videos or voice recordings <span className={helperClass}>(optional · up to {MAX_FILES_PER_MEMORY}; {slotsLeft} more can be added)</span>
-            </span>
+            <span>How you knew Jo</span>
             <input
-              type="file"
-              multiple
-              accept={ACCEPT_ATTRIBUTE}
-              className={fileInputClass}
-              disabled={busy || slotsLeft === 0}
-              onChange={(event) => {
-                addFiles(event.target.files);
-                event.target.value = "";
-              }}
+              name="relationship"
+              maxLength={120}
+              className={inputClass}
+              placeholder="former student · church friend · neighbor · family"
+              defaultValue={draft?.contributor.relationship || remembered?.relationship}
+              disabled={sending}
             />
           </label>
-          {rowsError && (
-            <p role="alert" className={errorClass}>
-              {rowsError}
-            </p>
-          )}
-          {rows.length > 0 && (
-            <ul className="flex flex-wrap gap-4">
-              {rows.map((row, index) => (
-                <li key={row.id} className="flex min-w-0 flex-[1_1_300px] flex-col gap-3 rounded-card border-[3px] border-wood-light bg-muslin p-4">
-                  <div className="flex flex-wrap items-center gap-3">
-                    {row.previewUrl ? (
-                      // Local preview of the file the contributor just chose; nothing has been uploaded yet, and a blob: URL is never optimized.
-                      <Image src={row.previewUrl} alt="" width={72} height={72} unoptimized className="size-[72px] rounded object-cover" />
-                    ) : (
-                      <span className="flex size-[72px] items-center justify-center rounded bg-paper text-small text-walnut-soft">{index + 1}</span>
-                    )}
-                    <span className="min-w-0 flex-1 break-words text-small">
-                      {row.file.name} <span className={helperClass}>({formatSize(row.file.size)})</span>
-                    </span>
-                    <SecondaryButton onClick={() => removeRow(row.id)} disabled={busy}>
-                      Remove
-                    </SecondaryButton>
-                  </div>
-                  <label className={labelClass}>
-                    <span>About this one <span className={helperClass}>(optional)</span></span>
-                    <textarea rows={2} maxLength={2000} className={textareaClass} value={row.caption} disabled={busy} onChange={(e) => updateRow(row.id, { caption: e.target.value })} placeholder="Who is in it, what was happening" />
-                  </label>
-                  <div className="flex flex-wrap gap-3">
-                    <label className={`${labelClass} flex-[1_1_120px]`}>
-                      <span>When <span className={helperClass}>(roughly)</span></span>
-                      <input maxLength={120} className={inputClass} value={row.approxDateText} disabled={busy} onChange={(e) => updateRow(row.id, { approxDateText: e.target.value })} placeholder="Summer 1985" />
-                    </label>
-                    <label className={`${labelClass} flex-[1_1_120px]`}>
-                      <span>Where</span>
-                      <input maxLength={200} className={inputClass} value={row.place} disabled={busy} onChange={(e) => updateRow(row.id, { place: e.target.value })} placeholder="Lake George" />
-                    </label>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+          <p className="narrow:hidden text-small text-walnut-soft">One memory is plenty. Add more if they come to you.</p>
+        </section>
+
+        {state.cards.map((card, index) => {
+          const position = openCards.indexOf(card) + 1;
+          if (!card.open) {
+            return <MemoryPlaceholder key={card.id} position={index + 1} onOpen={() => openPlaceholder(card.id)} disabled={busy} />;
+          }
+          const isFirst = index === 0;
+          // The phone layout hides the extra empty cards only: a card with something in it (a desktop window made
+          // narrow, a restored draft) stays visible, because it will be sent and may need its error shown.
+          return (
+            <div key={card.id} className={isFirst || hasContent(card) ? undefined : "narrow:hidden"}>
+              <MemoryCardSection
+                card={card}
+                position={position}
+                isFirst={isFirst}
+                disabled={sending}
+                issue={issues.find((issue) => issue.cardId === card.id) ?? null}
+                recording={{
+                  rec,
+                  canRecord,
+                  isHere: activeRecordingCardId === card.id,
+                  elsewhere: activeRecordingCardId !== null && activeRecordingCardId !== card.id ? recordingHeading : null,
+                  start: () => startRecording(card.id),
+                }}
+                progress={progress}
+                onField={(field, value) => dispatch({ type: "field", id: card.id, field, value })}
+                onAddMedia={(items) => dispatch({ type: "addMedia", id: card.id, items })}
+                onRemoveMedia={(mediaId) => dispatch({ type: "removeMedia", id: card.id, mediaId })}
+                onRemove={() => apply({ type: "remove", id: card.id })}
+                onClear={() => dispatch({ type: "clear", id: card.id })}
+                onBeforeCamera={saveDraftNow}
+              />
+            </div>
+          );
+        })}
+
+        <div className="narrow:hidden">
+          <SecondaryButton onClick={() => apply({ type: "add" })} disabled={busy || state.cards.length >= MAX_CARDS}>
+            + Add another memory
+          </SecondaryButton>
         </div>
 
-        <label className={labelClass}>
-          <span>Who can see this?</span>
-          <select name="visibility" defaultValue="PUBLIC" className={selectClass}>
-            <option value="FAMILY">The family</option>
-            <option value="PUBLIC">Everyone who visits the memorial</option>
-            <option value="PRIVATE">Only me and the family admins</option>
-          </select>
-        </label>
-        </fieldset>
-        {saving && phase.claimLink && (
-          <p role="status" className="text-body">
-            Your memory is saved. Your private link, in case this page closes:{" "}
-            <a className={`${linkClass} break-all`} href={phase.claimLink}>
-              {phase.claimLink}
-            </a>
-          </p>
-        )}
+        <section className="flex flex-col gap-[22px] rounded-form border-[3px] border-wood-light bg-paper p-6 shadow-form sm:p-8">
+          <label className={labelClass}>
+            <span>Who can see {several ? "these" : "this"}?</span>
+            <select name="visibility" defaultValue="PUBLIC" className={selectClass} disabled={sending}>
+              {VISIBILITY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
 
-        {phase.kind === "error" && (
-          <p role="alert" className={errorClass}>
-            {phase.message}
-            {phase.claimLink && (
-              <>
-                {" "}
-                <a className={`${linkClass} break-all`} href={phase.claimLink}>
-                  {phase.claimLink}
-                </a>
-              </>
-            )}
+          {issues.length > 0 && (
+            <div role="alert" className={errorClass}>
+              <p>Before we can send {several ? "these" : "this"}:</p>
+              <ul className="list-disc pl-6">
+                {issues.map((issue) => (
+                  <li key={issue.cardId}>
+                    <a
+                      className={linkClass}
+                      href={`#${cardIds(issue.cardId).note}`}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        document.getElementById(cardIds(issue.cardId).note)?.focus();
+                      }}
+                    >
+                      {issue.message}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {phase.kind === "error" && (
+            <p role="alert" className={errorClass}>
+              {phase.message}
+            </p>
+          )}
+          {confirmSilent && (
+            <p role="alert" className={errorClass}>
+              The recording in {confirmSilent.join(" and ")} sounds silent. Play it back first. Press &quot;Send anyway&quot; to send it as it is, or record it again.
+            </p>
+          )}
+          <PrimaryButton type="submit" disabled={busy}>
+            <SolidHeart size={24} fill="#fff" stitch={false} />
+            {sendLabel}
+          </PrimaryButton>
+          <p className="text-small text-walnut-soft">
+            Memories go to Richard, Rob and Tracy first. Later, with your okay, they&apos;ll join a shared collection the whole family can read.
           </p>
-        )}
-        {confirmSilent && (
-          <p role="alert" className={errorClass}>
-            This recording sounds silent. Play it back first. Press &quot;Send anyway&quot; to send it as it is, or record it again.
-          </p>
-        )}
-        <PrimaryButton type="submit" disabled={busy}>
-          <SolidHeart size={24} fill="#fff" stitch={false} />
-          {sendLabel}
-        </PrimaryButton>
-        <p className="text-small text-walnut-soft">
-          Memories go to Richard, Rob and Tracy first. Later, with your okay, they&apos;ll join a shared collection the whole family can read.
-        </p>
-        <label className="flex items-start gap-3 text-small">
-          <input name="contactOptIn" type="checkbox" defaultChecked className="mt-1 size-6 accent-jo-red" />
-          <span>{CONTACT_OPT_IN_LABEL}</span>
-        </label>
-        <label className="flex items-start gap-3 text-small">
-          <input name="notifyWhenPosted" type="checkbox" defaultChecked className="mt-1 size-6 accent-jo-red" />
-          <span>{NOTIFY_WHEN_POSTED_LABEL}</span>
-        </label>
-        <label className="flex items-start gap-3 text-small">
-          <input name="mailingListOptIn" type="checkbox" className="mt-1 size-6 accent-jo-red" />
-          <span>{MAILING_LIST_LABEL}</span>
-        </label>
-        <p className="text-small text-walnut-soft">{IMPLICIT_CONSENT_NOTE}</p>
+          <label className="flex items-start gap-3 text-small">
+            <input name="contactOptIn" type="checkbox" defaultChecked className="mt-1 size-6 accent-jo-red" disabled={sending} />
+            <span>{CONTACT_OPT_IN_LABEL}</span>
+          </label>
+          <label className="flex items-start gap-3 text-small">
+            <input name="notifyWhenPosted" type="checkbox" defaultChecked className="mt-1 size-6 accent-jo-red" disabled={sending} />
+            <span>{NOTIFY_WHEN_POSTED_LABEL}</span>
+          </label>
+          <label className="flex items-start gap-3 text-small">
+            <input name="mailingListOptIn" type="checkbox" className="mt-1 size-6 accent-jo-red" disabled={sending} />
+            <span>{MAILING_LIST_LABEL}</span>
+          </label>
+          <p className="text-small text-walnut-soft">{IMPLICIT_CONSENT_NOTE}</p>
+        </section>
       </form>
     </section>
   );

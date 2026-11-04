@@ -6,9 +6,11 @@ const TOKEN = "t".repeat(43);
 interface Rev { memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown> }
 const revisions: Rev[] = [];
 let memory: Record<string, unknown> | null;
-type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; sortOrder: number; deletedAt: Date | null; replacesMediaId: string | null; createdAt: Date; durationSeconds: number | null; caption?: string | null; approxDateText?: string | null; place?: string | null; derivatives?: Array<{ kind: string; status: string; mimeType: string | null }> };
+type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; sortOrder: number; deletedAt: Date | null; replacesMediaId: string | null; createdAt: Date; durationSeconds: number | null; maxBytes?: number; caption?: string | null; approxDateText?: string | null; place?: string | null; derivatives?: Array<{ kind: string; status: string; mimeType: string | null }> };
 const mediaRows: MediaRow[] = [];
 const lockCalls: string[] = [];
+/** Other memories of the same send, for the submission count. */
+let siblings: Array<{ id: string; submissionId: string | null; deletedAt: Date | null }> = [];
 function matchesMedia(row: MediaRow, where: Record<string, unknown>): boolean {
   for (const [k, v] of Object.entries(where)) {
     if (k === "status" && typeof v === "object" && v !== null && "in" in v) { if (!(v as { in: string[] }).in.includes(row.status)) { return false; } continue; }
@@ -37,6 +39,7 @@ const tx = {
       return { ...memory, contributor: memory.contributor ? { ...(memory.contributor as object) } : null };
     }),
     update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { Object.assign(memory!, data); return memory; }),
+    count: vi.fn(async ({ where }: { where: { submissionId: string; deletedAt: null } }) => siblings.filter((m) => m.submissionId === where.submissionId && m.deletedAt === null).length),
   },
   contributor: { update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { Object.assign(memory!.contributor as object, data); return memory!.contributor; }) },
   memoryRevision: {
@@ -52,15 +55,16 @@ import { cancelReservation, getMemoryForClaim, removeMediaFromClaim, updateMedia
 beforeEach(() => {
   revisions.length = 0;
   lockCalls.length = 0;
+  siblings = [];
   mediaRows.length = 0;
   mediaRows.push(
-    { id: "med_1", memoryId: "mem_1", status: "READY", mimeType: "image/heic", originalFilename: "a.heic", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:00Z"), durationSeconds: 24, derivatives: [{ kind: "WEB_IMAGE", status: "READY", mimeType: "image/jpeg" }, { kind: "THUMBNAIL", status: "READY", mimeType: "image/jpeg" }] },
-    { id: "med_2", memoryId: "mem_1", status: "PENDING", mimeType: "video/mp4", originalFilename: null, sortOrder: 1, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:01Z"), durationSeconds: null },
+    { id: "med_1", memoryId: "mem_1", status: "READY", mimeType: "image/heic", originalFilename: "a.heic", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:00Z"), durationSeconds: 24, maxBytes: 25 * 1024 * 1024, derivatives: [{ kind: "WEB_IMAGE", status: "READY", mimeType: "image/jpeg" }, { kind: "THUMBNAIL", status: "READY", mimeType: "image/jpeg" }] },
+    { id: "med_2", memoryId: "mem_1", status: "PENDING", mimeType: "video/mp4", originalFilename: null, sortOrder: 1, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:01Z"), durationSeconds: null, maxBytes: 500 * 1024 * 1024 },
     { id: "med_gone", memoryId: "mem_1", status: "READY", mimeType: "image/jpeg", originalFilename: "old.jpg", sortOrder: 2, deletedAt: new Date("2026-11-03T11:00:00Z"), replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:02Z"), durationSeconds: null },
     { id: "med_other", memoryId: "mem_2", status: "READY", mimeType: "image/jpeg", originalFilename: "x.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:03Z"), durationSeconds: null },
   );
   memory = {
-    id: "mem_1", type: "PHOTO", deletedAt: null, claimTokenHash: hashClaimToken(TOKEN), consentVersion: "2026-11-v1",
+    id: "mem_1", type: "PHOTO", deletedAt: null, claimTokenHash: hashClaimToken(TOKEN), consentVersion: "2026-11-v1", submissionId: null, submissionIndex: null,
     approxDateText: "Summer 1998", place: null, contributorNote: "old note", visibility: "FAMILY",
     contributor: { id: "con_1", name: "Jo", relationship: "friend", email: "jo@example.com" },
     media: [{ id: "med_1", status: "READY", mimeType: "image/heic", originalFilename: "a.heic", durationSeconds: 24 }, { id: "med_2", status: "PENDING", mimeType: "video/mp4", originalFilename: null, durationSeconds: null }],
@@ -221,6 +225,30 @@ describe("revision bookkeeping", () => {
     await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Baltimore" } });
     expect(revisions[0]!.before).toMatchObject({ name: "Renamed meanwhile" });
     expect((memory!.contributor as { name: string }).name).toBe("Renamed meanwhile");
+  });
+});
+
+describe("getMemoryForClaim: reservation size (Task 15)", () => {
+  it("carries each file's ticketed ceiling so the claim page can refuse a bigger 'same file' before uploading", async () => {
+    const found = await getMemoryForClaim(TOKEN);
+    expect(found?.media.map((m) => m.maxBytes)).toEqual([25 * 1024 * 1024, 500 * 1024 * 1024]);
+  });
+});
+
+describe("getMemoryForClaim: memories sent together (Task 15)", () => {
+  it("reports the memory's place in its send and how many live memories share the contributor", async () => {
+    memory!.submissionId = "sub_1"; memory!.submissionIndex = 1;
+    siblings = [
+      { id: "mem_1", submissionId: "sub_1", deletedAt: null },
+      { id: "mem_0", submissionId: "sub_1", deletedAt: null },
+      { id: "mem_2", submissionId: "sub_1", deletedAt: new Date() },
+    ];
+    expect((await getMemoryForClaim(TOKEN))?.submission).toEqual({ position: 2, count: 2 });
+  });
+
+  it("is null for a legacy memory", async () => {
+    expect((await getMemoryForClaim(TOKEN))?.submission).toBeNull();
+    expect(dbStub.memory.count).not.toHaveBeenCalled();
   });
 });
 

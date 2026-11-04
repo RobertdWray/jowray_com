@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { claimMediaRefSchema, completeSubmissionSchema, mediaChangesSchema, mediaWordsRequestSchema, replaceRequestSchema } from "@/lib/validations/media";
+import { claimMediaRefSchema, mediaChangesSchema, mediaWordsRequestSchema, replaceRequestSchema } from "@/lib/validations/media";
 import { memoryFileInputSchema } from "@/lib/validations/memory";
 
 const TOKEN = "t".repeat(43);
@@ -38,12 +38,6 @@ describe("mediaChangesSchema", () => {
 });
 
 describe("request schemas for the submission and per-file Server Functions", () => {
-  it("completeSubmissionSchema takes exactly a claim token", () => {
-    expect(completeSubmissionSchema.safeParse({ claimToken: TOKEN }).success).toBe(true);
-    expect(completeSubmissionSchema.safeParse({ claimToken: "short" }).success).toBe(false);
-    expect(completeSubmissionSchema.safeParse(null).success).toBe(false);
-  });
-
   it("mediaWordsRequestSchema wraps the media reference and the changes", () => {
     const parsed = mediaWordsRequestSchema.safeParse({ claimToken: TOKEN, mediaId: randomUUID(), changes: { caption: " x " } });
     expect(parsed.success && parsed.data.changes).toEqual({ caption: "x" });
