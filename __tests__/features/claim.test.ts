@@ -7,9 +7,11 @@ const TOKEN = "t".repeat(43);
 interface Rev { memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown> }
 const revisions: Rev[] = [];
 let memory: Record<string, unknown> | null;
-type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; sortOrder: number; deletedAt: Date | null; replacesMediaId: string | null; createdAt: Date; durationSeconds: number | null; derivatives?: Array<{ kind: string; status: string; mimeType: string | null }> };
+type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; sortOrder: number; deletedAt: Date | null; replacesMediaId: string | null; createdAt: Date; durationSeconds: number | null; maxBytes?: number; caption?: string | null; approxDateText?: string | null; place?: string | null; derivatives?: Array<{ kind: string; status: string; mimeType: string | null }> };
 const mediaRows: MediaRow[] = [];
 const lockCalls: string[] = [];
+/** Other memories of the same send, for the submission count. */
+let siblings: Array<{ id: string; submissionId: string | null; deletedAt: Date | null }> = [];
 function matchesMedia(row: MediaRow, where: Record<string, unknown>): boolean {
   for (const [k, v] of Object.entries(where)) {
     if (k === "status" && typeof v === "object" && v !== null && "in" in v) { if (!(v as { in: string[] }).in.includes(row.status)) { return false; } continue; }
@@ -38,6 +40,7 @@ const tx = {
       return { ...memory, contributor: memory.contributor ? { ...(memory.contributor as object) } : null };
     }),
     update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { Object.assign(memory!, data); return memory; }),
+    count: vi.fn(async ({ where }: { where: { submissionId: string; deletedAt: null } }) => siblings.filter((m) => m.submissionId === where.submissionId && m.deletedAt === null).length),
   },
   contributor: { update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { Object.assign(memory!.contributor as object, data); return memory!.contributor; }) },
   memoryRevision: {
@@ -48,20 +51,21 @@ const tx = {
 const dbStub = { ...tx, $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx)) };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
-import { cancelReservation, getMemoryForClaim, removeMediaFromClaim, updateMemoryFromClaim } from "@/features/memories/claim";
+import { cancelReservation, getMemoryForClaim, removeMediaFromClaim, updateMediaFromClaim, updateMemoryFromClaim } from "@/features/memories/claim";
 
 beforeEach(() => {
   revisions.length = 0;
   lockCalls.length = 0;
+  siblings = [];
   mediaRows.length = 0;
   mediaRows.push(
-    { id: "med_1", memoryId: "mem_1", status: "READY", mimeType: "image/heic", originalFilename: "a.heic", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:00Z"), durationSeconds: 24, derivatives: [{ kind: "WEB_IMAGE", status: "READY", mimeType: "image/jpeg" }, { kind: "THUMBNAIL", status: "READY", mimeType: "image/jpeg" }] },
-    { id: "med_2", memoryId: "mem_1", status: "PENDING", mimeType: "video/mp4", originalFilename: null, sortOrder: 1, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:01Z"), durationSeconds: null },
+    { id: "med_1", memoryId: "mem_1", status: "READY", mimeType: "image/heic", originalFilename: "a.heic", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:00Z"), durationSeconds: 24, maxBytes: 25 * 1024 * 1024, derivatives: [{ kind: "WEB_IMAGE", status: "READY", mimeType: "image/jpeg" }, { kind: "THUMBNAIL", status: "READY", mimeType: "image/jpeg" }] },
+    { id: "med_2", memoryId: "mem_1", status: "PENDING", mimeType: "video/mp4", originalFilename: null, sortOrder: 1, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:01Z"), durationSeconds: null, maxBytes: 500 * 1024 * 1024 },
     { id: "med_gone", memoryId: "mem_1", status: "READY", mimeType: "image/jpeg", originalFilename: "old.jpg", sortOrder: 2, deletedAt: new Date("2026-11-03T11:00:00Z"), replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:02Z"), durationSeconds: null },
     { id: "med_other", memoryId: "mem_2", status: "READY", mimeType: "image/jpeg", originalFilename: "x.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:03Z"), durationSeconds: null },
   );
   memory = {
-    id: "mem_1", type: "PHOTO", status: "PENDING", deletedAt: null, claimTokenHash: hashClaimToken(TOKEN), consentVersion: "2026-11-v1", consentedAt: new Date("2026-11-03T10:00:00Z"),
+    id: "mem_1", type: "PHOTO", status: "PENDING", deletedAt: null, claimTokenHash: hashClaimToken(TOKEN), consentVersion: "2026-11-v1", consentedAt: new Date("2026-11-03T10:00:00Z"), submissionId: null, submissionIndex: null,
     approxDateText: "Summer 1998", place: null, contributorNote: "old note", visibility: "FAMILY", notifyWhenPosted: true,
     contributor: { id: "con_1", name: "Jo", relationship: "friend", email: "jo@example.com", contactOptIn: true },
     media: [{ id: "med_1", status: "READY", mimeType: "image/heic", originalFilename: "a.heic", durationSeconds: 24 }, { id: "med_2", status: "PENDING", mimeType: "video/mp4", originalFilename: null, durationSeconds: null }],
@@ -305,5 +309,78 @@ describe("a DRAFT becomes the person's own by pressing Share", () => {
   it("the draft's words cannot be cleared before a file exists (same last_words rule)", async () => {
     expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "", share: true } })).toEqual({ ok: false, code: "last_words" });
     expect(memory!.status).toBe("DRAFT");
+  });
+});
+
+describe("getMemoryForClaim: reservation size (Task 15)", () => {
+  it("carries each file's ticketed ceiling so the claim page can refuse a bigger 'same file' before uploading", async () => {
+    const found = await getMemoryForClaim(TOKEN);
+    expect(found?.media.map((m) => m.maxBytes)).toEqual([25 * 1024 * 1024, 500 * 1024 * 1024]);
+  });
+});
+
+describe("getMemoryForClaim: memories sent together (Task 15)", () => {
+  it("reports the memory's place in its send and how many live memories share the contributor", async () => {
+    memory!.submissionId = "sub_1"; memory!.submissionIndex = 1;
+    siblings = [
+      { id: "mem_1", submissionId: "sub_1", deletedAt: null },
+      { id: "mem_0", submissionId: "sub_1", deletedAt: null },
+      { id: "mem_2", submissionId: "sub_1", deletedAt: new Date() },
+    ];
+    expect((await getMemoryForClaim(TOKEN))?.submission).toEqual({ position: 2, count: 2 });
+  });
+
+  it("is null for a legacy memory", async () => {
+    expect((await getMemoryForClaim(TOKEN))?.submission).toBeNull();
+    expect(dbStub.memory.count).not.toHaveBeenCalled();
+  });
+});
+
+describe("updateMediaFromClaim", () => {
+  const ID = "00000000-0000-4000-8000-000000000001";
+  beforeEach(() => { mediaRows[0]!.id = ID; mediaRows[0]!.caption = "old words"; mediaRows[0]!.approxDateText = null; mediaRows[0]!.place = "the lake"; });
+
+  it("edits one file's caption, date and place under the lock and appends a revision with before/after", async () => {
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "  her classroom ", approxDateText: "1985", place: "" } })).toEqual({ ok: true });
+    expect(mediaRows[0]).toMatchObject({ caption: "her classroom", approxDateText: "1985", place: null });
+    expect(lockCalls[0]).toContain("FOR UPDATE|mem_1");
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]!.before).toMatchObject({ mediaId: ID, caption: "old words", approxDateText: null, place: "the lake" });
+    expect(revisions[0]!.after).toMatchObject({ mediaId: ID, caption: "her classroom", approxDateText: "1985", place: null, consentVersion: "2026-11-v1" });
+  });
+
+  it("carries the edit onto a live PENDING replacement of that file, so the swap does not restore stale words", async () => {
+    mediaRows.push(
+      { id: "med_repl", memoryId: "mem_1", status: "PENDING", mimeType: "image/jpeg", originalFilename: "new.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: ID, createdAt: new Date(), durationSeconds: null, caption: "old words", approxDateText: null, place: "the lake" },
+      { id: "med_repl_gone", memoryId: "mem_1", status: "PENDING", mimeType: "image/jpeg", originalFilename: "x.jpg", sortOrder: 0, deletedAt: new Date(), replacesMediaId: ID, createdAt: new Date(), durationSeconds: null, caption: "old words", approxDateText: null, place: "the lake" },
+    );
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "her classroom", place: "" } })).toEqual({ ok: true });
+    expect(mediaRows.find((r) => r.id === "med_repl")).toMatchObject({ caption: "her classroom", approxDateText: null, place: null });
+    expect(mediaRows.find((r) => r.id === "med_repl_gone")).toMatchObject({ caption: "old words", place: "the lake" });
+  });
+
+  it("answers invalid to garbage input instead of throwing", async () => {
+    expect(await updateMediaFromClaim(null)).toEqual({ ok: false, code: "invalid" });
+    expect(await updateMediaFromClaim({ claimToken: TOKEN })).toEqual({ ok: false, code: "invalid" });
+  });
+
+  it("leaves fields that were not sent alone", async () => {
+    await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { place: "Broadmead" } });
+    expect(mediaRows[0]).toMatchObject({ caption: "old words", approxDateText: null, place: "Broadmead" });
+  });
+
+  it("rejects a removed file, a wrong token and invalid input without writing", async () => {
+    expect(await updateMediaFromClaim({ claimToken: "x".repeat(43), mediaId: ID, changes: { caption: "x" } })).toEqual({ ok: false, code: "not_found" });
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "x".repeat(2001) } })).toEqual({ ok: false, code: "invalid" });
+    mediaRows[0]!.deletedAt = new Date();
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "x" } })).toEqual({ ok: false, code: "not_found" });
+    mediaRows[0]!.deletedAt = null; mediaRows[0]!.status = "PENDING";
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "x" } })).toEqual({ ok: false, code: "not_found" });
+    expect(revisions).toHaveLength(0);
+  });
+
+  it("exposes the per-file words on the claim view", async () => {
+    const found = await getMemoryForClaim(TOKEN);
+    expect(found?.media[0]).toMatchObject({ caption: "old words", approxDateText: null, place: "the lake" });
   });
 });

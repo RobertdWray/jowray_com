@@ -210,13 +210,16 @@ export async function finalizeUpload({
   }
   let emailed = false;
   if (outcome.status === "READY") {
-    emailed = await confirmQuietly(memory.id, claimToken);
-    // The admin alert needs nothing from the contributor, so it runs after the response.
-    afterWithFlush(async () => {
-      await notifyAdminsQuietly(memory.id);
-    });
-    // After the response: the checksum (small files) and the web copy and
-    // thumbnail (photos; other kinds return not_eligible at once).
+    // A memory sent with others is confirmed and announced by completeSubmission,
+    // once every file of the send has landed (Task 15, D18); never per file here.
+    if (memory.submissionId === null) {
+      emailed = await confirmQuietly(memory.id, claimToken);
+      // After the response: the admin alert, then the checksum (small files) and
+      // the web copy and thumbnail (photos; other kinds return not_eligible at once).
+      afterWithFlush(async () => {
+        await notifyAdminsQuietly(memory.id);
+      });
+    }
     afterWithFlush(async () => {
       if (outcome.sizeBytes <= INLINE_HASH_MAX_BYTES) {
         await computeChecksum({ mediaId: outcome.mediaId });
@@ -241,9 +244,9 @@ export async function confirmQuietly(memoryId: string, claimToken: string): Prom
 }
 
 /** Same contract for the family-admin alert: reported, never thrown, left to the cron on failure. */
-export async function notifyAdminsQuietly(memoryId: string): Promise<boolean> {
+export async function notifyAdminsQuietly(memoryId: string, options: { settleNow?: boolean } = {}): Promise<boolean> {
   try {
-    return (await notifyAdminsOfMemory({ memoryId })).sent;
+    return (await notifyAdminsOfMemory({ memoryId, ...options })).sent;
   } catch (error) {
     await logErrorAndFlush("admin alert failed after save", error, { category: "email", memoryId });
     return false;

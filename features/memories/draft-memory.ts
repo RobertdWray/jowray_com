@@ -1,6 +1,6 @@
 import "server-only";
 
-import { TX_OPTIONS, withinBudget } from "@/features/memories/budget";
+import { TX_OPTIONS, withinBudget } from "@/features/memories/create-memory";
 import type { Prisma } from "@/generated/prisma/client";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
@@ -58,7 +58,7 @@ export async function draftMemory(raw: unknown): Promise<DraftMemoryResult> {
       if (existing) {
         return { duplicate: { memoryId: existing.id, status: existing.status } };
       }
-      if (!(await withinBudget(tx, 0, true))) {
+      if (!(await withinBudget(tx, 0, 1))) {
         return null;
       }
       const memorial = await tx.memorial.findUnique({ where: { slug: MEMORIAL_SLUG } });

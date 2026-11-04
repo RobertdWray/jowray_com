@@ -1,0 +1,261 @@
+{
+  "ranAt": "2026-11-04T02:26:57.287Z",
+  "results": [
+    {
+      "name": "phone-390: heading reads \"Your memory\"",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone-390: no placeholders",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone-390: no \"+ Add another memory\"",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone-390: phone camera button",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone-390: no desktop upload button",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone-390: visibility labels (D13)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone-landscape-852x393: heading reads \"Your memory\"",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone-landscape-852x393: no placeholders",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone-landscape-852x393: no \"+ Add another memory\"",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone-landscape-852x393: phone camera button",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone-landscape-852x393: no desktop upload button",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone-landscape-852x393: visibility labels (D13)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "1280: heading reads Memory 1",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "1280: placeholders 2 and 3",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "1280: no phone camera button",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "1280: desktop upload button",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "1280: hint under About you",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "1280: opening a placeholder focuses its first field",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "1280: add opens the waiting placeholder and focuses its heading",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "1280: a fourth card appears",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "1280: send button counts the filled cards",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "1280: removal announced",
+      "ok": true,
+      "detail": "Memory 4 removed. You now have 3 memories."
+    },
+    {
+      "name": "1280: focus moves to the previous heading",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "1280: done heading has focus",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "1280: two private links",
+      "ok": true,
+      "detail": "http://localhost:3101/m/4FSO0e8j9RoR_C_73RIUbLPraZZJDC6kCAh-Ert9Mac , http://localhost:3101/m/5jJh4QLeFZHwVgHihvBOlL71O8tWYKhPZvA_iJCJCQc"
+    },
+    {
+      "name": "1280: labels on the done screen",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "1280: no-email warning absent, not-emailed line present (outbound disabled)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "1280: phone tip hidden on a computer",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "claim page 1: shows its own words",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "claim page 1: shared-contributor note",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "claim page 1: D13 labels and FAMILY kept",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "claim page 2: shows its own words",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "claim page 2: shared-contributor note",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "claim page 2: D13 labels and FAMILY kept",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone: meter hears the fake microphone",
+      "ok": true,
+      "detail": "Hearing you"
+    },
+    {
+      "name": "phone: the clip is a row with a player",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone: two photos added",
+      "ok": true,
+      "detail": "3"
+    },
+    {
+      "name": "phone: a duplicate is refused",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone: byte-weighted progress text shown",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "phone: one private link",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone: tip on the done screen (D12)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone: no failed files",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone claim page: every file arrived",
+      "ok": true,
+      "detail": "0 not received"
+    },
+    {
+      "name": "phone claim page: three files listed",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "draft v2: card 1 words restored",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "draft v2: contributor name restored",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "draft v2: restore notice",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "draft v1→v2: card 1 restored from the old key",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "draft v1→v2: contributor restored",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "draft v1→v2: old key removed",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "no hydration warnings or page errors at any width",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "hydration": []
+}

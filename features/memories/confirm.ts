@@ -1,6 +1,6 @@
 import "server-only";
 
-import { summarizeReadyMedia } from "@/features/memories/media-summary";
+import { submissionInFlight, summarizeReadyMedia } from "@/features/memories/media-summary";
 import { siteEmailsConfirmation } from "@/features/memories/site-email";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
@@ -10,27 +10,37 @@ import { sendMemoryConfirmation, type SendResult } from "@/services/email";
 
 const log = createLogger({ category: "email" });
 
-export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "no_site_email" | "no_email" | "not_ready" };
+export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "no_site_email" | "no_email" | "not_ready" | "in_submission" | "leased" };
 
 /**
  * Send the one confirmation email for a memory, if there is an address and
  * something READY to confirm (or the memory is TEXT). Memories the admin
  * drafted on someone's behalf are never confirmed by the site
- * (`siteEmailsConfirmation`). Idempotency, the outbound guard and the
- * per-recipient cap live in the email service.
+ * (`siteEmailsConfirmation`, `no_site_email`); memories that belong to a send
+ * are left to `confirmSubmission` (`in_submission`). Idempotency, the
+ * outbound guard and the per-recipient cap live in the email service.
  *
  * The email echoes the contributor's words and details (ruling R1) and lists
  * every READY file in upload order.
  *
  * The claim link needs the raw token, which is never stored. Request-time
- * callers (createMemory, finalizeUpload) pass it in. The reconcile cron has
+ * callers (finalizeUpload) pass it in. The reconcile cron has
  * only the hash, so when `claimToken` is omitted the token is rotated: a
  * fresh one is minted, the email carries the new link, and its hash replaces
  * the old one in the same transaction that records SENT. An emailed link
  * therefore supersedes the on-screen one (ledger ruling), and a skipped or
  * failed send changes nothing.
  */
-export async function confirmMemory({ memoryId, claimToken }: { memoryId: string; claimToken?: string }): Promise<ConfirmResult> {
+export async function confirmMemory({
+  memoryId,
+  claimToken,
+  settleNow = false,
+}: {
+  memoryId: string;
+  claimToken?: string;
+  /** The submission is being closed by its contributor: send with what is READY now, whatever is still in flight. */
+  settleNow?: boolean;
+}): Promise<ConfirmResult> {
   const db = getDb();
   const memory = await db.memory.findUnique({
     where: { id: memoryId },
@@ -38,7 +48,7 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
       contributor: { select: { name: true, email: true, relationship: true } },
       media: {
         where: { deletedAt: null },
-        select: { id: true, status: true, mimeType: true, originalFilename: true, durationSeconds: true },
+        select: { id: true, status: true, mimeType: true, originalFilename: true, durationSeconds: true, createdAt: true },
         orderBy: { createdAt: "asc" },
       },
     },
@@ -54,6 +64,11 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
     log.info({ action: "confirmation_skipped", memoryId, reason: "no_site_email" }, "no site confirmation for an admin-drafted memory");
     return { sent: false, skipped: "no_site_email" };
   }
+  // A memory sent with others gets one receipt for the whole send (Task 15,
+  // `confirmSubmission`), never a per-memory email, the anchor included.
+  if (memory.submissionId !== null) {
+    return { sent: false, skipped: "in_submission" };
+  }
   if (claimToken !== undefined && hashClaimToken(claimToken) !== memory.claimTokenHash) {
     return { sent: false, skipped: "not_found" };
   }
@@ -68,8 +83,17 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
   if (memory.type !== "TEXT" && media.length === 0 && !hasWords) {
     return { sent: false, skipped: "not_ready" };
   }
+  // The one email should list the whole submission; completeSubmission settles regardless.
+  if (!settleNow && submissionInFlight(memory)) {
+    return { sent: false, skipped: "not_ready" };
+  }
 
   const rotating = claimToken === undefined;
+  // The cron (no raw token) rotates the link; it must not do that while the
+  // contributor is still sending files with the link they have.
+  if (rotating && memory.uploadLeaseUntil !== null && memory.uploadLeaseUntil.getTime() > Date.now()) {
+    return { sent: false, skipped: "leased" };
+  }
   const token = claimToken ?? newClaimToken();
 
   // Cron path: the service writes the new hash together with SENT in one

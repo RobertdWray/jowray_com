@@ -6,7 +6,7 @@ import { lockMemory } from "@/features/memories/lock";
 import { appendClaimRevision, hasWords, LIVE_MEDIA_ORDER, recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
-import { claimMediaRefSchema } from "@/lib/validations/media";
+import { claimMediaRefSchema, mediaWordsRequestSchema } from "@/lib/validations/media";
 import { getMemorialEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 
@@ -60,6 +60,12 @@ export interface ClaimMediaView {
   originalFilename: string | null;
   sortOrder: number;
   durationSeconds: number | null;
+  /** The reservation's ceiling (the kind's maximum, or the declared size for a send): a "Try again" file must fit it. */
+  maxBytes: number;
+  /** The contributor's words for this file; the memory's note is the shared story. */
+  caption: string | null;
+  approxDateText: string | null;
+  place: string | null;
   /** Set when this row is a pending replacement for another live file. */
   replacesMediaId: string | null;
 }
@@ -77,6 +83,8 @@ export interface ClaimView {
   contributor: { name: string | null; relationship: string | null; email: string | null; contactOptIn: boolean } | null;
   /** Every live file (not removed), whatever its status, in display order. */
   media: ClaimMediaView[];
+  /** Set when the memory was sent together with others (Task 15): its 1-based place and how many of them are still live. */
+  submission: { position: number; count: number } | null;
 }
 
 function webCopyState(row: { status: "PENDING" | "READY" | "FAILED"; mimeType: string | null } | null): WebCopyState {
@@ -102,6 +110,10 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
           sortOrder: true,
           replacesMediaId: true,
           durationSeconds: true,
+          maxBytes: true,
+          caption: true,
+          approxDateText: true,
+          place: true,
           derivatives: { where: { kind: "WEB_IMAGE" }, select: { status: true, mimeType: true } },
         },
         orderBy: [...LIVE_MEDIA_ORDER],
@@ -111,6 +123,10 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
   if (!memory || memory.deletedAt !== null) {
     return null;
   }
+  const submission =
+    memory.submissionId !== null
+      ? { position: (memory.submissionIndex ?? 0) + 1, count: await getDb().memory.count({ where: { submissionId: memory.submissionId, deletedAt: null } }) }
+      : null;
   return {
     id: memory.id,
     type: memory.type,
@@ -121,7 +137,8 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
     visibility: memory.visibility,
     notifyWhenPosted: memory.notifyWhenPosted,
     contributor: memory.contributor,
-    media: memory.media.map(({ id, status, mimeType, originalFilename, sortOrder, replacesMediaId, durationSeconds, derivatives }) => ({
+    submission,
+    media: memory.media.map(({ id, status, mimeType, originalFilename, sortOrder, replacesMediaId, durationSeconds, maxBytes, caption, approxDateText, place, derivatives }) => ({
       id,
       status,
       web: webCopyState(derivatives?.[0] ?? null),
@@ -130,6 +147,10 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
       sortOrder,
       replacesMediaId,
       durationSeconds,
+      maxBytes,
+      caption,
+      approxDateText,
+      place,
     })),
   };
 }
@@ -319,4 +340,46 @@ export function removeMediaFromClaim(raw: unknown): Promise<ClaimMediaResult> {
 /** Cancel a reservation that never arrived or was rejected, freeing its slot. */
 export function cancelReservation(raw: unknown): Promise<ClaimMediaResult> {
   return retireMedia(raw, ["PENDING", "FAILED"], "cancel");
+}
+
+/**
+ * Edit one file's own words (caption, rough date, place) from the claim page,
+ * under the memory lock, with a CLAIM_LINK revision naming the file.
+ */
+export async function updateMediaFromClaim(raw: unknown): Promise<ClaimMediaResult> {
+  const parsed = mediaWordsRequestSchema.safeParse(raw);
+  if (!parsed.success) {
+    return { ok: false, code: "invalid" };
+  }
+  const { mediaId, changes: input } = parsed.data;
+  const claimTokenHash = hashClaimToken(parsed.data.claimToken);
+  const result = await getDb().$transaction(async (tx) => {
+    const memory = await tx.memory.findUnique({ where: { claimTokenHash }, select: { id: true, deletedAt: true, consentVersion: true } });
+    if (!memory || memory.deletedAt !== null) {
+      return "not_found" as const;
+    }
+    await lockMemory(tx, memory.id);
+    const target = await tx.media.findFirst({ where: { id: mediaId, memoryId: memory.id, deletedAt: null, status: "READY" } });
+    if (!target) {
+      return "not_found" as const;
+    }
+    const before = { mediaId: target.id, caption: target.caption, approxDateText: target.approxDateText, place: target.place };
+    const after = {
+      mediaId: target.id,
+      caption: input.caption === undefined ? before.caption : input.caption,
+      approxDateText: input.approxDateText === undefined ? before.approxDateText : input.approxDateText,
+      place: input.place === undefined ? before.place : input.place,
+    };
+    const words = { caption: after.caption, approxDateText: after.approxDateText, place: after.place };
+    await tx.media.update({ where: { id: target.id }, data: words });
+    // A replacement still on its way copied the target's words when it was ticketed; keep it current so the swap cannot restore stale words.
+    await tx.media.updateMany({ where: { memoryId: memory.id, replacesMediaId: target.id, status: "PENDING", deletedAt: null }, data: words });
+    await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: memory.consentVersion });
+    return "ok" as const;
+  }, TX_OPTIONS);
+  if (result !== "ok") {
+    return { ok: false, code: result };
+  }
+  log.info({ action: "media_edit", mediaId }, "file words edited through the claim link");
+  return { ok: true };
 }

@@ -6,6 +6,7 @@ import { useState } from "react";
 import type { ClaimView } from "@/features/memories/claim";
 import { CONTACT_OPT_IN_LABEL, IMPLICIT_CONSENT_NOTE, NOTIFY_WHEN_POSTED_LABEL } from "@/lib/consent";
 import { ACCEPT_ATTRIBUTE } from "@/lib/media-types";
+import { VISIBILITY_OPTIONS } from "@/lib/visibility";
 import { uploadWithTicket } from "@/lib/upload-client";
 
 import { PrimaryButton } from "../../_components/buttons";
@@ -102,12 +103,18 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
         className="flex flex-col gap-[22px] rounded-form border-[3px] border-wood-light bg-paper p-8 shadow-form"
         aria-busy={busy}
       >
+        {memory.submission && memory.submission.count > 1 && (
+          <p className="text-small text-walnut-soft">
+            This is memory {memory.submission.position} of the {memory.submission.count} you sent together. Your name and how you knew Jo are
+            shared by all of them, so a change here changes them everywhere.
+          </p>
+        )}
         <label className={labelClass}>
           <span>Your name</span>
           <input name="name" defaultValue={memory.contributor?.name ?? ""} maxLength={120} className={inputClass} />
         </label>
         <label className={labelClass}>
-          <span>Relationship</span>
+          <span>How you knew Jo</span>
           <input name="relationship" defaultValue={memory.contributor?.relationship ?? ""} maxLength={120} className={inputClass} />
         </label>
         <label className={labelClass}>
@@ -125,9 +132,9 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
         <label className={labelClass}>
           <span>Who can see this?</span>
           <select name="visibility" defaultValue={memory.visibility} className={selectClass}>
-            <option value="FAMILY">The family</option>
-            <option value="PUBLIC">Everyone who visits the memorial</option>
-            <option value="PRIVATE">Only me and the family admins</option>
+            {VISIBILITY_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
           </select>
         </label>
         {draft ? (
