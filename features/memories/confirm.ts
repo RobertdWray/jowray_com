@@ -21,7 +21,7 @@ export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "
  * every READY file in upload order.
  *
  * The claim link needs the raw token, which is never stored. Request-time
- * callers (createMemory, finalizeUpload) pass it in. The reconcile cron has
+ * callers (finalizeUpload) pass it in. The reconcile cron has
  * only the hash, so when `claimToken` is omitted the token is rotated: a
  * fresh one is minted, the email carries the new link, and its hash replaces
  * the old one in the same transaction that records SENT. An emailed link

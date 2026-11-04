@@ -6,7 +6,7 @@ import { getUploadEnv } from "@/server/config/env";
 
 /**
  * An upload ticket binds one Media row to one Blob pathname, MIME type and
- * size limit for 15 minutes. It is minted by `createMemory()` /
+ * size limit for 15 minutes. It is minted by `issueUploadTicket()` /
  * `createUploadTicket()` and verified by `/api/upload` (token exchange) and
  * `finalizeUpload()`. The signature is HMAC-SHA256 over canonical JSON of
  * the claims (fixed key order), keyed by UPLOAD_TICKET_SECRET.
