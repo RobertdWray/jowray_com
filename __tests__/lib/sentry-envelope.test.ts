@@ -1,8 +1,23 @@
 import * as Sentry from "@sentry/nextjs";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { DATA_COLLECTION } from "@/lib/sentry/data-collection";
 import { scrubBreadcrumb, scrubEvent, scrubLog, scrubSpan } from "@/lib/sentry/scrub";
+import { instrumentedAction } from "@/lib/sentry/server-action";
+
+// `headers()` only works inside a request; the wrapper reads it for trace propagation.
+// The headers a Server Function POST from a claim page carries: Next's router state encodes the claim-token
+// segment, and the Vercel protection cookie rides along on a protected preview.
+const ROUTE_TOKEN = "SENTRYTEST_" + "h".repeat(32);
+vi.mock("next/headers", () => ({
+  headers: async () =>
+    new Headers({
+      "x-forwarded-for": "203.0.113.9",
+      "next-router-state-tree": encodeURIComponent(JSON.stringify(["", { children: ["m", { children: [["claimToken", "SENTRYTEST_" + "h".repeat(32), "d"], { children: ["__PAGE__", {}] }] }] }])),
+      "next-url": "/m/SENTRYTEST_" + "h".repeat(32),
+      cookie: "_vercel_jwt=SENTRYTEST_" + "j".repeat(32),
+    }),
+}));
 
 /**
  * The decisive gate for the expanded data policy (plan §7.4): the real server
@@ -37,6 +52,8 @@ beforeAll(() => {
   Sentry.init({
     dsn: "https://public@o0.ingest.sentry.io/0",
     environment: "test",
+    // As in both inits: Server Function inputs and results nest four or five deep (cards → files).
+    normalizeDepth: 6,
     // Streamed spans go through beforeSendSpan on the real StreamedSpanJSON shape only with tracing on.
     tracesSampleRate: 1.0,
     dataCollection: DATA_COLLECTION,
@@ -118,6 +135,28 @@ describe("tunnel route (handler mode, plan §7.1)", () => {
   });
 });
 
+describe("instrumentedAction (plan §8.5)", () => {
+  it("names the transaction, attaches the scrubbed input as context, and nothing inside the action leaks a token", async () => {
+    const before = sent.length;
+    const result = await instrumentedAction("createSubmission", { email: EMAIL, memories: [{ note: "hi", files: [{ name: "a.jpg" }] }], claimTokens: [CLAIM_TOKEN] }, async () => {
+      // An error reported while the action runs (what the features do) carries the action's context.
+      Sentry.captureMessage("inside the action");
+      return { ok: true, memories: [{ index: 0, memoryId: "mem_1", claimToken: CLAIM_TOKEN, files: [] }] };
+    });
+    expect(result.memories[0]?.claimToken).toBe(CLAIM_TOKEN); // the caller still gets the real token
+    await Sentry.flush(5000);
+    const envelope = sent.slice(before).find((item) => item.includes("inside the action"));
+    expect(envelope).toBeDefined();
+    expect(envelope).toContain('"transaction":"serverAction/createSubmission"');
+    // Events captured inside the action carry no request headers (only the trace comes from them), so the proof is the negatives.
+    expect(envelope).not.toContain("next-router-state-tree");
+    expect(envelope).not.toContain("_vercel_jwt");
+    expect(envelope).not.toContain(ROUTE_TOKEN);
+    expect(envelope).toContain('"server_action_input":{"email":"sentry-test@jowray.com","memories":[{"note":"hi","files":[{"name":"a.jpg"}]}],"claimTokens":"[Filtered]"}');
+    expect(envelope).not.toContain("SENTRYTEST_");
+  });
+});
+
 describe("streamed spans (beforeSendSpan on the real SDK)", () => {
   it("a server span carrying a claim URL and the Server Function span leave without a token", async () => {
     const before = sent.length;
@@ -138,6 +177,8 @@ describe("streamed spans (beforeSendSpan on the real SDK)", () => {
     await Sentry.flush(5000);
     const spans = sent.slice(before).filter((item) => item.includes('"type":"span"'));
     expect(spans.length).toBeGreaterThan(0);
+    // The Server Function span from the instrumentedAction case above is streamed too.
+    expect(sent.some((item) => item.includes('"type":"span"') && item.includes("createSubmission"))).toBe(true);
     for (const envelope of sent) {
       expect(envelope).not.toContain("SENTRYTEST_");
     }

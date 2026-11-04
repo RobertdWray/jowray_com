@@ -50,6 +50,9 @@ const tx = {
 };
 const dbStub = { ...tx, $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx)) };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
+const identifyMock = vi.fn();
+const tagIdsMock = vi.fn();
+vi.mock("@/lib/sentry/user", () => ({ identifyContributor: (...a: unknown[]) => identifyMock(...a), tagIds: (...a: unknown[]) => tagIdsMock(...a) }));
 
 import { cancelReservation, getMemoryForClaim, removeMediaFromClaim, updateMediaFromClaim, updateMemoryFromClaim } from "@/features/memories/claim";
 
@@ -403,5 +406,41 @@ describe("updateMediaFromClaim", () => {
   it("exposes the per-file words on the claim view", async () => {
     const found = await getMemoryForClaim(TOKEN);
     expect(found?.media[0]).toMatchObject({ caption: "old words", approxDateText: null, place: "the lake" });
+  });
+});
+
+describe("Sentry identity and tags (plan §8.2)", () => {
+  beforeEach(() => { identifyMock.mockClear(); tagIdsMock.mockClear(); });
+
+  it("getMemoryForClaim identifies the contributor (with id) and tags the memory", async () => {
+    await getMemoryForClaim(TOKEN);
+    expect(identifyMock).toHaveBeenCalledWith({ id: "con_1", email: "jo@example.com", name: "Jo" });
+    expect(tagIdsMock).toHaveBeenCalledWith({ memoryId: "mem_1" });
+  });
+
+  it("updateMemoryFromClaim identifies the contributor from the locked read and tags the memory", async () => {
+    await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "edited" } });
+    expect(identifyMock).toHaveBeenCalledWith({ id: "con_1", email: "jo@example.com", name: "Jo" });
+    expect(tagIdsMock).toHaveBeenCalledWith({ memoryId: "mem_1" });
+  });
+
+  it("the media features tag the memory and the file, and set no identity (the contributor is not loaded)", async () => {
+    const READY_ID = "00000000-0000-4000-8000-000000000001";
+    const PENDING_ID = "00000000-0000-4000-8000-000000000002";
+    mediaRows[0]!.id = READY_ID;
+    mediaRows[1]!.id = PENDING_ID;
+    memory!.contributorNote = "some words";
+    expect((await updateMediaFromClaim({ claimToken: TOKEN, mediaId: READY_ID, changes: { caption: "c" } })).ok).toBe(true);
+    expect((await cancelReservation({ claimToken: TOKEN, mediaId: PENDING_ID })).ok).toBe(true);
+    expect((await removeMediaFromClaim({ claimToken: TOKEN, mediaId: READY_ID })).ok).toBe(true);
+    expect(tagIdsMock.mock.calls).toEqual([[{ memoryId: "mem_1", mediaId: READY_ID }], [{ memoryId: "mem_1", mediaId: PENDING_ID }], [{ memoryId: "mem_1", mediaId: READY_ID }]]);
+    expect(identifyMock).not.toHaveBeenCalled();
+  });
+
+  it("a wrong token sets nothing", async () => {
+    await getMemoryForClaim("x".repeat(43));
+    await updateMemoryFromClaim({ claimToken: "x".repeat(43), changes: { note: "x" } });
+    expect(identifyMock).not.toHaveBeenCalled();
+    expect(tagIdsMock).not.toHaveBeenCalled();
   });
 });

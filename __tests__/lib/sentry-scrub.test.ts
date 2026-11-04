@@ -133,7 +133,7 @@ const FILTERED = "[Filtered]";
 
 describe("secrets constants", () => {
   it("name the bearer fields, key fragments and headers", () => {
-    expect(SECRET_FIELD_KEYS).toEqual(["claimToken", "claimTokens", "claimLink", "ticket", "clientPayload", "sig"]);
+    expect(SECRET_FIELD_KEYS).toEqual(["claimToken", "claimTokens", "claimLink", "ticket", "clientPayload", "sig", "key"]);
     expect(SECRET_KEY_FRAGMENTS).toEqual(["token", "ticket"]);
     expect(SECRET_HEADER_KEYS).toEqual(["cookie", "authorization", "x-vercel-protection-bypass", "x-vercel-signature", "next-router-state-tree"]);
   });
@@ -142,6 +142,11 @@ describe("secrets constants", () => {
 describe("scrubSecrets", () => {
   it("filters the completeSubmission input (claimTokens array) whatever the value type", () => {
     expect(scrubSecrets({ claimTokens: [TEST_TOKEN, TEST_TOKEN_2], anchorId: "mem_1" })).toEqual({ claimTokens: FILTERED, anchorId: "mem_1" });
+  });
+
+  it("filters the admin entry key (the enterAdmin Server Function argument) but not keys that merely contain the word", () => {
+    expect(scrubSecrets({ key: TEST_TOKEN, storageKey: "originals/mem_1/a.jpg" })).toEqual({ key: FILTERED, storageKey: "originals/mem_1/a.jpg" });
+    expect(scrubSecrets(`{"key":"${TEST_TOKEN}","storageKey":"k"}`)).toBe(`{"key":"${FILTERED}","storageKey":"k"}`);
   });
 
   it("filters a createSubmission response as an object and as JSON text", () => {
@@ -288,6 +293,11 @@ describe("scrubSecrets on the app's real wire shapes", () => {
     expect(scrubSecrets(`{"ticket":[{"sig":"${TEST_TOKEN}","a":[1]},{"sig":"${TEST_TOKEN_2}"}],"ok":1}`)).not.toContain("SENTRYTEST_");
     expect(scrubSecrets(`{"note":"she said \\"hi\\"","claimToken":"${TEST_TOKEN}"}`)).not.toContain(TEST_TOKEN);
     expect(scrubSecrets(`{"outer":{"inner":{"x":1}},"claimToken":"${TEST_TOKEN}"}`)).not.toContain(TEST_TOKEN);
+  });
+
+  it("filters the double-encoded admin entry key (PR #31's enterAdmin argument on the RSC wire)", () => {
+    const flight = JSON.stringify([JSON.stringify({ key: TEST_TOKEN })]);
+    expect(scrubSecrets(flight)).not.toContain("SENTRYTEST_");
   });
 
   it("still filters truncated double-encoded text", () => {

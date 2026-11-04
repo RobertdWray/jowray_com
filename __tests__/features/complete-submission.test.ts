@@ -72,7 +72,12 @@ const storageGetMock = vi.fn(async (pathname: string) => ({ stream: new Blob([Bu
 vi.mock("@/services/storage", () => ({ createStorageService: () => ({ get: storageGetMock, head: vi.fn(), del: vi.fn(), put: vi.fn(), presignGet: vi.fn() }) }));
 
 const afterCalls: Array<() => Promise<void>> = [];
-vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
+vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (_name: string, cb: () => Promise<void>) => { afterCalls.push(cb); } }));
+const identifyMock = vi.fn();
+const tagIdsMock = vi.fn();
+vi.mock("@/lib/sentry/user", () => ({ identifyContributor: (...a: unknown[]) => identifyMock(...a), tagIds: (...a: unknown[]) => tagIdsMock(...a) }));
+const metricsMock = vi.hoisted(() => ({ memoryCreated: vi.fn(), uploadFinalized: vi.fn(), confirmationSent: vi.fn(), reconcileRun: vi.fn() }));
+vi.mock("@/lib/sentry/metrics", () => metricsMock);
 
 import { completeSubmission, COMPLETION_GRACE_MS, confirmSubmission } from "@/features/memories/complete-submission";
 
@@ -295,5 +300,23 @@ describe("confirmSubmission (cron path)", () => {
     for (const m of memories) { m.contributor = { ...contributor, email: null }; }
     expect(await confirmSubmission({ anchorId: "mem_0" })).toEqual({ sent: false, skipped: "no_email" });
     expect(sendMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("Sentry identity, tags and metrics (plan §8.2)", () => {
+  it("completeSubmission tags the send; confirmSubmission identifies the anchor's contributor once the rows are loaded and records the outcome", async () => {
+    identifyMock.mockClear(); tagIdsMock.mockClear(); metricsMock.confirmationSent.mockClear();
+    const result = await completeSubmission({ claimTokens: [T(0), T(1), T(2)] });
+    expect(result).toEqual({ ok: true, emailed: true });
+    expect(tagIdsMock).toHaveBeenCalledWith({ submissionId: "sub_1", memoryId: "mem_0" });
+    expect(identifyMock).toHaveBeenCalledWith({ email: "kay@example.com", name: "Kay" });
+    expect(metricsMock.confirmationSent).toHaveBeenCalledWith("sent");
+  });
+
+  it("records a skipped confirmation by its reason", async () => {
+    metricsMock.confirmationSent.mockClear();
+    memories[0]!.uploadLeaseUntil = new Date(Date.now() + 60 * 60_000);
+    expect(await confirmSubmission({ anchorId: "mem_0" })).toEqual({ sent: false, skipped: "leased" });
+    expect(metricsMock.confirmationSent).toHaveBeenCalledWith("leased");
   });
 });

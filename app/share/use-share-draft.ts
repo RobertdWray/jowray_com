@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 
 import { isShareDraftEmpty, readShareDraft, serializeShareDraft, SHARE_DRAFT_KEY, type ShareDraft } from "@/lib/share-draft";
+import { reportClientError } from "@/lib/sentry/report";
 
 const SAVE_DELAY_MS = 500;
 
 function storage(): Storage | null {
   try {
     return typeof window === "undefined" ? null : window.localStorage;
-  } catch {
+  } catch (error) {
     // Private windows and blocked site data throw on access.
+    reportClientError(error, { surface: "share-draft", step: "storage" });
     return null;
   }
 }
@@ -69,8 +71,9 @@ export function useShareDraft(getCurrent: () => ShareDraft): {
       } else {
         store.setItem(SHARE_DRAFT_KEY, serializeShareDraft(current, Date.now()));
       }
-    } catch {
+    } catch (error) {
       // Quota or blocked storage: the form still works without a draft.
+      reportClientError(error, { surface: "share-draft", step: "save" });
     }
   }, []);
 
@@ -111,8 +114,9 @@ export function useShareDraft(getCurrent: () => ShareDraft): {
     snapshot = null;
     try {
       storage()?.removeItem(SHARE_DRAFT_KEY);
-    } catch {
+    } catch (error) {
       // Nothing to clear.
+      reportClientError(error, { surface: "share-draft", step: "clear" });
     }
   }, []);
 

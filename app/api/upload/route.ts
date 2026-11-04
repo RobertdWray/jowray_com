@@ -5,6 +5,7 @@ import { deriveMedia } from "@/features/memories/derive-media";
 import { recordMedia } from "@/features/memories/ingest-upload";
 import { createLogger, logError } from "@/lib/logger";
 import { afterWithFlush } from "@/lib/sentry/after-flush";
+import { tagIds } from "@/lib/sentry/user";
 import { getSiteUrl } from "@/lib/site-url";
 import { BLOB_TOKEN_LIFETIME_MS, parseTicket, verifyUploadTicket } from "@/lib/upload-ticket";
 import { getBlobEnv } from "@/server/config/env";
@@ -83,7 +84,8 @@ export async function POST(request: NextRequest): Promise<Response> {
           await db.webhookEvent.update({ where: { id: event.id }, data: { attempts: EVENT_MAX_ATTEMPTS, error: "no mediaId in tokenPayload" } });
           return;
         }
-        afterWithFlush(async () => {
+        tagIds({ mediaId });
+        afterWithFlush("upload.callback", async () => {
           try {
             const outcome = await recordMedia({ mediaId });
             // A blob that is not visible yet stays unprocessed so cron step (c) replays it.
