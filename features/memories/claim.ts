@@ -67,6 +67,8 @@ export interface ClaimView {
   contributor: { name: string | null; relationship: string | null; email: string | null } | null;
   /** Every live file (not removed), whatever its status, in display order. */
   media: ClaimMediaView[];
+  /** Set when the memory was sent together with others (Task 15): its 1-based place and how many of them are still live. */
+  submission: { position: number; count: number } | null;
 }
 
 function webCopyState(row: { status: "PENDING" | "READY" | "FAILED"; mimeType: string | null } | null): WebCopyState {
@@ -101,6 +103,10 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
   if (!memory || memory.deletedAt !== null) {
     return null;
   }
+  const submission =
+    memory.submissionId !== null
+      ? { position: (memory.submissionIndex ?? 0) + 1, count: await getDb().memory.count({ where: { submissionId: memory.submissionId, deletedAt: null } }) }
+      : null;
   return {
     id: memory.id,
     type: memory.type,
@@ -109,6 +115,7 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
     contributorNote: memory.contributorNote,
     visibility: memory.visibility,
     contributor: memory.contributor,
+    submission,
     media: memory.media.map(({ id, status, mimeType, originalFilename, sortOrder, replacesMediaId, durationSeconds, derivatives }) => ({
       id,
       status,
