@@ -50,6 +50,8 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
     return { sent: false, skipped: "deleted" };
   }
   if (!siteEmailsConfirmation(memory)) {
+    // Logged so a local walk-through can see the skip, not only the absence of an EmailLog row.
+    log.info({ action: "confirmation_skipped", memoryId, reason: "no_site_email" }, "no site confirmation for an admin-drafted memory");
     return { sent: false, skipped: "no_site_email" };
   }
   if (claimToken !== undefined && hashClaimToken(claimToken) !== memory.claimTokenHash) {
