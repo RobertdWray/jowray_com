@@ -4,6 +4,7 @@ import type { UploadGrant } from "@/features/memories/create-memory";
 import { renewUploadLease } from "@/features/memories/upload-lease";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
+import { tagIds } from "@/lib/sentry/user";
 import { mintUploadTicket } from "@/lib/upload-ticket";
 import { issueTicketRequestSchema } from "@/lib/validations/memory";
 import { getDb } from "@/server/db/client";
@@ -43,6 +44,7 @@ export async function issueUploadTicket(raw: unknown): Promise<IssueTicketResult
   if (row.status !== "PENDING") {
     return { ok: false, code: "not_pending" };
   }
+  tagIds({ memoryId: memory.id, mediaId: row.id });
   await renewUploadLease(db, memory);
   const ticket = mintUploadTicket({ mediaId: row.id, memoryId: memory.id, pathname: row.storageKey, mimeType: row.mimeType, maxBytes: row.maxBytes });
   log.info({ action: "ticket_issued", mediaId: row.id, memoryId: memory.id }, "upload ticket issued");

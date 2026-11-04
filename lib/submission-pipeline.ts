@@ -80,6 +80,13 @@ export interface PipelineHooks {
   onProgress?: (progress: PipelineProgress) => void;
   /** Each file's outcome as it is known, for the per-row progress bars. */
   onFileDone?: (cardId: string, mediaId: string, ok: boolean) => void;
+  /**
+   * Every error this pipeline swallows on purpose (the outcome rules above
+   * are unchanged), so it can still be reported: `create` (the send could not
+   * be created), `upload` (one file's bytes), `file` (a ticket or finalize
+   * step threw), `complete` (the completion call). Tokens are never passed.
+   */
+  onError?: (error: unknown, context: { step: "create" | "upload" | "file" | "complete"; [key: string]: unknown }) => void;
 }
 
 export const UNREACHABLE_MESSAGE = "We couldn't get through just now. Nothing was lost; your words are still here. Check your connection and press Send again.";
@@ -101,7 +108,7 @@ interface Job {
 }
 
 /** One attempt: ticket, upload, finalize. Returns the file's status, or null when the upload failed and the file is not there. */
-async function attempt(job: Job, deps: PipelineDeps, onProgress: (pct: number) => void): Promise<"READY" | "PENDING" | "FAILED" | "REJECTED" | "no_ticket" | "not_pending" | "not_there"> {
+async function attempt(job: Job, deps: PipelineDeps, onProgress: (pct: number) => void, hooks: PipelineHooks): Promise<"READY" | "PENDING" | "FAILED" | "REJECTED" | "no_ticket" | "not_pending" | "not_there"> {
   const ticketed = await deps.issueUploadTicket({ claimToken: job.claimToken, mediaId: job.mediaId });
   if (!ticketed.ok) {
     // `not_pending` on a retry means the first upload landed after all and the callback recorded it.
@@ -110,8 +117,9 @@ async function attempt(job: Job, deps: PipelineDeps, onProgress: (pct: number) =
   let uploaded = true;
   try {
     await deps.upload(ticketed.upload, job.item.file, onProgress);
-  } catch {
+  } catch (error) {
     // The file may still have landed (multipart retries, a lost response): finalize before deciding.
+    hooks.onError?.(error, { step: "upload", mediaId: job.mediaId, fileName: job.item.name });
     uploaded = false;
   }
   const finalized = await deps.finalizeUpload({ ticket: ticketed.upload.ticket, claimToken: job.claimToken });
@@ -129,8 +137,9 @@ export async function runSubmission(input: PipelineInput, deps: PipelineDeps, ho
       ...contributor,
       memories: cards.map((card) => ({ approxDateText: card.approxDateText, place: card.place, note: card.note, files: card.media.map(toFileInput) })),
     });
-  } catch {
+  } catch (error) {
     // Unknown outcome (network, timeout): never resend on our own.
+    hooks.onError?.(error, { step: "create" });
     return { ok: false, code: "unreachable", message: UNREACHABLE_MESSAGE, memoryIndex: null, fileIndex: null, field: null };
   }
   if (!created.ok) {
@@ -174,15 +183,16 @@ export async function runSubmission(input: PipelineInput, deps: PipelineDeps, ho
       report(job, index, 0);
       let ok = false;
       try {
-        let status = await attempt(job, deps, (pct) => report(job, index, pct));
+        let status = await attempt(job, deps, (pct) => report(job, index, pct), hooks);
         if (status === "not_there") {
-          status = await attempt(job, deps, (pct) => report(job, index, pct));
+          status = await attempt(job, deps, (pct) => report(job, index, pct), hooks);
           if (status === "not_pending") {
             status = "READY";
           }
         }
         ok = status === "READY" || status === "PENDING";
-      } catch {
+      } catch (error) {
+        hooks.onError?.(error, { step: "file", mediaId: job.mediaId, fileName: job.item.name });
         ok = false;
       }
       if (!ok) {
@@ -196,8 +206,9 @@ export async function runSubmission(input: PipelineInput, deps: PipelineDeps, ho
     try {
       const completed = await deps.completeSubmission({ claimTokens: created.memories.map((m) => m.claimToken) });
       emailed = completed.ok && completed.emailed;
-    } catch {
+    } catch (error) {
       // The links on screen still work; the cron finishes the send once the lease runs out.
+      hooks.onError?.(error, { step: "complete", submissionId: created.submissionId });
       emailed = false;
     }
   }

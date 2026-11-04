@@ -1,11 +1,13 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { ClaimView } from "@/features/memories/claim";
 import { CONTACT_OPT_IN_LABEL, IMPLICIT_CONSENT_NOTE, NOTIFY_WHEN_POSTED_LABEL } from "@/lib/consent";
 import { ACCEPT_ATTRIBUTE } from "@/lib/media-types";
+import { reportClientError } from "@/lib/sentry/report";
+import { identifyContributor, tagIds } from "@/lib/sentry/user";
 import { contributorVisibilityOptions } from "@/lib/visibility";
 import { uploadWithTicket } from "@/lib/upload-client";
 
@@ -19,6 +21,11 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
   const [busy, setBusy] = useState(false);
   // A DRAFT was saved by the family admin on this person's behalf: one button, Share, which is the act of sharing.
   const draft = memory.status === "DRAFT";
+  // Sentry knows whose claim page this is (plan 2026-11-04 §8.3); the memory id is a tag, never user.id.
+  useEffect(() => {
+    identifyContributor({ email: memory.contributor?.email, name: memory.contributor?.name });
+    tagIds({ memoryId: memory.id });
+  }, [memory.id, memory.contributor?.email, memory.contributor?.name]);
 
   async function onSave(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -55,7 +62,8 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
       if (result.ok) {
         router.refresh();
       }
-    } catch {
+    } catch (error) {
+      reportClientError(error, { surface: "claim-form", step: "save", memoryId: memory.id });
       setMessage("We could not reach the server. Your changes are still in the form; please try again.");
     } finally {
       setBusy(false);
@@ -80,6 +88,7 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
       setMessage(finalized.status === "READY" ? "File added." : finalized.status === "PENDING" ? "The file is still being checked; it will appear shortly." : "The file could not be accepted.");
       router.refresh();
     } catch (error) {
+      reportClientError(error, { surface: "claim-form", step: "add-file", memoryId: memory.id });
       setMessage(error instanceof Error ? error.message : "Upload failed");
     } finally {
       setBusy(false);

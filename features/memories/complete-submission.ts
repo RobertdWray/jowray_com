@@ -6,6 +6,8 @@ import { LIVE_MEDIA_ORDER } from "@/features/memories/media-state";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger, logErrorAndFlush } from "@/lib/logger";
 import { afterWithFlush } from "@/lib/sentry/after-flush";
+import { confirmationSent } from "@/lib/sentry/metrics";
+import { identifyContributor, tagIds } from "@/lib/sentry/user";
 import { getSiteUrl } from "@/lib/site-url";
 import { completeSubmissionSchema } from "@/lib/validations/memory";
 import { getDb } from "@/server/db/client";
@@ -155,7 +157,14 @@ async function buildMemories(live: LoadedMemory[], links: Map<string, string>): 
  * service together with SENT (C22, C25). A soft-deleted memory gets no link
  * and no rotation; a send with no live memory writes a terminal SKIPPED row.
  */
-export async function confirmSubmission({ anchorId, claimTokens }: { anchorId: string; claimTokens?: string[] }): Promise<SubmissionConfirmResult> {
+export async function confirmSubmission(input: { anchorId: string; claimTokens?: string[] }): Promise<SubmissionConfirmResult> {
+  const result = await confirmSubmissionInner(input);
+  // One metric per attempt: `sent`, or why it was skipped (plan 2026-11-04 §8.7).
+  confirmationSent(result.sent ? "sent" : result.skipped);
+  return result;
+}
+
+async function confirmSubmissionInner({ anchorId, claimTokens }: { anchorId: string; claimTokens?: string[] }): Promise<SubmissionConfirmResult> {
   const db = getDb();
   const anchor = await db.memory.findUnique({ where: { id: anchorId } });
   if (!anchor || anchor.submissionId === null || anchor.submissionIndex !== 0) {
@@ -172,6 +181,8 @@ export async function confirmSubmission({ anchorId, claimTokens }: { anchorId: s
   }
 
   let rows = await loadSubmission(anchor.submissionId);
+  // The contributor row is loaded with the send (ruling 6): identity for everything that follows, cron path included.
+  identifyContributor({ email: rows[0]?.contributor?.email, name: rows[0]?.contributor?.name });
   // Anything still PENDING is checked against the store once more: on the cron path the lease has
   // run out and the file either landed without a finalize or never will; on the request path a
   // file whose finalize saw the blob a moment too early must not be told "didn't arrive".
@@ -271,6 +282,7 @@ export async function completeSubmission(raw: unknown, options: CompletionOption
   if (!anchorId) {
     return { ok: false, code: "not_found" };
   }
+  tagIds({ submissionId, memoryId: anchorId });
 
   // Its own statement, committed before anything slow: the lease shrinks to a short grace, so the cron
   // finishes the send a couple of minutes after a request that dies here, and never during a live one.
@@ -296,7 +308,7 @@ export async function completeSubmission(raw: unknown, options: CompletionOption
   }
 
   const liveIds = liveOfSend.map((m) => m.id);
-  afterWithFlush(async () => {
+  afterWithFlush("completion.admin_alerts", async () => {
     for (const memoryId of liveIds) {
       // The send is settled: alert with what arrived, whatever is still marked in flight.
       await notifyAdminsQuietly(memoryId, { settleNow: true });

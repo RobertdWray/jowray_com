@@ -11,6 +11,7 @@ import { storagePrefix } from "@/lib/site-url";
 import { mintUploadTicket, type UploadTicket } from "@/lib/upload-ticket";
 import { replaceRequestSchema } from "@/lib/validations/media";
 import { type MemoryFileInput, uploadTicketRequestSchema } from "@/lib/validations/memory";
+import { tagIds } from "@/lib/sentry/user";
 import { getUploadEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 
@@ -157,7 +158,9 @@ export async function createUploadTicket(raw: unknown): Promise<UploadTicketResu
       return "budget_exceeded" as const;
     }
     // No lease here: the memory's one email was handled with its first submission; cron must not be held off.
-    return createPendingMedia(tx, memory.id, file, { sortOrder: await nextSortOrder(tx, memory.id), replacesMediaId: null });
+    const grant = await createPendingMedia(tx, memory.id, file, { sortOrder: await nextSortOrder(tx, memory.id), replacesMediaId: null });
+    tagIds({ memoryId: memory.id, mediaId: grant.ticket.mediaId });
+    return grant;
   }, TX_OPTIONS);
   if (typeof result === "string") {
     return { ok: false, code: result };
@@ -210,7 +213,9 @@ export async function createReplacementTicket(raw: unknown): Promise<UploadTicke
       approxDateText: file.approxDateText ?? target.approxDateText,
       place: file.place ?? target.place,
     };
-    return createPendingMedia(tx, memory.id, inherited, { sortOrder: target.sortOrder, replacesMediaId: target.id });
+    const grant = await createPendingMedia(tx, memory.id, inherited, { sortOrder: target.sortOrder, replacesMediaId: target.id });
+    tagIds({ memoryId: memory.id, mediaId: grant.ticket.mediaId });
+    return grant;
   }, TX_OPTIONS);
   if (typeof result === "string") {
     return { ok: false, code: result };

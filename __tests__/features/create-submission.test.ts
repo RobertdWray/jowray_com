@@ -31,7 +31,12 @@ const dbStub = { ...tx, $transaction: vi.fn(async (fn: (t: typeof tx) => Promise
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
 const afterCalls: Array<() => Promise<void>> = [];
-vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
+vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (_name: string, cb: () => Promise<void>) => { afterCalls.push(cb); } }));
+const identifyMock = vi.fn();
+const tagIdsMock = vi.fn();
+vi.mock("@/lib/sentry/user", () => ({ identifyContributor: (...a: unknown[]) => identifyMock(...a), tagIds: (...a: unknown[]) => tagIdsMock(...a) }));
+const metricsMock = vi.hoisted(() => ({ memoryCreated: vi.fn(), uploadFinalized: vi.fn(), confirmationSent: vi.fn(), reconcileRun: vi.fn() }));
+vi.mock("@/lib/sentry/metrics", () => metricsMock);
 const completeMock = vi.fn(async (_input: unknown, _options?: unknown) => ({ ok: true as const, emailed: true }));
 vi.mock("@/features/memories/complete-submission", () => ({ completeSubmission: (input: unknown, options?: unknown) => completeMock(input, options) }));
 
@@ -184,5 +189,27 @@ describe("createSubmission", () => {
     expect(completeMock).toHaveBeenCalledWith({ claimTokens: result.memories.map((m) => m.claimToken) }, { thumbnailWaitMs: 0 });
     completeMock.mockResolvedValueOnce({ ok: true, emailed: false });
     expect(await createSubmission({ ...contributor, memories: [{ note: "c", files: [] }] })).toMatchObject({ ok: true, emailed: false });
+  });
+});
+
+describe("Sentry identity, tags and metrics (plan §8.2)", () => {
+  it("identifies the contributor from the parsed input, again with the id once the row exists, tags the send and counts the memories", async () => {
+    identifyMock.mockClear(); tagIdsMock.mockClear(); metricsMock.memoryCreated.mockClear();
+    const result = await createSubmission({ ...contributor, memories: [{ note: "a", files: [] }, { note: "b", files: [] }] });
+    expect(result.ok).toBe(true);
+    expect(identifyMock.mock.calls).toEqual([
+      [{ email: "kay@example.com", name: "Kay" }],
+      [{ id: "con_1", email: "kay@example.com", name: "Kay" }],
+    ]);
+    expect(tagIdsMock).toHaveBeenCalledWith({ submissionId: result.ok ? result.submissionId : "" });
+    expect(metricsMock.memoryCreated).toHaveBeenCalledWith(2);
+  });
+
+  it("sets no identity, tag or metric when the input is refused", async () => {
+    identifyMock.mockClear(); tagIdsMock.mockClear(); metricsMock.memoryCreated.mockClear();
+    await createSubmission({ ...contributor, email: "nope", memories: [{ note: "ok", files: [] }] });
+    expect(identifyMock).not.toHaveBeenCalled();
+    expect(tagIdsMock).not.toHaveBeenCalled();
+    expect(metricsMock.memoryCreated).not.toHaveBeenCalled();
   });
 });

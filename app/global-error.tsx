@@ -20,7 +20,19 @@ export default function GlobalError({
   retry: () => void;
 }) {
   useEffect(() => {
-    Sentry.captureException(error);
+    const eventId = Sentry.captureException(error);
+    // The crash-report dialog (plan 2026-11-04 §9.5): name and email are pre-filled from the
+    // identified contributor; a failure to show it is itself reported, never thrown.
+    Sentry.showReportDialog({
+      eventId,
+      title: "Something went wrong",
+      subtitle: "Rob has been notified.",
+      subtitle2: "If you can, tell us what you were doing.",
+      labelSubmit: "Send",
+      onError: (dialogError) => {
+        Sentry.captureException(dialogError);
+      },
+    });
   }, [error]);
 
   return (
