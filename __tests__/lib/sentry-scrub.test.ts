@@ -251,3 +251,48 @@ describe("scrubRecordingEvent", () => {
     expect((out.data as { payload: { description: string } }).payload.description).toBe("/api/media/1");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Whole-stack review (2026-11-04): the app's real wire shapes, as text.
+// ---------------------------------------------------------------------------
+describe("scrubSecrets on the app's real wire shapes", () => {
+  const ticket = { mediaId: "med_1", memoryId: "mem_1", pathname: "originals/mem_1/a.jpg", mimeType: "image/jpeg", maxBytes: 100, expiresAt: 1, sig: TEST_TOKEN };
+
+  it("filters the ticket signature inside the double-encoded clientPayload the Blob client sends to /api/upload", () => {
+    const body = JSON.stringify({ type: "blob.generate-client-token", payload: { pathname: ticket.pathname, callbackUrl: "https://www.jowray.com/api/upload", clientPayload: JSON.stringify(ticket), multipart: true } });
+    const out = scrubSecrets(body) as string;
+    expect(out).not.toContain(TEST_TOKEN);
+    expect(out).toContain('"pathname":"originals/mem_1/a.jpg"');
+    expect(out).toContain('"multipart":true');
+  });
+
+  it("filters a double-encoded ticket and a double-encoded claim token at any depth", () => {
+    const flight = JSON.stringify([JSON.stringify({ ticket: { sig: TEST_TOKEN } }), { nested: JSON.stringify({ changes: { note: "x" }, claimToken: TEST_TOKEN_2 }) }]);
+    const out = scrubSecrets(flight) as string;
+    expect(out).not.toContain("SENTRYTEST_");
+    expect(out).toContain("note");
+  });
+
+  it("filters nested arrays and arrays of objects under a secret key, and values with escaped quotes", () => {
+    expect(scrubSecrets(`{"claimTokens":[["${TEST_TOKEN}"],["${TEST_TOKEN_2}"]],"ok":1}`)).not.toContain("SENTRYTEST_");
+    expect(scrubSecrets(`{"ticket":[{"sig":"${TEST_TOKEN}","a":[1]},{"sig":"${TEST_TOKEN_2}"}],"ok":1}`)).not.toContain("SENTRYTEST_");
+    expect(scrubSecrets(`{"note":"she said \\"hi\\"","claimToken":"${TEST_TOKEN}"}`)).not.toContain(TEST_TOKEN);
+    expect(scrubSecrets(`{"outer":{"inner":{"x":1}},"claimToken":"${TEST_TOKEN}"}`)).not.toContain(TEST_TOKEN);
+  });
+
+  it("still filters truncated double-encoded text", () => {
+    const body = JSON.stringify({ payload: { clientPayload: JSON.stringify(ticket) } });
+    expect(scrubSecrets(body.slice(0, body.indexOf("sig") + 30))).not.toContain(TEST_TOKEN.slice(0, 12));
+  });
+});
+
+describe("scrubReplayEvent covers every event type beforeSend never sees", () => {
+  it("scrubs request.url and the feedback context of a feedback event, and request.url of a replay event", () => {
+    const feedback = scrubReplayEvent({ type: "feedback", request: { url: `https://www.jowray.com/m/${TEST_TOKEN}` }, contexts: { feedback: { url: `https://www.jowray.com/m/${TEST_TOKEN}`, message: "it broke" } } } as never);
+    expect(JSON.stringify(feedback)).not.toContain(TEST_TOKEN);
+    expect(JSON.stringify(feedback)).toContain("it broke");
+    const replay = scrubReplayEvent({ type: "replay_event", request: { url: `https://www.jowray.com/m/${TEST_TOKEN}?t=${TEST_TOKEN}` }, urls: [`/m/${TEST_TOKEN}`] } as never);
+    expect(JSON.stringify(replay)).not.toContain(TEST_TOKEN);
+    expect((replay as { urls: string[] }).urls).toEqual(["/m/[claimToken]"]);
+  });
+});

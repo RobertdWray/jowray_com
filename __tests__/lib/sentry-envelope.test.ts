@@ -37,6 +37,8 @@ beforeAll(() => {
   Sentry.init({
     dsn: "https://public@o0.ingest.sentry.io/0",
     environment: "test",
+    // Streamed spans go through beforeSendSpan on the real StreamedSpanJSON shape only with tracing on.
+    tracesSampleRate: 1.0,
     dataCollection: DATA_COLLECTION,
     transport: (options: TransportOptions) =>
       Sentry.createTransport(options, async (request) => {
@@ -68,7 +70,8 @@ describe("server SDK envelopes with the alpha data policy", () => {
         url: `https://preview.test/m/${CLAIM_TOKEN}?t=${CLAIM_TOKEN}`,
         method: "POST",
         headers: { "x-vercel-protection-bypass": BYPASS_SECRET, "content-type": "application/json" },
-        data: JSON.stringify({ claimToken: CLAIM_TOKEN, ticket: { sig: TICKET_SIG } }),
+        // The exact body lib/upload-client.ts sends: the ticket is a double-encoded JSON string.
+        data: JSON.stringify({ type: "blob.generate-client-token", payload: { pathname: "originals/mem_1/a.jpg", clientPayload: JSON.stringify({ mediaId: "med_1", pathname: "originals/mem_1/a.jpg", sig: TICKET_SIG }), multipart: true } }),
       },
     });
     try {
@@ -110,5 +113,31 @@ describe("tunnel route (handler mode, plan §7.1)", () => {
       })
     );
     expect(response.status).toBe(403);
+  });
+});
+
+describe("streamed spans (beforeSendSpan on the real SDK)", () => {
+  it("a server span carrying a claim URL and the Server Function span leave without a token", async () => {
+    const before = sent.length;
+    // Named the way Next.js names its http.server spans (the parameterized route); the raw URL sits in the attributes.
+    // The envelope header's trace context repeats the root span name, which beforeSendSpan cannot touch, and the SDK
+    // leaves URL-sourced names out of it, so the route-pattern name is the realistic shape to pin.
+    await Sentry.startSpan(
+      { name: "GET /m/[claimToken]", op: "http.server", attributes: { "url.full": `https://preview.test/m/${CLAIM_TOKEN}?t=${CLAIM_TOKEN}`, "url.path": `/m/${CLAIM_TOKEN}`, "http.route": "/m/[claimToken]" } },
+      async () => {
+        // Prisma's shape with databaseQueryData on: the statement is parameterized and the bound value is the token's
+        // hash (the app never queries by a raw token); a secret-named attribute is filtered by key.
+        await Sentry.startSpan(
+          { name: "db.query", op: "db", attributes: { "db.statement": "SELECT ... WHERE claim_token_hash = $1", "db.query.parameter.0": "a".repeat(64), claimToken: CLAIM_TOKEN } },
+          async () => undefined
+        );
+      }
+    );
+    await Sentry.flush(5000);
+    const spans = sent.slice(before).filter((item) => item.includes('"type":"span"'));
+    expect(spans.length).toBeGreaterThan(0);
+    for (const envelope of sent) {
+      expect(envelope).not.toContain("SENTRYTEST_");
+    }
   });
 });
