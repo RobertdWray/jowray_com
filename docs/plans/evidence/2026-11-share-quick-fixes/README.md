@@ -43,6 +43,32 @@ Runtime: `next dev` on port 3077 from the worktree, env copied from the main che
 
 The About-you width shrinking from 716 to 604 as the window grows is the `px-[max(16px,5%)]`-on-the-capped-box bug named in the plan.
 
+## PR B — desktop layout (item 7), from worktree B
+
+Dev server on port 3078 (worktree B at PR A's head plus B0–B5), same Chrome context. `npm run validate` clean, `npm run test:run` 1000/1000, `npm run build:offline` passes (no new tests: PR B is markup and CSS only; its done-check is the table below, ruling R12).
+
+### Expected-layout table (plan § B1), measured
+
+| Window | `narrow` | `wide` | `roomy` | `#form` width | About-you columns | Card interior | Words textarea | Send row | Placeholders shown | `scrollHeight` (screens) | File |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 390×844 | yes | no | no | 351 | 1 | stacked (flex) | 297×238 | stacked | 0 | 3139 (3.72) | `b-390x844.png` |
+| 1280×470 | yes (height < 480) | no | no | 860 | 2 | stacked | 790×238 | stacked | 0 | 2350 (5.0) | `b-1280x470.png` |
+| 1279×900 | no | yes | no | 860 | 2 | stacked | 790×238 | stacked | 2 (full width) | 2680 (2.98) | `b-1279x900.png` |
+| 1280×600 | no | yes | **yes** | 1040 | 3 | grid 391 + 547 | 547×515 (≈52 ch) | row | 2 abreast (504 each) | 2190 (3.65) | `b-1280x600.png` |
+| 1440×900 | no | yes | yes | 1040 | 3 | grid 391 + 547 | 547×515 | row | 2 abreast | 2190 (2.43) | `b-1440x900.png`, `b-1440x900-full.jpeg` |
+| 2560×1440 | no | yes | yes | 1040 (About-you 1040, was 604) | 3 | grid 391 + 547 | 547×515 | row | 2 abreast | 2190 (1.52) | `b-2560x1440.jpeg` |
+
+Before (PR A, same pages): 1440×900 → 2837px (3.15 screens); 2560×1440 → 2904px (2.02 screens). After: 2190px at every `roomy` width, 23–25% shorter; the plan's estimate was 1,910–2,000px, the difference being the media block (recorder box + file field) that sets the card row's height.
+
+### Other PR B checks
+
+| Check | Result | File |
+|---|---|---|
+| 390 identical to PR A | Pixel compare of `a-390-blank.png` and `b-390x844.png` (both 780×1688): the only difference is the "How you knew Jo" row sitting 2px higher (the About-you grid's 20px row gap replaces the former 22px section gap between the email row and that field; name→email stays 20px). Everything above is byte-identical; `narrow` is unchanged (ruling R12) | `b-390x844.png` |
+| Three cards open at 1440×900 | Each open card spans both columns (`grid-column: span 2`, width 1040); "+ Add another memory" appears only once every card is open; blank Send → name focused, `aria-invalid`, summary as on PR A; the walnut focus outline sits cleanly outside the red ring (F2, roomy) | `b-1440x900-three-open-blank-send.png`, `b-1440x900-three-open-full.jpeg` |
+| Header on every page | `/`, `/obituary`, a claim page, `/admin` (signed-out shell): at 1280×800 the inner box is 1152px with 64px side padding (unchanged); at 2560×1440 it is the full 1200px (was 1200 − 2×128 = 944), centred at x = 680; nothing else moves | `b-header-{home,obituary,claim,admin}-{1280.png,2560.jpeg}` |
+| Console | No errors or warnings across the PR B checks | — |
+
 ## Part 3 — assistive technology and devices (owner: Rob; does not gate the drafts)
 
 Not run: VoiceOver (iPhone Safari, macOS Chrome), TalkBack, iOS reduced motion. Checklist in the plan § Verification part 3.
