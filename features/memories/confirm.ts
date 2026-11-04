@@ -1,29 +1,21 @@
 import "server-only";
 
 import { lockMemory } from "@/features/memories/lock";
+import { submissionInFlight, summarizeReadyMedia } from "@/features/memories/media-summary";
+import { notifyAdminsOfMemory } from "@/features/memories/notify-admins";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
-import { createLogger } from "@/lib/logger";
+import { createLogger, logErrorAndFlush } from "@/lib/logger";
+import { afterWithFlush } from "@/lib/sentry/after-flush";
 import { getSiteUrl } from "@/lib/site-url";
-import { TICKET_TTL_MS } from "@/lib/upload-ticket";
 import { completeSubmissionSchema } from "@/lib/validations/media";
 import { getDb } from "@/server/db/client";
-import { type MediaKind, type MemoryMediaSummary, sendMemoryConfirmation, type SendResult } from "@/services/email";
+import { sendMemoryConfirmation, type SendResult } from "@/services/email";
 
 const log = createLogger({ category: "email" });
 
 export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "no_email" | "not_ready" | "leased" };
 /** Neon computes can take a couple of seconds to wake; Prisma's defaults (2 s / 5 s) are too tight. */
 const TX_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;
-
-function kindOf(mimeType: string): MediaKind {
-  if (mimeType.startsWith("image/")) {
-    return "PHOTO";
-  }
-  if (mimeType.startsWith("audio/")) {
-    return "VOICE";
-  }
-  return "VIDEO";
-}
 
 /**
  * Send the one confirmation email for a memory, if there is an address and
@@ -76,29 +68,17 @@ export async function confirmMemory({
   if (!email) {
     return { sent: false, skipped: "no_email" };
   }
-  const ready = memory.media.filter((m) => m.status === "READY");
+  const media = summarizeReadyMedia(memory.media);
   const hasWords = (memory.contributorNote ?? "").trim().length > 0;
   // Something to confirm: a file that arrived, or words (a TEXT memory, or a
   // memory whose file failed but whose note was saved).
-  if (memory.type !== "TEXT" && ready.length === 0 && !hasWords) {
+  if (memory.type !== "TEXT" && media.length === 0 && !hasWords) {
     return { sent: false, skipped: "not_ready" };
   }
-  // The one email should list the whole submission. Rows are created when the
-  // memory is, tickets come later, so a reservation counts as in flight while
-  // the submission lease is open, or (claim-page adds, no lease) while it is
-  // younger than a ticket lifetime; completeSubmission settles regardless.
-  const leaseOpen = memory.uploadLeaseUntil !== null && memory.uploadLeaseUntil.getTime() > Date.now();
-  const inFlight = memory.media.some((m) => m.status === "PENDING" && (leaseOpen || m.createdAt.getTime() > Date.now() - TICKET_TTL_MS));
-  if (inFlight && !settleNow) {
+  // The one email should list the whole submission; completeSubmission settles regardless.
+  if (!settleNow && submissionInFlight(memory)) {
     return { sent: false, skipped: "not_ready" };
   }
-
-  const media: MemoryMediaSummary[] = ready.map((m) => ({
-    kind: kindOf(m.mimeType),
-    originalFilename: m.originalFilename,
-    durationSeconds: m.durationSeconds,
-    preview: null,
-  }));
 
   const rotating = claimToken === undefined;
   // The cron (no raw token) rotates the link; it must not do that while the
@@ -151,11 +131,24 @@ export async function completeSubmission(raw: unknown): Promise<ConfirmResult> {
   if (!memory || memory.deletedAt !== null) {
     return { sent: false, skipped: "not_found" };
   }
-  const result = await confirmMemory({ memoryId: memory.id, claimToken, settleNow: true });
-  await db.$transaction(async (tx) => {
-    await lockMemory(tx, memory.id);
-    await tx.memory.update({ where: { id: memory.id }, data: { uploadLeaseUntil: null } });
-  }, TX_OPTIONS);
+  let result: ConfirmResult;
+  try {
+    result = await confirmMemory({ memoryId: memory.id, claimToken, settleNow: true });
+  } finally {
+    // Whatever happened to the send, the submission is over: the cron may reconcile from here.
+    await db.$transaction(async (tx) => {
+      await lockMemory(tx, memory.id);
+      await tx.memory.update({ where: { id: memory.id }, data: { uploadLeaseUntil: null } });
+    }, TX_OPTIONS);
+  }
   log.info({ action: "submission_completed", memoryId: memory.id, sent: result.sent }, "submission closed by the contributor");
+  // The family-admin alert for the whole submission runs after the response; on failure the cron (e2) retries it.
+  afterWithFlush(async () => {
+    try {
+      await notifyAdminsOfMemory({ memoryId: memory.id, settleNow: true });
+    } catch (error) {
+      await logErrorAndFlush("admin alert failed after submission", error, { category: "email", memoryId: memory.id });
+    }
+  });
   return result;
 }

@@ -32,6 +32,10 @@ const dbStub = {
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 const sendMock = vi.fn(async (_arg: unknown): Promise<{ sent: boolean; messageId?: string; skipped?: string }> => ({ sent: true, messageId: "m1" }));
 vi.mock("@/services/email", () => ({ sendMemoryConfirmation: (arg: unknown) => sendMock(arg) }));
+const notifyMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m2" }));
+vi.mock("@/features/memories/notify-admins", () => ({ notifyAdminsOfMemory: (arg: unknown) => notifyMock(arg) }));
+const afterCalls: Array<() => Promise<void>> = [];
+vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
 
 import { completeSubmission, confirmMemory } from "@/features/memories/confirm";
 
@@ -226,5 +230,21 @@ describe("multi-file submissions", () => {
     expect(memory!.uploadLeaseUntil).toBeNull();
     expect(await completeSubmission(null)).toEqual({ sent: false, skipped: "not_found" });
     expect(await completeSubmission({ claimToken: 42 })).toEqual({ sent: false, skipped: "not_found" });
+  });
+
+  it("completeSubmission alerts the admins after the response with the whole submission, and closes the lease even when sending throws", async () => {
+    afterCalls.length = 0;
+    notifyMock.mockClear();
+    memory!.uploadLeaseUntil = new Date(Date.now() + 60 * 60_000);
+    await completeSubmission({ claimToken: TOKEN });
+    expect(notifyMock).not.toHaveBeenCalled();
+    expect(afterCalls).toHaveLength(1);
+    await afterCalls[0]!();
+    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_1", settleNow: true });
+
+    memory!.uploadLeaseUntil = new Date(Date.now() + 60 * 60_000);
+    sendMock.mockRejectedValueOnce(new Error("db down"));
+    await expect(completeSubmission({ claimToken: TOKEN })).rejects.toThrow("db down");
+    expect(memory!.uploadLeaseUntil).toBeNull();
   });
 });

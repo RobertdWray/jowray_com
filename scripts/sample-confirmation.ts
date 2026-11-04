@@ -24,9 +24,15 @@ async function gradientJpeg(width: number, height: number, from: [number, number
   return jpeg.toString("base64");
 }
 
-export async function buildSampleConfirmation(claimLink: string): Promise<RenderedMemoryConfirmation> {
+/** A photo preview and a video poster (play badge composited), as base64 JPEG, shared by both sample emails. */
+export async function samplePreviews(): Promise<{ photo: string; poster: string }> {
   const photo = await gradientJpeg(1000, 750, [232, 163, 23], [200, 16, 46]);
   const poster = await gradientJpeg(1000, 562, [91, 125, 177], [63, 125, 78], Buffer.from(PLAY_BADGE_COMPOSITE.contentBase64, "base64"));
+  return { photo, poster };
+}
+
+export async function buildSampleConfirmation(claimLink: string): Promise<RenderedMemoryConfirmation> {
+  const { photo, poster } = await samplePreviews();
   return buildMemoryConfirmation({
     name: "Kay Bartholomew",
     relationship: "former student",
