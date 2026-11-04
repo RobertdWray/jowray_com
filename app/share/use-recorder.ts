@@ -17,9 +17,19 @@ export interface Clip {
   url: string;
 }
 
+export interface UseRecorderOptions {
+  /**
+   * Receives each finished take instead of the hook keeping it as `clip`
+   * (the memory cards own their rows and their object URLs, C12). Read
+   * through a ref, so the latest handler is always the one called.
+   */
+  onClip?: (recording: Recording) => void;
+}
+
 export interface UseRecorder {
   snapshot: RecorderSnapshot;
   recorder: AudioRecorder;
+  /** The last take, when no `onClip` owner was given. */
   clip: Clip | null;
   /** Labelled microphones, once permission has been granted at least once. */
   inputs: AudioInputInfo[];
@@ -45,9 +55,13 @@ function subscribeNever(): () => void {
  * microphone list (which outlives any single recording, so a headset plugged
  * in between takes still shows up) and the help copy for the current problem.
  */
-export function useRecorder(): UseRecorder {
+export function useRecorder(options: UseRecorderOptions = {}): UseRecorder {
   // One engine per mounted form; constructing it has no side effects.
   const [recorder] = useState(() => new AudioRecorder());
+  const onClipRef = useRef(options.onClip);
+  useEffect(() => {
+    onClipRef.current = options.onClip;
+  }, [options.onClip]);
   const snapshot = useSyncExternalStore(recorder.subscribe, recorder.getSnapshot, AudioRecorder.getServerSnapshot);
   const platform = useSyncExternalStore(
     subscribeNever,
@@ -110,6 +124,13 @@ export function useRecorder(): UseRecorder {
           return;
         }
         publishedRef.current = recording;
+        const owner = onClipRef.current;
+        if (owner) {
+          // The owner makes and revokes its own object URL; the engine goes back to idle for the next take.
+          owner(recording);
+          recorder.discard();
+          return;
+        }
         replaceClip({ recording, url: URL.createObjectURL(recording.blob) });
       },
       () => {

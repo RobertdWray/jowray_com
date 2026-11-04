@@ -26,7 +26,7 @@ const optionalText = (max: number) =>
 
 const NEEDS_CONTENT = "Add a file, a recording, or a few words";
 
-/** Who is sending, and the preferences asked once per send; shared by the one-memory and the many-memory forms. */
+/** Who is sending, and the preferences asked once per send (D5). */
 const contributorFields = {
   name: optionalText(120),
   relationship: optionalText(120),
@@ -53,18 +53,6 @@ const memoryFields = {
   place: optionalText(200),
   note: z.string().max(10_000).optional().nullable(),
 };
-
-export const createMemoryInputSchema = z
-  .object({
-    ...contributorFields,
-    ...memoryFields,
-    file: fileInputSchema.nullable(),
-  })
-  .refine((value) => value.file !== null || (value.note ?? "").trim().length > 0, {
-    message: NEEDS_CONTENT,
-    path: ["note"],
-  });
-export type CreateMemoryInput = z.infer<typeof createMemoryInputSchema>;
 
 /** One card of a send: its details plus up to ten files, and it must carry files or words. */
 export const submissionMemorySchema = z

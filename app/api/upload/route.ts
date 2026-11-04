@@ -27,7 +27,7 @@ class UploadRefused extends Error {
 
 /**
  * Vercel Blob client-upload handler. Token exchange: the browser presents the
- * ticket minted by createMemory()/createUploadTicket() and gets a client
+ * ticket minted by issueUploadTicket()/createUploadTicket() and gets a client
  * token scoped to that one pathname, MIME type and size. Upload completed:
  * the signed callback is the backstop for a tab closed before finalizeUpload().
  */

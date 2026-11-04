@@ -2,18 +2,16 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import { confirmQuietly, notifyAdminsQuietly } from "@/features/memories/ingest-upload";
 import { lockMemory, type Tx } from "@/features/memories/lock";
 import { renewUploadLease } from "@/features/memories/upload-lease";
-import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
+import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
-import { afterWithFlush } from "@/lib/sentry/after-flush";
 import { extensionFor, MAX_FILES_PER_MEMORY, maxBytesFor, memoryTypeFor, normalizeMime } from "@/lib/media-types";
 import { storagePrefix } from "@/lib/site-url";
 import { mintUploadTicket, type UploadTicket } from "@/lib/upload-ticket";
 import { replaceRequestSchema } from "@/lib/validations/media";
-import { createMemoryInputSchema, type FileInput, uploadTicketRequestSchema } from "@/lib/validations/memory";
-import { getMemorialEnv, getUploadEnv } from "@/server/config/env";
+import { type FileInput, uploadTicketRequestSchema } from "@/lib/validations/memory";
+import { getUploadEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 
 const log = createLogger({ category: "upload" });
@@ -26,17 +24,13 @@ export const TX_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;
 
 export type UploadGrant = { pathname: string; ticket: UploadTicket };
 
-export type CreateMemoryResult =
-  | { ok: true; memoryId: string; claimToken: string; upload: UploadGrant | null; emailed: boolean }
-  | { ok: false; code: "invalid" | "unsupported_type" | "too_large" | "budget_exceeded"; message: string };
-
 export type UploadTicketResult =
   | { ok: true; upload: UploadGrant }
   | { ok: false; code: "invalid" | "unsupported_type" | "too_large" | "budget_exceeded" | "not_found" | "too_many_files" | "replacement_pending" };
 
 export interface ResolvedFile {
   mimeType: string;
-  /** The reservation and the ticket's ceiling: the kind's maximum, or the declared size where the caller trusts it (createSubmission). */
+  /** The reservation and the ticket's ceiling: the kind's maximum for a claim-page file, or the declared size for a send (createSubmission). */
   maxBytes: number;
   extension: string;
   originalFilename: string;
@@ -82,7 +76,7 @@ async function liveFileCount(tx: Tx, memoryId: string): Promise<number> {
   return tx.media.count({ where: { memoryId, deletedAt: null, status: { in: ["PENDING", "READY"] } } });
 }
 
-/** The PENDING row alone, with a fresh write-once pathname; the caller decides whether a ticket is minted now (createMemory, the claim page) or per file later (createSubmission). */
+/** The PENDING row alone, with a fresh write-once pathname; the caller decides whether a ticket is minted now (the claim page) or per file later (createSubmission). */
 export async function createPendingMediaRow(
   tx: Tx,
   memoryId: string,
@@ -120,85 +114,6 @@ async function createPendingMedia(
 /** Next display slot: rows are never hard-deleted, so the row count is monotonic. */
 async function nextSortOrder(tx: Tx, memoryId: string): Promise<number> {
   return tx.media.count({ where: { memoryId } });
-}
-
-/**
- * Create a memory from the /share form: a new Contributor for this submission
- * (never matched to an existing one by unverified email), a PENDING Memory
- * with a fresh claim token (stored hashed), and, when a file is attached, a
- * PENDING Media row whose upload ticket the browser exchanges at /api/upload.
- * Everything happens in one transaction behind the daily budgets.
- */
-export async function createMemory(raw: unknown): Promise<CreateMemoryResult> {
-  const parsed = createMemoryInputSchema.safeParse(raw);
-  if (!parsed.success) {
-    return { ok: false, code: "invalid", message: parsed.error.issues[0]?.message ?? "Invalid input" };
-  }
-  const input = parsed.data;
-  const file = input.file ? resolveFile(input.file) : null;
-  if (file === "unsupported_type") {
-    return { ok: false, code: "unsupported_type", message: "That kind of file is not supported" };
-  }
-  if (file === "too_large") {
-    return { ok: false, code: "too_large", message: "That file is too large" };
-  }
-
-  const { MEMORIAL_SLUG, CONSENT_VERSION } = getMemorialEnv();
-  const claimToken = newClaimToken();
-
-  const created = await getDb().$transaction(async (tx) => {
-    if (!(await withinBudget(tx, file?.maxBytes ?? 0, 1))) {
-      return null;
-    }
-    const memorial = await tx.memorial.findUnique({ where: { slug: MEMORIAL_SLUG } });
-    if (!memorial) {
-      throw new Error(`Memorial "${MEMORIAL_SLUG}" is not seeded`);
-    }
-    const contributor = await tx.contributor.create({
-      data: {
-        memorialId: memorial.id,
-        name: input.name ?? null,
-        email: input.email ?? null,
-        relationship: input.relationship ?? null,
-        contactOptIn: input.contactOptIn,
-        mailingListOptIn: input.mailingListOptIn,
-      },
-    });
-    const memory = await tx.memory.create({
-      data: {
-        memorialId: memorial.id,
-        contributorId: contributor.id,
-        type: file ? memoryTypeFor(file.mimeType) : "TEXT",
-        source: "WEB_UPLOAD",
-        approxDateText: input.approxDateText ?? null,
-        place: input.place ?? null,
-        contributorNote: input.note && input.note.trim().length > 0 ? input.note : null,
-        visibility: input.visibility,
-        notifyWhenPosted: input.notifyWhenPosted,
-        consentVersion: CONSENT_VERSION,
-        consentedAt: new Date(),
-        status: "PENDING",
-        claimTokenHash: hashClaimToken(claimToken),
-      },
-    });
-    const upload = file ? await createPendingMedia(tx, memory.id, file, { sortOrder: 0, replacesMediaId: null }) : null;
-    return { memoryId: memory.id, upload };
-  }, TX_OPTIONS);
-
-  if (!created) {
-    log.warn({ action: "budget_refusal" }, "daily budget reached");
-    return { ok: false, code: "budget_exceeded", message: "We are receiving a lot of memories right now. Please try again later." };
-  }
-  log.info({ action: "memory_created", memoryId: created.memoryId, hasFile: created.upload !== null }, "memory created");
-  // A text-only memory is complete now; one with a file is confirmed by finalizeUpload().
-  const emailed = created.upload === null ? await confirmQuietly(created.memoryId, claimToken) : false;
-  if (created.upload === null) {
-    // The admin alert needs nothing from the contributor, so it runs after the response.
-    afterWithFlush(async () => {
-      await notifyAdminsQuietly(created.memoryId);
-    });
-  }
-  return { ok: true, memoryId: created.memoryId, claimToken, upload: created.upload, emailed };
 }
 
 /** Ticket for one more file on an existing memory, from its claim page. */

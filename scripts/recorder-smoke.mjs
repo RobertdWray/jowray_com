@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Headless-Chromium smoke test for the /share recorder, driven over the
+ * Headless-Chromium smoke test for the /share recorder (card 1 of the memory
+ * cards; the clip becomes a row under `#record`), driven over the
  * DevTools protocol with no dependencies (Node 22's WebSocket).
  *
  *   node scripts/recorder-smoke.mjs --url http://localhost:3101/share --expect hearing
@@ -139,8 +140,9 @@ async function click(buttonText) {
 
 const report = { url, expect, audioFile };
 try {
+  // `#record` is card 1's media area: the recorder box, then the rows (the clip lands as a row).
   await waitFor(`document.querySelector("#record") !== null`, 30000, "the recorder panel");
-  await click("Start recording");
+  await click("Record your voice");
   await waitFor(`document.querySelector("#record [aria-live]") !== null`, 10000, "the meter");
   await sleep(recordMs);
   await screenshot("recording");

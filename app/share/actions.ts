@@ -1,11 +1,5 @@
 "use server";
 
-import {
-  createMemory as createMemoryFeature,
-  createUploadTicket as createUploadTicketFeature,
-  type CreateMemoryResult,
-  type UploadTicketResult,
-} from "@/features/memories/create-memory";
 import { completeSubmission as completeSubmissionFeature, type CompleteSubmissionResult } from "@/features/memories/complete-submission";
 import { createSubmission as createSubmissionFeature, type CreateSubmissionResult } from "@/features/memories/create-submission";
 import { finalizeUpload as finalizeUploadFeature, type FinalizeResult } from "@/features/memories/ingest-upload";
@@ -29,14 +23,6 @@ export async function issueUploadTicket(input: unknown): Promise<IssueTicketResu
 /** Called once after the uploads, with every raw token, so the receipt can carry every link. */
 export async function completeSubmission(input: unknown): Promise<CompleteSubmissionResult> {
   return completeSubmissionFeature(input);
-}
-
-export async function createMemory(input: unknown): Promise<CreateMemoryResult> {
-  return createMemoryFeature(input);
-}
-
-export async function createUploadTicket(input: unknown): Promise<UploadTicketResult> {
-  return createUploadTicketFeature(input);
 }
 
 export async function finalizeUpload(input: { ticket: UploadTicket; claimToken: string }): Promise<FinalizeResult> {
