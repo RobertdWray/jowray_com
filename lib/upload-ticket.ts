@@ -14,6 +14,21 @@ import { getUploadEnv } from "@/server/config/env";
 
 export const TICKET_TTL_MS = 15 * 60 * 1000;
 
+/**
+ * The ticket's expiry bounds when the browser must *start* the upload; the
+ * Blob client token it is exchanged for must outlive the transfer (Blob checks
+ * it on every multipart part), so it gets an hour from the exchange.
+ */
+export const BLOB_TOKEN_LIFETIME_MS = 60 * 60 * 1000;
+/** Bytes can still land this long after a ticket is minted: the ticket TTL plus the Blob token's life. */
+export const UPLOAD_WINDOW_MS = TICKET_TTL_MS + BLOB_TOKEN_LIFETIME_MS;
+/**
+ * How long a send's anchor memory holds its upload lease after a ticket is
+ * minted or renewed. While the lease is live the reconcile cron neither emails
+ * the send nor rotates its claim tokens, because a file may still be landing.
+ */
+export const UPLOAD_LEASE_MS = UPLOAD_WINDOW_MS + 5 * 60 * 1000;
+
 export interface TicketClaims {
   mediaId: string;
   memoryId: string;

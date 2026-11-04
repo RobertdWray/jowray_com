@@ -51,3 +51,13 @@ describe("upload tickets", () => {
     expect(verifyUploadTicket(null as unknown as UploadTicket)).toEqual({ ok: false, reason: "malformed" });
   });
 });
+
+describe("upload window and lease (Task 15)", () => {
+  it("the lease covers the ticket TTL plus the Blob token lifetime, with a margin", async () => {
+    const mod = await import("@/lib/upload-ticket");
+    expect(mod.BLOB_TOKEN_LIFETIME_MS).toBe(60 * 60_000);
+    expect(mod.UPLOAD_WINDOW_MS).toBe(mod.TICKET_TTL_MS + mod.BLOB_TOKEN_LIFETIME_MS);
+    expect(mod.UPLOAD_WINDOW_MS).toBe(75 * 60_000);
+    expect(mod.UPLOAD_LEASE_MS).toBe(mod.UPLOAD_WINDOW_MS + 5 * 60_000);
+  });
+});

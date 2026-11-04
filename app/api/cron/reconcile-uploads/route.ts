@@ -8,6 +8,7 @@ import { safeEqualHex } from "@/lib/claim-token";
 import { posterStagingKeyFor } from "@/lib/derived-keys";
 import { createLogger, logError } from "@/lib/logger";
 import { storagePrefix } from "@/lib/site-url";
+import { UPLOAD_WINDOW_MS } from "@/lib/upload-ticket";
 import { getCronEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 import { createStorageService } from "@/services/storage";
@@ -27,8 +28,8 @@ const CHECKSUM_DEADLINE_MS = 40_000;
 const CONFIRM_MIN_AGE_MS = 30 * MINUTE_MS;
 const EMAIL_MAX_ATTEMPTS = 5;
 const EVENT_MAX_ATTEMPTS = 3;
-/** A cancelled reservation may still receive bytes until its Blob client token (1 h) expires; purge it after that plus a margin. */
-const CANCELLED_RESERVATION_GRACE_MS = 75 * MINUTE_MS;
+/** A cancelled reservation may still receive bytes until its ticket (15 min) and Blob client token (1 h) have both expired. */
+const CANCELLED_RESERVATION_GRACE_MS = UPLOAD_WINDOW_MS;
 /** Step (g): a few photos per run, each decode bounded; the shared run deadline still applies. */
 const DERIVE_BATCH = 3;
 const DERIVE_DEADLINE_MS = 30_000;

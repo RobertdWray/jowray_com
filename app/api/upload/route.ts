@@ -6,19 +6,13 @@ import { recordMedia } from "@/features/memories/ingest-upload";
 import { createLogger, logError } from "@/lib/logger";
 import { afterWithFlush } from "@/lib/sentry/after-flush";
 import { getSiteUrl } from "@/lib/site-url";
-import { parseTicket, verifyUploadTicket } from "@/lib/upload-ticket";
+import { BLOB_TOKEN_LIFETIME_MS, parseTicket, verifyUploadTicket } from "@/lib/upload-ticket";
 import { getBlobEnv } from "@/server/config/env";
 import type { Prisma } from "@/generated/prisma/client";
 import { getDb } from "@/server/db/client";
 
 export const maxDuration = 60;
 
-/**
- * The ticket's 15-minute expiry bounds when the browser must *start* the
- * upload; the Blob token itself must outlive the transfer (Blob checks it on
- * every multipart part), so it gets an hour from the exchange.
- */
-const BLOB_TOKEN_LIFETIME_MS = 60 * 60 * 1000;
 const EVENT_MAX_ATTEMPTS = 3;
 /** Budget for the derived copies made from the callback (the route has 60 s). */
 const DERIVE_DEADLINE_CALLBACK_MS = 15_000;
