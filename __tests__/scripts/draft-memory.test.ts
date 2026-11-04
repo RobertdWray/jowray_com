@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { callAdmin, describeTarget, parseArgs, resolveTarget, summarize } from "../../scripts/draft-memory";
+import { gmailSourceRef, otherSourceRef, smsSourceRef } from "../../lib/source-ref";
+import { callAdmin, describeTarget, parseArgs, prepareInput, resolveTarget, summarize } from "../../scripts/draft-memory";
 
 describe("resolveTarget", () => {
   it("has no default: production needs the explicit --prod flag, anything else needs ADMIN_API_URL", () => {
@@ -64,5 +65,23 @@ describe("summarize", () => {
   });
   it("never echoes the secret", () => {
     expect(summarize(401, { error: { code: "unauthorized", message: `Unauthorized ${secret}` } }).join("\n")).not.toContain(secret);
+  });
+});
+
+describe("prepareInput", () => {
+  const base = { contributor: { email: "pat@example.com" }, note: "Jo was a light." };
+
+  it("derives source and sourceRef from sourceInput through the canonical builders and drops sourceInput", () => {
+    expect(prepareInput({ ...base, sourceInput: { kind: "gmail", messageId: "1A1A2317FBA34EEC" } })).toEqual({ ...base, source: "EMAIL", sourceRef: gmailSourceRef("1a1a2317fba34eec") });
+    expect(prepareInput({ ...base, sourceInput: { kind: "sms", number: "+14105551234", sentAt: "2026-11-03T10:05-04:00", text: "Jo was a light.\r\n" } })).toEqual({ ...base, source: "SMS", sourceRef: smsSourceRef("+14105551234", "2026-11-03T14:05Z", "Jo was a light.") });
+    expect(prepareInput({ ...base, sourceInput: { kind: "other", email: "Pat@Example.com", originalText: "Dear Rob,\r\n\r\nJo was a light.\r\n" } })).toEqual({ ...base, source: "OTHER", sourceRef: otherSourceRef("pat@example.com", "Dear Rob,\n\nJo was a light.") });
+  });
+
+  it("passes an input that already carries source and sourceRef through unchanged, and refuses one with neither or both", () => {
+    const explicit = { ...base, source: "EMAIL", sourceRef: "gmail:1a1a2317fba34eec" };
+    expect(prepareInput(explicit)).toEqual(explicit);
+    expect(() => prepareInput(base)).toThrow(/sourceInput/);
+    expect(() => prepareInput({ ...explicit, sourceInput: { kind: "gmail", messageId: "1a1a2317fba34eec" } })).toThrow(/sourceInput/);
+    expect(() => prepareInput({ ...base, sourceInput: { kind: "fax" } })).toThrow(/kind/);
   });
 });

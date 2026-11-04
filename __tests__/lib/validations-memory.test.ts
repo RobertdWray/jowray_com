@@ -76,6 +76,7 @@ describe("draftMemoryInputSchema", () => {
     expect(parsed.contributor.email).toBe("joyce@example.com");
     expect(parsed.visibility).toBe("PUBLIC");
     expect(parsed.contributor.phone).toBeUndefined();
+    expect(draftMemoryInputSchema.parse({ ...valid, contributor: { ...valid.contributor, phone: "  " } }).contributor.phone).toBeNull();
   });
 
   it("trims and lower-cases a padded address before checking it (zod 4 checks the format first unless piped)", () => {

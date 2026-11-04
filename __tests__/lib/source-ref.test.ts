@@ -19,27 +19,32 @@ describe("gmailSourceRef", () => {
 });
 
 describe("smsSourceRef", () => {
-  it("hashes the E.164 number with the text's timestamp; the number never appears in clear", () => {
-    const ref = smsSourceRef("+14105551234", "2026-11-03T14:05:00Z");
-    expect(ref).toBe(`sms:${sha("+14105551234|2026-11-03T14:05Z").slice(0, 32)}`);
+  it("hashes the E.164 number, the text's timestamp (UTC minute) and the canonical text; the number never appears in clear", () => {
+    const ref = smsSourceRef("+14105551234", "2026-11-03T14:05:00Z", "Jo was a light.");
+    expect(ref).toBe(`sms:${sha("+14105551234|2026-11-03T14:05Z|Jo was a light.").slice(0, 32)}`);
     expect(ref).not.toContain("4105551234");
     expect(ref).toMatch(SOURCE_REF_PATTERN);
   });
 
-  it("gives two texts from the same number different refs", () => {
-    expect(smsSourceRef("+14105551234", "2026-11-03T14:05:00Z")).not.toBe(smsSourceRef("+14105551234", "2026-11-03T15:05:00Z"));
+  it("gives two texts from the same number different refs, even within the same minute when the words differ", () => {
+    expect(smsSourceRef("+14105551234", "2026-11-03T14:05:00Z", "a")).not.toBe(smsSourceRef("+14105551234", "2026-11-03T15:05:00Z", "a"));
+    expect(smsSourceRef("+14105551234", "2026-11-03T14:05:01Z", "first text")).not.toBe(smsSourceRef("+14105551234", "2026-11-03T14:05:58Z", "second text"));
+  });
+
+  it("rejects an empty text", () => {
+    expect(() => smsSourceRef("+14105551234", "2026-11-03T14:05:00Z", "  \n")).toThrow(/text/);
   });
 
   it("canonicalises the timestamp to UTC at minute precision, so a retyped zone or seconds cannot make a second draft", () => {
-    const a = smsSourceRef("+14105551234", "2026-11-03T10:05:00-04:00");
-    expect(a).toBe(smsSourceRef("+14105551234", "2026-11-03T14:05Z"));
-    expect(a).toBe(smsSourceRef("+14105551234", "2026-11-03T14:05:37.250Z"));
-    expect(a).toBe(`sms:${sha("+14105551234|2026-11-03T14:05Z").slice(0, 32)}`);
-    expect(() => smsSourceRef("+14105551234", "yesterday")).toThrow(/timestamp/);
+    const a = smsSourceRef("+14105551234", "2026-11-03T10:05:00-04:00", "Jo");
+    expect(a).toBe(smsSourceRef("+14105551234", "2026-11-03T14:05Z", "Jo\r\n"));
+    expect(a).toBe(smsSourceRef("+14105551234", "2026-11-03T14:05:37.250Z", "Jo"));
+    expect(a).toBe(`sms:${sha("+14105551234|2026-11-03T14:05Z|Jo").slice(0, 32)}`);
+    expect(() => smsSourceRef("+14105551234", "yesterday", "Jo")).toThrow(/timestamp/);
   });
 
   it("rejects a number that is not E.164", () => {
-    expect(() => smsSourceRef("410-555-1234", "2026-11-03T14:05:00Z")).toThrow();
+    expect(() => smsSourceRef("410-555-1234", "2026-11-03T14:05:00Z", "Jo")).toThrow();
   });
 });
 
@@ -57,6 +62,12 @@ describe("otherSourceRef", () => {
     const a = otherSourceRef("pat@example.com", "Dear Rob,\r\n\r\nJo taught me to quilt.  \r\n\r\nLove, Pat\r\n\r\n");
     expect(a).toBe(otherSourceRef("pat@example.com", "Dear Rob,\n\nJo taught me to quilt.\n\nLove, Pat"));
     expect(otherSourceRef("pat@example.com", "caf\u00e9")).toBe(otherSourceRef("pat@example.com", "cafe\u0301"));
+  });
+
+  it("rejects an empty or non-address email and an empty text", () => {
+    expect(() => otherSourceRef("", "words")).toThrow(/email/);
+    expect(() => otherSourceRef("not-an-address", "words")).toThrow(/email/);
+    expect(() => otherSourceRef("pat@example.com", " \n ")).toThrow(/text/);
   });
 
   it("gives two people with identical words different refs", () => {

@@ -86,8 +86,17 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
     }
   }
 
+  const addFile = (
+    <label className={labelClass}>
+      <span>{draft ? "Add a photo, video or recording" : "Add another photo, video or recording"}</span>
+      <input type="file" accept={ACCEPT_ATTRIBUTE} onChange={onAddFile} disabled={busy} className={fileInputClass} />
+    </label>
+  );
+
   return (
     <div className="space-y-6">
+      {/* A draft's page says "add a photo, then press Share": the file control comes before the button. */}
+      {draft && addFile}
       <form
         onSubmit={onSave}
         className="flex flex-col gap-[22px] rounded-form border-[3px] border-wood-light bg-paper p-8 shadow-form"
@@ -139,10 +148,7 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
           <PrimaryButton type="submit" disabled={busy}>Save changes</PrimaryButton>
         )}
       </form>
-      <label className={labelClass}>
-        <span>{draft ? "Add a photo, video or recording" : "Add another photo, video or recording"}</span>
-        <input type="file" accept={ACCEPT_ATTRIBUTE} onChange={onAddFile} disabled={busy} className={fileInputClass} />
-      </label>
+      {!draft && addFile}
       {message && <p role="status" className="text-body">{message}</p>}
     </div>
   );

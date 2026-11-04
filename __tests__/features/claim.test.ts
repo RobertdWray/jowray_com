@@ -193,6 +193,15 @@ describe("updateMemoryFromClaim non-empty invariant", () => {
 });
 
 describe("invariants are evaluated after the lock", () => {
+  it("a removal through a link rotated while waiting for the lock is refused", async () => {
+    const VALID = { claimToken: TOKEN, mediaId: "00000000-0000-4000-8000-000000000001" };
+    mediaRows[0]!.id = VALID.mediaId;
+    memory!.contributorNote = "words";
+    tx.$queryRaw.mockImplementationOnce(async (strings: TemplateStringsArray, ...values: unknown[]) => { memory!.claimTokenHash = hashClaimToken("rotated".padEnd(43, "x")); lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; });
+    expect(await removeMediaFromClaim(VALID)).toEqual({ ok: false, code: "not_found" });
+    expect(mediaRows.find((r) => r.id === VALID.mediaId)!.deletedAt).toBeNull();
+  });
+
   it("sees a note cleared by a concurrent editor and refuses to remove the last file", async () => {
     const VALID = { claimToken: TOKEN, mediaId: "00000000-0000-4000-8000-000000000001" };
     mediaRows[0]!.id = VALID.mediaId;
@@ -276,6 +285,21 @@ describe("a DRAFT becomes the person's own by pressing Share", () => {
     expect((memory!.contributor as { contactOptIn: boolean }).contactOptIn).toBe(false);
     expect(revisions[0]!.before).toMatchObject({ notifyWhenPosted: true, contactOptIn: true });
     expect(revisions[0]!.after).toMatchObject({ notifyWhenPosted: false, contactOptIn: false });
+  });
+
+  it("a revoked link cannot share: the token is re-checked under the lock (reissue won the race)", async () => {
+    tx.$queryRaw.mockImplementationOnce(async (strings: TemplateStringsArray, ...values: unknown[]) => { memory!.claimTokenHash = hashClaimToken("rotated-by-reissue".padEnd(43, "x")); lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; });
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { share: true } })).toEqual({ ok: false, code: "not_found" });
+    expect(memory).toMatchObject({ status: "DRAFT", consentedAt: null });
+    expect(revisions).toHaveLength(0);
+  });
+
+  it("a share-less edit of a DRAFT cannot record preferences: those are given by pressing Share", async () => {
+    (memory!.contributor as { contactOptIn: boolean }).contactOptIn = false;
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Broadmead", contactOptIn: true, notifyWhenPosted: false } })).toEqual({ ok: true, shared: false });
+    expect(memory).toMatchObject({ status: "DRAFT", place: "Broadmead", notifyWhenPosted: true });
+    expect((memory!.contributor as { contactOptIn: boolean }).contactOptIn).toBe(false);
+    expect(revisions[0]!.after).toMatchObject({ notifyWhenPosted: true, contactOptIn: false });
   });
 
   it("the draft's words cannot be cleared before a file exists (same last_words rule)", async () => {

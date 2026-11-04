@@ -73,7 +73,7 @@
 | `CONSENT_VERSION=2026-11-v2` in Vercel Production and `.env` | no | `vercel env ls production` shows it; `grep -c '^CONSENT_VERSION=2026-11-v2' .env` = 1 |
 | Gmail threading probe done (draft reply to Rob's own message, then deleted) | **yes** (2026-11-04T12:15Z) | Connector account in this session: `rwray@tray-verify.com`. `create_draft` with `replyToMessageId` = message `1a10c465ac6230da` (a message Rob sent to himself and one other person), `to` = `["rwray@tray-verify.com"]`, explicit `Re:` subject → draft `r-4471266293683734600` landed in the **same thread** (`threadId` 1a10c465ac6230da), `to` was **exactly** the list given (the original's other recipient was **not** added), subject as given, the original quoted below the body. Deleted with `delete_draft` right after. So the skill must always set `to` explicitly (it does) and the subject is not inherited. **Note:** the Joyce/Bridget threads named in §0 live in whichever mailbox the planning session's connector was; check `authuser` in a `viewUrl` before the first real run. |
 | Draft PR open, parking lot in notes | **yes** | `gh pr list --head feat/draft-memory-on-behalf` → #30 |
-| `/team-code-review` on the PR, bucketed | no | §8 updated |
+| `/team-code-review` on the PR, bucketed | **yes** (2026-11-04; George + Oscar, 12 findings; buckets 1 and 2 fixed the same day) | §8.2 |
 | Merged with Rob's go-ahead; production deploy carries both migrations | no | `vercel ls` latest READY; `prisma migrate status` against prod via a Rob-run command |
 | First real run (Joyce) | no | `SELECT status FROM "Memory" WHERE "sourceRef" = 'gmail:1a1a2317fba34eec'` returns a row |
 | Second real run (Bridget) | no | same for `gmail:1a1a1ad3b27b64e4` |
@@ -298,6 +298,27 @@ Each ruling: what — why — cost if wrong.
 *Bucket 4 · Real, out of scope → §11*
 - P4 dedicated tools worktree for the skill (F11); P10 withdraw/correct a draft (F12); P6 `--attach` through an admin ticket route (F13); P8 "live memories with the same contributor email" hint on POST (F14).
 
+**PR #30 Team Code Review (George on gemini-4-argon, Oscar on Codex; 2026-11-04; log `~/Downloads/team-review-20261104-072911-jowray_com-pr30-facbb85.md`), 12 findings, verified against the branch and sorted:**
+
+*Bucket 1 · Must do (done the same day)*
+- #6 (Oscar, High) Share could act through a link rotated while waiting for the lock: `updateMemoryFromClaim` and `retireMedia` now re-read `claimTokenHash` under the lock and answer `not_found` on a mismatch (tests: "a revoked link cannot share", "a removal through a link rotated while waiting for the lock is refused").
+- #7 (Oscar) a share-less edit of a DRAFT could record `contactOptIn`: preferences on a DRAFT are now applied only by the Share request (test).
+- #1 / #8 (George, Oscar) the skill hashed `sourceRef` by hand in bash, diverging from the builders: the input JSON now carries `sourceInput` and the script derives `source` + `sourceRef` through `lib/source-ref.ts` (`prepareInput`, tests); SKILL.md no longer shows a `shasum` command.
+- #2 (George) `docs/environment.md` still described a default `ADMIN_API_URL` and suggested storing it in `.env`, which would abort every `--prod` run: fixed.
+- #3 (George) SKILL.md contradicted itself on attachments and stopped on any existing Gmail draft: one workflow now (the reply invites the sender to add the photo; Rob never does), and step 4 updates a hand-started draft with the link instead of stopping.
+- #11 (Oscar) texts and pasted notes have no Gmail message to reply to: step 4 has a compose-new branch (`A memory of Jo`, no `replyToMessageId`).
+- #5 (George) `otherSourceRef` accepted empty inputs; `phone: ""` was stored as `""`: both validated / normalised (tests).
+
+*Bucket 2 · Nice to do (done)*
+- #9 (Oscar) minute rounding conflated two texts in one minute: the `sms:` key now includes the canonical text (tests for same-minute distinct texts and for a retyped zone).
+- #12 (Oscar) the 30-minute age filter delayed the after-Share admin alert to ~40 min: step (e2) waives the age wait for memories not from `/share` (`source != WEB_UPLOAD`), keeping the readiness and in-flight-upload checks (test `mem_draft_shared_young`).
+- #4 (George) on a DRAFT page the file control sat below the Share button although the intro says "add a photo … then press Share": it now renders above the form on a DRAFT.
+- #10 (Oscar) a `/m/` link found in Gmail is not proof the current link is live: SKILL.md step 3 now matches the sender's thread, calls a found link "probably live", shows Rob the `memoryId`, and leaves links in other threads alone. The remaining gap (verifying a link's token) is F15.
+
+*Bucket 3 · Don't do*
+- #9's "prefer an immutable message id" for SMS: there is none until a vendor is chosen (F9); the text-in-key compromise stands.
+- #10's "authenticated read-only check of token currency": no such endpoint exists and adding one is out of scope → F15.
+
 
 ---
 
@@ -344,6 +365,7 @@ Severity: **H** = affects correctness or privacy today; **M** = affects the prod
 | F12 | Withdraw or correct a draft (premortem P10) | M | A DRAFT with the wrong excerpt or sender has no admin edit; `deletedAt` works but the unique `sourceRef` still blocks a redraft (409) and reissue answers `not_found`. Add `POST /api/admin/memories/[id]/withdraw` (conditional on `status = DRAFT`: set `deletedAt`, rewrite `sourceRef` to `withdrawn:<id>`), `--withdraw` in the script, and have the 409 report a deleted row. |
 | F13 | Attach a file to a draft from the script (premortem P6; half of F5) | M | `--attach <memoryId> <file>` backed by an admin ticket route limited to DRAFT, so Rob never opens a draft's page (where the only button is the sender's consent). Reuse `createPendingMedia` + the ticket flow + `finalizeUpload`. |
 | F14 | Hint on POST: other live memories with the same contributor email (premortem P8) | L | A follow-up Gmail message ("here's the photo") has a new id and makes a second draft. Return `sameEmail: [{ memoryId, status }]` from `POST /api/admin/memories` and have the skill show them to Rob before drafting. |
+| F15 | Verify a claim link without using it (Team Code Review #10) | L | `POST /api/admin/memories/[id]/claim-link/verify` taking a raw token and answering whether its hash is the memory's current `claimTokenHash` (bearer-protected, read-only). The skill would call it before telling Rob a link found in Gmail is live. Until then the skill says "probably live" and shows the `memoryId`. |
 | F10 | Draft expiry or cleanup for memories nobody ever shares | L | Decide a policy (keep forever vs soft-delete after N months with Rob's say-so). A cron step (g) over `status = DRAFT AND createdAt < now - N`. Not urgent: drafts are invisible and cost nothing. |
 
 ---

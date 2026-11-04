@@ -15,6 +15,8 @@ import { SOURCE_REF_PATTERN } from "@/lib/validations/memory";
 
 const GMAIL_MESSAGE_ID = /^[0-9a-f]{8,32}$/i;
 const E164 = /^\+[1-9]\d{6,14}$/;
+/** Shape check only (the zod schema validates the stored address); enough to refuse an empty or obviously wrong key. */
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function hash32(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex").slice(0, 32);
@@ -55,15 +57,36 @@ export function canonicalText(text: string): string {
     .replace(/^\n+|\n+$/g, "");
 }
 
-/** A text message: the E.164 number and the timestamp of the text (to the UTC minute), hashed. */
-export function smsSourceRef(e164Number: string, sentAtIso: string): string {
+function nonEmptyText(text: string): string {
+  const canonical = canonicalText(text);
+  if (canonical.length === 0) {
+    throw new Error("The original text is required");
+  }
+  return canonical;
+}
+
+function emailKey(email: string): string {
+  const key = email.trim().toLowerCase();
+  if (!EMAIL_SHAPE.test(key)) {
+    throw new Error("The sender's email is required");
+  }
+  return key;
+}
+
+/**
+ * A text message: the E.164 number, the timestamp of the text (to the UTC
+ * minute) and the canonical text, hashed. The text is part of the key so two
+ * messages in the same minute stay distinct while a retyped timestamp does not
+ * make a second draft.
+ */
+export function smsSourceRef(e164Number: string, sentAtIso: string, text: string): string {
   if (!E164.test(e164Number)) {
     throw new Error("The number must be E.164 (+ and 7 to 15 digits)");
   }
-  return checked(`sms:${hash32(`${e164Number}|${canonicalMinute(sentAtIso)}`)}`);
+  return checked(`sms:${hash32(`${e164Number}|${canonicalMinute(sentAtIso)}|${nonEmptyText(text)}`)}`);
 }
 
 /** Anything else: the sender's email (lower-cased) and the full original message text (canonicalised), hashed. */
 export function otherSourceRef(senderEmail: string, originalText: string): string {
-  return checked(`other:${hash32(`${senderEmail.trim().toLowerCase()}|${canonicalText(originalText)}`)}`);
+  return checked(`other:${hash32(`${emailKey(senderEmail)}|${nonEmptyText(originalText)}`)}`);
 }

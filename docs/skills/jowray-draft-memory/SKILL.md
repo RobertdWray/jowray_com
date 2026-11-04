@@ -52,7 +52,7 @@ printf '%x\n' <decimal>
 
 **Pasted text or a text message** → use it as given. Ask for the sender's name and email if missing (email is required). For a text message also ask for the number (E.164) and when it arrived (ISO-8601), which only ever appear hashed.
 
-Note whether the message has attachments: the skill cannot download them, so Rob adds them through the claim link before he sends the reply, and the reply mentions them.
+Note whether the message has attachments: the skill cannot download them. The reply invites the sender to add the photo on their own page (step 4); Rob does not add it for them (hard rule above; `--attach` is follow-up F13).
 
 ### 2. Propose the excerpt
 
@@ -66,7 +66,7 @@ Show Rob, and wait for his yes or edits:
 
 ### 3. Save the draft
 
-Build the input JSON in the scratchpad (never in the repo):
+Build the input JSON in the scratchpad (never in the repo). Describe **where the words came from** in `sourceInput`; the script derives `source` and `sourceRef` through the canonical builders in `lib/source-ref.ts`. Never compute a `sourceRef` by hand.
 
 ```json
 {
@@ -74,19 +74,14 @@ Build the input JSON in the scratchpad (never in the repo):
   "note": "<the verbatim excerpt>",
   "approxDateText": "<or omit>",
   "place": "<or omit>",
-  "source": "EMAIL",
-  "sourceRef": "gmail:<sender's message id>"
+  "sourceInput": { "kind": "gmail", "messageId": "<the sender's message id>" }
 }
 ```
 
-`source` is `EMAIL`, `SMS` or `OTHER`. `sourceRef` by the scheme (`lib/source-ref.ts`):
-- Gmail: `gmail:<message id>`.
-- Text message: `sms:` + first 32 hex of `sha256("<E.164>|<ISO-8601 timestamp>")`.
-- Anything else: `other:` + first 32 hex of `sha256("<lower-cased email>|<full original text>")` (the whole original, not the excerpt).
-
-```bash
-printf '%s' '+14105551234|2026-11-03T14:05:00Z' | shasum -a 256 | cut -c1-32
-```
+`sourceInput` is one of:
+- `{ "kind": "gmail", "messageId": "<sender's message id>" }` → `source: EMAIL`.
+- `{ "kind": "sms", "number": "<E.164>", "sentAt": "<ISO-8601 with zone>", "text": "<the full text message>" }` → `source: SMS`. Keyed on number, the minute (UTC) and the text, so a retyped zone or seconds cannot make a second draft and two texts in one minute stay distinct.
+- `{ "kind": "other", "email": "<sender email>", "originalText": "<the whole original message, not the excerpt>" }` → `source: OTHER`.
 
 Run the script (it prints the host it is about to call, then `memoryId` and `claimLink`):
 
@@ -96,24 +91,24 @@ npx tsx --env-file=/Users/rob/Documents/active_work/jowray_com/.env /Users/rob/D
 
 Then delete the JSON file.
 
-- **409 duplicate, status DRAFT**: a draft already exists for this message, and a link for it may already be in Gmail. **Check Gmail before offering anything:** `list_drafts(query: "to:<sender email>")` and `search_threads(query: "in:sent to:<sender email> jowray.com/m/")`.
-  - A Gmail **draft** with a `/m/` link exists → the link is still live. Do not reissue; go to step 4 and show Rob that draft.
-  - A **sent** reply with a `/m/` link exists → the person holds a working link. Do not reissue unless Rob says, in so many words, that he wants to revoke it (for example because it leaked).
+- **409 duplicate, status DRAFT**: a draft already exists for this message, and a link for it may already be in Gmail. **Check Gmail before offering anything.** Look in **this sender's thread** (the `threadId` from step 1; for a text or pasted note, `list_drafts(query: "to:<sender email>")` and `search_threads(query: "in:sent to:<sender email> jowray.com/m/")`):
+  - A Gmail **draft** in that thread with a `/m/` link → probably the link for this memory, and probably still live. The site cannot confirm a link without its token, so say so: show Rob the draft and the `memoryId` from the 409, and let him decide between sending it as is and a reissue (which replaces the link in that draft).
+  - A **sent** reply in that thread with a `/m/` link → the person most likely holds a working link. Do not reissue unless Rob says, in so many words, that he wants to revoke it (for example because it leaked or he knows a reissue happened after it was sent).
   - Neither → the link was lost (a session died between the POST and the Gmail draft). Offer `--prod --reissue <memoryId>` and say that any link already sent stops working. Only on Rob's explicit yes.
-  - After any reissue, put the new link into the existing Gmail draft with `update_draft` if one exists; never leave a draft carrying a dead link.
+  - After any reissue, put the new link into the existing Gmail draft with `update_draft` if one exists; never leave a draft carrying a dead link. A `/m/` link found for the same person but in another thread belongs to another memory: leave it alone.
 - **409 duplicate, status PENDING or later**: the person already shared it. Stop; tell Rob.
 - **401**: `ADMIN_API_SECRET` is missing locally or differs from Vercel. Stop.
 - **429**: the daily memory budget is spent. Try later.
 
 ### 4. Draft Rob's reply
 
-`list_drafts(query: "to:<sender email>")` first. If a draft to this address in this thread already exists, show it to Rob and stop.
+`list_drafts(query: "to:<sender email>")` first. If a draft to this address in this thread already exists: if it already carries this memory's `claimLink`, show it to Rob and stop; if it does not (Rob started a reply by hand), `update_draft` it to add the link and the lines below, keeping his words, and show him the result.
 
-Otherwise `create_draft` with:
-- `replyToMessageId`: the sender's message id (the same id as in `sourceRef`).
+Otherwise `create_draft`:
+- **Gmail source** (`sourceInput.kind = gmail`): `replyToMessageId` = the sender's message id (the same id as in `sourceRef`); `subject` = `Re: <original subject>` with any existing leading `Re:` / `RE:` / `Fwd:` stripped first, so it never reads `Re: Re:`.
+- **Text message or pasted note** (no Gmail message to reply to): omit `replyToMessageId`; `subject` = `A memory of Jo`.
 - `to`: `["<sender email>"]`. No `cc`, no `bcc`. The connector does **not** inherit recipients from the original (probe, 2026-11-04), so this list is exactly who gets the link.
-- `subject`: `Re: <original subject>` with any existing leading `Re:` / `RE:` / `Fwd:` stripped first, so it never reads `Re: Re:`.
-- `body`: plain text, in Rob's voice. Short, warm, first person. Thank them for the specific memory (name it in a few words, do not quote the note back at length). One line that it is saved to Jo's memorial in their own words. The claim link on its own line. "Change anything, add a photo or a recording, and press Share when it's right." A clean exit: "No need to do anything if you'd rather not." If the message had an attachment, one line that the photo can be added on that page. Never grovel, never include anyone's phone number, no "I know you're busy".
+- `body`: plain text, in Rob's voice. Short, warm, first person. Thank them for the specific memory (name it in a few words, do not quote the note back at length). One line that it is saved to Jo's memorial in their own words. The claim link on its own line. "Change anything, add a photo or a recording, and press Share when it's right." A clean exit: "No need to do anything if you'd rather not." If the message had an attachment, one line that the photo can be added on that page (Rob does not add it for them). Never grovel, never include anyone's phone number, no "I know you're busy".
 
 **Then read the draft back** (`get_draft`, or `list_drafts` with `DRAFT_VIEW_FULL`) and stop if `to` is not exactly the sender, or `cc` / `bcc` is not empty: a CC'd person would hold the bearer link and could edit or Share the memory.
 

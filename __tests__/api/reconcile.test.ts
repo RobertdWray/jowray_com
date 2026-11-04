@@ -150,6 +150,9 @@ beforeEach(() => {
     { id: "mem_draft", type: "TEXT", status: "DRAFT", source: "EMAIL", deletedAt: null, createdAt: old, contributorNote: "words from a condolence note", contributor: { email: "h@example.com" }, media: [], emails: [] },
     // The same memory after the person pressed Share: still no site confirmation, but the admins are told it landed.
     { id: "mem_draft_shared", type: "TEXT", status: "PENDING", source: "EMAIL", deletedAt: null, createdAt: old, contributorNote: "words from a condolence note", contributor: { email: "i@example.com" }, media: [], emails: [] },
+    // Drafted and shared within the same half hour: no request-path alert exists for a Share, so the 30-minute
+    // "finalize may still be running" wait does not apply; the admins hear on the next run.
+    { id: "mem_draft_shared_young", type: "TEXT", status: "PENDING", source: "EMAIL", deletedAt: null, createdAt: new Date(), contributorNote: "words", contributor: { email: "j@example.com" }, media: [], emails: [] },
   ];
   recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
   recordMediaMock.mockImplementation(async ({ mediaId }) => mediaId === "med_orphan" ? { status: "PENDING", mediaId, memoryId: "mem_2" } : { status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 });
@@ -183,7 +186,8 @@ describe("GET /api/cron/reconcile-uploads", () => {
     // (d) the failed admin alert is retried through the admin path; (e2) ready memories without an admin row are
     // alerted (with or without a contributor address, and even when the contributor's confirmation was skipped),
     // not the young one, not the one with a 20-minute-old upload, not the pre-cutoff one
-    expect(notifyMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5", "mem_draft_shared", "mem_noemail", "mem_skipped"]);
+    expect(notifyMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5", "mem_draft_shared", "mem_draft_shared_young", "mem_noemail", "mem_skipped"]);
+    expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_draft_shared_young");
     // admin-drafted memories: never confirmed by the site (DRAFT or shared), never alerted while DRAFT (see the fixture comments)
     expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_draft");
     expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_draft_shared");
@@ -213,7 +217,7 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(deriveMediaMock.mock.calls[0]![0].deadlineMs).toBeGreaterThan(25_000);
     // the staging pathname is only ever deleted for videos
     expect(delMock.mock.calls.map((c) => c[0] as string).filter((k) => k.endsWith(".upload.jpg"))).toEqual([]);
-    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 2, confirmationsSent: 2, adminAlertsSent: 4, deletedBlobsRemoved: 3, derived: 3 });
+    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 2, confirmationsSent: 2, adminAlertsSent: 5, deletedBlobsRemoved: 3, derived: 3 });
   });
 
   it("alerts a failed upload only when words were saved, and never resends", async () => {

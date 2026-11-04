@@ -58,7 +58,7 @@ export const uploadTicketRequestSchema = z.object({
 /**
  * `Memory.sourceRef`: an opaque, unique reference to where an admin-drafted
  * memory's words came from. Never an address or a number in clear:
- * `gmail:<sender's message id>`, `sms:<32 hex of sha256(E.164|timestamp)>`,
+ * `gmail:<sender's message id>`, `sms:<32 hex of sha256(E.164|UTC minute|canonical text)>`,
  * `other:<32 hex of sha256(lower-cased email|full original text)>`.
  * The builders live in `lib/source-ref.ts`.
  */
@@ -71,7 +71,7 @@ export const draftMemoryInputSchema = z.object({
     // Trim and lower-case first, then check the format: zod 4's `z.email().trim()` would check the padded string.
     email: z.string().trim().toLowerCase().max(254).pipe(z.email("Enter a valid email address")),
     relationship: optionalText(120),
-    phone: z.string().trim().max(40).optional(),
+    phone: optionalText(40),
   }),
   // Verbatim: the sender's own paragraphs, never trimmed or rewritten here.
   note: z.string().max(10_000).refine((value) => value.trim().length > 0, { message: "The note needs some words" }),

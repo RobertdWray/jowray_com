@@ -171,6 +171,7 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
       where: { id: memory.id },
       select: {
         deletedAt: true,
+        claimTokenHash: true,
         status: true,
         consentedAt: true,
         approxDateText: true,
@@ -181,10 +182,13 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
         contributor: { select: { id: true, name: true, relationship: true, contactOptIn: true } },
       },
     });
-    if (fresh.deletedAt !== null) {
+    // A link rotated while this request waited for the lock (an admin reissue) must not act.
+    if (fresh.deletedAt !== null || fresh.claimTokenHash !== claimTokenHash) {
       return "not_found" as const;
     }
     const sharing = fresh.status === "DRAFT" && input.share === true;
+    // On a DRAFT the preferences are given by pressing Share, never by a plain edit.
+    const preferencesEditable = sharing || fresh.status !== "DRAFT";
     const before = {
       name: fresh.contributor?.name ?? null,
       relationship: fresh.contributor?.relationship ?? null,
@@ -205,8 +209,8 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
       place: input.place === undefined ? before.place : input.place,
       contributorNote: input.note === undefined ? before.contributorNote : input.note,
       visibility: input.visibility ?? before.visibility,
-      notifyWhenPosted: input.notifyWhenPosted ?? before.notifyWhenPosted,
-      contactOptIn: input.contactOptIn ?? before.contactOptIn,
+      notifyWhenPosted: preferencesEditable ? (input.notifyWhenPosted ?? before.notifyWhenPosted) : before.notifyWhenPosted,
+      contactOptIn: preferencesEditable ? (input.contactOptIn ?? before.contactOptIn) : before.contactOptIn,
       ...(consent && { status: "PENDING" as const, ...consent }),
     };
     if (hasWords(before.contributorNote) && !hasWords(after.contributorNote)) {
@@ -271,8 +275,8 @@ async function retireMedia(raw: unknown, statuses: MediaStatus[], action: "remov
     }
     await lockMemory(tx, memory.id);
     // Re-read under the lock: a note cleared by a concurrent editor must count here.
-    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { deletedAt: true, contributorNote: true, type: true, consentVersion: true } });
-    if (fresh.deletedAt !== null) {
+    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { deletedAt: true, claimTokenHash: true, contributorNote: true, type: true, consentVersion: true } });
+    if (fresh.deletedAt !== null || fresh.claimTokenHash !== claimTokenHash) {
       return "not_found" as const;
     }
     const target = await tx.media.findFirst({ where: { id: mediaId, memoryId: memory.id, deletedAt: null, status: { in: statuses } } });

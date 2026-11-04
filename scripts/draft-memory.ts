@@ -17,6 +17,8 @@
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 
+import { gmailSourceRef, otherSourceRef, smsSourceRef } from "../lib/source-ref";
+
 const PRODUCTION_TARGET = "https://www.jowray.com";
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
@@ -101,6 +103,52 @@ export async function callAdmin({
   return { status: response.status, body: parsed };
 }
 
+/**
+ * Where the words came from, in the input JSON. The script turns this into
+ * `source` + `sourceRef` through the canonical builders in lib/source-ref.ts,
+ * so the skill never reproduces the hashing by hand. An input may instead
+ * carry `source` and `sourceRef` itself (a replay of an earlier payload).
+ */
+export type SourceInput =
+  | { kind: "gmail"; messageId: string }
+  | { kind: "sms"; number: string; sentAt: string; text: string }
+  | { kind: "other"; email: string; originalText: string };
+
+function sourceFor(input: SourceInput): { source: "EMAIL" | "SMS" | "OTHER"; sourceRef: string } {
+  switch (input.kind) {
+    case "gmail":
+      return { source: "EMAIL", sourceRef: gmailSourceRef(input.messageId) };
+    case "sms":
+      return { source: "SMS", sourceRef: smsSourceRef(input.number, input.sentAt, input.text) };
+    case "other":
+      return { source: "OTHER", sourceRef: otherSourceRef(input.email, input.originalText) };
+    default:
+      throw new Error(`sourceInput.kind must be gmail, sms or other (got ${String((input as { kind?: unknown }).kind)})`);
+  }
+}
+
+/** The JSON file's object, with `sourceInput` replaced by `source` + `sourceRef`. */
+export function prepareInput(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error("The input file must hold a JSON object");
+  }
+  const { sourceInput, ...rest } = raw as Record<string, unknown> & { sourceInput?: SourceInput };
+  const explicit = "source" in rest || "sourceRef" in rest;
+  if (sourceInput !== undefined && explicit) {
+    throw new Error("Give either sourceInput or source + sourceRef, not both");
+  }
+  if (sourceInput === undefined) {
+    if (!("source" in rest) || !("sourceRef" in rest)) {
+      throw new Error("The input needs sourceInput ({ kind: gmail | sms | other, … }) or source + sourceRef");
+    }
+    return rest;
+  }
+  if (typeof sourceInput !== "object" || sourceInput === null) {
+    throw new Error("sourceInput.kind must be gmail, sms or other");
+  }
+  return { ...rest, ...sourceFor(sourceInput) };
+}
+
 /** Lines for the terminal. The secret is never part of a response, so nothing here can echo it. */
 export function summarize(status: number, body: unknown): string[] {
   if (typeof body === "object" && body !== null) {
@@ -132,7 +180,7 @@ async function main(): Promise<void> {
   console.log(`target: ${describeTarget(target)}`);
   const call =
     args.mode === "draft"
-      ? callAdmin({ target, secret, path: "/api/admin/memories", body: JSON.parse(readFileSync(args.inputPath, "utf8")) as unknown })
+      ? callAdmin({ target, secret, path: "/api/admin/memories", body: prepareInput(JSON.parse(readFileSync(args.inputPath, "utf8"))) })
       : callAdmin({ target, secret, path: `/api/admin/memories/${encodeURIComponent(args.memoryId)}/claim-link`, body: null });
   const { status, body } = await call;
   for (const line of summarize(status, body)) {

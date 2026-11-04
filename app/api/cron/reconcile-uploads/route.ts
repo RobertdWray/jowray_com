@@ -198,14 +198,18 @@ export async function GET(request: NextRequest): Promise<Response> {
   // only memories created since the alert existed (never a backfill of old
   // ones), and not while an upload younger than an hour is still in flight
   // (the request path alerts the moment it lands; step (a) gives up on older ones).
-  // Not while a memory is a DRAFT the admin made; once shared it is alerted like any other.
+  // Not while a memory is a DRAFT the admin made; once shared it is alerted like any
+  // other, and without the 30-minute wait: a Share has no request-path alert to race.
   const unalerted = await db.memory.findMany({
     where: {
       ...ADMIN_ALERT_WHERE,
       deletedAt: null,
-      createdAt: { gte: ADMIN_ALERT_SINCE, lt: new Date(now - CONFIRM_MIN_AGE_MS) },
+      createdAt: { gte: ADMIN_ALERT_SINCE },
       emails: { none: { emailType: "ADMIN_NEW_MEMORY" } },
-      OR: ready,
+      AND: [
+        { OR: ready },
+        { OR: [{ createdAt: { lt: new Date(now - CONFIRM_MIN_AGE_MS) } }, { source: { not: "WEB_UPLOAD" } }] },
+      ],
       NOT: { media: { some: { status: "PENDING", deletedAt: null, createdAt: { gt: new Date(now - HOUR_MS) } } } },
     },
     orderBy: { createdAt: "asc" },
