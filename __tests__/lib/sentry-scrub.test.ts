@@ -356,3 +356,22 @@ describe("the depth cap fails closed", () => {
     expect(scrubSecrets(shallow)).toEqual({ a: { b: { claimToken: FILTERED, note: "keep" } } });
   });
 });
+
+describe("the escaped-context scanner is idempotent (regression check M2)", () => {
+  it("keeps the inner JSON string well formed and leaves neighbouring keys alone on repeated passes", () => {
+    const flight = `1:{"p":"{\\"ticket\\":\\"${TEST_TOKEN}\\",\\"b\\":\\"keep\\"}"}`;
+    const once = scrubSecrets(flight) as string;
+    expect(once).not.toContain(TEST_TOKEN);
+    expect(once).toContain('\\"b\\":\\"keep\\"');
+    expect(once).toContain('\\"ticket\\":\\"[Filtered]\\"');
+    expect(scrubSecrets(once)).toBe(once);
+    expect(scrubSecrets(scrubSecrets(once))).toBe(once);
+  });
+
+  it("steps over three-character inner escapes (\\\\n) without overshooting the closing quote", () => {
+    const flight = `1:{"p":"{\\"claimToken\\":\\"${TEST_TOKEN}\\\\n\\",\\"b\\":\\"keep\\"}"}`;
+    const once = scrubSecrets(flight) as string;
+    expect(once).not.toContain(TEST_TOKEN);
+    expect(once).toContain('\\"b\\":\\"keep\\"');
+  });
+});

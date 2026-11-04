@@ -73,10 +73,17 @@ function stringEnd(text: string, i: number, escaped: boolean): number {
   while (i < text.length) {
     const c = text[i];
     if (c === "\\") {
-      if (escaped && text[i + 1] === '"') {
+      if (!escaped) {
+        i += 2; // `\x` is one plain escape
+        continue;
+      }
+      if (text[i + 1] === '"') {
         return i + 2; // `\"` closes an escaped string
       }
-      i += escaped && text[i + 1] === "\\" ? 4 : 2; // `\\\\` is one escaped backslash; `\x` is one plain escape
+      // Inside an escaped string an inner escape is `\\` + one char: `\\\\` (a backslash) and `\\\"` (a quote)
+      // are four characters, anything else (`\\n`, `\\t`) is three.
+      const third = text[i + 2];
+      i += text[i + 1] === "\\" && (third === "\\" || third === '"') ? 4 : 3;
       continue;
     }
     if (c === '"' && !escaped) {
@@ -130,8 +137,11 @@ function scrubMembers(text: string): string {
       continue; // inside a value already replaced
     }
     const [whole, open, key, close] = match;
-    const end = valueEnd(text, match.index + whole.length, open === '\\"');
-    out += `${text.slice(last, match.index)}${open}${key}${close}:"${FILTERED}"`;
+    const escaped = open === '\\"';
+    const end = valueEnd(text, match.index + whole.length, escaped);
+    // The marker is written in the member's own quoting, so a double-encoded string stays well formed (and a second pass is a no-op).
+    const quote = escaped ? '\\"' : '"';
+    out += `${text.slice(last, match.index)}${open}${key}${close}:${quote}${FILTERED}${quote}`;
     last = end;
     SECRET_MEMBER_KEY.lastIndex = end;
   }
