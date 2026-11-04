@@ -41,8 +41,8 @@ Order is deliberate: contracts and failing tests first, then session and feature
 | L10 | Pages, server components, client forms (§3.8) | todo | | | |
 | L11 | `next.config.ts` headers; `lib/sentry/scrub.ts`; docs (`docs/admin.md`, `docs/environment.md`) | todo | | | |
 | L12 | `npm run validate` / `test:run` / `build:offline` green with no `.env*` | todo | | paste the three summaries | |
-| L13 | Local walk (§5, §6 rows B1–B14) with screenshots at 390 / 1440 / 2560 | todo | | commit SHA the screenshots were taken against | |
-| L14 | PR opened with §10 non-goals and §11 follow-ups in the description | todo | | PR URL | |
+| L13 | Local walk (§5, §6 rows B1–B14) with screenshots at 390 / 1440 / 2560 | verified | a823127 (walk), fix pass re-walked as B15 | 2026-11-04, B1–B15 all pass: `docs/plans/evidence/2026-11-admin-page/README.md` + jpgs; three walk findings fixed in a823127 (hashchange entry, two tap targets, third-column precedence) | |
+| L14 | PR opened with §10 non-goals and §11 follow-ups in the description | verified | (this branch) | https://github.com/RobertdWray/jowray_com/pull/31; final review: 0 Critical, 2 Important fixed, 4 Minor deferred (PR body) | |
 | L15 | **Rob:** `ADMIN_PAGE_SECRET` in Vercel Production + local `.env` | todo | | | |
 | L16 | **Rob:** Vercel Deployment Protection = Standard (§7) | todo | | | |
 | L17 | Merge, production smoke (§7), record deployment id/SHA | todo | | | |
