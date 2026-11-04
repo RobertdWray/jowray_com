@@ -21,7 +21,7 @@ const log = createLogger({ category: "upload" });
 export { MAX_FILES_PER_MEMORY };
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Neon computes can take a couple of seconds to wake; Prisma's defaults (2 s / 5 s) are too tight. */
-const TX_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;
+export const TX_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;
 
 export type UploadGrant = { pathname: string; ticket: UploadTicket };
 
@@ -33,15 +33,16 @@ export type UploadTicketResult =
   | { ok: true; upload: UploadGrant }
   | { ok: false; code: "invalid" | "unsupported_type" | "too_large" | "budget_exceeded" | "not_found" | "too_many_files" | "replacement_pending" };
 
-interface ResolvedFile {
+export interface ResolvedFile {
   mimeType: string;
+  /** The reservation and the ticket's ceiling: the kind's maximum, or the declared size where the caller trusts it (createSubmission). */
   maxBytes: number;
   extension: string;
   originalFilename: string;
   durationSeconds: number | null;
 }
 
-function resolveFile(file: FileInput): ResolvedFile | "unsupported_type" | "too_large" {
+export function resolveFile(file: FileInput): ResolvedFile | "unsupported_type" | "too_large" {
   const mimeType = normalizeMime(file.type, file.name);
   if (!mimeType) {
     return "unsupported_type";
@@ -56,13 +57,13 @@ function resolveFile(file: FileInput): ResolvedFile | "unsupported_type" | "too_
   return { mimeType, maxBytes, extension: extensionFor(mimeType), originalFilename: file.name.slice(0, 255), durationSeconds };
 }
 
-/** True when one more memory and `addBytes` more ticketed bytes fit in today's budgets. */
-async function withinBudget(tx: Tx, addBytes: number, countMemory: boolean): Promise<boolean> {
+/** True when `addMemories` more memories and `addBytes` more ticketed bytes fit in today's budgets. */
+export async function withinBudget(tx: Tx, addBytes: number, addMemories: number): Promise<boolean> {
   const env = getUploadEnv();
   const since = new Date(Date.now() - DAY_MS);
-  if (countMemory) {
+  if (addMemories > 0) {
     const memories = await tx.memory.count({ where: { createdAt: { gt: since } } });
-    if (memories >= env.DAILY_MEMORY_BUDGET) {
+    if (memories + addMemories > env.DAILY_MEMORY_BUDGET) {
       return false;
     }
   }
@@ -80,12 +81,13 @@ async function liveFileCount(tx: Tx, memoryId: string): Promise<number> {
   return tx.media.count({ where: { memoryId, deletedAt: null, status: { in: ["PENDING", "READY"] } } });
 }
 
-async function createPendingMedia(
+/** The PENDING row alone, with a fresh write-once pathname; the caller decides whether a ticket is minted now (createMemory, the claim page) or per file later (createSubmission). */
+export async function createPendingMediaRow(
   tx: Tx,
   memoryId: string,
   file: ResolvedFile,
   placement: { sortOrder: number; replacesMediaId: string | null }
-): Promise<UploadGrant> {
+): Promise<{ mediaId: string; pathname: string }> {
   const pathname = `${storagePrefix()}${memoryId}/${randomUUID()}.${file.extension}`;
   const media = await tx.media.create({
     data: {
@@ -100,13 +102,17 @@ async function createPendingMedia(
       replacesMediaId: placement.replacesMediaId,
     },
   });
-  const ticket = mintUploadTicket({
-    mediaId: media.id,
-    memoryId,
-    pathname,
-    mimeType: file.mimeType,
-    maxBytes: file.maxBytes,
-  });
+  return { mediaId: media.id, pathname };
+}
+
+async function createPendingMedia(
+  tx: Tx,
+  memoryId: string,
+  file: ResolvedFile,
+  placement: { sortOrder: number; replacesMediaId: string | null }
+): Promise<UploadGrant> {
+  const { mediaId, pathname } = await createPendingMediaRow(tx, memoryId, file, placement);
+  const ticket = mintUploadTicket({ mediaId, memoryId, pathname, mimeType: file.mimeType, maxBytes: file.maxBytes });
   return { pathname, ticket };
 }
 
@@ -140,7 +146,7 @@ export async function createMemory(raw: unknown): Promise<CreateMemoryResult> {
   const claimToken = newClaimToken();
 
   const created = await getDb().$transaction(async (tx) => {
-    if (!(await withinBudget(tx, file?.maxBytes ?? 0, true))) {
+    if (!(await withinBudget(tx, file?.maxBytes ?? 0, 1))) {
       return null;
     }
     const memorial = await tx.memorial.findUnique({ where: { slug: MEMORIAL_SLUG } });
@@ -214,7 +220,7 @@ export async function createUploadTicket(raw: unknown): Promise<UploadTicketResu
     if ((await liveFileCount(tx, memory.id)) >= MAX_FILES_PER_MEMORY) {
       return "too_many_files" as const;
     }
-    if (!(await withinBudget(tx, file.maxBytes, false))) {
+    if (!(await withinBudget(tx, file.maxBytes, 0))) {
       return "budget_exceeded" as const;
     }
     return createPendingMedia(tx, memory.id, file, { sortOrder: await nextSortOrder(tx, memory.id), replacesMediaId: null });
@@ -259,7 +265,7 @@ export async function createReplacementTicket(raw: unknown): Promise<UploadTicke
     if ((await liveFileCount(tx, memory.id)) >= MAX_FILES_PER_MEMORY + 1) {
       return "too_many_files" as const;
     }
-    if (!(await withinBudget(tx, file.maxBytes, false))) {
+    if (!(await withinBudget(tx, file.maxBytes, 0))) {
       return "budget_exceeded" as const;
     }
     return createPendingMedia(tx, memory.id, file, { sortOrder: target.sortOrder, replacesMediaId: target.id });
