@@ -9,9 +9,9 @@ const HOUR = 60 * 60 * 1000;
 interface DerivedRow { kind: string; status: string; error: string | null; attempts: number; claimedAt: Date | null; storageKey: string }
 interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; mimeType?: string; derivatives?: DerivedRow[]; memory: { deletedAt: Date | null } }
 interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
-type EmailType = "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY";
+type EmailType = "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY" | "SUBMISSION_CONFIRMATION";
 interface EmailRow { id: string; memoryId: string; emailType: EmailType; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null } }
-interface MemoryRow { id: string; type: string; deletedAt: Date | null; createdAt: Date; contributorNote?: string | null; contributor: { email: string | null } | null; media: Array<{ status: string; deletedAt: Date | null; createdAt?: Date }>; emails: EmailRow[] }
+interface MemoryRow { id: string; type: string; deletedAt: Date | null; createdAt: Date; contributorNote?: string | null; contributor: { email: string | null } | null; media: Array<{ status: string; deletedAt: Date | null; createdAt?: Date }>; emails: EmailRow[]; submissionId?: string | null; submissionIndex?: number | null; uploadLeaseUntil?: Date | null }
 
 let media: MediaRow[] = [];
 let events: EventRow[] = [];
@@ -53,7 +53,8 @@ const dbStub = {
   derivedMedia: { deleteMany: vi.fn(async ({ where }: { where: { mediaId: string; storageKey?: { in: string[] } } }) => { derivedDeletes.push(where); const m = media.find((x) => x.id === where.mediaId); if (m?.derivatives) { m.derivatives = m.derivatives.filter((d) => where.storageKey ? !where.storageKey.in.includes(d.storageKey) : false); } return { count: 1 }; }) },
   webhookEvent: { findMany: finder(() => events as unknown as Record<string, unknown>[]), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<EventRow> }) => { Object.assign(events.find((e) => e.id === where.id)!, data); }) },
   emailLog: { findMany: finder(() => emails as unknown as Record<string, unknown>[]) },
-  memory: { findMany: finder(() => memories as unknown as Record<string, unknown>[]) },
+  // Prisma returns the submission columns as null on legacy rows; fixtures may omit them.
+  memory: { findMany: finder(() => memories.map((m) => ({ submissionId: null, submissionIndex: null, uploadLeaseUntil: null, ...m })) as unknown as Record<string, unknown>[]) },
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
@@ -71,6 +72,13 @@ function recordSent(memoryId: string, emailType: EmailType) {
 }
 const confirmMock = vi.fn(async ({ memoryId }: { memoryId: string }) => recordSent(memoryId, "MEMORY_CONFIRMATION"));
 vi.mock("@/features/memories/confirm", () => ({ confirmMemory: (a: { memoryId: string }) => confirmMock(a) }));
+/** Like the real `confirmSubmission`: answers `leased` while the anchor's lease is live, otherwise records the receipt. */
+const confirmSubmissionMock = vi.fn(async ({ anchorId }: { anchorId: string }) => {
+  const anchor = memories.find((m) => m.id === anchorId);
+  if (anchor?.uploadLeaseUntil && anchor.uploadLeaseUntil.getTime() > Date.now()) { return { sent: false, skipped: "leased" }; }
+  return recordSent(anchorId, "SUBMISSION_CONFIRMATION");
+});
+vi.mock("@/features/memories/complete-submission", () => ({ confirmSubmission: (a: { anchorId: string }) => confirmSubmissionMock(a) }));
 const deriveMediaMock = vi.fn(async ({ mediaId }: { mediaId: string; deadlineMs: number }) => { const m = media.find((x) => x.id === mediaId)!; m.derivatives = [{ kind: "WEB_IMAGE", status: "READY", error: null, attempts: 1, claimedAt: new Date(), storageKey: "dev/derived/x/a.jpg" }, { kind: "THUMBNAIL", status: "READY", error: null, attempts: 1, claimedAt: new Date(), storageKey: "dev/derived/x/b.jpg" }]; return { WEB_IMAGE: "derived", THUMBNAIL: "derived" }; });
 vi.mock("@/features/memories/derive-media", async (importOriginal) => { const actual = await importOriginal<Record<string, unknown>>(); return { ...actual, deriveMedia: (a: { mediaId: string; deadlineMs: number }) => deriveMediaMock(a) }; });
 // The activation cutoff is a day in the past here so the fixtures (created 2 h ago) fall after it; the real constant is the merge day.
@@ -125,6 +133,11 @@ beforeEach(() => {
     { id: "log_admin_failed", memoryId: "mem_4", emailType: "ADMIN_NEW_MEMORY", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: null } },
     // An admin row alone must not stop the contributor's confirmation (step (e) filters `none` by type).
     { id: "log_admin_only", memoryId: "mem_adminonly", emailType: "ADMIN_NEW_MEMORY", status: "SENT", attempts: 1, nextAttemptAt: null, createdAt: old, memory: { deletedAt: null } },
+    // (Task 15) An admin row on a send's anchor must not count as the send's receipt (step (e3) filters `none` by type).
+    { id: "log_sub_admin", memoryId: "mem_sub0", emailType: "ADMIN_NEW_MEMORY", status: "SENT", attempts: 1, nextAttemptAt: null, createdAt: old, memory: { deletedAt: null } },
+    // A failed receipt is retried through the submission path (d); one whose send is still leased waits.
+    { id: "log_sub_failed", memoryId: "mem_subfail0", emailType: "SUBMISSION_CONFIRMATION", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: null } },
+    { id: "log_sub_leased", memoryId: "mem_live0", emailType: "SUBMISSION_CONFIRMATION", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: null } },
   ];
   memories = [
     { id: "mem_4", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "a@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [emails[0]!, emails[3]!] },
@@ -141,8 +154,19 @@ beforeEach(() => {
     { id: "mem_skipped", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "e@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [emails[2]!] },
     // Its only READY file was removed and it has no words: nothing to confirm.
     { id: "mem_emptied", type: "PHOTO", deletedAt: null, createdAt: old, contributorNote: null, contributor: { email: "f@example.com" }, media: [{ status: "READY", deletedAt: old }], emails: [] },
+    // (Task 15) A send whose lease has run out: (e) leaves both memories alone, (e3) emails the anchor once, (e2) alerts the sibling (the anchor already has its admin row).
+    { id: "mem_sub0", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "s@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [emails[5]!], submissionId: "sub_1", submissionIndex: 0, uploadLeaseUntil: new Date(Date.now() - 5 * 60 * 1000) },
+    { id: "mem_sub1", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "s@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [], submissionId: "sub_1", submissionIndex: 1, uploadLeaseUntil: null },
+    // A send still under its lease: (e3) waits, (e2) waits for both memories, (d) gets `leased` back for its failed receipt.
+    { id: "mem_live0", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "l@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [emails[7]!], submissionId: "sub_live", submissionIndex: 0, uploadLeaseUntil: new Date(Date.now() + 30 * 60 * 1000) },
+    { id: "mem_live1", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "l@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [], submissionId: "sub_live", submissionIndex: 1, uploadLeaseUntil: null },
+    // A failed receipt whose send is free again: retried through (d).
+    { id: "mem_subfail0", type: "TEXT", deletedAt: null, createdAt: old, contributorNote: "words", contributor: { email: "x@example.com" }, media: [], emails: [emails[6]!], submissionId: "sub_fail", submissionIndex: 0, uploadLeaseUntil: null },
+    // Anchors (e3) must leave alone: too young, and without an address.
+    { id: "mem_subyoung0", type: "TEXT", deletedAt: null, createdAt: new Date(), contributorNote: "words", contributor: { email: "y@example.com" }, media: [], emails: [], submissionId: "sub_young", submissionIndex: 0, uploadLeaseUntil: null },
+    { id: "mem_subnoemail0", type: "TEXT", deletedAt: null, createdAt: old, contributorNote: "words", contributor: { email: null }, media: [], emails: [], submissionId: "sub_noemail", submissionIndex: 0, uploadLeaseUntil: null },
   ];
-    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
+    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); confirmSubmissionMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
   recordMediaMock.mockImplementation(async ({ mediaId }) => mediaId === "med_orphan" ? { status: "PENDING", mediaId, memoryId: "mem_2" } : { status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 });
 });
 
@@ -174,7 +198,16 @@ describe("GET /api/cron/reconcile-uploads", () => {
     // (d) the failed admin alert is retried through the admin path; (e2) ready memories without an admin row are
     // alerted (with or without a contributor address, and even when the contributor's confirmation was skipped),
     // not the young one, not the one with a 20-minute-old upload, not the pre-cutoff one
-    expect(notifyMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5", "mem_noemail", "mem_skipped"]);
+    // (Task 15) plus the sibling of a send whose lease ran out; nothing from the send still under its lease, and no sibling-less text anchors (they have no admin row yet but are alerted: mem_subfail0 and mem_subnoemail0 are ready text memories)
+    expect(notifyMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5", "mem_noemail", "mem_skipped", "mem_sub1", "mem_subfail0", "mem_subnoemail0"]);
+    // (e) never confirms a memory that belongs to a send
+    expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_sub0");
+    expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_sub1");
+    // (d) retries the failed receipts through the submission path (the leased one answers `leased`); (e3) emails the free anchor once
+    expect(confirmSubmissionMock.mock.calls.map((c) => c[0].anchorId).sort()).toEqual(["mem_live0", "mem_sub0", "mem_subfail0"]);
+    expect(emails.find((e) => e.memoryId === "mem_sub0" && e.emailType === "SUBMISSION_CONFIRMATION")?.status).toBe("SENT");
+    expect(emails.find((e) => e.id === "log_sub_failed")?.status).toBe("SENT");
+    expect(emails.find((e) => e.id === "log_sub_leased")?.status).toBe("FAILED");
     // removed rows are neither re-recorded (a) nor hashed (b)
     expect(recordMediaMock.mock.calls.map((c) => c[0].mediaId)).not.toContain("med_cancelled");
     expect(checksumMock).not.toHaveBeenCalledWith({ mediaId: "med_removed" });
@@ -200,7 +233,34 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(deriveMediaMock.mock.calls[0]![0].deadlineMs).toBeGreaterThan(25_000);
     // the staging pathname is only ever deleted for videos
     expect(delMock.mock.calls.map((c) => c[0] as string).filter((k) => k.endsWith(".upload.jpg"))).toEqual([]);
-    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 2, confirmationsSent: 2, adminAlertsSent: 3, deletedBlobsRemoved: 3, derived: 3 });
+    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 3, confirmationsSent: 2, adminAlertsSent: 6, submissionReceiptsSent: 1, deletedBlobsRemoved: 3, derived: 3 });
+  });
+
+  it("(e2) waits for a send's lease before alerting any of its memories, and (e3) emails the anchor once the lease is gone", async () => {
+    await run(`Bearer ${SECRET}`);
+    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_live0" });
+    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_live1" });
+    expect(emails.find((e) => e.id === "log_sub_leased")?.status).toBe("FAILED");
+    memories.find((m) => m.id === "mem_live0")!.uploadLeaseUntil = new Date(Date.now() - 1_000);
+    notifyMock.mockClear(); confirmSubmissionMock.mockClear();
+    const res = await run(`Bearer ${SECRET}`);
+    expect(notifyMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_live0", "mem_live1"]);
+    // The failed receipt row is retried by (d); (e3) does not select the anchor a second time because the row exists.
+    expect(confirmSubmissionMock.mock.calls.map((c) => c[0].anchorId)).toEqual(["mem_live0"]);
+    expect(emails.find((e) => e.id === "log_sub_leased")?.status).toBe("SENT");
+    const body = (await res.json()) as { data: Record<string, number> };
+    expect(body.data.emailsRetried).toBe(1);
+    expect(body.data.submissionReceiptsSent).toBe(0);
+  });
+
+  it("(e3) picks only anchors at least 30 minutes old with an address, no live lease and no receipt row", async () => {
+    await run(`Bearer ${SECRET}`);
+    const receipts = confirmSubmissionMock.mock.calls.map((c) => c[0].anchorId);
+    expect(receipts).toContain("mem_sub0");
+    expect(receipts).not.toContain("mem_sub1");
+    expect(receipts).not.toContain("mem_subyoung0");
+    expect(receipts).not.toContain("mem_subnoemail0");
+    expect(receipts).not.toContain("mem_live0_by_e3");
   });
 
   it("alerts the admins once a pending upload lands (or fails), never while it is in flight", async () => {
@@ -222,7 +282,7 @@ describe("GET /api/cron/reconcile-uploads", () => {
 
   it("is a no-op on a second run", async () => {
     await run(`Bearer ${SECRET}`);
-    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
+    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); confirmSubmissionMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
     const res = await run(`Bearer ${SECRET}`);
     const body = (await res.json()) as { data: Record<string, number> };
     expect(checksumMock).not.toHaveBeenCalled();
@@ -230,9 +290,12 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(notifyMock).not.toHaveBeenCalled();
     expect(delMock).not.toHaveBeenCalled();
     expect(deriveMediaMock).not.toHaveBeenCalled();
+    // Only the still-leased receipt row is retried again (and answers `leased` again).
+    expect(confirmSubmissionMock.mock.calls.map((c) => c[0].anchorId)).toEqual(["mem_live0"]);
     expect(body.data.checksumsComputed).toBe(0);
     expect(body.data.confirmationsSent).toBe(0);
     expect(body.data.adminAlertsSent).toBe(0);
+    expect(body.data.submissionReceiptsSent).toBe(0);
   });
 
   it("gives up on a webhook event after three attempts", async () => {

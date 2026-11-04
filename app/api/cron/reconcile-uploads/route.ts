@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 
+import { confirmSubmission } from "@/features/memories/complete-submission";
 import { confirmMemory } from "@/features/memories/confirm";
 import { DERIVED_KINDS, deriveMedia, MAX_DECODE_ATTEMPTS, MAX_PIXELS, STALE_CLAIM_MS } from "@/features/memories/derive-media";
 import { computeChecksum, recordMedia } from "@/features/memories/ingest-upload";
@@ -24,8 +25,10 @@ const CHECKSUM_BATCH = 20;
 const RUN_DEADLINE_MS = 50_000;
 /** Step (b) stops starting new files after this. */
 const CHECKSUM_DEADLINE_MS = 40_000;
-/** Step (e) leaves very new memories to the request path (finalize may still be running). */
+/** Steps (e), (e2) and (e3) leave very new memories to the request path (finalize or completion may still be running). */
 const CONFIRM_MIN_AGE_MS = 30 * MINUTE_MS;
+/** Step (e3): sends of several memories whose receipt never went out; the lease check keeps it from racing an open browser. */
+const SUBMISSION_BATCH = 10;
 const EMAIL_MAX_ATTEMPTS = 5;
 const EVENT_MAX_ATTEMPTS = 3;
 /** A cancelled reservation may still receive bytes until its ticket (15 min) and Blob client token (1 h) have both expired. */
@@ -42,6 +45,7 @@ interface Counts {
   emailsRetried: number;
   confirmationsSent: number;
   adminAlertsSent: number;
+  submissionReceiptsSent: number;
   deletedBlobsRemoved: number;
   derived: number;
   errors: number;
@@ -68,6 +72,7 @@ export async function GET(request: NextRequest): Promise<Response> {
     emailsRetried: 0,
     confirmationsSent: 0,
     adminAlertsSent: 0,
+    submissionReceiptsSent: 0,
     deletedBlobsRemoved: 0,
     derived: 0,
     errors: 0,
@@ -150,8 +155,14 @@ export async function GET(request: NextRequest): Promise<Response> {
       break;
     }
     try {
-      // Each email type has its own sender; the row says which one owns it.
-      const result = row.emailType === "ADMIN_NEW_MEMORY" ? await notifyAdminsOfMemory({ memoryId: row.memoryId }) : await confirmMemory({ memoryId: row.memoryId });
+      // Each email type has its own sender; the row says which one owns it. A send's
+      // receipt answers `leased` while its anchor's upload lease is live and is retried later.
+      const result =
+        row.emailType === "ADMIN_NEW_MEMORY"
+          ? await notifyAdminsOfMemory({ memoryId: row.memoryId })
+          : row.emailType === "SUBMISSION_CONFIRMATION"
+            ? await confirmSubmission({ anchorId: row.memoryId })
+            : await confirmMemory({ memoryId: row.memoryId });
       if (result.sent) {
         counts.emailsRetried += 1;
       }
@@ -164,10 +175,12 @@ export async function GET(request: NextRequest): Promise<Response> {
   // (e) Memories with an address and something READY (or TEXT) that were never
   // emailed and are old enough that no request-path confirm is still running.
   // `none` is filtered by type: an admin-alert row alone must not count as "emailed".
+  // Memories that belong to a send are confirmed by (e3), never one by one.
   const ready = [{ type: "TEXT" as const }, { contributorNote: { not: null } }, { media: { some: { status: "READY" as const, deletedAt: null } } }];
   const unconfirmed = await db.memory.findMany({
     where: {
       deletedAt: null,
+      submissionId: null,
       createdAt: { lt: new Date(now - CONFIRM_MIN_AGE_MS) },
       contributor: { email: { not: null } },
       emails: { none: { emailType: "MEMORY_CONFIRMATION" } },
@@ -206,9 +219,28 @@ export async function GET(request: NextRequest): Promise<Response> {
     orderBy: { createdAt: "asc" },
     take: 50,
   });
+  // A memory sent with others waits until its send's lease has run out, so the
+  // alert lists every file rather than "still uploading" (Task 15, D18). One
+  // anchor read per send, in code, keeps the main query simple.
+  const leasedSends = new Set<string>();
+  const sendIds = [...new Set(unalerted.map((m) => m.submissionId).filter((id): id is string => id !== null))];
+  if (sendIds.length > 0) {
+    const anchors = await db.memory.findMany({
+      where: { submissionId: { in: sendIds }, submissionIndex: 0, uploadLeaseUntil: { gt: new Date(now) } },
+      select: { submissionId: true },
+    });
+    for (const anchor of anchors) {
+      if (anchor.submissionId !== null) {
+        leasedSends.add(anchor.submissionId);
+      }
+    }
+  }
   for (const memory of unalerted) {
     if (outOfTime()) {
       break;
+    }
+    if (memory.submissionId !== null && leasedSends.has(memory.submissionId)) {
+      continue;
     }
     try {
       const result = await notifyAdminsOfMemory({ memoryId: memory.id });
@@ -218,6 +250,39 @@ export async function GET(request: NextRequest): Promise<Response> {
     } catch (error) {
       counts.errors += 1;
       logError("reconcile: admin alert failed", error, { category: "cron", memoryId: memory.id });
+    }
+  }
+
+  // (e3) Sends of several memories whose receipt never went out: the browser
+  // closed before completion, or completion's send failed without a row. Only
+  // anchors (index 0) with an address, old enough, and with no live lease; the
+  // `none` is filtered by type because the anchor's own admin-alert row must
+  // not count as the send's receipt. confirmSubmission re-checks PENDING files,
+  // names the missing ones and rotates every live token (Task 15).
+  const unreceipted = await db.memory.findMany({
+    where: {
+      submissionIndex: 0,
+      submissionId: { not: null },
+      createdAt: { lt: new Date(now - CONFIRM_MIN_AGE_MS) },
+      contributor: { email: { not: null } },
+      emails: { none: { emailType: "SUBMISSION_CONFIRMATION" } },
+      OR: [{ uploadLeaseUntil: null }, { uploadLeaseUntil: { lt: new Date(now) } }],
+    },
+    orderBy: { createdAt: "asc" },
+    take: SUBMISSION_BATCH,
+  });
+  for (const anchor of unreceipted) {
+    if (outOfTime()) {
+      break;
+    }
+    try {
+      const result = await confirmSubmission({ anchorId: anchor.id });
+      if (result.sent) {
+        counts.submissionReceiptsSent += 1;
+      }
+    } catch (error) {
+      counts.errors += 1;
+      logError("reconcile: send receipt failed", error, { category: "cron", memoryId: anchor.id });
     }
   }
 
