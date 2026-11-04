@@ -1,6 +1,7 @@
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { type NextRequest, NextResponse } from "next/server";
 
+import { deriveMedia } from "@/features/memories/derive-media";
 import { recordMedia } from "@/features/memories/ingest-upload";
 import { createLogger, logError } from "@/lib/logger";
 import { afterWithFlush } from "@/lib/sentry/after-flush";
@@ -19,6 +20,8 @@ export const maxDuration = 60;
  */
 const BLOB_TOKEN_LIFETIME_MS = 60 * 60 * 1000;
 const EVENT_MAX_ATTEMPTS = 3;
+/** Budget for the derived copies made from the callback (the route has 60 s). */
+const DERIVE_DEADLINE_CALLBACK_MS = 15_000;
 
 const log = createLogger({ category: "upload" });
 
@@ -94,6 +97,15 @@ export async function POST(request: NextRequest): Promise<Response> {
               where: { id: event.id },
               data: outcome.status === "PENDING" ? { attempts: 1, error: "blob not visible yet" } : { processedAt: new Date(), attempts: 1, error: null },
             });
+            if (outcome.status === "READY") {
+              // Closed-tab backstop for the derived copies; finalize normally gets there first and the
+              // claim rows make the race harmless. A failure here is not a callback failure: cron (g) retries.
+              try {
+                await deriveMedia({ mediaId, deadlineMs: DERIVE_DEADLINE_CALLBACK_MS });
+              } catch (error) {
+                logError("derived copies failed after the upload callback", error, { category: "upload", mediaId });
+              }
+            }
           } catch (error) {
             await db.webhookEvent.update({
               where: { id: event.id },

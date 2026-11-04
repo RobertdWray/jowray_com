@@ -83,7 +83,7 @@ The admin email reuses PR #20's template chrome, media cards and inline CID asse
 11. **`features/memories/create-memory.ts`** `[C1]`: TEXT memory → `afterWithFlush(() => notifyAdminsQuietly(created.memoryId))` after `confirmQuietly`.
 12. **`app/api/cron/reconcile-uploads/route.ts`** `[C9]`: `ADMIN_ALERT_SINCE` (R6); step (d) dispatches on `row.emailType`; step (e) narrows to `emails: { none: { emailType: "MEMORY_CONFIRMATION" } }`; step (e2) `adminAlertsSent`: `createdAt >= ADMIN_ALERT_SINCE` and `< now − 30 min`, not deleted, ready/TEXT/words, `emails: { none: { emailType: "ADMIN_NEW_MEMORY" } }`, `NOT: { media: { some: { status: "PENDING", createdAt: { gt: now − 1 h } } } }` (R8), no contributor-email condition, `take: 50`.
 13. **Scripts:** `scripts/sample-admin-alert.ts`; `render-email-preview.ts [out.html] [confirmation|admin]`; `send-test-email.ts <address> [confirmation|admin]`.
-14. **Docs:** `docs/plans/2026-11-03-admin-new-memory-alert.md` (this runbook + ledger); `docs/plans/phase1-ledger.md` "Task 13 — Admin alert"; `design/DESIGN.md` § 11 one line; `docs/code-layout.md` + `AGENTS.md` copy (`templates/shared.ts`); `docs/environment.md`.
+14. **Docs:** `docs/plans/2026-11-03-admin-new-memory-alert.md` (this runbook + ledger); `docs/plans/phase1-ledger.md` "Task 14 — Family-admin alert email"; `design/DESIGN.md` § 11 one line; `docs/code-layout.md` + `AGENTS.md` copy (`templates/shared.ts`); `docs/environment.md`.
 
 ## 6. Tests (first; `vi.mock` through `@` `[C10]`; doubles honour `(memoryId, emailType)` per R10)
 
@@ -146,7 +146,7 @@ The admin email reuses PR #20's template chrome, media cards and inline CID asse
 | 8 | done | `4ef66c6` | cron (d)/(e)/(e2); `reconcile.test.ts` 6/6; whole suite 712/712 |
 | 9 | done | `2f1bfeb`, `62c4c62` | sample + script switch; renders at 390/1280 px in `docs/plans/evidence/2026-11-admin-alert/`; **first real send exposed the `contentId` bug (SendGrid 400), fixed in `62c4c62`**; both samples then accepted (202) and received in Gmail with 5 inline attachments |
 | 9b | done | — | end to end on Neon `dev-admin-alert` with `npm run dev`: synthetic TEXT memory without contributor email + FAILED admin row → cron step (d) retried through the admin path, outbound guard dropped the hotmail address, row SENT with `recipientEmail = robwray@gmail.com`, "New memory from Synthetic Tester" received; second run all zeros; (e)/(e2) Prisma filters executed without error |
-| 10 | done | (docs commit) | `build:offline` exit 0 with no `.env*` and `DATABASE_URL` unset, 0 blocked hosts; `validate` clean; `test:run` 712/712; runbook copied to `docs/plans/2026-11-03-admin-new-memory-alert.md`; ledger Task 13; DESIGN § 11, code-layout, AGENTS, environment docs; PR opened (see git log) |
+| 10 | done | (docs commit) | `build:offline` exit 0 with no `.env*` and `DATABASE_URL` unset, 0 blocked hosts; `validate` clean; `test:run` 712/712; runbook copied to `docs/plans/2026-11-03-admin-new-memory-alert.md`; ledger Task 14; DESIGN § 11, code-layout, AGENTS, environment docs; PR opened (see git log) |
 
 Rulings made while building:
 - Ruling: the transport sends `content_id`, not `contentId` — `@sendgrid/mail` 8.1.6 stores attachment objects as given and does not snake-case them (verified by `Mail.create(...).toJSON()`), and the API answered 400 to every message with an inline image; PR #20's transport test had pinned the wrong key. Cost if wrong: none (the API field name is documented); the fix also unblocks the already-merged confirmation email.

@@ -197,7 +197,15 @@ Final: Ruling: the cron response does not report the day's `recipient_capped` / 
 - Ruling: no `[data-ogsc]` Outlook.com dark-mode overrides (attribute selectors are outside Gmail's documented CSS support); `color-scheme: light` metas and `bgcolor` attributes carry the ground colour.
 - Still open after this PR: Task 4 (attach DerivedMedia THUMBNAIL rows in `confirmMemory`, cap 4, size/time budgets), Task 5 (`durationSeconds` from the browser), Task 6 browser half (poster capture + ticket `kind` + poster token; the server writes a POSTER row), all after issue 17 PR A merges. Send `npx tsx --env-file=.env scripts/send-test-email.ts robwray@gmail.com` and inspect the delivered message (Gmail "Show original": `multipart/related`, `Content-ID`s, no `sendgrid.net` link rewriting) before the production deploy.
 
-## Task 13 — Family-admin alert email (2026-11-03)
+## Task 13 — Photos and media (issue #17: derived copies, remove/replace, multi-file) (2026-11-03)
+
+- Status: [~] PR B merged (#22, 1db03f6); PR A in review; PR C not started.   Owner: session 95e0ccc1 (this file's orchestrator).   Plan: `docs/plans/2026-11-03-photos-derived-media.md` (repo copy of `~/.claude/plans/can-you-build-a-silly-turing.md`, citations C1–C47).
+- Decisions (Rob, 2026-11-03): derive every photo; multi-file on every device with responsive rows; one Memory holds mixed media; placeholder until a sanitized copy exists, originals downloadable by the claim-link holder; PR A owns the email THUMBNAIL and reserves POSTER; HEIC decodes in a worker thread.
+- Ruling: PR A was assigned to session 25e018cf, which finished without opening it; order became B → A → C and A absorbed B's deferred hooks (derivative purge, staging keys, web placeholder state).
+- Code done (TDD): PR B `feat/claim-remove-replace` (soft delete, replacement relation, memory row lock, remove/cancel/replace, live-only reads, purge), PR A `feat/derived-web-images` (DerivedMedia, derived keys, HEIC worker, image service, deriveMedia claim/publish protocol, triggers, cron (g), sanitized-only serving, claim-page placeholder).
+- Still open: PR C (`files[]`, `issueUploadTicket`, submission lease, `completeSubmission`, per-kind email summary); email Task 4 (attach THUMBNAIL rows in `confirmMemory`); the iPhone device pass (Task 10 / F7); verification V2–V13 on a preview.
+
+## Task 14 — Family-admin alert email (2026-11-03)
 
 - Status: implemented on `feat/admin-new-memory-alert` (worktree `jowray_wt_admin_alert`, base `1db03f6` = main after PR #22); runbook, rulings R1–R13, non-goals and follow-ups in `docs/plans/2026-11-03-admin-new-memory-alert.md`.
 - Rob's decisions (2026-11-03): recipients `robwray@gmail.com` and `rjwray@hotmail.com` via `ADMIN_ALERT_EMAILS`; content order Who, Date, Memory, Media, other details; **no links of any kind** ("the admins shouldn't edit memories through this email notification; the edit links are for users only"); premortem (Oscar) findings folded in as rulings; implementation in a separate worktree.

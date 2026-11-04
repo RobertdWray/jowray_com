@@ -76,6 +76,8 @@ const confirmMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m1
 vi.mock("@/features/memories/confirm", () => ({ confirmMemory: (arg: unknown) => confirmMock(arg) }));
 const notifyMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m2" }));
 vi.mock("@/features/memories/notify-admins", () => ({ notifyAdminsOfMemory: (arg: unknown) => notifyMock(arg) }));
+const deriveMock = vi.fn(async (_arg: unknown) => ({ WEB_IMAGE: "derived", THUMBNAIL: "derived" }));
+vi.mock("@/features/memories/derive-media", () => ({ deriveMedia: (arg: unknown) => deriveMock(arg) }));
 
 import { finalizeUpload, recordMedia } from "@/features/memories/ingest-upload";
 
@@ -110,6 +112,7 @@ beforeEach(() => {
   p2002Once = false;
   headMock.mockReset();
   delMock.mockReset();
+  deriveMock.mockClear();
   headMock.mockResolvedValue({
     pathname: "originals/mem_1/abc.jpg",
     url: "https://blob.test/originals/mem_1/abc.jpg",
@@ -281,6 +284,21 @@ describe("finalizeUpload", () => {
     await expect(afterCalls[0]!()).resolves.toBeUndefined();
   });
 
+  it("derives the web copy and thumbnail after the response once a file is READY", async () => {
+    await finalizeUpload({ ticket: mintUploadTicket(claims), claimToken: CLAIM });
+    expect(deriveMock).not.toHaveBeenCalled();
+    for (const cb of afterCalls) { await cb(); }
+    expect(deriveMock).toHaveBeenCalledWith({ mediaId: "med_1", deadlineMs: 20_000 });
+  });
+
+  it("schedules the derivation even for files too large to hash inline", async () => {
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 60 * 1024 * 1024, contentType: "video/mp4", uploadedAt: new Date() });
+    media = [row({ mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 })];
+    await finalizeUpload({ ticket: mintUploadTicket({ ...claims, mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 }), claimToken: CLAIM });
+    for (const cb of afterCalls) { await cb(); }
+    expect(deriveMock).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects a tampered ticket, a mismatched claim token, and does not touch the row", async () => {
     const ticket = mintUploadTicket(claims);
     expect(await finalizeUpload({ ticket: { ...ticket, maxBytes: 1 }, claimToken: CLAIM })).toEqual({ status: "REJECTED", reason: "bad_signature" });
@@ -316,9 +334,9 @@ describe("finalizeUpload", () => {
     media = [row({ mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 })];
     const result = await finalizeUpload({ ticket: mintUploadTicket({ ...claims, mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 }), claimToken: CLAIM });
     expect(result.status).toBe("READY");
-    expect(afterCalls).toHaveLength(1); // the admin alert only; the cron hashes large files
-    await afterCalls[0]!();
+    expect(afterCalls).toHaveLength(2); // the admin alert, then the combined checksum/derivation callback (no checksum for a large file)
+    for (const cb of afterCalls) { await cb(); }
     expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_1" });
-    expect(media[0]?.checksumSha256).toBeNull();
+    expect(dbStub.media.update.mock.calls.some((c) => "checksumSha256" in ((c[0] as { data: Record<string, unknown> }).data ?? {}))).toBe(false);
   });
 });

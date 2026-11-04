@@ -19,6 +19,8 @@ const dbStub = {
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 const recordMediaMock = vi.fn(async (_arg: { mediaId: string }) => ({ status: "READY", mediaId: "med_1", memoryId: "mem_1", sizeBytes: 5 }));
 vi.mock("@/features/memories/ingest-upload", () => ({ recordMedia: (arg: { mediaId: string }) => recordMediaMock(arg) }));
+const deriveMock = vi.fn(async (_arg: unknown) => ({ WEB_IMAGE: "derived", THUMBNAIL: "derived" }));
+vi.mock("@/features/memories/derive-media", () => ({ deriveMedia: (arg: unknown) => deriveMock(arg) }));
 const afterCalls: Array<() => Promise<void>> = [];
 vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
 
@@ -39,7 +41,7 @@ function tokenRequest(ticketOverride?: Record<string, unknown>, pathname = claim
 
 beforeEach(() => {
   media = [{ id: "med_1", status: "PENDING", deletedAt: null, memory: { deletedAt: null } }];
-  events.length = 0; afterCalls.length = 0; recordMediaMock.mockClear();
+  events.length = 0; afterCalls.length = 0; recordMediaMock.mockClear(); deriveMock.mockClear();
   process.env.BLOB_READ_WRITE_TOKEN = RW_TOKEN;
   process.env.UPLOAD_TICKET_SECRET = "s".repeat(32);
   process.env.NEXT_PUBLIC_SITE_URL = "https://www.jowray.com";
@@ -93,6 +95,18 @@ describe("POST /api/upload (upload completed callback)", () => {
     expect(afterCalls).toHaveLength(1);
     await afterCalls[0]!();
     expect(recordMediaMock).toHaveBeenCalledWith({ mediaId: "med_1" });
+    expect(deriveMock).toHaveBeenCalledWith({ mediaId: "med_1", deadlineMs: 15_000 });
+  });
+
+  it("keeps the event processed when the derived copies fail after a successful record", async () => {
+    deriveMock.mockRejectedValueOnce(new Error("db hiccup"));
+    const body = JSON.stringify({ type: "blob.upload-completed", payload: { blob: { url: "u", downloadUrl: "d", pathname: claims.pathname, contentType: "audio/mp4", contentDisposition: "inline" }, tokenPayload: JSON.stringify({ mediaId: "med_1" }) } });
+    const signature = createHmac("sha256", RW_TOKEN).update(body).digest("hex");
+    await POST(new NextRequest("http://localhost:3000/api/upload", { method: "POST", body, headers: { "content-type": "application/json", "x-vercel-signature": signature } }));
+    await afterCalls[0]!();
+    const update = dbStub.webhookEvent.update.mock.calls.at(-1)?.[0] as unknown as { data: { processedAt?: Date; error?: string | null } };
+    expect(update.data.processedAt).toBeInstanceOf(Date);
+    expect(update.data.error).toBeNull();
   });
 
   it("leaves the event unprocessed when the blob is not visible yet, and abandons payloads without a mediaId", async () => {
