@@ -1,7 +1,7 @@
 # Draft a memory on someone's behalf, then let them claim it
 
-**Status:** plan content approved by Rob in chat on 2026-11-04 (buckets 1 and 2 of §8.1 are in; §10 non-goals and §11 follow-ups are agreed). Formal ExitPlanMode approval pending. Nothing below has been built. No secret generated, no migration applied, no Gmail draft created, no branch created.
-**Plan file:** `/Users/rob/.claude/plans/i-d-like-to-build-jolly-thimble.md` while in plan mode. On approval, copy to `docs/plans/2026-11-03-draft-memory-on-behalf.md` in the repo as the first commit on the branch, then keep that copy current.
+**Status:** approved by Rob in chat on 2026-11-04 ("go build this plan"); **built on branch `feat/draft-memory-on-behalf`** (worktree `/Users/rob/Documents/active_work/jowray_wt_draft_memory`) the same day. This repo copy is the live record; §2 says what has happened, §8.2 the rulings made during the build. No secret generated, no migration applied to any Neon branch, no Gmail draft created yet (see §2).
+**Base:** `origin/main` at 1caf117 (2026-11-04), which includes #22 (claim remove/replace), #25 (derived web images) and #26 (admin alert). The plan was written against 079dfc2; §8.2 R1 covers what #26 changed.
 
 ---
 
@@ -10,11 +10,11 @@
 | Item | Value |
 |---|---|
 | Repo | `/Users/rob/Documents/active_work/jowray_com` (GitHub `RobertdWray/jowray_com`, private) |
-| Base | `origin/main` at **079dfc2** (2026-11-03). Local `main` was stale at f13c390; always start from `origin/main`, never local `main`. |
-| Branch | `feat/draft-memory-on-behalf` (create from `origin/main`; does not exist yet) |
-| Worktree | none yet. Preferred: `/Users/rob/Documents/active_work/jowray_wt_draft_memory` (see Rules). |
-| PR | none yet. Open as **draft**; nothing merges without Rob's go-ahead. |
-| Open PR that overlaps | **#22** `feat/claim-remove-replace` (remove/replace/cancel files on the claim page). Touches `prisma/schema.prisma`, `features/memories/claim.ts`, `confirm.ts`, `create-memory.ts`, `ingest-upload.ts`, `app/m/[claimToken]/{page,claim-form,actions}.tsx`, the cron route, and adds migration `20261103210000_media_soft_delete`, `features/memories/lock.ts` and `features/memories/media-state.ts`. **Merge order: #22 first, then this.** If #22 is still open when the build starts, stop and ask Rob. |
+| Base | `origin/main` at **1caf117** (2026-11-04; includes #22, #25, #26). Local `main` is stale; always start from `origin/main`, never local `main`. |
+| Branch | `feat/draft-memory-on-behalf`, created from 1caf117 on 2026-11-04 |
+| Worktree | `/Users/rob/Documents/active_work/jowray_wt_draft_memory` |
+| PR | see §2 (opened as **draft**; nothing merges without Rob's go-ahead). |
+| Overlapping PR | **#22** merged 2026-11-03T21:42Z (1db03f6), so the "edit after #22" rule is satisfied. Open PRs #27, #28, #29 (multi-file memories, share cards) touch `create-memory.ts`, `claim.ts`, `confirm.ts`, `ingest-upload.ts` and the claim page too: whichever merges second rebases. |
 | House rules | `AGENTS.md` (branch + PR for everything, no eslint-disable without "YES", no band-aids, no secrets in git, TDD on critical paths, Cache Components rules, layer import direction `app → features → services → integrations`). `docs/code-layout.md` has the long form. |
 | Checks | `npm run validate`, `npm run test:run`, `npm run build:offline`; all three must pass with no `.env*` present. |
 | Env on this machine | `.env` holds every project key (production Neon values from Vercel; `CONSENT_VERSION=2026-11-v1` there, see Ledger). `.env.local` overrides `DATABASE_URL` to the Neon **dev** branch `br-holy-rice-bbz4t50l` (host `ep-solitary-tree-bbnwysvl`). Next.js and `prisma.config.ts` read `.env.local`; `npx tsx --env-file=.env` does **not**, so a script run that way hits production. Never print values from either file. |
@@ -57,16 +57,16 @@
 
 | Step | Done? | Check |
 |---|---|---|
-| Plan approved by Rob | no | ExitPlanMode accepted |
-| Citations step run | no | §12 has no "ASSUMED" rows left |
-| Premortem (`/team-code-review` with `premortum.md`) run and bucketed | no | §8 lists its findings |
-| PR #22 merged | no | `gh pr view 22 --json state` = MERGED |
-| Branch + worktree created from origin/main | no | `git -C <worktree> log -1 --oneline` shows a commit on top of 079dfc2 or later |
-| Plan copied to `docs/plans/2026-11-03-draft-memory-on-behalf.md` | no | file exists on the branch |
-| Migration A (enum values, nullable consent, sourceRef) written | no | `ls prisma/migrations | grep draft_memories` |
-| Migration B (CHECK constraint) written | no | `ls prisma/migrations | grep consent_check` |
+| Plan approved by Rob | **yes** (2026-11-04, chat: "go build this plan") | this file is on the branch |
+| Citations step run | **yes** (2026-11-04) | §12 has no "ASSUMED" rows left except the Gmail probe part of [C11] |
+| Premortem run and bucketed | **yes** (2026-11-04, fresh-context Opus agent on this plan; see §8.2) | §8.2 lists its findings |
+| PR #22 merged | **yes** | `gh pr view 22 --json state` = MERGED (1db03f6, 2026-11-03T21:42Z) |
+| Branch + worktree created from origin/main | **yes** | `git -C /Users/rob/Documents/active_work/jowray_wt_draft_memory log -1 --oneline` shows a commit on top of 1caf117 |
+| Plan copied to `docs/plans/2026-11-03-draft-memory-on-behalf.md` | **yes** (fcf7fe7) | file exists on the branch |
+| Migration A (enum values, nullable consent, sourceRef) written | **yes** | `ls prisma/migrations | grep draft_memories` → `20261104070000_draft_memories` |
+| Migration B (CHECK constraint) written | **yes** | `ls prisma/migrations | grep consent_check` → `20261104070100_consent_check` |
 | Migrations applied to the **dev** Neon branch only | no | `npx prisma migrate status` (via `prisma.config.ts`, which reads `.env.local`) shows both applied; `.env.local` host is `ep-solitary-tree-…` |
-| Code + tests green | no | the three checks pass with `.env*` moved aside |
+| Code + tests green | **yes** (2026-11-04: validate clean, 809 tests, offline build; see the PR) | the three checks pass with `.env*` absent from the worktree |
 | `ADMIN_API_SECRET` in Vercel Production | no | `vercel env ls production \| grep -c ADMIN_API_SECRET` = 1 |
 | `ADMIN_API_SECRET` in local `.env` | no | `grep -c '^ADMIN_API_SECRET=' .env` = 1 (never print the value) |
 | `CONSENT_VERSION=2026-11-v2` in Vercel Production and `.env` | no | `vercel env ls production` shows it; `grep -c '^CONSENT_VERSION=2026-11-v2' .env` = 1 |
@@ -258,8 +258,22 @@ Unit tests in §3.8; the manual walk in §6 step 5; the Gmail probe in step 6; s
 
 **Bucket 4 · Real, but out of scope** → written up as follow-ups in **§11**, each with a severity and a pickup note. Copy §11 to the end of the PR description; file the medium and high ones as issues after merge.
 
-### 8.2 Premortem and PR-review findings
-_(filled in at rollout steps 2 and 7; sort into the same four buckets, route 3 → §10 and 4 → §11)_
+### 8.2 Rulings made during the build (2026-11-04), premortem and PR-review findings
+
+Each ruling: what — why — cost if wrong.
+
+- **R1 · Admin alert (PR #26, merged after this plan was written).** `notifyAdminsOfMemory` now returns `skipped: "draft"` for a DRAFT and cron step (e2) excludes DRAFT rows (`ADMIN_ALERT_WHERE`); once the person presses Share the memory is PENDING and the cron alerts the admins within one run (≤ 10 min). No request-path alert on Share — why: the cron already covers it, and wiring `notifyAdminsQuietly` into `claim.ts` would pull the storage and email graph into the claim feature for a ten-minute gain. Cost if wrong: Rob learns of a Share up to ten minutes late; the alert's "submitted at" shows the draft time, not the Share time (deferred minor).
+- **R2 · The site-email predicates live in `features/memories/site-email.ts`,** not in `confirm.ts` as §3.5 said — why: the cron test mocks `@/features/memories/confirm` wholesale, so a constant exported from there would be `undefined` inside the route under test; a leaf module keeps the predicate testable from both sides. Cost if wrong: one extra small file.
+- **R3 · `sourceRef` builders live in `lib/source-ref.ts`** (node:crypto), with only the regex and the zod schema in `lib/validations/memory.ts` — why: validations stay a pure zod module that could be bundled for the client. Cost if wrong: one import path in the skill doc.
+- **R4 · `reissueDraftClaimLink` takes `raw: unknown` and validates `{ memoryId: uuid }`** (new `reissueClaimLinkSchema`), answering `invalid` → 400 from the route — why: the id comes from a URL segment and the house rule is "route handlers validate input with zod". Cost if wrong: none.
+- **R5 · The admin bearer check is a shared helper `app/api/admin/_auth.ts`** used by both routes — why: one copy of the fail-closed, constant-time check. Cost if wrong: none.
+- **R6 · Share stores both preferences and records them in the revision** (`notifyWhenPosted`, `contactOptIn` in `before`/`after`), and `before`/`after` carry `status` and `consentedAt` only when a Share happens — why: ordinary edits keep their compact snapshots; the Share revision shows the transition. Cost if wrong: revision JSON shape, read by nothing yet.
+- **R7 · Astra workers not dispatched; built inline by Fable** — why: Rob's instruction was "go build this plan", the mechanical pieces were small, and the plan's §4 split was advisory. Cost if wrong: none to the code.
+- **R8 · The premortem ran as a fresh-context Opus agent on this plan file,** not `/team-code-review` with `premortum.md` — why: no `premortum.md` exists on this machine (searched `~/.claude` and `~/.claude-shared-skills`); the plan already carried a 27-finding George/Oscar/Claude review; the PR-level `/team-code-review` (rollout step 7) is the external pass. Cost if wrong: one fewer external voice on the plan before code existed.
+- **R9 · Test fixtures for `Memory` rows now carry `status` and `source`** (`confirm`, `notify-admins`, `reconcile` tests) because the predicates read them; the reconcile stub defaults every fixture to a /share memory. Cost if wrong: none.
+
+**Premortem findings (fresh-context agent, 2026-11-04)** are listed below once received, sorted into the four buckets.
+
 
 ---
 
@@ -313,14 +327,14 @@ Each: Relevant File(s) · Change Summary · Source · Verbatim quote · Justific
 **[C1] Deploy runs migrations on every build — VERIFIED (repo)**
 `vercel.json`; migrations must be expand-only · `"buildCommand": "npx prisma migrate deploy && npx prisma db seed && npm run build"` (per Phase 1 plan Task 3 step 8, which also says every migration must be backward-compatible) · Why: the running app and the new schema overlap during a deploy.
 
-**[C2] `ALTER TYPE … ADD VALUE` and using the new value in the same transaction — ASSUMED**
-Migrations A/B split · Postgres docs, ALTER TYPE: new enum values cannot be used until the transaction that added them commits (Postgres ≥ 12 wording) · Verify at https://www.postgresql.org/docs/current/sql-altertype.html and confirm how Prisma 7 wraps migration files (one transaction per file).
+**[C2] `ALTER TYPE … ADD VALUE` and using the new value in the same transaction — VERIFIED (2026-11-04)**
+Migrations A/B split · Postgres commit 15bc038f9 (shipped in 12) relaxed "ADD VALUE cannot run inside a transaction block" to: the new value "cannot be used until the transaction has been committed" (SQLSTATE 55P04 `unsafe use of new value`) · Prisma's own reference (`docs/reference/postgres-native-enums.md`): "You can't add a value and use it in the same transaction. `ALTER TYPE ... ADD VALUE` is special-cased: the new value isn't usable until the transaction that adds it commits … So a migration can't add an enum value and apply the changes that depend on it as one atomic step" · Prisma Migrate sends each `migration.sql` as one script; Postgres runs a multi-statement simple-query string as one implicit transaction · Why: the CHECK that names `'DRAFT'` must be its own migration. Sources: https://www.postgresql.org/message-id/E1Tesj1-00081a-Kc@gemulon.postgresql.org, https://github.com/prisma/prisma/blob/00ae8e2e31be324e13b717152e4aacdb18ca4e5c/docs/reference/postgres-native-enums.md. Confirmed empirically when `migrate deploy` runs on the dev branch (§2).
 
 **[C3] Existing create path to mirror — VERIFIED (repo)**
 `features/memories/create-memory.ts` · `draftMemory` mirrors it · "Create a memory from the /share form: a new Contributor for this submission (never matched to an existing one by unverified email), a PENDING Memory with a fresh claim token (stored hashed) … Everything happens in one transaction behind the daily budgets." · Why: same invariants (one Contributor per submission, hashed token, budgets).
 
-**[C4] Prisma P2002 shape with the Neon driver adapter — ASSUMED**
-`draft-memory.ts` catch · Friend's claim: `meta.target` is absent, error surfaces under `meta.driverAdapterError` · Verify against Prisma 7.10 docs for driver adapters and a local reproduction; the plan already avoids depending on `meta.target`.
+**[C4] Prisma P2002 shape with the Neon driver adapter — VERIFIED (2026-11-04, installed runtime)**
+`draft-memory.ts` catch · `node_modules/@prisma/client/runtime/client.mjs` (7.10.1): `case"UniqueConstraintViolation":return"P2002"` and the error is built as `new K(message, code, { driverAdapterError: e, table? })`: `meta` holds `driverAdapterError` and optionally `table`, never `target` · Why: the code checks `error.code === "P2002"` only, then re-reads by `sourceRef` outside the transaction.
 
 **[C5] Postgres aborts the transaction after a failed statement — VERIFIED (standard behaviour; cite in step 1)**
 `draft-memory.ts` · SQLSTATE `25P02 in_failed_sql_transaction`: "current transaction is aborted, commands ignored until end of transaction block" · Why: the P2002 catch must sit outside `$transaction`.
@@ -337,8 +351,8 @@ Migrations A/B split · Postgres docs, ALTER TYPE: new enum values cannot be use
 **[C9] Script conventions — VERIFIED (repo)**
 `scripts/send-test-email.ts`, `eslint.config.mjs` · scripts run as `npx tsx --env-file=.env scripts/<x>.ts`, import nothing guarded by `server-only`, console allowed only in `scripts/**` and `prisma/**` · Why: the new script follows the same shape.
 
-**[C10] fetch drops Authorization on cross-origin redirect — ASSUMED**
-`scripts/draft-memory.ts` `redirect: "error"` · Fetch standard, HTTP-redirect fetch step: strip `Authorization` when the origin changes (Node 20+ undici implements this) · Verify at https://fetch.spec.whatwg.org/#http-redirect-fetch; also confirm `jowray.com` → `www.jowray.com` is a 308 (`docs/domain.md`).
+**[C10] fetch drops Authorization on cross-origin redirect — VERIFIED (2026-11-04)**
+`scripts/draft-memory.ts` `redirect: "error"` · WHATWG Fetch PR #1544 (merged 2022-11-25): a script-supplied `Authorization` value does not survive a redirect chain that crosses origins; undici implemented it the same day (and CVE-2023-45143 / CVE-2024-30260 closed the Cookie and `undici.request()` gaps) · `docs/domain.md`: "`https://jowray.com` | 308 to `https://www.jowray.com`" · Why: a call to the apex would redirect and lose the bearer, surfacing as a confusing 401; the script refuses redirects and defaults to `www`. Source: https://github.com/whatwg/fetch/pull/1544.
 
 **[C11] Gmail connector parameters — VERIFIED (live tool schema, this session)**
 SKILL.md · `get_thread` takes `threadId`, `messageFormat` ("We recommend using `PLAIN_TEXT`"); each message carries its own `id` and `viewUrl`; `create_draft`: "If the draft is created as a reply to an existing message, the ID of the original message should be passed to the tool in the `replyToMessageId` field … Returns a Draft object with the `id`, `threadId`, and `viewUrl` fields populated." · Why: threading and ids as the skill uses them. Still ASSUMED: that `replyToMessageId` does not fill `to` (so the skill always sets `to` explicitly) and the resulting subject; the rollout probe settles both.
