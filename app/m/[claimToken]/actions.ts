@@ -43,6 +43,6 @@ export async function cancelReservation(input: unknown): Promise<ClaimMediaResul
   return cancelReservationFeature(input);
 }
 
-export async function updateMediaWords(input: { claimToken: string; mediaId: string; changes: unknown }): Promise<ClaimMediaResult> {
+export async function updateMediaWords(input: unknown): Promise<ClaimMediaResult> {
   return updateMediaFromClaimFeature(input);
 }

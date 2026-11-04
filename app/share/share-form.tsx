@@ -26,7 +26,7 @@ import {
   textareaClass,
 } from "../_components/field-classes";
 import { SolidHeart } from "../_components/hearts";
-import { completeSubmission, createMemory, finalizeUpload, issueUploadTicket } from "./actions";
+import { cancelReservation, completeSubmission, createMemory, finalizeUpload, issueUploadTicket } from "./actions";
 import { pickRecordingType } from "./recorder";
 import { RecorderPanel } from "./recorder-panel-client";
 import { useRecorder } from "./use-recorder";
@@ -74,6 +74,8 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
   const [rowsError, setRowsError] = useState<string | null>(null);
   // Mirror of `rows` for the unmount cleanup (refs are not read during render).
   const rowsRef = useRef<FileRow[]>([]);
+  // Row keys: a counter, not crypto.randomUUID(), which is missing outside secure contexts (a phone on a LAN address during the device pass).
+  const nextRowId = useRef(0);
   useEffect(() => {
     rowsRef.current = rows;
   }, [rows]);
@@ -120,7 +122,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
     setRowsError(picked.length > room ? `You can add up to ${MAX_FILES_PER_MEMORY} files to one memory; the first ${room} were kept.` : null);
     // Ids and object URLs are made here, outside the updater (updaters may run twice in development).
     const added: FileRow[] = accepted.map((file) => ({
-      id: crypto.randomUUID(),
+      id: `row_${(nextRowId.current += 1)}`,
       file,
       previewUrl: canPreview(file) ? URL.createObjectURL(file) : null,
       caption: "",
@@ -131,13 +133,12 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
   }
 
   function removeRow(id: string) {
-    setRows((current) => {
-      const row = current.find((r) => r.id === id);
-      if (row?.previewUrl) {
-        URL.revokeObjectURL(row.previewUrl);
-      }
-      return current.filter((r) => r.id !== id);
-    });
+    // Side effects stay outside the state updater (which may run twice in development).
+    const row = rows.find((r) => r.id === id);
+    if (row?.previewUrl) {
+      URL.revokeObjectURL(row.previewUrl);
+    }
+    setRows((current) => current.filter((r) => r.id !== id));
     setRowsError(null);
   }
 
@@ -242,18 +243,30 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
         break;
       }
       setPhase({ kind: "saving", claimLink, current: index + 1, total: byOrder.length });
+      // A reservation whose bytes never left this browser is cancelled so it does not sit on the claim page or hold a slot;
+      // one whose upload finished (finalize may still have failed) is left for the reconcile cron to record.
+      let uploaded = false;
       try {
         const ticketed = await issueUploadTicket({ claimToken: created.claimToken, mediaId: entry.mediaId });
         if (!ticketed.ok) {
           outcomes.push({ name: item.file.name, status: "ERROR" });
+          await cancelReservation({ claimToken: created.claimToken, mediaId: entry.mediaId });
           continue;
         }
         await uploadWithTicket(ticketed.upload, item.file, (percentage) => setPhase({ kind: "saving", claimLink, current: index + 1, total: byOrder.length, progress: percentage }));
+        uploaded = true;
         const finalized = await finalizeUpload({ ticket: ticketed.upload.ticket, claimToken: created.claimToken });
         outcomes.push({ name: item.file.name, status: finalized.status === "REJECTED" ? "ERROR" : finalized.status });
         emailed = emailed || (finalized.status !== "REJECTED" && finalized.emailed);
       } catch {
         outcomes.push({ name: item.file.name, status: "ERROR" });
+        if (!uploaded) {
+          try {
+            await cancelReservation({ claimToken: created.claimToken, mediaId: entry.mediaId });
+          } catch {
+            // The cron retires an untouched reservation after 24 h; the claim page offers Cancel meanwhile.
+          }
+        }
       }
     }
     try {

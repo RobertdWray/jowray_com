@@ -295,6 +295,18 @@ describe("issueUploadTicket", () => {
     expect(lockCalls.at(-1)).toContain("FOR UPDATE|mem_1");
   });
 
+  it("does not reopen a closed lease: a ticket for a leftover PENDING row after completion leaves cron free to reconcile", async () => {
+    const created = await createMemory({ ...valid, files: [{ name: "a.jpg", type: "image/jpeg", size: 1 }] });
+    if (!created.ok) { throw new Error("setup"); }
+    memories[0]!.uploadLeaseUntil = null;
+    medias[0]!.id = "00000000-0000-4000-8000-000000000003";
+    expect((await issueUploadTicket({ claimToken: created.claimToken, mediaId: "00000000-0000-4000-8000-000000000003" })).ok).toBe(true);
+    expect(memories[0]!.uploadLeaseUntil ?? null).toBeNull();
+    memories[0]!.uploadLeaseUntil = new Date(Date.now() - 1_000);
+    expect((await issueUploadTicket({ claimToken: created.claimToken, mediaId: "00000000-0000-4000-8000-000000000003" })).ok).toBe(true);
+    expect(memories[0]!.uploadLeaseUntil!.getTime()).toBeLessThan(Date.now());
+  });
+
   it("refuses a READY row, a cancelled row, another memory's row, a wrong token and invalid input", async () => {
     const created = await createMemory({ ...valid, files: [{ name: "a.jpg", type: "image/jpeg", size: 1 }] });
     if (!created.ok) { throw new Error("setup"); }

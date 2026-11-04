@@ -22,12 +22,15 @@ const optionalText = (max: number) =>
     .nullable()
     .optional();
 
-/** A file on the share form: what the browser knows plus the contributor's words for that file (the memory keeps its own). */
-export const memoryFileInputSchema = fileInputSchema.extend({
+/** A file's own words (the memory keeps its own); the same limits on the share form and on the claim page. */
+export const mediaWordsFields = {
   caption: optionalText(2000),
   approxDateText: optionalText(120),
   place: optionalText(200),
-});
+} as const;
+
+/** A file on the share form: what the browser knows plus the contributor's words for that file. */
+export const memoryFileInputSchema = fileInputSchema.extend(mediaWordsFields);
 export type MemoryFileInput = z.infer<typeof memoryFileInputSchema>;
 
 export const createMemoryInputSchema = z

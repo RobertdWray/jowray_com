@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { memoryFileInputSchema } from "@/lib/validations/memory";
+import { mediaWordsFields, memoryFileInputSchema } from "@/lib/validations/memory";
 
 /** A claim-page request that names one of the memory's files. The token is checked against the memory's hash in features/. */
 export const claimMediaRefSchema = z.object({
@@ -15,19 +15,16 @@ export const replaceRequestSchema = claimMediaRefSchema.extend({
 });
 export type ReplaceRequest = z.infer<typeof replaceRequestSchema>;
 
-const optionalText = (max: number) =>
-  z
-    .string()
-    .trim()
-    .max(max)
-    .transform((value) => (value.length === 0 ? null : value))
-    .nullable()
-    .optional();
-
 /** Edits to one file's own words from the claim page. */
-export const mediaChangesSchema = z.object({
-  caption: optionalText(2000),
-  approxDateText: optionalText(120),
-  place: optionalText(200),
-});
+export const mediaChangesSchema = z.object(mediaWordsFields);
 export type MediaChanges = z.infer<typeof mediaChangesSchema>;
+
+/** The per-file words Server Function: the reference plus the changes. */
+export const mediaWordsRequestSchema = claimMediaRefSchema.extend({
+  changes: mediaChangesSchema,
+});
+
+/** The browser closing its submission: only the raw token. */
+export const completeSubmissionSchema = z.object({
+  claimToken: z.string().min(16).max(128),
+});

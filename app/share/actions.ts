@@ -1,5 +1,6 @@
 "use server";
 
+import { cancelReservation as cancelReservationFeature, type ClaimMediaResult } from "@/features/memories/claim";
 import { completeSubmission as completeSubmissionFeature, type ConfirmResult } from "@/features/memories/confirm";
 import {
   createMemory as createMemoryFeature,
@@ -30,6 +31,10 @@ export async function issueUploadTicket(input: unknown): Promise<UploadTicketRes
   return issueUploadTicketFeature(input);
 }
 
-export async function completeSubmission(input: { claimToken: string }): Promise<ConfirmResult> {
+export async function completeSubmission(input: unknown): Promise<ConfirmResult> {
   return completeSubmissionFeature(input);
+}
+
+export async function cancelReservation(input: unknown): Promise<ClaimMediaResult> {
+  return cancelReservationFeature(input);
 }

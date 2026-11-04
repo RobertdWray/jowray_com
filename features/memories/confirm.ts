@@ -5,6 +5,7 @@ import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { getSiteUrl } from "@/lib/site-url";
 import { TICKET_TTL_MS } from "@/lib/upload-ticket";
+import { completeSubmissionSchema } from "@/lib/validations/media";
 import { getDb } from "@/server/db/client";
 import { type MediaKind, type MemoryMediaSummary, sendMemoryConfirmation, type SendResult } from "@/services/email";
 
@@ -130,27 +131,31 @@ export async function confirmMemory({
 
 /**
  * The browser calls this when its batch of uploads has finished (or given up):
- * close the submission lease and send the one confirmation with whatever is
- * READY, using the raw token so the on-screen link stays valid.
+ * send the one confirmation with whatever is READY, using the raw token so the
+ * on-screen link stays valid, then close the submission lease.
+ *
+ * Order matters: the lease is what keeps the cron's rotate-and-send away.
+ * Sending first (settleNow ignores the lease on the request path) means the
+ * email operation is already claimed in EmailLog when the lease closes, so the
+ * cron can never slip into a gap, win the send, and rotate the link on screen.
  */
-export async function completeSubmission({ claimToken }: { claimToken: string }): Promise<ConfirmResult> {
-  if (typeof claimToken !== "string" || claimToken.length < 16 || claimToken.length > 128) {
+export async function completeSubmission(raw: unknown): Promise<ConfirmResult> {
+  const parsed = completeSubmissionSchema.safeParse(raw);
+  if (!parsed.success) {
     return { sent: false, skipped: "not_found" };
   }
+  const { claimToken } = parsed.data;
   const claimTokenHash = hashClaimToken(claimToken);
   const db = getDb();
-  const memoryId = await db.$transaction(async (tx) => {
-    const memory = await tx.memory.findUnique({ where: { claimTokenHash }, select: { id: true, deletedAt: true } });
-    if (!memory || memory.deletedAt !== null) {
-      return null;
-    }
-    await lockMemory(tx, memory.id);
-    await tx.memory.update({ where: { id: memory.id }, data: { uploadLeaseUntil: null } });
-    return memory.id;
-  }, TX_OPTIONS);
-  if (memoryId === null) {
+  const memory = await db.memory.findUnique({ where: { claimTokenHash }, select: { id: true, deletedAt: true } });
+  if (!memory || memory.deletedAt !== null) {
     return { sent: false, skipped: "not_found" };
   }
-  log.info({ action: "submission_completed", memoryId }, "submission closed by the contributor");
-  return confirmMemory({ memoryId, claimToken, settleNow: true });
+  const result = await confirmMemory({ memoryId: memory.id, claimToken, settleNow: true });
+  await db.$transaction(async (tx) => {
+    await lockMemory(tx, memory.id);
+    await tx.memory.update({ where: { id: memory.id }, data: { uploadLeaseUntil: null } });
+  }, TX_OPTIONS);
+  log.info({ action: "submission_completed", memoryId: memory.id, sent: result.sent }, "submission closed by the contributor");
+  return result;
 }

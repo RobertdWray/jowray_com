@@ -262,7 +262,10 @@ export async function issueUploadTicket(raw: unknown): Promise<UploadTicketResul
     if (!row) {
       return "not_found" as const;
     }
-    await renewLease(tx, memory.id);
+    // Only a submission still in progress keeps the cron waiting; a closed lease is never reopened by a late ticket.
+    if (memory.uploadLeaseUntil !== null && memory.uploadLeaseUntil.getTime() > Date.now()) {
+      await renewLease(tx, memory.id);
+    }
     const ticket = mintUploadTicket({ mediaId: row.id, memoryId: memory.id, pathname: row.storageKey, mimeType: row.mimeType, maxBytes: row.maxBytes });
     return { pathname: row.storageKey, ticket } satisfies UploadGrant;
   }, TX_OPTIONS);

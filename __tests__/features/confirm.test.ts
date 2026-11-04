@@ -206,12 +206,25 @@ describe("multi-file submissions", () => {
   it("completeSubmission closes the lease and sends with the raw token (no rotation), ignoring young reservations", async () => {
     memory!.uploadLeaseUntil = new Date(Date.now() + 60 * 60_000);
     memory!.media = [readyPhoto(), { id: "med_2", status: "PENDING", mimeType: "image/jpeg", originalFilename: "b.jpg", durationSeconds: null, createdAt: new Date() }];
+    let leaseAtSend: Date | null | undefined;
+    sendMock.mockImplementationOnce(async () => { leaseAtSend = memory!.uploadLeaseUntil; return { sent: true, messageId: "m1" }; });
     const result = await completeSubmission({ claimToken: TOKEN });
     expect(result.sent).toBe(true);
+    // The lease closes only after the email operation is claimed: cron cannot slip into a gap and rotate the link.
+    expect(leaseAtSend).not.toBeNull();
     expect(memory!.uploadLeaseUntil).toBeNull();
     const arg = sendMock.mock.calls.at(-1)?.[0] as unknown as { claimLink: string; rotateToClaimTokenHash?: string };
     expect(arg.claimLink.endsWith(`/m/${TOKEN}`)).toBe(true);
     expect(arg.rotateToClaimTokenHash).toBeUndefined();
     expect(await completeSubmission({ claimToken: "x".repeat(43) })).toEqual({ sent: false, skipped: "not_found" });
+  });
+
+  it("completeSubmission closes the lease even when nothing can be sent yet, and answers not_found to garbage input", async () => {
+    memory!.uploadLeaseUntil = new Date(Date.now() + 60 * 60_000);
+    memory!.contributor = { name: "Jo", email: null, relationship: null };
+    expect(await completeSubmission({ claimToken: TOKEN })).toEqual({ sent: false, skipped: "no_email" });
+    expect(memory!.uploadLeaseUntil).toBeNull();
+    expect(await completeSubmission(null)).toEqual({ sent: false, skipped: "not_found" });
+    expect(await completeSubmission({ claimToken: 42 })).toEqual({ sent: false, skipped: "not_found" });
   });
 });

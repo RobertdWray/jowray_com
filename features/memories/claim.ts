@@ -6,7 +6,7 @@ import { lockMemory } from "@/features/memories/lock";
 import { appendClaimRevision, hasWords, LIVE_MEDIA_ORDER, recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
-import { claimMediaRefSchema, mediaChangesSchema } from "@/lib/validations/media";
+import { claimMediaRefSchema, mediaWordsRequestSchema } from "@/lib/validations/media";
 import { getDb } from "@/server/db/client";
 
 const log = createLogger({ category: "api" });
@@ -282,21 +282,20 @@ export function cancelReservation(raw: unknown): Promise<ClaimMediaResult> {
  * Edit one file's own words (caption, rough date, place) from the claim page,
  * under the memory lock, with a CLAIM_LINK revision naming the file.
  */
-export async function updateMediaFromClaim({ claimToken, mediaId, changes }: { claimToken: string; mediaId: string; changes: unknown }): Promise<ClaimMediaResult> {
-  const ref = claimMediaRefSchema.safeParse({ claimToken, mediaId });
-  const parsed = mediaChangesSchema.safeParse(changes);
-  if (!ref.success || !parsed.success) {
+export async function updateMediaFromClaim(raw: unknown): Promise<ClaimMediaResult> {
+  const parsed = mediaWordsRequestSchema.safeParse(raw);
+  if (!parsed.success) {
     return { ok: false, code: "invalid" };
   }
-  const input = parsed.data;
-  const claimTokenHash = hashClaimToken(ref.data.claimToken);
+  const { mediaId, changes: input } = parsed.data;
+  const claimTokenHash = hashClaimToken(parsed.data.claimToken);
   const result = await getDb().$transaction(async (tx) => {
     const memory = await tx.memory.findUnique({ where: { claimTokenHash }, select: { id: true, deletedAt: true, consentVersion: true } });
     if (!memory || memory.deletedAt !== null) {
       return "not_found" as const;
     }
     await lockMemory(tx, memory.id);
-    const target = await tx.media.findFirst({ where: { id: ref.data.mediaId, memoryId: memory.id, deletedAt: null, status: "READY" } });
+    const target = await tx.media.findFirst({ where: { id: mediaId, memoryId: memory.id, deletedAt: null, status: "READY" } });
     if (!target) {
       return "not_found" as const;
     }
@@ -307,7 +306,10 @@ export async function updateMediaFromClaim({ claimToken, mediaId, changes }: { c
       approxDateText: input.approxDateText === undefined ? before.approxDateText : input.approxDateText,
       place: input.place === undefined ? before.place : input.place,
     };
-    await tx.media.update({ where: { id: target.id }, data: { caption: after.caption, approxDateText: after.approxDateText, place: after.place } });
+    const words = { caption: after.caption, approxDateText: after.approxDateText, place: after.place };
+    await tx.media.update({ where: { id: target.id }, data: words });
+    // A replacement still on its way copied the target's words when it was ticketed; keep it current so the swap cannot restore stale words.
+    await tx.media.updateMany({ where: { memoryId: memory.id, replacesMediaId: target.id, status: "PENDING", deletedAt: null }, data: words });
     await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: memory.consentVersion });
     return "ok" as const;
   }, TX_OPTIONS);

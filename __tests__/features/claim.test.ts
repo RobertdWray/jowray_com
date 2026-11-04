@@ -237,6 +237,21 @@ describe("updateMediaFromClaim", () => {
     expect(revisions[0]!.after).toMatchObject({ mediaId: ID, caption: "her classroom", approxDateText: "1985", place: null, consentVersion: "2026-11-v1" });
   });
 
+  it("carries the edit onto a live PENDING replacement of that file, so the swap does not restore stale words", async () => {
+    mediaRows.push(
+      { id: "med_repl", memoryId: "mem_1", status: "PENDING", mimeType: "image/jpeg", originalFilename: "new.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: ID, createdAt: new Date(), durationSeconds: null, caption: "old words", approxDateText: null, place: "the lake" },
+      { id: "med_repl_gone", memoryId: "mem_1", status: "PENDING", mimeType: "image/jpeg", originalFilename: "x.jpg", sortOrder: 0, deletedAt: new Date(), replacesMediaId: ID, createdAt: new Date(), durationSeconds: null, caption: "old words", approxDateText: null, place: "the lake" },
+    );
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "her classroom", place: "" } })).toEqual({ ok: true });
+    expect(mediaRows.find((r) => r.id === "med_repl")).toMatchObject({ caption: "her classroom", approxDateText: null, place: null });
+    expect(mediaRows.find((r) => r.id === "med_repl_gone")).toMatchObject({ caption: "old words", place: "the lake" });
+  });
+
+  it("answers invalid to garbage input instead of throwing", async () => {
+    expect(await updateMediaFromClaim(null)).toEqual({ ok: false, code: "invalid" });
+    expect(await updateMediaFromClaim({ claimToken: TOKEN })).toEqual({ ok: false, code: "invalid" });
+  });
+
   it("leaves fields that were not sent alone", async () => {
     await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { place: "Broadmead" } });
     expect(mediaRows[0]).toMatchObject({ caption: "old words", approxDateText: null, place: "Broadmead" });
