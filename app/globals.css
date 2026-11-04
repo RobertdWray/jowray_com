@@ -7,7 +7,12 @@
  * 30rem, which keeps landscape phones on the phone layout (C53, C54).
  */
 @custom-variant wide (@media (width >= 48rem) and (height >= 30rem));
-@custom-variant narrow (@media (width < 48rem), (height < 30rem));
+@custom-variant narrow {
+  /* A media query list needs the block form: the shorthand reads the comma as a second selector. */
+  @media (width < 48rem), (height < 30rem) {
+    @slot;
+  }
+}
 
 @theme {
   /* Palette — see DESIGN.md § Color for where each one is allowed */

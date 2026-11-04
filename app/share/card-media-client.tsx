@@ -157,7 +157,8 @@ export function CardMedia({
               <li key={item.id} className="flex flex-col gap-2 rounded-card border-[3px] border-wood-light bg-paper p-3">
                 <Preview item={item} url={urls[item.id]} userAgent={userAgent} />
                 <p className="text-small text-walnut-soft">
-                  {KIND_TITLE[item.kind]} · {item.source === "recording" ? `Recorded ${formatDuration((item.durationSeconds ?? 0) * 1000)}` : item.name} · {formatBytes(item.size)}
+                  <span>{KIND_TITLE[item.kind]}</span> · <span>{item.source === "recording" ? `Recorded ${formatDuration((item.durationSeconds ?? 0) * 1000)}` : item.name}</span> ·{" "}
+                  <span>{formatBytes(item.size)}</span>
                 </p>
                 {item.verdict === "suspectedSilent" && (
                   <p role="status" className={errorClass}>This recording sounds silent. Play it back before you send it.</p>
