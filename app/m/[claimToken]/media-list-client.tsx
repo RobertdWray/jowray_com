@@ -10,8 +10,8 @@ import { ACCEPT_ATTRIBUTE, isRenderableIn } from "@/lib/media-types";
 import { uploadWithTicket } from "@/lib/upload-client";
 
 import { SecondaryButton, TertiaryButton } from "../../_components/buttons";
-import { fileInputClass, labelClass, linkClass } from "../../_components/field-classes";
-import { cancelReservation, finalizeAddedFile, removeFile, replaceFileTicket } from "./actions";
+import { fileInputClass, inputClass, labelClass, linkClass, textareaClass } from "../../_components/field-classes";
+import { cancelReservation, finalizeAddedFile, removeFile, replaceFileTicket, updateMediaWords } from "./actions";
 
 const cardClass = "flex flex-col gap-3 rounded-card border-[3px] border-wood-light bg-paper p-3";
 
@@ -97,6 +97,23 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
         return "This is the only file in this memory. Add a few words or another file first, or replace it.";
       }
       return "That file could not be removed. Please reload the page and try again.";
+    });
+  }
+
+  function onSaveWords(item: ClaimMediaView, event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    return run(item.id, async () => {
+      const result = await updateMediaWords({
+        claimToken,
+        mediaId: item.id,
+        changes: {
+          caption: String(form.get("caption") ?? ""),
+          approxDateText: String(form.get("approxDateText") ?? ""),
+          place: String(form.get("place") ?? ""),
+        },
+      });
+      return result.ok ? "Saved." : "Could not save those words. Please reload the page and try again.";
     });
   }
 
@@ -203,6 +220,23 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
             ) : (
               <video controls src={src} className="max-w-full rounded" />
             )}
+            <form onSubmit={(event) => onSaveWords(item, event)} className="flex flex-col gap-3" aria-busy={busy}>
+              <label className={labelClass}>
+                <span>About this {kind} <span className="font-normal text-walnut-soft">(optional)</span></span>
+                <textarea name="caption" rows={2} maxLength={2000} defaultValue={item.caption ?? ""} className={textareaClass} disabled={busy} />
+              </label>
+              <div className="flex flex-wrap gap-3">
+                <label className={`${labelClass} flex-[1_1_140px]`}>
+                  <span>When <span className="font-normal text-walnut-soft">(roughly)</span></span>
+                  <input name="approxDateText" maxLength={120} defaultValue={item.approxDateText ?? ""} className={inputClass} disabled={busy} />
+                </label>
+                <label className={`${labelClass} flex-[1_1_140px]`}>
+                  <span>Where</span>
+                  <input name="place" maxLength={200} defaultValue={item.place ?? ""} className={inputClass} disabled={busy} />
+                </label>
+                <TertiaryButton type="submit" disabled={busy}>Save these words</TertiaryButton>
+              </div>
+            </form>
             {pending && (
               <div className="flex flex-wrap items-center gap-3">
                 <p className="text-body text-walnut-soft">A replacement ({pending.originalFilename ?? "new file"}) has not been received yet.</p>

@@ -102,10 +102,10 @@ Authoritative record of what has already happened. Read every copy (main, open P
 - Checks passed: `npm run validate`, `npm run test:run` (66/66), offline build with no `DATABASE_URL`/`BLOB_READ_WRITE_TOKEN`/`SENDGRID_API_KEY`/`UPLOAD_TICKET_SECRET`/DSN. Orchestrator checks 2026-11-03 (local + PR D preview, see findings): PNG upload → one Media READY with size and 64-hex checksum; text-only memory → claim link; preview photo and text-only memories saved; `vercel env ls` shows the three keys. Still pending: 20 MB and 100 MB videos, iPhone HEIC/.mov/recording, 21 rapid creates with budget 20.
 
 ## Task 8 — Claim links + email
-- Status: [x] 2026-11-03 (HEIC-in-Safari check pending)   Owner: worker (inline)   Branch/PR: D (merged in #7)
+- Status: [x] 2026-11-03 (HEIC-in-Safari check superseded by #17 PRs A–C: every photo is served as a derived web copy; iPhone device pass still owed, Task 10 gate)   Owner: worker (inline)   Branch/PR: D (merged in #7)
 - Code done 2026-11-03 (TDD): `features/memories/confirm.ts` (`confirmMemory`: email only with an address, not deleted, READY media or TEXT; delegates idempotency/guard/cap to the email service), `features/memories/claim.ts` (`getMemoryForClaim`, `updateMemoryFromClaim` + `MemoryRevision(CLAIM_LINK, before, after)`, consent version on the first revision), `app/m/[claimToken]/{page,claim-form,actions}` (static shell, token read in `<Suspense>`, `<meta referrer>`, media via `/api/media/[id]?t=`, download link when `isRenderableIn()` is false, "add another file" through `createUploadTicket`), the `confirm` call in `finalizeUpload()` (READY) and in `createMemory()` (text-only), and the "we emailed you" line only when `emailed` is true. Tests: `__tests__/features/confirm`, `__tests__/features/claim`; the finalize path asserts one `confirm` call.
 - Ruling (plan conflict): the raw claim token is never stored (S6), so the **cron cannot rebuild a claim link** for retries or first sends (plan Task 9 steps d/e). `confirmMemory()` without a raw token therefore **rotates** the token (new hash, email carries the new link); an emailed link supersedes the on-screen one. Cost if wrong: a contributor who kept the on-screen link but whose email failed and was retried by the cron finds the old link dead and uses the emailed one.
-- Checks passed: validate, 76/76 tests, offline build. Orchestrator checks 2026-11-03: edit via claim page → one `MemoryRevision` (before/after + consentVersion); wrong token → not-found body (HTTP 200, deferred minor); confirmation email to the allowlisted address arrived (local) and `confirmation sent` on the preview after `SENDGRID_API_KEY` was added to Vercel; second file from the claim page → READY. Still pending: HEIC in Chrome/Safari.
+- Checks passed: validate, 76/76 tests, offline build. Orchestrator checks 2026-11-03: edit via claim page → one `MemoryRevision` (before/after + consentVersion); wrong token → not-found body (HTTP 200, deferred minor); confirmation email to the allowlisted address arrived (local) and `confirmation sent` on the preview after `SENDGRID_API_KEY` was added to Vercel; second file from the claim page → READY. HEIC in Chrome/Safari: superseded by #17 PRs A–C (derived web copies); iPhone device pass still owed (Task 10 gate).
 
 ## Task 9 — Reconcile cron
 - Status: [x] 2026-11-03   Owner: worker + orchestrator   Branch/PR: D (merged in #7)
@@ -151,7 +151,7 @@ Final: minor (deferred), from the code review, for Rob to accept or schedule:
 - Cron step (a) marks a row FAILED without `status: PENDING` in the `where`.
 - Cron step (f) never deletes blobs of PENDING media on deleted memories (`blobUrl` null).
 - Per-recipient cap uses the literal address; plus-tag variants bypass it.
-- iOS Chrome/Firefox (WebKit) get a HEIC download link although they can render HEIC.
+- iOS Chrome/Firefox (WebKit) get a HEIC download link although they can render HEIC. Superseded by #17 PRs A–C: inline photos are always the derived JPEG/PNG/WebP/GIF copy; iPhone device pass still owed (Task 10 gate).
 - Budget checks race at READ COMMITTED (WAF rule mitigates).
 - `filename*` leaves `'()*!` unencoded (RFC 8187 nit, not injectable).
 - Replaying finalize restarts the inline hash while the checksum is null and can resend a FAILED email without backoff.
@@ -199,11 +199,11 @@ Final: Ruling: the cron response does not report the day's `recipient_capped` / 
 
 ## Task 13 — Photos and media (issue #17: derived copies, remove/replace, multi-file) (2026-11-03)
 
-- Status: [~] PR B merged (#22, 1db03f6); PR A in review; PR C not started.   Owner: session 95e0ccc1 (this file's orchestrator).   Plan: `docs/plans/2026-11-03-photos-derived-media.md` (repo copy of `~/.claude/plans/can-you-build-a-silly-turing.md`, citations C1–C47).
+- Status: [~] PR B merged (#22, 1db03f6); PR A merged (#25, b6bf228); PR C in review.   Owner: session 95e0ccc1 (this file's orchestrator).   Plan: `docs/plans/2026-11-03-photos-derived-media.md` (repo copy of `~/.claude/plans/can-you-build-a-silly-turing.md`, citations C1–C47).
 - Decisions (Rob, 2026-11-03): derive every photo; multi-file on every device with responsive rows; one Memory holds mixed media; placeholder until a sanitized copy exists, originals downloadable by the claim-link holder; PR A owns the email THUMBNAIL and reserves POSTER; HEIC decodes in a worker thread.
 - Ruling: PR A was assigned to session 25e018cf, which finished without opening it; order became B → A → C and A absorbed B's deferred hooks (derivative purge, staging keys, web placeholder state).
 - Code done (TDD): PR B `feat/claim-remove-replace` (soft delete, replacement relation, memory row lock, remove/cancel/replace, live-only reads, purge), PR A `feat/derived-web-images` (DerivedMedia, derived keys, HEIC worker, image service, deriveMedia claim/publish protocol, triggers, cron (g), sanitized-only serving, claim-page placeholder).
-- Still open: PR C (`files[]`, `issueUploadTicket`, submission lease, `completeSubmission`, per-kind email summary); email Task 4 (attach THUMBNAIL rows in `confirmMemory`); the iPhone device pass (Task 10 / F7); verification V2–V13 on a preview.
+- Still open: email Task 4 (attach THUMBNAIL rows in `confirmMemory`); the iPhone device pass (Task 10 / brand F7, now "five mixed files from Safari iOS and Chrome Android, 390 px layout"); V9 mobile part, V10 lease expiry and V11–V13 on a preview. Done on previews: V2 (HEIC renders upright), V9 desktop part (3 files in one memory, per-file words, claim-page edit).
 
 ## Task 14 — Family-admin alert email (2026-11-03)
 

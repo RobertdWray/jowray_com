@@ -1,8 +1,11 @@
 "use server";
 
+import { cancelReservation as cancelReservationFeature, type ClaimMediaResult } from "@/features/memories/claim";
+import { completeSubmission as completeSubmissionFeature, type ConfirmResult } from "@/features/memories/confirm";
 import {
   createMemory as createMemoryFeature,
   createUploadTicket as createUploadTicketFeature,
+  issueUploadTicket as issueUploadTicketFeature,
   type CreateMemoryResult,
   type UploadTicketResult,
 } from "@/features/memories/create-memory";
@@ -22,4 +25,16 @@ export async function createUploadTicket(input: unknown): Promise<UploadTicketRe
 
 export async function finalizeUpload(input: { ticket: UploadTicket; claimToken: string }): Promise<FinalizeResult> {
   return finalizeUploadFeature(input);
+}
+
+export async function issueUploadTicket(input: unknown): Promise<UploadTicketResult> {
+  return issueUploadTicketFeature(input);
+}
+
+export async function completeSubmission(input: unknown): Promise<ConfirmResult> {
+  return completeSubmissionFeature(input);
+}
+
+export async function cancelReservation(input: unknown): Promise<ClaimMediaResult> {
+  return cancelReservationFeature(input);
 }

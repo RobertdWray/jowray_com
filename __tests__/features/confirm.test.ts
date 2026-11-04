@@ -4,7 +4,7 @@ import { hashClaimToken } from "@/lib/claim-token";
 import { resetEnvCache } from "@/server/config/env";
 
 const TOKEN = "t".repeat(43);
-interface MediaRow { id: string; status: "PENDING" | "READY" | "FAILED"; mimeType: string; originalFilename: string | null; durationSeconds: number | null; deletedAt?: Date | null }
+interface MediaRow { id: string; status: "PENDING" | "READY" | "FAILED"; mimeType: string; originalFilename: string | null; durationSeconds: number | null; deletedAt?: Date | null; createdAt?: Date }
 interface MemoryRow {
   id: string;
   type: "VOICE" | "VIDEO" | "PHOTO" | "TEXT";
@@ -15,6 +15,7 @@ interface MemoryRow {
   place: string | null;
   contributor: { name: string | null; email: string | null; relationship: string | null } | null;
   media: MediaRow[];
+  uploadLeaseUntil?: Date | null;
 }
 let memory: MemoryRow | null = null;
 const emailUpdateMock = vi.fn(async (_arg: unknown) => ({ count: 1 }));
@@ -22,18 +23,24 @@ const dbStub = {
   memory: {
     findUnique: vi.fn(async ({ include }: { include?: { media?: { where?: { deletedAt?: null } } } } = {}) =>
       memory && include?.media?.where && "deletedAt" in include.media.where ? { ...memory, media: memory.media.filter((m) => (m.deletedAt ?? null) === null) } : memory),
-    update: vi.fn(async ({ data }: { data: { claimTokenHash: string } }) => { memory!.claimTokenHash = data.claimTokenHash; return memory; }),
+    update: vi.fn(async ({ data }: { data: Partial<MemoryRow> }) => { Object.assign(memory!, data); return memory; }),
   },
   emailLog: { updateMany: (arg: unknown) => emailUpdateMock(arg) },
+  $queryRaw: vi.fn(async () => [{ id: "mem_1" }]),
+  $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) => fn(dbStub)),
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 const sendMock = vi.fn(async (_arg: unknown): Promise<{ sent: boolean; messageId?: string; skipped?: string }> => ({ sent: true, messageId: "m1" }));
 vi.mock("@/services/email", () => ({ sendMemoryConfirmation: (arg: unknown) => sendMock(arg) }));
+const notifyMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m2" }));
+vi.mock("@/features/memories/notify-admins", () => ({ notifyAdminsOfMemory: (arg: unknown) => notifyMock(arg) }));
+const afterCalls: Array<() => Promise<void>> = [];
+vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
 
-import { confirmMemory } from "@/features/memories/confirm";
+import { completeSubmission, confirmMemory } from "@/features/memories/confirm";
 
 function readyPhoto(over: Partial<MediaRow> = {}): MediaRow {
-  return { id: "med_1", status: "READY", mimeType: "image/jpeg", originalFilename: "IMG_0001.jpg", durationSeconds: null, ...over };
+  return { id: "med_1", status: "READY", mimeType: "image/jpeg", originalFilename: "IMG_0001.jpg", durationSeconds: null, createdAt: new Date(Date.now() - 60 * 60_000), ...over };
 }
 
 beforeEach(() => {
@@ -47,6 +54,7 @@ beforeEach(() => {
     place: "her classroom",
     contributor: { name: "Jo", email: "jo@example.com", relationship: "former student" },
     media: [readyPhoto()],
+    uploadLeaseUntil: null,
   };
   emailUpdateMock.mockClear();
   sendMock.mockClear();
@@ -168,5 +176,75 @@ describe("removed files", () => {
     expect((await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).sent).toBe(true);
     const arg = sendMock.mock.calls.at(-1)?.[0] as unknown as { media: unknown[] };
     expect(arg.media).toHaveLength(1);
+  });
+});
+
+describe("multi-file submissions", () => {
+  it("waits while a file of this submission is still on its way, unless the submission is being settled", async () => {
+    memory!.media = [readyPhoto(), { id: "med_2", status: "PENDING", mimeType: "image/jpeg", originalFilename: "b.jpg", durationSeconds: null, createdAt: new Date() }];
+    expect(await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).toEqual({ sent: false, skipped: "not_ready" });
+    expect((await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN, settleNow: true })).sent).toBe(true);
+    const arg = sendMock.mock.calls.at(-1)?.[0] as unknown as { media: unknown[] };
+    expect(arg.media).toHaveLength(1);
+  });
+
+  it("does not wait for a reservation older than the ticket lifetime once the submission lease is closed (abandoned upload)", async () => {
+    memory!.media = [readyPhoto(), { id: "med_2", status: "PENDING", mimeType: "image/jpeg", originalFilename: "b.jpg", durationSeconds: null, createdAt: new Date(Date.now() - 16 * 60_000) }];
+    expect((await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).sent).toBe(true);
+  });
+
+  it("keeps waiting for an old reservation while the submission lease is open: rows are created at the start, tickets come later", async () => {
+    memory!.uploadLeaseUntil = new Date(Date.now() + 30 * 60_000);
+    memory!.media = [readyPhoto(), { id: "med_2", status: "PENDING", mimeType: "image/jpeg", originalFilename: "b.jpg", durationSeconds: null, createdAt: new Date(Date.now() - 40 * 60_000) }];
+    expect(await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).toEqual({ sent: false, skipped: "not_ready" });
+    expect((await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN, settleNow: true })).sent).toBe(true);
+  });
+
+  it("the cron path never sends while the submission lease is open, so it cannot rotate a link still in use", async () => {
+    memory!.uploadLeaseUntil = new Date(Date.now() + 10 * 60_000);
+    expect(await confirmMemory({ memoryId: "mem_1" })).toEqual({ sent: false, skipped: "leased" });
+    memory!.uploadLeaseUntil = new Date(Date.now() - 1_000);
+    expect((await confirmMemory({ memoryId: "mem_1" })).sent).toBe(true);
+  });
+
+  it("completeSubmission closes the lease and sends with the raw token (no rotation), ignoring young reservations", async () => {
+    memory!.uploadLeaseUntil = new Date(Date.now() + 60 * 60_000);
+    memory!.media = [readyPhoto(), { id: "med_2", status: "PENDING", mimeType: "image/jpeg", originalFilename: "b.jpg", durationSeconds: null, createdAt: new Date() }];
+    let leaseAtSend: Date | null | undefined;
+    sendMock.mockImplementationOnce(async () => { leaseAtSend = memory!.uploadLeaseUntil; return { sent: true, messageId: "m1" }; });
+    const result = await completeSubmission({ claimToken: TOKEN });
+    expect(result.sent).toBe(true);
+    // The lease closes only after the email operation is claimed: cron cannot slip into a gap and rotate the link.
+    expect(leaseAtSend).not.toBeNull();
+    expect(memory!.uploadLeaseUntil).toBeNull();
+    const arg = sendMock.mock.calls.at(-1)?.[0] as unknown as { claimLink: string; rotateToClaimTokenHash?: string };
+    expect(arg.claimLink.endsWith(`/m/${TOKEN}`)).toBe(true);
+    expect(arg.rotateToClaimTokenHash).toBeUndefined();
+    expect(await completeSubmission({ claimToken: "x".repeat(43) })).toEqual({ sent: false, skipped: "not_found" });
+  });
+
+  it("completeSubmission closes the lease even when nothing can be sent yet, and answers not_found to garbage input", async () => {
+    memory!.uploadLeaseUntil = new Date(Date.now() + 60 * 60_000);
+    memory!.contributor = { name: "Jo", email: null, relationship: null };
+    expect(await completeSubmission({ claimToken: TOKEN })).toEqual({ sent: false, skipped: "no_email" });
+    expect(memory!.uploadLeaseUntil).toBeNull();
+    expect(await completeSubmission(null)).toEqual({ sent: false, skipped: "not_found" });
+    expect(await completeSubmission({ claimToken: 42 })).toEqual({ sent: false, skipped: "not_found" });
+  });
+
+  it("completeSubmission alerts the admins after the response with the whole submission, and closes the lease even when sending throws", async () => {
+    afterCalls.length = 0;
+    notifyMock.mockClear();
+    memory!.uploadLeaseUntil = new Date(Date.now() + 60 * 60_000);
+    await completeSubmission({ claimToken: TOKEN });
+    expect(notifyMock).not.toHaveBeenCalled();
+    expect(afterCalls).toHaveLength(1);
+    await afterCalls[0]!();
+    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_1", settleNow: true });
+
+    memory!.uploadLeaseUntil = new Date(Date.now() + 60 * 60_000);
+    sendMock.mockRejectedValueOnce(new Error("db down"));
+    await expect(completeSubmission({ claimToken: TOKEN })).rejects.toThrow("db down");
+    expect(memory!.uploadLeaseUntil).toBeNull();
   });
 });

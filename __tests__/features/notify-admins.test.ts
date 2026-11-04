@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { resetEnvCache } from "@/server/config/env";
 
-interface MediaRow { id: string; status: "PENDING" | "READY" | "FAILED"; mimeType: string; originalFilename: string | null; durationSeconds: number | null; deletedAt?: Date | null }
+interface MediaRow { id: string; status: "PENDING" | "READY" | "FAILED"; mimeType: string; originalFilename: string | null; durationSeconds: number | null; deletedAt?: Date | null; createdAt?: Date }
 interface MemoryRow {
   id: string;
   type: "VOICE" | "VIDEO" | "PHOTO" | "TEXT";
@@ -14,6 +14,7 @@ interface MemoryRow {
   place: string | null;
   visibility: "PUBLIC" | "FAMILY" | "PRIVATE";
   notifyWhenPosted: boolean;
+  uploadLeaseUntil?: Date | null;
   contributor: { name: string | null; email: string | null; relationship: string | null; contactOptIn: boolean; mailingListOptIn: boolean } | null;
   media: MediaRow[];
 }
@@ -33,7 +34,7 @@ vi.mock("@/services/email", () => ({ sendAdminNewMemory: (arg: unknown) => sendM
 import { notifyAdminsOfMemory } from "@/features/memories/notify-admins";
 
 function readyPhoto(over: Partial<MediaRow> = {}): MediaRow {
-  return { id: "med_1", status: "READY", mimeType: "image/jpeg", originalFilename: "IMG_0001.jpg", durationSeconds: null, ...over };
+  return { id: "med_1", status: "READY", mimeType: "image/jpeg", originalFilename: "IMG_0001.jpg", durationSeconds: null, createdAt: new Date(Date.now() - 60 * 60_000), ...over };
 }
 
 const SUBMITTED = new Date("2026-11-03T19:38:00Z");
@@ -50,6 +51,7 @@ beforeEach(() => {
     place: "her classroom",
     visibility: "FAMILY",
     notifyWhenPosted: true,
+    uploadLeaseUntil: null,
     contributor: { name: "Jo", email: "jo@example.com", relationship: "former student", contactOptIn: true, mailingListOptIn: false },
     media: [readyPhoto()],
   };
@@ -140,5 +142,25 @@ describe("notifyAdminsOfMemory", () => {
     expect(Object.keys(arg)).not.toContain("claimLink");
     expect(Object.keys(arg)).not.toContain("rotateToClaimTokenHash");
     expect(JSON.stringify(arg)).not.toContain("h".repeat(64));
+  });
+});
+
+describe("multi-file submissions", () => {
+  it("waits while the submission is still sending files (lease open, or a reservation younger than a ticket lifetime), unless settled", async () => {
+    memory!.uploadLeaseUntil = new Date(Date.now() + 30 * 60_000);
+    memory!.media = [readyPhoto(), { id: "med_2", status: "PENDING", mimeType: "image/jpeg", originalFilename: "b.jpg", durationSeconds: null, createdAt: new Date(Date.now() - 40 * 60_000) }];
+    expect(await notifyAdminsOfMemory({ memoryId: "mem_1" })).toEqual({ sent: false, skipped: "not_ready" });
+    memory!.uploadLeaseUntil = null;
+    memory!.media[1]!.createdAt = new Date();
+    expect(await notifyAdminsOfMemory({ memoryId: "mem_1" })).toEqual({ sent: false, skipped: "not_ready" });
+    expect(sendMock).not.toHaveBeenCalled();
+    expect((await notifyAdminsOfMemory({ memoryId: "mem_1", settleNow: true })).sent).toBe(true);
+    expect(sendMock.mock.calls[0]![0]).toMatchObject({ filesNotReady: 1 });
+  });
+
+  it("does not wait for an abandoned reservation once the lease is closed", async () => {
+    memory!.uploadLeaseUntil = new Date(Date.now() - 1_000);
+    memory!.media = [readyPhoto(), { id: "med_2", status: "PENDING", mimeType: "image/jpeg", originalFilename: "b.jpg", durationSeconds: null, createdAt: new Date(Date.now() - 16 * 60_000) }];
+    expect((await notifyAdminsOfMemory({ memoryId: "mem_1" })).sent).toBe(true);
   });
 });

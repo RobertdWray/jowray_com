@@ -6,7 +6,7 @@ import { lockMemory } from "@/features/memories/lock";
 import { appendClaimRevision, hasWords, LIVE_MEDIA_ORDER, recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
-import { claimMediaRefSchema } from "@/lib/validations/media";
+import { claimMediaRefSchema, mediaWordsRequestSchema } from "@/lib/validations/media";
 import { getDb } from "@/server/db/client";
 
 const log = createLogger({ category: "api" });
@@ -53,6 +53,10 @@ export interface ClaimMediaView {
   originalFilename: string | null;
   sortOrder: number;
   durationSeconds: number | null;
+  /** The contributor's words for this file; the memory's note is the shared story. */
+  caption: string | null;
+  approxDateText: string | null;
+  place: string | null;
   /** Set when this row is a pending replacement for another live file. */
   replacesMediaId: string | null;
 }
@@ -92,6 +96,9 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
           sortOrder: true,
           replacesMediaId: true,
           durationSeconds: true,
+          caption: true,
+          approxDateText: true,
+          place: true,
           derivatives: { where: { kind: "WEB_IMAGE" }, select: { status: true, mimeType: true } },
         },
         orderBy: [...LIVE_MEDIA_ORDER],
@@ -109,7 +116,7 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
     contributorNote: memory.contributorNote,
     visibility: memory.visibility,
     contributor: memory.contributor,
-    media: memory.media.map(({ id, status, mimeType, originalFilename, sortOrder, replacesMediaId, durationSeconds, derivatives }) => ({
+    media: memory.media.map(({ id, status, mimeType, originalFilename, sortOrder, replacesMediaId, durationSeconds, caption, approxDateText, place, derivatives }) => ({
       id,
       status,
       web: webCopyState(derivatives?.[0] ?? null),
@@ -118,6 +125,9 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
       sortOrder,
       replacesMediaId,
       durationSeconds,
+      caption,
+      approxDateText,
+      place,
     })),
   };
 }
@@ -266,4 +276,46 @@ export function removeMediaFromClaim(raw: unknown): Promise<ClaimMediaResult> {
 /** Cancel a reservation that never arrived or was rejected, freeing its slot. */
 export function cancelReservation(raw: unknown): Promise<ClaimMediaResult> {
   return retireMedia(raw, ["PENDING", "FAILED"], "cancel");
+}
+
+/**
+ * Edit one file's own words (caption, rough date, place) from the claim page,
+ * under the memory lock, with a CLAIM_LINK revision naming the file.
+ */
+export async function updateMediaFromClaim(raw: unknown): Promise<ClaimMediaResult> {
+  const parsed = mediaWordsRequestSchema.safeParse(raw);
+  if (!parsed.success) {
+    return { ok: false, code: "invalid" };
+  }
+  const { mediaId, changes: input } = parsed.data;
+  const claimTokenHash = hashClaimToken(parsed.data.claimToken);
+  const result = await getDb().$transaction(async (tx) => {
+    const memory = await tx.memory.findUnique({ where: { claimTokenHash }, select: { id: true, deletedAt: true, consentVersion: true } });
+    if (!memory || memory.deletedAt !== null) {
+      return "not_found" as const;
+    }
+    await lockMemory(tx, memory.id);
+    const target = await tx.media.findFirst({ where: { id: mediaId, memoryId: memory.id, deletedAt: null, status: "READY" } });
+    if (!target) {
+      return "not_found" as const;
+    }
+    const before = { mediaId: target.id, caption: target.caption, approxDateText: target.approxDateText, place: target.place };
+    const after = {
+      mediaId: target.id,
+      caption: input.caption === undefined ? before.caption : input.caption,
+      approxDateText: input.approxDateText === undefined ? before.approxDateText : input.approxDateText,
+      place: input.place === undefined ? before.place : input.place,
+    };
+    const words = { caption: after.caption, approxDateText: after.approxDateText, place: after.place };
+    await tx.media.update({ where: { id: target.id }, data: words });
+    // A replacement still on its way copied the target's words when it was ticketed; keep it current so the swap cannot restore stale words.
+    await tx.media.updateMany({ where: { memoryId: memory.id, replacesMediaId: target.id, status: "PENDING", deletedAt: null }, data: words });
+    await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: memory.consentVersion });
+    return "ok" as const;
+  }, TX_OPTIONS);
+  if (result !== "ok") {
+    return { ok: false, code: result };
+  }
+  log.info({ action: "media_edit", mediaId }, "file words edited through the claim link");
+  return { ok: true };
 }

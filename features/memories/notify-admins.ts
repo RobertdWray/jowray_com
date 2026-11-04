@@ -1,6 +1,6 @@
 import "server-only";
 
-import { summarizeReadyMedia } from "@/features/memories/media-summary";
+import { submissionInFlight, summarizeReadyMedia } from "@/features/memories/media-summary";
 import { getDb } from "@/server/db/client";
 import { sendAdminNewMemory, type SendResult } from "@/services/email";
 
@@ -24,7 +24,14 @@ export type NotifyAdminsResult = SendResult | { sent: false; skipped: "not_found
  * This never reads or mints the claim token: the alert carries no link by
  * ruling (R2), so the admins are told, not handed the edit capability.
  */
-export async function notifyAdminsOfMemory({ memoryId }: { memoryId: string }): Promise<NotifyAdminsResult> {
+export async function notifyAdminsOfMemory({
+  memoryId,
+  settleNow = false,
+}: {
+  memoryId: string;
+  /** The contributor closed the submission: alert with what is READY now, whatever is still in flight. */
+  settleNow?: boolean;
+}): Promise<NotifyAdminsResult> {
   const db = getDb();
   const memory = await db.memory.findUnique({
     where: { id: memoryId },
@@ -32,7 +39,7 @@ export async function notifyAdminsOfMemory({ memoryId }: { memoryId: string }): 
       contributor: { select: { name: true, email: true, relationship: true, contactOptIn: true, mailingListOptIn: true } },
       media: {
         where: { deletedAt: null },
-        select: { id: true, status: true, mimeType: true, originalFilename: true, durationSeconds: true },
+        select: { id: true, status: true, mimeType: true, originalFilename: true, durationSeconds: true, createdAt: true },
         orderBy: { createdAt: "asc" },
       },
     },
@@ -46,6 +53,10 @@ export async function notifyAdminsOfMemory({ memoryId }: { memoryId: string }): 
   const media = summarizeReadyMedia(memory.media);
   const hasWords = (memory.contributorNote ?? "").trim().length > 0;
   if (memory.type !== "TEXT" && media.length === 0 && !hasWords) {
+    return { sent: false, skipped: "not_ready" };
+  }
+  // One alert for the whole submission: wait while files are still on their way (same rule as the confirmation).
+  if (!settleNow && submissionInFlight(memory)) {
     return { sent: false, skipped: "not_ready" };
   }
 

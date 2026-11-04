@@ -10,8 +10,8 @@ interface DerivedRow { kind: string; status: string; error: string | null; attem
 interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; mimeType?: string; derivatives?: DerivedRow[]; memory: { deletedAt: Date | null } }
 interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
 type EmailType = "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY";
-interface EmailRow { id: string; memoryId: string; emailType: EmailType; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null } }
-interface MemoryRow { id: string; type: string; deletedAt: Date | null; createdAt: Date; contributorNote?: string | null; contributor: { email: string | null } | null; media: Array<{ status: string; deletedAt: Date | null; createdAt?: Date }>; emails: EmailRow[] }
+interface EmailRow { id: string; memoryId: string; emailType: EmailType; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null; uploadLeaseUntil?: Date | null } }
+interface MemoryRow { id: string; type: string; deletedAt: Date | null; createdAt: Date; contributorNote?: string | null; uploadLeaseUntil?: Date | null; contributor: { email: string | null } | null; media: Array<{ status: string; deletedAt: Date | null; createdAt?: Date }>; emails: EmailRow[] }
 
 let media: MediaRow[] = [];
 let events: EventRow[] = [];
@@ -52,8 +52,9 @@ const dbStub = {
   media: { findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => (await finder(() => media as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }) },
   derivedMedia: { deleteMany: vi.fn(async ({ where }: { where: { mediaId: string; storageKey?: { in: string[] } } }) => { derivedDeletes.push(where); const m = media.find((x) => x.id === where.mediaId); if (m?.derivatives) { m.derivatives = m.derivatives.filter((d) => where.storageKey ? !where.storageKey.in.includes(d.storageKey) : false); } return { count: 1 }; }) },
   webhookEvent: { findMany: finder(() => events as unknown as Record<string, unknown>[]), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<EventRow> }) => { Object.assign(events.find((e) => e.id === where.id)!, data); }) },
-  emailLog: { findMany: finder(() => emails as unknown as Record<string, unknown>[]) },
-  memory: { findMany: finder(() => memories as unknown as Record<string, unknown>[]) },
+  // Prisma returns every scalar; fixtures may omit uploadLeaseUntil (null = no open submission).
+  emailLog: { findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => finder(() => emails.map((e) => ({ ...e, memory: e.memory ? { uploadLeaseUntil: null, ...e.memory } : e.memory })) as unknown as Record<string, unknown>[])(args)) },
+  memory: { findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => finder(() => memories.map((m) => ({ uploadLeaseUntil: null, ...m })) as unknown as Record<string, unknown>[])(args)) },
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
@@ -141,7 +142,10 @@ beforeEach(() => {
     { id: "mem_skipped", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "e@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [emails[2]!] },
     // Its only READY file was removed and it has no words: nothing to confirm.
     { id: "mem_emptied", type: "PHOTO", deletedAt: null, createdAt: old, contributorNote: null, contributor: { email: "f@example.com" }, media: [{ status: "READY", deletedAt: old }], emails: [] },
+    // Still sending files (lease open): neither (e) nor a retry in (d) may touch it yet.
+    { id: "mem_leased", type: "PHOTO", deletedAt: null, createdAt: old, uploadLeaseUntil: new Date(Date.now() + 30 * 60 * 1000), contributor: { email: "g@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [] },
   ];
+  emails.push({ id: "log_leased", memoryId: "mem_leased_retry", emailType: "MEMORY_CONFIRMATION", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: null, uploadLeaseUntil: new Date(Date.now() + 30 * 60 * 1000) } });
   recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
   recordMediaMock.mockImplementation(async ({ mediaId }) => mediaId === "med_orphan" ? { status: "PENDING", mediaId, memoryId: "mem_2" } : { status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 });
 });
@@ -175,6 +179,10 @@ describe("GET /api/cron/reconcile-uploads", () => {
     // alerted (with or without a contributor address, and even when the contributor's confirmation was skipped),
     // not the young one, not the one with a 20-minute-old upload, not the pre-cutoff one
     expect(notifyMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5", "mem_noemail", "mem_skipped"]);
+    // a submission still sending files (lease open) gets neither email from the cron yet
+    expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_leased");
+    expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_leased_retry");
+    expect(notifyMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_leased");
     // removed rows are neither re-recorded (a) nor hashed (b)
     expect(recordMediaMock.mock.calls.map((c) => c[0].mediaId)).not.toContain("med_cancelled");
     expect(checksumMock).not.toHaveBeenCalledWith({ mediaId: "med_removed" });

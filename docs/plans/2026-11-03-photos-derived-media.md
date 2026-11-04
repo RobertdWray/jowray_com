@@ -813,7 +813,7 @@ Each row needs an executor, the deployment SHA, evidence path and pass/fail/bloc
 
 ## Progress
 
-- [ ] PR A `feat/derived-web-images` — steps 1–10 (owner: THIS session, after B merges; session 25e018cf finished without opening A). Also absorbs B's deferred hooks: derivative/staging purge, `web` placeholder state, 51-tombstone test, docs copy.
+- [x] PR A `feat/derived-web-images` — **merged 2026-11-03 23:09 UTC as b6bf228** (PR #25). Fresh review (Critical: Turbopack module-id fold in the worker, fixed and proven on the preview with a real HEIC), Team Code Review round 1 (George 12, Oscar 8) applied with tests first, Fable regression check clean; bucket 3/4 notes on the PR; evidence in docs/plans/evidence/2026-11-issue17/. Follow-ups: email Task 4 (attach THUMBNAIL rows), POSTER flow, 24 MP memory measurement, single-decode optimisation.
 - [x] PR B `feat/claim-remove-replace` — **merged 2026-11-03 21:42 UTC as 1db03f6** (PR #22). Rebased onto main @ 5edd042; Team Code Review round 1 (George 6, Oscar 3) applied with tests first; fresh Fable regression check: no serious regression. Bucket 3/4 notes are on the PR. Deferred to A: derivative/staging purge, `web` placeholder state, 51-tombstone test, docs copy. Deferred to C: Retry on reservations.
 - [ ] PR C `feat/multi-file-memories` — steps 1–7
 - [ ] Ledger Task 12 section; Task 7/8/10 HEIC lines and F7 updated

@@ -6,7 +6,7 @@ const TOKEN = "t".repeat(43);
 interface Rev { memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown> }
 const revisions: Rev[] = [];
 let memory: Record<string, unknown> | null;
-type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; sortOrder: number; deletedAt: Date | null; replacesMediaId: string | null; createdAt: Date; durationSeconds: number | null; derivatives?: Array<{ kind: string; status: string; mimeType: string | null }> };
+type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; sortOrder: number; deletedAt: Date | null; replacesMediaId: string | null; createdAt: Date; durationSeconds: number | null; caption?: string | null; approxDateText?: string | null; place?: string | null; derivatives?: Array<{ kind: string; status: string; mimeType: string | null }> };
 const mediaRows: MediaRow[] = [];
 const lockCalls: string[] = [];
 function matchesMedia(row: MediaRow, where: Record<string, unknown>): boolean {
@@ -47,7 +47,7 @@ const tx = {
 const dbStub = { ...tx, $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx)) };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
-import { cancelReservation, getMemoryForClaim, removeMediaFromClaim, updateMemoryFromClaim } from "@/features/memories/claim";
+import { cancelReservation, getMemoryForClaim, removeMediaFromClaim, updateMediaFromClaim, updateMemoryFromClaim } from "@/features/memories/claim";
 
 beforeEach(() => {
   revisions.length = 0;
@@ -221,5 +221,54 @@ describe("revision bookkeeping", () => {
     await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Baltimore" } });
     expect(revisions[0]!.before).toMatchObject({ name: "Renamed meanwhile" });
     expect((memory!.contributor as { name: string }).name).toBe("Renamed meanwhile");
+  });
+});
+
+describe("updateMediaFromClaim", () => {
+  const ID = "00000000-0000-4000-8000-000000000001";
+  beforeEach(() => { mediaRows[0]!.id = ID; mediaRows[0]!.caption = "old words"; mediaRows[0]!.approxDateText = null; mediaRows[0]!.place = "the lake"; });
+
+  it("edits one file's caption, date and place under the lock and appends a revision with before/after", async () => {
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "  her classroom ", approxDateText: "1985", place: "" } })).toEqual({ ok: true });
+    expect(mediaRows[0]).toMatchObject({ caption: "her classroom", approxDateText: "1985", place: null });
+    expect(lockCalls[0]).toContain("FOR UPDATE|mem_1");
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]!.before).toMatchObject({ mediaId: ID, caption: "old words", approxDateText: null, place: "the lake" });
+    expect(revisions[0]!.after).toMatchObject({ mediaId: ID, caption: "her classroom", approxDateText: "1985", place: null, consentVersion: "2026-11-v1" });
+  });
+
+  it("carries the edit onto a live PENDING replacement of that file, so the swap does not restore stale words", async () => {
+    mediaRows.push(
+      { id: "med_repl", memoryId: "mem_1", status: "PENDING", mimeType: "image/jpeg", originalFilename: "new.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: ID, createdAt: new Date(), durationSeconds: null, caption: "old words", approxDateText: null, place: "the lake" },
+      { id: "med_repl_gone", memoryId: "mem_1", status: "PENDING", mimeType: "image/jpeg", originalFilename: "x.jpg", sortOrder: 0, deletedAt: new Date(), replacesMediaId: ID, createdAt: new Date(), durationSeconds: null, caption: "old words", approxDateText: null, place: "the lake" },
+    );
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "her classroom", place: "" } })).toEqual({ ok: true });
+    expect(mediaRows.find((r) => r.id === "med_repl")).toMatchObject({ caption: "her classroom", approxDateText: null, place: null });
+    expect(mediaRows.find((r) => r.id === "med_repl_gone")).toMatchObject({ caption: "old words", place: "the lake" });
+  });
+
+  it("answers invalid to garbage input instead of throwing", async () => {
+    expect(await updateMediaFromClaim(null)).toEqual({ ok: false, code: "invalid" });
+    expect(await updateMediaFromClaim({ claimToken: TOKEN })).toEqual({ ok: false, code: "invalid" });
+  });
+
+  it("leaves fields that were not sent alone", async () => {
+    await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { place: "Broadmead" } });
+    expect(mediaRows[0]).toMatchObject({ caption: "old words", approxDateText: null, place: "Broadmead" });
+  });
+
+  it("rejects a removed file, a wrong token and invalid input without writing", async () => {
+    expect(await updateMediaFromClaim({ claimToken: "x".repeat(43), mediaId: ID, changes: { caption: "x" } })).toEqual({ ok: false, code: "not_found" });
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "x".repeat(2001) } })).toEqual({ ok: false, code: "invalid" });
+    mediaRows[0]!.deletedAt = new Date();
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "x" } })).toEqual({ ok: false, code: "not_found" });
+    mediaRows[0]!.deletedAt = null; mediaRows[0]!.status = "PENDING";
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "x" } })).toEqual({ ok: false, code: "not_found" });
+    expect(revisions).toHaveLength(0);
+  });
+
+  it("exposes the per-file words on the claim view", async () => {
+    const found = await getMemoryForClaim(TOKEN);
+    expect(found?.media[0]).toMatchObject({ caption: "old words", approxDateText: null, place: "the lake" });
   });
 });

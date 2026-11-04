@@ -7,11 +7,11 @@ import { lockMemory, type Tx } from "@/features/memories/lock";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { afterWithFlush } from "@/lib/sentry/after-flush";
-import { extensionFor, MAX_FILES_PER_MEMORY, maxBytesFor, memoryTypeFor, normalizeMime } from "@/lib/media-types";
+import { extensionFor, MAX_FILES_PER_MEMORY, maxBytesFor, memoryTypeFor, normalizeMime, summarizeMemoryType } from "@/lib/media-types";
 import { storagePrefix } from "@/lib/site-url";
 import { mintUploadTicket, type UploadTicket } from "@/lib/upload-ticket";
-import { replaceRequestSchema } from "@/lib/validations/media";
-import { createMemoryInputSchema, type FileInput, uploadTicketRequestSchema } from "@/lib/validations/memory";
+import { claimMediaRefSchema, replaceRequestSchema } from "@/lib/validations/media";
+import { createMemoryInputSchema, type MemoryFileInput, uploadTicketRequestSchema } from "@/lib/validations/memory";
 import { getMemorialEnv, getUploadEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 
@@ -20,13 +20,19 @@ const log = createLogger({ category: "upload" });
 /** Re-exported for existing callers; the constant lives in lib/media-types so validation can import it. */
 export { MAX_FILES_PER_MEMORY };
 const DAY_MS = 24 * 60 * 60 * 1000;
+/**
+ * Submission lease: how long the reconcile cron waits, from the last ticket,
+ * before it may confirm (and rotate the link of) a memory whose contributor
+ * may still be sending files. Longer than the 1 h Blob client token.
+ */
+export const LEASE_MS = 70 * 60 * 1000;
 /** Neon computes can take a couple of seconds to wake; Prisma's defaults (2 s / 5 s) are too tight. */
 const TX_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;
 
 export type UploadGrant = { pathname: string; ticket: UploadTicket };
 
 export type CreateMemoryResult =
-  | { ok: true; memoryId: string; claimToken: string; upload: UploadGrant | null; emailed: boolean }
+  | { ok: true; memoryId: string; claimToken: string; media: Array<{ mediaId: string; sortOrder: number }>; emailed: boolean }
   | { ok: false; code: "invalid" | "unsupported_type" | "too_large" | "budget_exceeded"; message: string };
 
 export type UploadTicketResult =
@@ -39,9 +45,12 @@ interface ResolvedFile {
   extension: string;
   originalFilename: string;
   durationSeconds: number | null;
+  caption: string | null;
+  approxDateText: string | null;
+  place: string | null;
 }
 
-function resolveFile(file: FileInput): ResolvedFile | "unsupported_type" | "too_large" {
+function resolveFile(file: MemoryFileInput): ResolvedFile | "unsupported_type" | "too_large" {
   const mimeType = normalizeMime(file.type, file.name);
   if (!mimeType) {
     return "unsupported_type";
@@ -53,7 +62,21 @@ function resolveFile(file: FileInput): ResolvedFile | "unsupported_type" | "too_
   const durationSeconds = memoryTypeFor(mimeType) !== "PHOTO" && file.durationSeconds !== undefined && file.durationSeconds > 0
     ? file.durationSeconds
     : null;
-  return { mimeType, maxBytes, extension: extensionFor(mimeType), originalFilename: file.name.slice(0, 255), durationSeconds };
+  return {
+    mimeType,
+    maxBytes,
+    extension: extensionFor(mimeType),
+    originalFilename: file.name.slice(0, 255),
+    durationSeconds,
+    caption: file.caption ?? null,
+    approxDateText: file.approxDateText ?? null,
+    place: file.place ?? null,
+  };
+}
+
+/** Keep the cron off this memory for a while: the contributor is (still) sending files. */
+async function renewLease(tx: Tx, memoryId: string): Promise<void> {
+  await tx.memory.update({ where: { id: memoryId }, data: { uploadLeaseUntil: new Date(Date.now() + LEASE_MS) } });
 }
 
 /** True when one more memory and `addBytes` more ticketed bytes fit in today's budgets. */
@@ -95,6 +118,9 @@ async function createPendingMedia(
       maxBytes: file.maxBytes,
       originalFilename: file.originalFilename,
       durationSeconds: file.durationSeconds,
+      caption: file.caption,
+      approxDateText: file.approxDateText,
+      place: file.place,
       status: "PENDING",
       sortOrder: placement.sortOrder,
       replacesMediaId: placement.replacesMediaId,
@@ -128,19 +154,24 @@ export async function createMemory(raw: unknown): Promise<CreateMemoryResult> {
     return { ok: false, code: "invalid", message: parsed.error.issues[0]?.message ?? "Invalid input" };
   }
   const input = parsed.data;
-  const file = input.file ? resolveFile(input.file) : null;
-  if (file === "unsupported_type") {
-    return { ok: false, code: "unsupported_type", message: "That kind of file is not supported" };
+  const files: ResolvedFile[] = [];
+  for (const file of input.files) {
+    const resolved = resolveFile(file);
+    if (resolved === "unsupported_type") {
+      return { ok: false, code: "unsupported_type", message: "That kind of file is not supported" };
+    }
+    if (resolved === "too_large") {
+      return { ok: false, code: "too_large", message: "That file is too large" };
+    }
+    files.push(resolved);
   }
-  if (file === "too_large") {
-    return { ok: false, code: "too_large", message: "That file is too large" };
-  }
+  const hasWords = (input.note ?? "").trim().length > 0;
 
   const { MEMORIAL_SLUG, CONSENT_VERSION } = getMemorialEnv();
   const claimToken = newClaimToken();
 
   const created = await getDb().$transaction(async (tx) => {
-    if (!(await withinBudget(tx, file?.maxBytes ?? 0, true))) {
+    if (!(await withinBudget(tx, files.reduce((sum, f) => sum + f.maxBytes, 0), true))) {
       return null;
     }
     const memorial = await tx.memorial.findUnique({ where: { slug: MEMORIAL_SLUG } });
@@ -161,37 +192,94 @@ export async function createMemory(raw: unknown): Promise<CreateMemoryResult> {
       data: {
         memorialId: memorial.id,
         contributorId: contributor.id,
-        type: file ? memoryTypeFor(file.mimeType) : "TEXT",
+        type: summarizeMemoryType(files, hasWords) ?? "TEXT",
         source: "WEB_UPLOAD",
         approxDateText: input.approxDateText ?? null,
         place: input.place ?? null,
-        contributorNote: input.note && input.note.trim().length > 0 ? input.note : null,
+        contributorNote: hasWords ? input.note : null,
         visibility: input.visibility,
         notifyWhenPosted: input.notifyWhenPosted,
         consentVersion: CONSENT_VERSION,
         consentedAt: new Date(),
         status: "PENDING",
         claimTokenHash: hashClaimToken(claimToken),
+        // The contributor is about to send these files; the cron waits for the lease (or completeSubmission).
+        uploadLeaseUntil: files.length > 0 ? new Date(Date.now() + LEASE_MS) : null,
       },
     });
-    const upload = file ? await createPendingMedia(tx, memory.id, file, { sortOrder: 0, replacesMediaId: null }) : null;
-    return { memoryId: memory.id, upload };
+    // Rows only: each ticket is minted right before its upload (issueUploadTicket), so none can expire in a queue.
+    const media: Array<{ mediaId: string; sortOrder: number }> = [];
+    for (const [sortOrder, file] of files.entries()) {
+      const row = await tx.media.create({
+        data: {
+          memoryId: memory.id,
+          storageKey: `${storagePrefix()}${memory.id}/${randomUUID()}.${file.extension}`,
+          mimeType: file.mimeType,
+          maxBytes: file.maxBytes,
+          originalFilename: file.originalFilename,
+          durationSeconds: file.durationSeconds,
+          caption: file.caption,
+          approxDateText: file.approxDateText,
+          place: file.place,
+          status: "PENDING",
+          sortOrder,
+          replacesMediaId: null,
+        },
+      });
+      media.push({ mediaId: row.id, sortOrder });
+    }
+    return { memoryId: memory.id, media };
   }, TX_OPTIONS);
 
   if (!created) {
     log.warn({ action: "budget_refusal" }, "daily budget reached");
     return { ok: false, code: "budget_exceeded", message: "We are receiving a lot of memories right now. Please try again later." };
   }
-  log.info({ action: "memory_created", memoryId: created.memoryId, hasFile: created.upload !== null }, "memory created");
-  // A text-only memory is complete now; one with a file is confirmed by finalizeUpload().
-  const emailed = created.upload === null ? await confirmQuietly(created.memoryId, claimToken) : false;
-  if (created.upload === null) {
+  log.info({ action: "memory_created", memoryId: created.memoryId, files: created.media.length }, "memory created");
+  // A text-only memory is complete now; one with files is confirmed by completeSubmission() / finalizeUpload().
+  const emailed = created.media.length === 0 ? await confirmQuietly(created.memoryId, claimToken) : false;
+  if (created.media.length === 0) {
     // The admin alert needs nothing from the contributor, so it runs after the response.
     afterWithFlush(async () => {
       await notifyAdminsQuietly(created.memoryId);
     });
   }
-  return { ok: true, memoryId: created.memoryId, claimToken, upload: created.upload, emailed };
+  return { ok: true, memoryId: created.memoryId, claimToken, media: created.media, emailed };
+}
+
+/**
+ * Ticket for one of the memory's own PENDING rows, minted just before the
+ * browser uploads it (tickets expire 15 minutes after minting, a batch can
+ * take longer). Renews the submission lease.
+ */
+export async function issueUploadTicket(raw: unknown): Promise<UploadTicketResult> {
+  const parsed = claimMediaRefSchema.safeParse(raw);
+  if (!parsed.success) {
+    return { ok: false, code: "invalid" };
+  }
+  const { claimToken, mediaId } = parsed.data;
+  const claimTokenHash = hashClaimToken(claimToken);
+  const result = await getDb().$transaction(async (tx) => {
+    const memory = await tx.memory.findUnique({ where: { claimTokenHash } });
+    if (!memory || memory.deletedAt !== null) {
+      return "not_found" as const;
+    }
+    await lockMemory(tx, memory.id);
+    const row = await tx.media.findFirst({ where: { id: mediaId, memoryId: memory.id, status: "PENDING", deletedAt: null } });
+    if (!row) {
+      return "not_found" as const;
+    }
+    // Only a submission still in progress keeps the cron waiting; a closed lease is never reopened by a late ticket.
+    if (memory.uploadLeaseUntil !== null && memory.uploadLeaseUntil.getTime() > Date.now()) {
+      await renewLease(tx, memory.id);
+    }
+    const ticket = mintUploadTicket({ mediaId: row.id, memoryId: memory.id, pathname: row.storageKey, mimeType: row.mimeType, maxBytes: row.maxBytes });
+    return { pathname: row.storageKey, ticket } satisfies UploadGrant;
+  }, TX_OPTIONS);
+  if (typeof result === "string") {
+    return { ok: false, code: result };
+  }
+  return { ok: true, upload: result };
 }
 
 /** Ticket for one more file on an existing memory, from its claim page. */
@@ -217,6 +305,7 @@ export async function createUploadTicket(raw: unknown): Promise<UploadTicketResu
     if (!(await withinBudget(tx, file.maxBytes, false))) {
       return "budget_exceeded" as const;
     }
+    // No lease here: the memory's one email was handled with its first submission; cron must not be held off.
     return createPendingMedia(tx, memory.id, file, { sortOrder: await nextSortOrder(tx, memory.id), replacesMediaId: null });
   }, TX_OPTIONS);
   if (typeof result === "string") {
@@ -262,7 +351,14 @@ export async function createReplacementTicket(raw: unknown): Promise<UploadTicke
     if (!(await withinBudget(tx, file.maxBytes, false))) {
       return "budget_exceeded" as const;
     }
-    return createPendingMedia(tx, memory.id, file, { sortOrder: target.sortOrder, replacesMediaId: target.id });
+    // The replacement keeps the target's words unless the contributor typed new ones.
+    const inherited: ResolvedFile = {
+      ...file,
+      caption: file.caption ?? target.caption,
+      approxDateText: file.approxDateText ?? target.approxDateText,
+      place: file.place ?? target.place,
+    };
+    return createPendingMedia(tx, memory.id, inherited, { sortOrder: target.sortOrder, replacesMediaId: target.id });
   }, TX_OPTIONS);
   if (typeof result === "string") {
     return { ok: false, code: result };
