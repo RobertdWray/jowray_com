@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { gmailSourceRef, otherSourceRef, smsSourceRef } from "../../lib/source-ref";
-import { callAdmin, describeTarget, parseArgs, prepareInput, resolveTarget, summarize } from "../../scripts/draft-memory";
+import { callAdmin, describeTarget, parseArgs, prepareInput, redactSecret, resolveTarget, summarize } from "../../scripts/draft-memory";
 
 describe("resolveTarget", () => {
   it("has no default: production needs the explicit --prod flag, anything else needs ADMIN_API_URL", () => {
@@ -77,11 +77,30 @@ describe("prepareInput", () => {
     expect(prepareInput({ ...base, sourceInput: { kind: "other", email: "Pat@Example.com", originalText: "Dear Rob,\r\n\r\nJo was a light.\r\n" } })).toEqual({ ...base, source: "OTHER", sourceRef: otherSourceRef("pat@example.com", "Dear Rob,\n\nJo was a light.") });
   });
 
+  it("checks the sourceInput fields are strings and names the missing one", () => {
+    expect(() => prepareInput({ ...base, sourceInput: { kind: "gmail" } })).toThrow(/messageId/);
+    expect(() => prepareInput({ ...base, sourceInput: { kind: "sms", number: "+14105551234", sentAt: 20261103 } })).toThrow(/sentAt|text/);
+    expect(() => prepareInput({ ...base, sourceInput: { kind: "other", originalText: 42 } })).toThrow(/originalText/);
+  });
+
+  it("for `other`, the dedup key uses the contributor's email: it defaults from contributor.email and a different address is refused", () => {
+    expect(prepareInput({ ...base, sourceInput: { kind: "other", originalText: "Jo was a light." } })).toEqual({ ...base, source: "OTHER", sourceRef: otherSourceRef("pat@example.com", "Jo was a light.") });
+    expect(() => prepareInput({ ...base, sourceInput: { kind: "other", email: "someone-else@example.com", originalText: "Jo" } })).toThrow(/contributor\.email/);
+  });
+
   it("passes an input that already carries source and sourceRef through unchanged, and refuses one with neither or both", () => {
     const explicit = { ...base, source: "EMAIL", sourceRef: "gmail:1a1a2317fba34eec" };
     expect(prepareInput(explicit)).toEqual(explicit);
     expect(() => prepareInput(base)).toThrow(/sourceInput/);
     expect(() => prepareInput({ ...explicit, sourceInput: { kind: "gmail", messageId: "1a1a2317fba34eec" } })).toThrow(/sourceInput/);
     expect(() => prepareInput({ ...base, sourceInput: { kind: "fax" } })).toThrow(/kind/);
+  });
+});
+
+describe("redactSecret", () => {
+  it("replaces the configured secret wherever it appears in output, and leaves other text (including a claim link) alone", () => {
+    const secret = "s".repeat(40);
+    expect(redactSecret([`502: <html>Bearer ${secret} rejected</html>`, "claimLink: https://www.jowray.com/m/tok"], secret)).toEqual(["502: <html>Bearer [redacted] rejected</html>", "claimLink: https://www.jowray.com/m/tok"]);
+    expect(redactSecret(["plain"], "")).toEqual(["plain"]);
   });
 });

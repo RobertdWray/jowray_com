@@ -114,17 +114,42 @@ export type SourceInput =
   | { kind: "sms"; number: string; sentAt: string; text: string }
   | { kind: "other"; email: string; originalText: string };
 
-function sourceFor(input: SourceInput): { source: "EMAIL" | "SMS" | "OTHER"; sourceRef: string } {
+function stringField(input: Record<string, unknown>, key: string): string {
+  const value = input[key];
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`sourceInput.${key} must be a non-empty string`);
+  }
+  return value;
+}
+
+function sourceFor(input: Record<string, unknown>, contributorEmail: string | undefined): { source: "EMAIL" | "SMS" | "OTHER"; sourceRef: string } {
   switch (input.kind) {
     case "gmail":
-      return { source: "EMAIL", sourceRef: gmailSourceRef(input.messageId) };
+      return { source: "EMAIL", sourceRef: gmailSourceRef(stringField(input, "messageId")) };
     case "sms":
-      return { source: "SMS", sourceRef: smsSourceRef(input.number, input.sentAt, input.text) };
-    case "other":
-      return { source: "OTHER", sourceRef: otherSourceRef(input.email, input.originalText) };
+      return { source: "SMS", sourceRef: smsSourceRef(stringField(input, "number"), stringField(input, "sentAt"), stringField(input, "text")) };
+    case "other": {
+      // The dedup key is the stored contributor's address; a different one would let the same person be drafted twice.
+      const email = typeof input.email === "string" && input.email.length > 0 ? input.email : contributorEmail;
+      if (!email) {
+        throw new Error("sourceInput.email or contributor.email is required for kind other");
+      }
+      if (contributorEmail && email.trim().toLowerCase() !== contributorEmail.trim().toLowerCase()) {
+        throw new Error("sourceInput.email must match contributor.email (the dedup key is the stored address)");
+      }
+      return { source: "OTHER", sourceRef: otherSourceRef(email, stringField(input, "originalText")) };
+    }
     default:
-      throw new Error(`sourceInput.kind must be gmail, sms or other (got ${String((input as { kind?: unknown }).kind)})`);
+      throw new Error(`sourceInput.kind must be gmail, sms or other (got ${String(input.kind)})`);
   }
+}
+
+/** Every output line goes through here: the configured secret never reaches the terminal, whatever a proxy or error page echoes. */
+export function redactSecret(lines: string[], secret: string): string[] {
+  if (secret.length === 0) {
+    return lines;
+  }
+  return lines.map((line) => line.split(secret).join("[redacted]"));
 }
 
 /** The JSON file's object, with `sourceInput` replaced by `source` + `sourceRef`. */
@@ -132,7 +157,7 @@ export function prepareInput(raw: unknown): Record<string, unknown> {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new Error("The input file must hold a JSON object");
   }
-  const { sourceInput, ...rest } = raw as Record<string, unknown> & { sourceInput?: SourceInput };
+  const { sourceInput, ...rest } = raw as Record<string, unknown> & { sourceInput?: unknown };
   const explicit = "source" in rest || "sourceRef" in rest;
   if (sourceInput !== undefined && explicit) {
     throw new Error("Give either sourceInput or source + sourceRef, not both");
@@ -146,7 +171,9 @@ export function prepareInput(raw: unknown): Record<string, unknown> {
   if (typeof sourceInput !== "object" || sourceInput === null) {
     throw new Error("sourceInput.kind must be gmail, sms or other");
   }
-  return { ...rest, ...sourceFor(sourceInput) };
+  const contributor = rest.contributor as { email?: unknown } | undefined;
+  const contributorEmail = typeof contributor?.email === "string" ? contributor.email : undefined;
+  return { ...rest, ...sourceFor(sourceInput as Record<string, unknown>, contributorEmail) };
 }
 
 /** Lines for the terminal. The secret is never part of a response, so nothing here can echo it. */
@@ -183,7 +210,7 @@ async function main(): Promise<void> {
       ? callAdmin({ target, secret, path: "/api/admin/memories", body: prepareInput(JSON.parse(readFileSync(args.inputPath, "utf8"))) })
       : callAdmin({ target, secret, path: `/api/admin/memories/${encodeURIComponent(args.memoryId)}/claim-link`, body: null });
   const { status, body } = await call;
-  for (const line of summarize(status, body)) {
+  for (const line of redactSecret(summarize(status, body), secret)) {
     console.log(line);
   }
   if (status !== 200) {
@@ -194,7 +221,8 @@ async function main(): Promise<void> {
 const isEntrypoint = basename(process.argv[1] ?? "").replace(/\.ts$/, "") === "draft-memory";
 if (isEntrypoint) {
   main().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : error);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(redactSecret([message], process.env.ADMIN_API_SECRET ?? "")[0]);
     process.exitCode = 1;
   });
 }

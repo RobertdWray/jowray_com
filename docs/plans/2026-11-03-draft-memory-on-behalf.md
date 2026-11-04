@@ -319,6 +319,26 @@ Each ruling: what — why — cost if wrong.
 - #9's "prefer an immutable message id" for SMS: there is none until a vendor is chosen (F9); the text-in-key compromise stands.
 - #10's "authenticated read-only check of token currency": no such endpoint exists and adding one is out of scope → F15.
 
+**PR #30 Team Code Review, round 2 (after merging `origin/main` 3f437eb; George on gemini-4-argon, Oscar on Codex; 2026-11-04), 8 findings, verified against the branch and sorted:**
+
+*Bucket 1 · Must do (done the same day)*
+- G1 (High) `updateMediaFromClaim` (arrived with #27) had no post-lock re-read, so a link rotated by a reissue could still edit a file's words: it now re-reads `deletedAt`, `claimTokenHash` and `consentVersion` under the lock like the other two claim transactions; `updateMemoryFromClaim` takes `consentVersion` from the post-lock read too (two tests).
+- G4 `ADMIN_API_SECRET=` (empty) made `getAdminEnv()` throw a 500 inside the bearer check: empty now means unset, so the routes fail closed with 401 (env test + route test).
+- O1 `Date.parse` read a zone-less `sentAt` in the process's zone, so the same text could hash differently on another machine: an explicit `Z` or offset is now required (tests).
+- G2.1 `source` and `sourceRef` were validated independently: a `.refine` now requires `EMAIL ↔ gmail:`, `SMS ↔ sms:`, `OTHER ↔ other:` (test).
+- G2.2 `prepareInput` cast untyped JSON into the builders and let `other` use an email different from the contributor's: fields are checked as non-empty strings with a named error; `other` defaults to `contributor.email` and refuses a different address (tests).
+
+*Bucket 2 · Nice to do (done)*
+- G5 the ADMIN revision omitted `approxDateText`, `place`, `visibility`, `status`: recorded now (test).
+- G3 nothing proved the predicates and the Prisma `where` fragments agree: `__tests__/features/site-email.test.ts` checks every status × source pair (it passed on first run, so it is a guard, not a fix).
+- O2 only `error.message` was redacted: `redactSecret` now runs over every output line and the exception path, replacing the configured secret wherever it appears (test).
+
+*Bucket 3 · Don't do*
+- O2's "redact capability tokens from failure output": error responses from the admin API never carry a token, and the claim link must be printed on success (it is the whole point of the call). Redacting the secret everywhere is the whole of the real exposure.
+
+*Bucket 4 · Real, out of scope → §11*
+- O3 rotation/revocation runbook for `ADMIN_API_SECRET` (F16; `docs/environment.md` carries the short version).
+
 
 ---
 
@@ -366,6 +386,7 @@ Severity: **H** = affects correctness or privacy today; **M** = affects the prod
 | F13 | Attach a file to a draft from the script (premortem P6; half of F5) | M | `--attach <memoryId> <file>` backed by an admin ticket route limited to DRAFT, so Rob never opens a draft's page (where the only button is the sender's consent). Reuse `createPendingMedia` + the ticket flow + `finalizeUpload`. |
 | F14 | Hint on POST: other live memories with the same contributor email (premortem P8) | L | A follow-up Gmail message ("here's the photo") has a new id and makes a second draft. Return `sameEmail: [{ memoryId, status }]` from `POST /api/admin/memories` and have the skill show them to Rob before drafting. |
 | F15 | Verify a claim link without using it (Team Code Review #10) | L | `POST /api/admin/memories/[id]/claim-link/verify` taking a raw token and answering whether its hash is the memory's current `claimTokenHash` (bearer-protected, read-only). The skill would call it before telling Rob a link found in Gmail is live. Until then the skill says "probably live" and shows the `memoryId`. |
+| F16 | Rotation and revocation runbook for `ADMIN_API_SECRET` (Team Code Review round 2, O3) | M | One shared secret authorises drafting and link revocation from Rob's laptop and production. Write `docs/runbooks/admin-api-secret-rotation.md`: generate, `vercel env rm` + `vercel env add … production` from a mode-600 file, redeploy (env reaches only new deployments; older deployments keep the old value until they are gone), replace the `.env` line, verify the old value answers 401 and the new one 200 against a harmless call (a 409 duplicate works). Also note that Preview has no `ADMIN_API_SECRET` by design. |
 | F10 | Draft expiry or cleanup for memories nobody ever shares | L | Decide a policy (keep forever vs soft-delete after N months with Rob's say-so). A cron step (g) over `status = DRAFT AND createdAt < now - N`. Not urgent: drafts are invisible and cost nothing. |
 
 ---

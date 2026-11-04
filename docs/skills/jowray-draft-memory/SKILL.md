@@ -80,8 +80,8 @@ Build the input JSON in the scratchpad (never in the repo). Describe **where the
 
 `sourceInput` is one of:
 - `{ "kind": "gmail", "messageId": "<sender's message id>" }` → `source: EMAIL`.
-- `{ "kind": "sms", "number": "<E.164>", "sentAt": "<ISO-8601 with zone>", "text": "<the full text message>" }` → `source: SMS`. Keyed on number, the minute (UTC) and the text, so a retyped zone or seconds cannot make a second draft and two texts in one minute stay distinct.
-- `{ "kind": "other", "email": "<sender email>", "originalText": "<the whole original message, not the excerpt>" }` → `source: OTHER`.
+- `{ "kind": "sms", "number": "<E.164>", "sentAt": "<ISO-8601 with an explicit zone, e.g. 2026-11-03T14:05-05:00>", "text": "<the full text message>" }` → `source: SMS`. The zone is required (a zone-less time would hash differently on another machine). Keyed on number, the minute (UTC) and the text, so a retyped zone or seconds cannot make a second draft and two texts in one minute stay distinct.
+- `{ "kind": "other", "originalText": "<the whole original message, not the excerpt>" }` → `source: OTHER`. The dedup key uses `contributor.email`; an `email` field here must match it.
 
 Run the script (it prints the host it is about to call, then `memoryId` and `claimLink`):
 

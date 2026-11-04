@@ -177,6 +177,12 @@ describe("draftMemoryInputSchema", () => {
     expect(draftMemoryInputSchema.safeParse({ ...valid, sourceRef: "" }).success).toBe(false);
   });
 
+  it("requires the sourceRef scheme to match the source", () => {
+    expect(draftMemoryInputSchema.safeParse({ ...valid, source: "SMS", sourceRef: "gmail:1a1a2317fba34eec" }).success).toBe(false);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, source: "EMAIL", sourceRef: `other:${"b".repeat(32)}` }).success).toBe(false);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, source: "OTHER", sourceRef: `sms:${"a".repeat(32)}` }).success).toBe(false);
+  });
+
   it("keeps the note exactly as given (never trimmed or rewritten) and turns empty optional fields into null", () => {
     const parsed = draftMemoryInputSchema.parse({ ...valid, note: "  Two spaces lead.\n\nAnd a blank line.  ", approxDateText: "", place: " Broadmead " });
     expect(parsed.note).toBe("  Two spaces lead.\n\nAnd a blank line.  ");

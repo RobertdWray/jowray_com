@@ -193,6 +193,7 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
       select: {
         deletedAt: true,
         claimTokenHash: true,
+        consentVersion: true,
         status: true,
         consentedAt: true,
         approxDateText: true,
@@ -257,7 +258,7 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
     if (hasWords(before.contributorNote) !== hasWords(after.contributorNote)) {
       await recomputeMemoryType(tx, memory.id, after.contributorNote);
     }
-    await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: consent?.consentVersion ?? memory.consentVersion });
+    await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: consent?.consentVersion ?? fresh.consentVersion });
     return sharing ? ("shared" as const) : ("ok" as const);
   }, TX_OPTIONS);
 
@@ -354,11 +355,16 @@ export async function updateMediaFromClaim(raw: unknown): Promise<ClaimMediaResu
   const { mediaId, changes: input } = parsed.data;
   const claimTokenHash = hashClaimToken(parsed.data.claimToken);
   const result = await getDb().$transaction(async (tx) => {
-    const memory = await tx.memory.findUnique({ where: { claimTokenHash }, select: { id: true, deletedAt: true, consentVersion: true } });
+    const memory = await tx.memory.findUnique({ where: { claimTokenHash }, select: { id: true, deletedAt: true } });
     if (!memory || memory.deletedAt !== null) {
       return "not_found" as const;
     }
     await lockMemory(tx, memory.id);
+    // Re-read under the lock: a link rotated while this request waited (an admin reissue) must not act.
+    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { deletedAt: true, claimTokenHash: true, consentVersion: true } });
+    if (fresh.deletedAt !== null || fresh.claimTokenHash !== claimTokenHash) {
+      return "not_found" as const;
+    }
     const target = await tx.media.findFirst({ where: { id: mediaId, memoryId: memory.id, deletedAt: null, status: "READY" } });
     if (!target) {
       return "not_found" as const;
@@ -374,7 +380,7 @@ export async function updateMediaFromClaim(raw: unknown): Promise<ClaimMediaResu
     await tx.media.update({ where: { id: target.id }, data: words });
     // A replacement still on its way copied the target's words when it was ticketed; keep it current so the swap cannot restore stale words.
     await tx.media.updateMany({ where: { memoryId: memory.id, replacesMediaId: target.id, status: "PENDING", deletedAt: null }, data: words });
-    await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: memory.consentVersion });
+    await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: fresh.consentVersion });
     return "ok" as const;
   }, TX_OPTIONS);
   if (result !== "ok") {

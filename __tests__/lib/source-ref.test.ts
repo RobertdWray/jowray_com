@@ -41,6 +41,9 @@ describe("smsSourceRef", () => {
     expect(a).toBe(smsSourceRef("+14105551234", "2026-11-03T14:05:37.250Z", "Jo"));
     expect(a).toBe(`sms:${sha("+14105551234|2026-11-03T14:05Z|Jo").slice(0, 32)}`);
     expect(() => smsSourceRef("+14105551234", "yesterday", "Jo")).toThrow(/timestamp/);
+    // A zone-less timestamp would be read in the process's zone and hash differently on another machine.
+    expect(() => smsSourceRef("+14105551234", "2026-11-03T10:05", "Jo")).toThrow(/zone|offset|Z/);
+    expect(() => smsSourceRef("+14105551234", "2026-11-03", "Jo")).toThrow(/zone|offset|Z/);
   });
 
   it("rejects a number that is not E.164", () => {

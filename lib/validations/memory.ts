@@ -128,8 +128,11 @@ export const uploadTicketRequestSchema = z.object({
  */
 export const SOURCE_REF_PATTERN = /^(?:gmail:[0-9a-f]{8,32}|sms:[0-9a-f]{32}|other:[0-9a-f]{32})$/;
 
+const SOURCE_REF_PREFIX = { EMAIL: "gmail:", SMS: "sms:", OTHER: "other:" } as const;
+
 /** What the family admin sends to draft a memory on a sender's behalf (features/memories/draft-memory.ts). */
-export const draftMemoryInputSchema = z.object({
+export const draftMemoryInputSchema = z
+  .object({
   contributor: z.object({
     name: optionalText(120),
     // Trim and lower-case first, then check the format: zod 4's `z.email().trim()` would check the padded string.
@@ -144,7 +147,11 @@ export const draftMemoryInputSchema = z.object({
   source: z.enum(["EMAIL", "SMS", "OTHER"]),
   sourceRef: z.string().regex(SOURCE_REF_PATTERN, "sourceRef must follow the gmail:/sms:/other: scheme"),
   visibility: z.enum(["PUBLIC", "FAMILY", "PRIVATE"]).default("PUBLIC"),
-});
+  })
+  .refine((value) => value.sourceRef.startsWith(SOURCE_REF_PREFIX[value.source]), {
+    message: "sourceRef must match source (EMAIL ↔ gmail:, SMS ↔ sms:, OTHER ↔ other:)",
+    path: ["sourceRef"],
+  });
 export type DraftMemoryInput = z.infer<typeof draftMemoryInputSchema>;
 
 /** Admin request to rotate a DRAFT's claim link (features/memories/draft-memory.ts). */

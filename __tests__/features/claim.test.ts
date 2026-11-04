@@ -197,6 +197,27 @@ describe("updateMemoryFromClaim non-empty invariant", () => {
 });
 
 describe("invariants are evaluated after the lock", () => {
+  it("a file-words edit through a link rotated while waiting for the lock is refused", async () => {
+    const ID = "00000000-0000-4000-8000-000000000001";
+    mediaRows[0]!.id = ID; mediaRows[0]!.caption = "old words";
+    tx.$queryRaw.mockImplementationOnce(async (strings: TemplateStringsArray, ...values: unknown[]) => { memory!.claimTokenHash = hashClaimToken("rotated".padEnd(43, "x")); lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; });
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "new words" } })).toEqual({ ok: false, code: "not_found" });
+    expect(mediaRows[0]!.caption).toBe("old words");
+    expect(revisions).toHaveLength(0);
+  });
+
+  it("the first revision's consent version comes from the post-lock read, in every claim transaction", async () => {
+    tx.$queryRaw.mockImplementationOnce(async (strings: TemplateStringsArray, ...values: unknown[]) => { memory!.consentVersion = "2026-11-v9"; lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; });
+    await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Broadmead" } });
+    expect(revisions[0]!.after).toMatchObject({ consentVersion: "2026-11-v9" });
+    revisions.length = 0;
+    const ID = "00000000-0000-4000-8000-000000000001";
+    mediaRows[0]!.id = ID;
+    tx.$queryRaw.mockImplementationOnce(async (strings: TemplateStringsArray, ...values: unknown[]) => { memory!.consentVersion = "2026-11-v8"; lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; });
+    await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "x" } });
+    expect(revisions[0]!.after).toMatchObject({ consentVersion: "2026-11-v8" });
+  });
+
   it("a removal through a link rotated while waiting for the lock is refused", async () => {
     const VALID = { claimToken: TOKEN, mediaId: "00000000-0000-4000-8000-000000000001" };
     mediaRows[0]!.id = VALID.mediaId;

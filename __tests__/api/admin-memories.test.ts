@@ -35,6 +35,9 @@ describe("POST /api/admin/memories", () => {
     delete process.env.ADMIN_API_SECRET;
     resetEnvCache();
     expect((await postDraft(body, `Bearer ${SECRET}`)).status).toBe(401);
+    process.env.ADMIN_API_SECRET = "";
+    resetEnvCache();
+    expect((await postDraft(body, "Bearer ")).status).toBe(401);
     expect(draftMock).not.toHaveBeenCalled();
   });
 

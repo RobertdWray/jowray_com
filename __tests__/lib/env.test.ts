@@ -172,6 +172,12 @@ describe("getAdminEnv", () => {
     expect(getAdminEnv().ADMIN_API_SECRET).toBeUndefined();
   });
 
+  it("treats an empty value as unset (the `KEY=` convention), so the routes fail closed with 401 rather than 500", () => {
+    process.env.ADMIN_API_SECRET = "";
+    resetEnvCache();
+    expect(getAdminEnv().ADMIN_API_SECRET).toBeUndefined();
+  });
+
   it("requires at least 32 characters when set", () => {
     process.env.ADMIN_API_SECRET = "short";
     resetEnvCache();

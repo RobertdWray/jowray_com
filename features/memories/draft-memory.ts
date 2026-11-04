@@ -95,10 +95,15 @@ export async function draftMemory(raw: unknown): Promise<DraftMemoryResult> {
           claimTokenHash: hashClaimToken(claimToken),
         },
       });
+      // Everything the draft wrote, so the revision history starts from a complete picture.
       const after: Prisma.InputJsonObject = {
         note: input.note,
         name: input.contributor.name ?? null,
         relationship: input.contributor.relationship ?? null,
+        approxDateText: input.approxDateText ?? null,
+        place: input.place ?? null,
+        visibility: input.visibility,
+        status: "DRAFT",
         source: input.source,
         sourceRef: input.sourceRef,
       };

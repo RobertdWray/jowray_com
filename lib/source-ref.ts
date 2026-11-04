@@ -37,9 +37,16 @@ export function gmailSourceRef(messageId: string): string {
   return checked(`gmail:${messageId.toLowerCase()}`);
 }
 
+/** ISO-8601 with an explicit zone: `Z` or `±HH:MM` (also `±HHMM`). A zone-less value would be read in the process's zone and hash differently elsewhere. */
+const EXPLICIT_ZONE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+
 /** `2026-11-03T14:05Z`: the instant to the minute, in UTC, whatever zone or precision was typed. */
 function canonicalMinute(sentAtIso: string): string {
-  const ms = Date.parse(sentAtIso);
+  const trimmed = sentAtIso.trim();
+  if (!EXPLICIT_ZONE.test(trimmed)) {
+    throw new Error("The text's timestamp must carry an explicit zone or offset, for example 2026-11-03T14:05-04:00 or 2026-11-03T18:05Z");
+  }
+  const ms = Date.parse(trimmed);
   if (Number.isNaN(ms)) {
     throw new Error("The text's timestamp must be ISO-8601 (for example 2026-11-03T14:05-04:00)");
   }

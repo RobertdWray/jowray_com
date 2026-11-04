@@ -84,7 +84,8 @@ const adminAlertSchema = z.object({
 
 /** Bearer secret for the admin API (/api/admin/*); unset means the routes answer 401 to everything. */
 const adminSchema = z.object({
-  ADMIN_API_SECRET: z.string().min(32, "ADMIN_API_SECRET must be at least 32 characters").optional(),
+  // `ADMIN_API_SECRET=` (empty) means unset, like the other optional keys, so the routes fail closed with 401 rather than 500.
+  ADMIN_API_SECRET: z.preprocess((value) => (value === "" ? undefined : value), z.string().min(32, "ADMIN_API_SECRET must be at least 32 characters").optional()),
 });
 
 export type DbEnv = z.infer<typeof dbSchema>;

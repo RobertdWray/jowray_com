@@ -73,7 +73,7 @@ describe("draftMemory", () => {
     expect(contributors[0]).toMatchObject({ memorialId: "memorial_1", name: "Joyce Gilley", email: "joyce@example.com", relationship: "Friend from church", contactOptIn: false });
     expect(revisions).toHaveLength(1);
     expect(revisions[0]).toMatchObject({ memoryId: memory.id, changedVia: "ADMIN", before: {} });
-    expect(revisions[0]!.after).toMatchObject({ note: valid.note, name: "Joyce Gilley", relationship: "Friend from church", source: "EMAIL", sourceRef: "gmail:1a1a2317fba34eec" });
+    expect(revisions[0]!.after).toMatchObject({ note: valid.note, name: "Joyce Gilley", relationship: "Friend from church", source: "EMAIL", sourceRef: "gmail:1a1a2317fba34eec", approxDateText: null, place: null, visibility: "PUBLIC", status: "DRAFT" });
   });
 
   it("rejects a missing email, an empty note and a bad sourceRef without writing", async () => {
