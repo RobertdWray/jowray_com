@@ -174,6 +174,7 @@ model Media {
   approxDateText   String?                  // per-file "roughly when" (max 120), independent of the memory's
   place            String?                  // per-file "where" (max 200), independent of the memory's
   deletedAt        DateTime?                // soft delete: removed file, cancelled reservation or cancelled replacement; blobs purged by cron step (f)
+  purgedAt         DateTime?                // set by cron step (f) before any byte is deleted; once set the removal completes even if the memory is restored; READY rows flip to FAILED at the same time
   replacesMediaId  String?                  // set on a PENDING replacement; the target is retired when this row reaches READY (one-to-many so a FAILED attempt can be retried)
   sortOrder        Int         @default(0)  // display order chosen by the contributor; a replacement copies its target's
   createdAt        DateTime    @default(now())
