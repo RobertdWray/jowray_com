@@ -63,7 +63,8 @@ enum MediaStatus {
 }
 enum EmailType {
   MEMORY_CONFIRMATION
-  ADMIN_NEW_MEMORY                        // family admins: "a new memory landed" (Task 13)
+  ADMIN_NEW_MEMORY                        // family admins: "a new memory landed" (Task 14)
+  SUBMISSION_CONFIRMATION                 // one receipt for a whole send of several memories, logged on the anchor (Task 15)
 }
 enum EmailStatus {
   PENDING
@@ -132,6 +133,9 @@ model Memory {
   status          MemoryStatus   @default(PENDING)
   analysisStatus  AnalysisStatus @default(NOT_STARTED)
   claimTokenHash  String         @unique     // sha256 of the 32-byte base64url token; the raw token is never stored [C1]
+  submissionId    String?                    // memories sent together from /share share one id; legacy rows are NULL (Task 15)
+  submissionIndex Int?                       // 0..N-1 within the send; 0 is the anchor that carries the lease and the email row
+  uploadLeaseUntil DateTime?                 // anchor only: while live, the cron must not email or rotate the send's tokens
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
   deletedAt       DateTime?
@@ -143,6 +147,7 @@ model Memory {
   @@index([memorialId, status, createdAt])
   @@index([contributorId])
   @@index([createdAt])                       // daily budget count
+  @@index([submissionId, submissionIndex])   // not @@unique: nullable columns; uniqueness holds by construction (one transaction assigns 0..N-1)
 }
 
 model Media {
