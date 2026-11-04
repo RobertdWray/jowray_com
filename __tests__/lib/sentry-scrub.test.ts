@@ -17,6 +17,16 @@ describe("scrubUrl", () => {
     expect(scrubUrl(`https://x.test/api/media/abc?t=${TOKEN}`)).toBe("https://x.test/api/media/abc");
   });
 
+  it("drops the admin entry key whether it travels as a query parameter or a fragment (V16)", () => {
+    const KEY = "k".repeat(64);
+    expect(scrubUrl(`https://www.jowray.com/admin/enter?key=${KEY}`)).toBe("https://www.jowray.com/admin/enter");
+    expect(scrubUrl(`/admin/enter?x=1&key=${KEY}&y=2`)).toBe("/admin/enter?x=1&y=2");
+    expect(scrubUrl(`https://www.jowray.com/admin/enter#key=${KEY}`)).toBe("https://www.jowray.com/admin/enter");
+    expect(scrubUrl(`/admin/enter?t=${TOKEN}#key=${KEY}`)).toBe("/admin/enter");
+    expect(scrubUrl(`/admin/enter#key=${KEY}&other=1`)).toBe("/admin/enter#other=1");
+    expect(scrubUrl("/admin?monkey=1")).toBe("/admin?monkey=1");
+  });
+
   it("leaves other urls alone", () => {
     expect(scrubUrl("/share?step=2")).toBe("/share?step=2");
   });
@@ -364,5 +374,24 @@ describe("the depth cap fails closed", () => {
     expect(scrubSecrets(JSON.stringify(root))).not.toContain(TEST_TOKEN);
     const shallow = { a: { b: { claimToken: TEST_TOKEN, note: "keep" } } };
     expect(scrubSecrets(shallow)).toEqual({ a: { b: { claimToken: FILTERED, note: "keep" } } });
+  });
+});
+
+describe("the escaped-context scanner is idempotent (regression check M2)", () => {
+  it("keeps the inner JSON string well formed and leaves neighbouring keys alone on repeated passes", () => {
+    const flight = `1:{"p":"{\\"ticket\\":\\"${TEST_TOKEN}\\",\\"b\\":\\"keep\\"}"}`;
+    const once = scrubSecrets(flight) as string;
+    expect(once).not.toContain(TEST_TOKEN);
+    expect(once).toContain('\\"b\\":\\"keep\\"');
+    expect(once).toContain('\\"ticket\\":\\"[Filtered]\\"');
+    expect(scrubSecrets(once)).toBe(once);
+    expect(scrubSecrets(scrubSecrets(once))).toBe(once);
+  });
+
+  it("steps over three-character inner escapes (\\\\n) without overshooting the closing quote", () => {
+    const flight = `1:{"p":"{\\"claimToken\\":\\"${TEST_TOKEN}\\\\n\\",\\"b\\":\\"keep\\"}"}`;
+    const once = scrubSecrets(flight) as string;
+    expect(once).not.toContain(TEST_TOKEN);
+    expect(once).toContain('\\"b\\":\\"keep\\"');
   });
 });

@@ -7,7 +7,7 @@ const SECRET = "c".repeat(40);
 const HOUR = 60 * 60 * 1000;
 
 interface DerivedRow { kind: string; status: string; error: string | null; attempts: number; claimedAt: Date | null; storageKey: string }
-interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; mimeType?: string; derivatives?: DerivedRow[]; memory: { deletedAt: Date | null } }
+interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; purgedAt?: Date | null; mimeType?: string; derivatives?: DerivedRow[]; memory: { deletedAt: Date | null } }
 interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
 type EmailType = "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY" | "SUBMISSION_CONFIRMATION";
 interface EmailRow { id: string; memoryId: string; emailType: EmailType; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null; uploadLeaseUntil?: Date | null } }
@@ -32,6 +32,8 @@ function matches(row: Record<string, unknown>, where: Record<string, unknown>): 
     if (v !== null && typeof v === "object" && !(v instanceof Date)) {
       const cond = v as { lt?: Date; lte?: Date; gt?: Date; gte?: Date; not?: unknown; startsWith?: string; in?: unknown[] };
       if (cond.in !== undefined && !cond.in.includes(actual)) { return false; }
+      // SQL: a comparison against NULL is never true; the old `null < Date` was true in JS and would "purge" live memories' media.
+      if ((cond.lt !== undefined || cond.lte !== undefined || cond.gt !== undefined || cond.gte !== undefined) && (actual === null || actual === undefined)) { return false; }
       if (cond.lt !== undefined && !((actual as Date) < cond.lt)) { return false; }
       if (cond.gte !== undefined && !((actual as Date) >= cond.gte)) { return false; }
       if (cond.lte !== undefined && !((actual as Date) <= cond.lte)) { return false; }
@@ -51,9 +53,16 @@ const derivedDeletes: Array<Record<string, unknown>> = [];
 function shareMemory(row: MemoryRow): MemoryRow {
   return { status: "PENDING", source: "WEB_UPLOAD", ...row };
 }
+/** Phase 1 of the purge runs inside a transaction; storage calls must never happen there. */
+let inTransaction = false;
+/** Runs when the purge takes the memory lock (to simulate a Restore that committed just before). */
+let onLock: ((memoryId: string) => void) | null = null;
+const lockCalls: string[] = [];
 const dbStub = {
-  // Prisma always returns `derivatives` as an array when it is included; fixtures may omit it.
-  media: { findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => (await finder(() => media as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }) },
+  // Prisma always returns `derivatives` as an array when it is included, and every scalar; fixtures may omit `derivatives` and `purgedAt`.
+  media: { findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => (await finder(() => media.map((m) => ({ purgedAt: null, ...m })) as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }), findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { const m = media.find((x) => x.id === where.id); if (!m) { throw new Error("not found"); } return { purgedAt: null, ...m }; }) },
+  $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(String(values[0])); onLock?.(String(values[0])); return [{ id: values[0] }]; }),
+  $transaction: vi.fn(async (fn: (t: typeof dbStub) => Promise<unknown>) => { inTransaction = true; try { return await fn(dbStub); } finally { inTransaction = false; } }),
   derivedMedia: { deleteMany: vi.fn(async ({ where }: { where: { mediaId: string; storageKey?: { in: string[] } } }) => { derivedDeletes.push(where); const m = media.find((x) => x.id === where.mediaId); if (m?.derivatives) { m.derivatives = m.derivatives.filter((d) => where.storageKey ? !where.storageKey.in.includes(d.storageKey) : false); } return { count: 1 }; }) },
   webhookEvent: { findMany: finder(() => events as unknown as Record<string, unknown>[]), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<EventRow> }) => { Object.assign(events.find((e) => e.id === where.id)!, data); }) },
   // Prisma returns every scalar; fixtures may omit the submission columns and the lease (null = legacy row / no open submission)
@@ -100,7 +109,7 @@ vi.mock("@/features/memories/derive-media", async (importOriginal) => { const ac
 const ADMIN_ALERT_SINCE = vi.hoisted(() => new Date(Date.now() - 24 * 60 * 60 * 1000));
 const notifyMock = vi.fn(async ({ memoryId }: { memoryId: string }) => recordSent(memoryId, "ADMIN_NEW_MEMORY"));
 vi.mock("@/features/memories/notify-admins", () => ({ ADMIN_ALERT_SINCE, notifyAdminsOfMemory: (a: { memoryId: string }) => notifyMock(a) }));
-const delMock = vi.fn();
+const delMock = vi.fn(async (_key: string) => { if (inTransaction) { throw new Error("storage.del inside the purge transaction"); } });
 vi.mock("@/services/storage", () => ({ createStorageService: () => ({ del: delMock, head: vi.fn(), get: vi.fn(), put: vi.fn(), presignGet: vi.fn() }) }));
 
 import { GET } from "@/app/api/cron/reconcile-uploads/route";
@@ -114,18 +123,19 @@ beforeEach(() => {
   resetEnvCache();
   const old = new Date(Date.now() - 2 * HOUR);
   const ancient = new Date(Date.now() - 30 * HOUR);
+  const longGone = new Date(Date.now() - 31 * 24 * HOUR);
   media = [
     { id: "med_stale", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: old, storageKey: "originals/mem_1/a", blobUrl: "u", deletedAt: null, memory: { deletedAt: null } },
     { id: "med_fresh", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: new Date(), storageKey: "originals/mem_1/b", blobUrl: "u", deletedAt: null, memory: { deletedAt: null } },
     { id: "med_orphan", memoryId: "mem_2", status: "PENDING", checksumSha256: null, createdAt: ancient, storageKey: "originals/mem_2/c", blobUrl: "u", deletedAt: null, memory: { deletedAt: null } },
     { id: "med_nohash", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: old, storageKey: "originals/mem_1/d", blobUrl: "u", deletedAt: null, memory: { deletedAt: null } },
-    { id: "med_gone", memoryId: "mem_3", status: "READY", checksumSha256: "b".repeat(64), createdAt: old, storageKey: "dev/originals/mem_3/0f6a1c7e-3f1a-4b5e-9c2d-1234567890ab.jpg", blobUrl: "u", deletedAt: null, mimeType: "image/jpeg", derivatives: [{ kind: "WEB_IMAGE", status: "READY", error: null, attempts: 1, claimedAt: ancient, storageKey: "dev/derived/mem_3/w.jpg" }, { kind: "THUMBNAIL", status: "FAILED", error: "too_large", attempts: 1, claimedAt: ancient, storageKey: "dev/derived/mem_3/t.jpg" }], memory: { deletedAt: ancient } },
+    { id: "med_gone", memoryId: "mem_3", status: "READY", checksumSha256: "b".repeat(64), createdAt: old, storageKey: "dev/originals/mem_3/0f6a1c7e-3f1a-4b5e-9c2d-1234567890ab.jpg", blobUrl: "u", deletedAt: null, mimeType: "image/jpeg", derivatives: [{ kind: "WEB_IMAGE", status: "READY", error: null, attempts: 1, claimedAt: ancient, storageKey: "dev/derived/mem_3/w.jpg" }, { kind: "THUMBNAIL", status: "FAILED", error: "too_large", attempts: 1, claimedAt: ancient, storageKey: "dev/derived/mem_3/t.jpg" }], memory: { deletedAt: longGone } },
     // Already purged last run (no blob, no derivatives): must not be selected again.
-    { id: "med_gone_done", memoryId: "mem_3", status: "READY", checksumSha256: "b".repeat(64), createdAt: old, storageKey: "dev/originals/mem_3/done.jpg", blobUrl: null, deletedAt: null, mimeType: "image/jpeg", derivatives: [], memory: { deletedAt: ancient } },
+    { id: "med_gone_done", memoryId: "mem_3", status: "READY", checksumSha256: "b".repeat(64), createdAt: old, storageKey: "dev/originals/mem_3/done.jpg", blobUrl: null, deletedAt: null, mimeType: "image/jpeg", derivatives: [], memory: { deletedAt: longGone } },
     // Removed file whose copy is being (re)made right now: the fresh claim is left for the worker to finish.
     { id: "med_removed_claimed", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: old, storageKey: "dev/originals/mem_1/claimed.jpg", blobUrl: null, deletedAt: old, mimeType: "image/jpeg", derivatives: [{ kind: "WEB_IMAGE", status: "PENDING", error: null, attempts: 1, claimedAt: new Date(), storageKey: "dev/derived/mem_1/fresh.jpg" }], memory: { deletedAt: null } },
     // A row copied from production into this branch: its blob must never be touched from here.
-    { id: "med_prod_copy", memoryId: "mem_9", status: "READY", checksumSha256: "c".repeat(64), createdAt: old, storageKey: "originals/mem_9/f", blobUrl: "u", deletedAt: null, memory: { deletedAt: ancient } },
+    { id: "med_prod_copy", memoryId: "mem_9", status: "READY", checksumSha256: "c".repeat(64), createdAt: old, storageKey: "originals/mem_9/f", blobUrl: "u", deletedAt: null, memory: { deletedAt: longGone } },
     // Removed through the claim page: never re-recorded or hashed; its blob is purged from this environment.
     { id: "med_cancelled", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: old, storageKey: "dev/originals/mem_1/g", blobUrl: null, deletedAt: old, memory: { deletedAt: null } },
     { id: "med_removed", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: old, storageKey: "dev/originals/mem_1/h", blobUrl: "u", deletedAt: old, memory: { deletedAt: null } },
@@ -136,6 +146,8 @@ beforeEach(() => {
     { id: "med_photo_terminal", memoryId: "mem_1", status: "READY", checksumSha256: "d".repeat(64), createdAt: old, storageKey: "dev/originals/mem_1/p4.jpg", blobUrl: "u", deletedAt: null, mimeType: "image/jpeg", derivatives: [{ kind: "WEB_IMAGE", status: "FAILED", error: "too_many_pixels:30000000", attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_1/f.jpg" }, { kind: "THUMBNAIL", status: "FAILED", error: "too_large", attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_1/f2.jpg" }], memory: { deletedAt: null } },
     { id: "med_photo_nullclaim", memoryId: "mem_1", status: "READY", checksumSha256: "d".repeat(64), createdAt: old, storageKey: "dev/originals/mem_1/p5.jpg", blobUrl: "u", deletedAt: null, mimeType: "image/jpeg", derivatives: [{ kind: "WEB_IMAGE", status: "PENDING", error: null, attempts: 1, claimedAt: null, storageKey: "dev/derived/mem_1/n.jpg" }, { kind: "THUMBNAIL", status: "READY", error: null, attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_1/t5.jpg" }], memory: { deletedAt: null } },
     { id: "med_photo_prod", memoryId: "mem_9", status: "READY", checksumSha256: "d".repeat(64), createdAt: old, storageKey: "originals/mem_9/p.heic", blobUrl: "u", deletedAt: null, mimeType: "image/heic", derivatives: [], memory: { deletedAt: null } },
+    // Its memory was deleted yesterday: the 30-day grace keeps the file until a Restore is no longer expected (C2).
+    { id: "med_recent_delete", memoryId: "mem_rd", status: "READY", checksumSha256: "e".repeat(64), createdAt: old, storageKey: "dev/originals/mem_rd/r.jpg", blobUrl: "u", deletedAt: null, purgedAt: null, mimeType: "image/jpeg", derivatives: [], memory: { deletedAt: new Date(Date.now() - 24 * HOUR) } },
     // Cancelled minutes ago: its Blob token is still valid, so the pathname is left alone until the grace period passes.
     { id: "med_cancelled_fresh", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: new Date(), storageKey: "dev/originals/mem_1/i", blobUrl: "u", deletedAt: new Date(), memory: { deletedAt: null } },
   ];
@@ -192,6 +204,7 @@ beforeEach(() => {
     { id: "mem_leased", type: "PHOTO", deletedAt: null, createdAt: old, uploadLeaseUntil: new Date(Date.now() + 30 * 60 * 1000), contributor: { email: "g@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [] },
   ];
   emails.push({ id: "log_leased", memoryId: "mem_leased_retry", emailType: "MEMORY_CONFIRMATION", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: null, uploadLeaseUntil: new Date(Date.now() + 30 * 60 * 1000) } });
+  inTransaction = false; onLock = null; lockCalls.length = 0; delMock.mockReset(); delMock.mockImplementation(async () => { if (inTransaction) { throw new Error("storage.del inside the purge transaction"); } });
     recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); confirmSubmissionMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
   recordMediaMock.mockImplementation(async ({ mediaId }) => mediaId === "med_orphan" ? { status: "PENDING", mediaId, memoryId: "mem_2" } : { status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 });
 });
@@ -259,6 +272,12 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(delMock).toHaveBeenCalledWith("dev/originals/mem_1/h");
     expect(delMock).not.toHaveBeenCalledWith("originals/mem_9/f");
     expect(media.find((m) => m.id === "med_removed")?.blobUrl).toBeNull();
+    // the purge marks its intent (purgedAt, READY → FAILED) under the memory lock before the first delete, and leaves a memory deleted yesterday alone (C1, C2, C4)
+    expect(media.find((m) => m.id === "med_gone")).toMatchObject({ purgedAt: expect.any(Date), status: "FAILED", blobUrl: null });
+    expect(media.find((m) => m.id === "med_removed")).toMatchObject({ purgedAt: expect.any(Date), status: "FAILED" });
+    expect(lockCalls).toEqual(expect.arrayContaining(["mem_3", "mem_1"]));
+    expect(delMock).not.toHaveBeenCalledWith("dev/originals/mem_rd/r.jpg");
+    expect(media.find((m) => m.id === "med_recent_delete")).toMatchObject({ purgedAt: null, status: "READY", blobUrl: "u" });
     // a cancelled reservation older than the Blob token lifetime: its pathname is deleted (idempotent) and the row leaves PENDING
     expect(delMock).toHaveBeenCalledWith("dev/originals/mem_1/g");
     expect(delMock).not.toHaveBeenCalledWith("dev/originals/mem_1/i");
@@ -333,6 +352,7 @@ describe("GET /api/cron/reconcile-uploads", () => {
 
   it("is a no-op on a second run", async () => {
     await run(`Bearer ${SECRET}`);
+  inTransaction = false; onLock = null; lockCalls.length = 0; delMock.mockReset(); delMock.mockImplementation(async () => { if (inTransaction) { throw new Error("storage.del inside the purge transaction"); } });
     recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); confirmSubmissionMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
     const res = await run(`Bearer ${SECRET}`);
     const body = (await res.json()) as { data: Record<string, number> };
@@ -455,5 +475,84 @@ describe("Sentry cron monitor (plan §8.8)", () => {
     expect(seen).toHaveLength(2);
     expect(seen[0]).not.toBe(seen[1]);
     expect(isolationCalls.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("purge (f): durable intent under the memory lock (C1, C3, C5, C5b, C5c)", () => {
+  const old = new Date(Date.now() - 2 * HOUR);
+  const longGone = new Date(Date.now() - 31 * 24 * HOUR);
+  function goneRow(): MediaRow {
+    return { id: "med_x", memoryId: "mem_x", status: "READY", checksumSha256: "a".repeat(64), createdAt: old, storageKey: "dev/originals/mem_x/o.jpg", blobUrl: "u", deletedAt: null, purgedAt: null, mimeType: "video/mp4", derivatives: [{ kind: "WEB_IMAGE", status: "READY", error: null, attempts: 1, claimedAt: old, storageKey: "dev/derived/mem_x/w.jpg" }], memory: { deletedAt: longGone } };
+  }
+  beforeEach(() => { media = [goneRow()]; events = []; emails = []; memories = []; });
+
+  it("C1: claims under lockMemory (purgedAt set, READY → FAILED, no storage call inside the transaction), then deletes the original, the copies and the poster key, drops the derived rows and nulls blobUrl", async () => {
+    const res = await run(`Bearer ${SECRET}`);
+    expect(lockCalls).toEqual(["mem_x"]);
+    expect(dbStub.media.update.mock.calls[0]![0]).toEqual({ where: { id: "med_x" }, data: { purgedAt: expect.any(Date), status: "FAILED" } });
+    expect(delMock.mock.calls.map((c) => c[0])).toEqual(["dev/originals/mem_x/o.jpg", "dev/derived/mem_x/w.jpg", "dev/derived/mem_x/o.upload.jpg"]);
+    expect(derivedDeletes).toEqual([{ mediaId: "med_x", storageKey: { in: ["dev/derived/mem_x/w.jpg"] } }]);
+    expect(media[0]).toMatchObject({ status: "FAILED", purgedAt: expect.any(Date), blobUrl: null, derivatives: [] });
+    expect(((await res.json()) as { data: Record<string, number> }).data).toMatchObject({ deletedBlobsRemoved: 1, errors: 0 });
+  });
+
+  it("C3: a Restore that commits before the claim makes the row ineligible: skipped, nothing touched", async () => {
+    onLock = (memoryId) => { if (memoryId === "mem_x") { media[0]!.memory.deletedAt = null; } };
+    const res = await run(`Bearer ${SECRET}`);
+    expect(lockCalls).toEqual(["mem_x"]);
+    expect(delMock).not.toHaveBeenCalled();
+    expect(media[0]).toMatchObject({ status: "READY", purgedAt: null, blobUrl: "u" });
+    expect(media[0]!.derivatives).toHaveLength(1);
+    expect(((await res.json()) as { data: Record<string, number> }).data).toMatchObject({ deletedBlobsRemoved: 0, errors: 0 });
+  });
+
+  it("C5: a delete that fails after the original is gone leaves the committed mark; the next run re-selects by purgedAt and finishes idempotently", async () => {
+    delMock.mockImplementation(async (key: string) => { if (key.endsWith("/w.jpg")) { throw new Error("blob host down"); } });
+    const first = await run(`Bearer ${SECRET}`);
+    expect(((await first.json()) as { data: Record<string, number> }).data).toMatchObject({ deletedBlobsRemoved: 0, errors: 1 });
+    expect(media[0]).toMatchObject({ status: "FAILED", purgedAt: expect.any(Date), blobUrl: "u" });
+    expect(derivedDeletes).toEqual([]);
+    // Meanwhile the memory is restored: the intent is durable, so the row is still selected and completed (C5c).
+    media[0]!.memory.deletedAt = null;
+    delMock.mockClear();
+    delMock.mockImplementation(async () => undefined);
+    dbStub.media.update.mockClear();
+    const second = await run(`Bearer ${SECRET}`);
+    expect(((await second.json()) as { data: Record<string, number> }).data).toMatchObject({ deletedBlobsRemoved: 1, errors: 0 });
+    // phase 1 is a no-op once purgedAt is set: no second mark, and the delete of the original is simply repeated (idempotent)
+    expect(dbStub.media.update.mock.calls.map((c) => c[0].data)).toEqual([{ blobUrl: null }]);
+    expect(delMock.mock.calls.map((c) => c[0])).toEqual(["dev/originals/mem_x/o.jpg", "dev/derived/mem_x/w.jpg", "dev/derived/mem_x/o.upload.jpg"]);
+    expect(media[0]).toMatchObject({ blobUrl: null, derivatives: [] });
+    const third = await run(`Bearer ${SECRET}`);
+    expect(((await third.json()) as { data: Record<string, number> }).data).toMatchObject({ deletedBlobsRemoved: 0 });
+  });
+
+  it("C7: a row already marked purgedAt but still READY is flipped to FAILED by the claim phase, whoever left it that way", async () => {
+    media[0]!.purgedAt = new Date(Date.now() - HOUR);
+    await run(`Bearer ${SECRET}`);
+    expect(dbStub.media.update.mock.calls[0]![0]).toEqual({ where: { id: "med_x" }, data: { status: "FAILED" } });
+    expect(media[0]).toMatchObject({ status: "FAILED", blobUrl: null, derivatives: [] });
+  });
+
+  it("C5b: a failure in the pointer phase (deleteMany) after every delete recovers the same way on the next run", async () => {
+    dbStub.derivedMedia.deleteMany.mockImplementationOnce(async () => { throw new Error("db hiccup"); });
+    const first = await run(`Bearer ${SECRET}`);
+    expect(((await first.json()) as { data: Record<string, number> }).data).toMatchObject({ deletedBlobsRemoved: 0, errors: 1 });
+    expect(media[0]).toMatchObject({ status: "FAILED", purgedAt: expect.any(Date), blobUrl: "u" });
+    const second = await run(`Bearer ${SECRET}`);
+    expect(((await second.json()) as { data: Record<string, number> }).data).toMatchObject({ deletedBlobsRemoved: 1, errors: 0 });
+    expect(media[0]).toMatchObject({ blobUrl: null, derivatives: [] });
+  });
+});
+
+describe("(e3) and deleted anchors (C6)", () => {
+  it("still sends the receipt when the anchor is soft-deleted and a sibling is live: confirmSubmission drops deleted memories itself", async () => {
+    const old = new Date(Date.now() - 2 * HOUR);
+    memories.push(
+      { id: "mem_delanchor0", type: "TEXT", deletedAt: new Date(), createdAt: old, contributorNote: "words", contributor: { email: "z@example.com" }, media: [], emails: [], submissionId: "sub_del", submissionIndex: 0, uploadLeaseUntil: null },
+      { id: "mem_delanchor1", type: "TEXT", deletedAt: null, createdAt: old, contributorNote: "words", contributor: { email: "z@example.com" }, media: [], emails: [], submissionId: "sub_del", submissionIndex: 1, uploadLeaseUntil: null }
+    );
+    await run(`Bearer ${SECRET}`);
+    expect(confirmSubmissionMock).toHaveBeenCalledWith({ anchorId: "mem_delanchor0" });
   });
 });

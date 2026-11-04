@@ -37,22 +37,32 @@ export async function recomputeMemoryType(tx: Tx, memoryId: string, note: string
   return type;
 }
 
+export type RevisionVia = "WEB" | "SMS" | "CLAIM_LINK" | "ADMIN";
+
 /**
- * Append a CLAIM_LINK revision. The first revision of a memory, whatever kind
- * of edit it is, also records the consent version in force; every writer goes
- * through here so a removal or a swap can never hide that record.
+ * Append a revision. The first revision of a memory, whatever kind of edit it
+ * is, also records the consent version in force; every writer goes through
+ * here so a removal or a swap can never hide that record.
  */
-export async function appendClaimRevision(
+export async function appendRevision(
   tx: Tx,
-  { memoryId, before, after, consentVersion }: { memoryId: string; before: Record<string, unknown>; after: Record<string, unknown>; consentVersion: string }
+  { memoryId, changedVia, before, after, consentVersion }: { memoryId: string; changedVia: RevisionVia; before: Record<string, unknown>; after: Record<string, unknown>; consentVersion: string }
 ): Promise<void> {
   const isFirst = (await tx.memoryRevision.count({ where: { memoryId } })) === 0;
   await tx.memoryRevision.create({
     data: {
       memoryId,
-      changedVia: "CLAIM_LINK",
+      changedVia,
       before: before as Prisma.InputJsonValue,
       after: (isFirst ? { ...after, consentVersion } : after) as Prisma.InputJsonValue,
     },
   });
+}
+
+/** A CLAIM_LINK revision (the claim page's writers). */
+export function appendClaimRevision(
+  tx: Tx,
+  input: { memoryId: string; before: Record<string, unknown>; after: Record<string, unknown>; consentVersion: string }
+): Promise<void> {
+  return appendRevision(tx, { ...input, changedVia: "CLAIM_LINK" });
 }

@@ -14,6 +14,7 @@ interface MediaRow {
   storageKey: string;
   originalFilename: string | null;
   deletedAt: Date | null;
+  purgedAt?: Date | null;
   derivatives?: Array<{ kind: "WEB_IMAGE" | "THUMBNAIL" | "POSTER"; status: "PENDING" | "READY" | "FAILED"; storageKey: string; mimeType: string | null }>;
   memory: { claimTokenHash: string; deletedAt: Date | null };
 }
@@ -24,7 +25,7 @@ const dbStub = {
       const row = media.find((m) => m.id === where.id);
       if (!row) { return null; }
       const wanted = include?.derivatives?.where?.status;
-      return { ...row, derivatives: (row.derivatives ?? []).filter((d) => !wanted || d.status === wanted) };
+      return { purgedAt: null, ...row, derivatives: (row.derivatives ?? []).filter((d) => !wanted || d.status === wanted) };
     }),
   },
 };
@@ -158,6 +159,14 @@ describe("variants", () => {
   it("never serves a staging key, even if a row points at one", async () => {
     media[0]!.derivatives = [{ kind: "WEB_IMAGE", status: "READY", storageKey: "derived/mem_1/x.upload.jpg", mimeType: "image/jpeg" }];
     expect((await request("med_ready", `?t=${TOKEN}`)).status).toBe(404);
+  });
+
+  it("never serves a row marked for purge, even while it is still READY", async () => {
+    media.push({ ...media[0]!, id: "med_marked", mimeType: "audio/mp4", storageKey: "originals/mem_1/m.m4a", derivatives: [], purgedAt: new Date() });
+    expect((await request("med_marked", `?t=${TOKEN}`)).status).toBe(404);
+    expect((await request("med_marked", `?t=${TOKEN}&download=1`)).status).toBe(404);
+    expect(presignMock).not.toHaveBeenCalled();
+    expect(getMock).not.toHaveBeenCalled();
   });
 
   it("keeps serving audio and video originals inline", async () => {

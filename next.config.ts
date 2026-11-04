@@ -4,6 +4,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
+  // The admin entry key travels as a Server Function argument (enterAdmin);
+  // the dev logger would otherwise print every call's arguments as JSON.
+  logging: { serverFunctions: false },
   // The HEIC decoder is libheif compiled to WebAssembly (embedded in a JS
   // bundle); it uses Node features and runs inside a worker thread, so it is
   // required from node_modules instead of being bundled. `sharp` is already on
@@ -35,6 +38,15 @@ const nextConfig: NextConfig = {
         // not even to same-origin requests (they would land in request logs).
         source: "/m/:path*",
         headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
+      },
+      {
+        // The family admin pages: never indexed, and admin URLs never reach another
+        // host's logs through Referer. `:path*` is zero or more segments, so `/admin` matches.
+        source: "/admin/:path*",
+        headers: [
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
+        ],
       },
     ];
   },

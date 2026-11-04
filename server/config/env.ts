@@ -88,7 +88,14 @@ const adminSchema = z.object({
   ADMIN_API_SECRET: z.preprocess((value) => (value === "" ? undefined : value), z.string().min(32, "ADMIN_API_SECRET must be at least 32 characters").optional()),
 });
 
+/** Shared secret behind the family admin page (/admin); unset means signed-out for everyone, never a 500. */
+const adminPageSchema = z.object({
+  // `ADMIN_PAGE_SECRET=` (empty) means unset, like ADMIN_API_SECRET: every check fails closed.
+  ADMIN_PAGE_SECRET: z.preprocess((value) => (value === "" ? undefined : value), z.string().min(32, "ADMIN_PAGE_SECRET must be at least 32 characters").optional()),
+});
+
 export type DbEnv = z.infer<typeof dbSchema>;
+export type AdminPageEnv = z.infer<typeof adminPageSchema>;
 export type AdminEnv = z.infer<typeof adminSchema>;
 export type CronEnv = z.infer<typeof cronSchema>;
 export type AdminAlertEnv = z.infer<typeof adminAlertSchema>;
@@ -131,6 +138,7 @@ export const getMemorialEnv = memoized("memorial", memorialSchema);
 export const getCronEnv = memoized("cron", cronSchema);
 export const getAdminAlertEnv = memoized("adminAlert", adminAlertSchema);
 export const getAdminEnv = memoized("admin", adminSchema);
+export const getAdminPageEnv = memoized("adminPage", adminPageSchema);
 
 /** Test helper: forget every parsed sub-schema so the next call re-reads `process.env`. */
 export function resetEnvCache(): void {

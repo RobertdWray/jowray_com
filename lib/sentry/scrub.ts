@@ -11,7 +11,8 @@ export interface StreamedSpan {
 }
 
 /**
- * Claim tokens travel in the URL (`/m/<token>`, `?t=<token>`). Sentry events,
+ * Claim tokens travel in the URL (`/m/<token>`, `?t=<token>`), and the admin
+ * entry key in a fragment (`/admin/enter#key=<secret>`). Sentry events,
  * transactions, spans and breadcrumbs all carry URLs, so every one of them is
  * passed through here on the server and in the browser before it leaves the
  * process. Pure functions: no Sentry calls, safe in Client Components.
@@ -26,10 +27,12 @@ export interface StreamedSpan {
 // A claim path is `/m/` followed by a base64url token (16+ chars); the token
 // may be followed by anything (slash, query, whitespace in a log message).
 const CLAIM_PATH = /\/m\/[A-Za-z0-9_-]{16,}/g;
-// Every `t=` parameter in a full URL (`?t=…`, `&t=…`) or a bare query string
-// (`t=…`), stopping at `&`, `#` or whitespace; the delimiter is not consumed
-// so consecutive `t=` parameters are all matched.
-const TOKEN_QUERY = /(^|[?&])t=[^&#\s]*(?=[&#\s]|$)/g;
+// Every `t=` (claim token) or `key=` (admin entry key) parameter in a full URL
+// (`?t=…`, `&t=…`, `#key=…`) or a bare query string (`t=…`), stopping at `&`,
+// `#` or whitespace; the delimiter is not consumed so consecutive parameters
+// are all matched. `#` is a delimiter because the admin entry link carries its
+// key in the fragment and the browser SDK records `location.href` with it.
+const TOKEN_QUERY = /(^|[?&#])(t|key)=[^&#\s]*(?=[&#\s]|$)/g;
 
 export function scrubUrl(url: string): string {
   const withoutPath = url.replace(CLAIM_PATH, "/m/[claimToken]");
@@ -39,8 +42,10 @@ export function scrubUrl(url: string): string {
   }
   return withoutToken
     .replace(/\?&+/g, "?")
+    .replace(/#&+/g, "#")
     .replace(/&&+/g, "&")
     .replace(/[?&](?=[#\s]|$)/g, "")
+    .replace(/#(?=\s|$)/g, "")
     .replace(/^&+/, "");
 }
 
@@ -73,10 +78,17 @@ function stringEnd(text: string, i: number, escaped: boolean): number {
   while (i < text.length) {
     const c = text[i];
     if (c === "\\") {
-      if (escaped && text[i + 1] === '"') {
+      if (!escaped) {
+        i += 2; // `\x` is one plain escape
+        continue;
+      }
+      if (text[i + 1] === '"') {
         return i + 2; // `\"` closes an escaped string
       }
-      i += escaped && text[i + 1] === "\\" ? 4 : 2; // `\\\\` is one escaped backslash; `\x` is one plain escape
+      // Inside an escaped string an inner escape is `\\` + one char: `\\\\` (a backslash) and `\\\"` (a quote)
+      // are four characters, anything else (`\\n`, `\\t`) is three.
+      const third = text[i + 2];
+      i += text[i + 1] === "\\" && (third === "\\" || third === '"') ? 4 : 3;
       continue;
     }
     if (c === '"' && !escaped) {
@@ -130,8 +142,11 @@ function scrubMembers(text: string): string {
       continue; // inside a value already replaced
     }
     const [whole, open, key, close] = match;
-    const end = valueEnd(text, match.index + whole.length, open === '\\"');
-    out += `${text.slice(last, match.index)}${open}${key}${close}:"${FILTERED}"`;
+    const escaped = open === '\\"';
+    const end = valueEnd(text, match.index + whole.length, escaped);
+    // The marker is written in the member's own quoting, so a double-encoded string stays well formed (and a second pass is a no-op).
+    const quote = escaped ? '\\"' : '"';
+    out += `${text.slice(last, match.index)}${open}${key}${close}:${quote}${FILTERED}${quote}`;
     last = end;
     SECRET_MEMBER_KEY.lastIndex = end;
   }
