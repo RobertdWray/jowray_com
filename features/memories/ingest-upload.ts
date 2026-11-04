@@ -210,12 +210,16 @@ export async function finalizeUpload({
   }
   let emailed = false;
   if (outcome.status === "READY") {
-    emailed = await confirmQuietly(memory.id, claimToken);
-    // After the response: the admin alert, then the checksum (small files) and
-    // the web copy and thumbnail (photos; other kinds return not_eligible at once).
-    afterWithFlush(async () => {
-      await notifyAdminsQuietly(memory.id);
-    });
+    // A memory sent with others is confirmed and announced by completeSubmission,
+    // once every file of the send has landed (Task 15, D18); never per file here.
+    if (memory.submissionId === null) {
+      emailed = await confirmQuietly(memory.id, claimToken);
+      // After the response: the admin alert, then the checksum (small files) and
+      // the web copy and thumbnail (photos; other kinds return not_eligible at once).
+      afterWithFlush(async () => {
+        await notifyAdminsQuietly(memory.id);
+      });
+    }
     afterWithFlush(async () => {
       if (outcome.sizeBytes <= INLINE_HASH_MAX_BYTES) {
         await computeChecksum({ mediaId: outcome.mediaId });

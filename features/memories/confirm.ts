@@ -9,11 +9,12 @@ import { sendMemoryConfirmation, type SendResult } from "@/services/email";
 
 const log = createLogger({ category: "email" });
 
-export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "no_email" | "not_ready" };
+export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "no_email" | "not_ready" | "in_submission" };
 
 /**
  * Send the one confirmation email for a memory, if there is an address and
- * something READY to confirm (or the memory is TEXT). Idempotency, the
+ * something READY to confirm (or the memory is TEXT). Memories that belong to
+ * a send are left to `confirmSubmission` (`in_submission`). Idempotency, the
  * outbound guard and the per-recipient cap live in the email service.
  *
  * The email echoes the contributor's words and details (ruling R1) and lists
@@ -45,6 +46,11 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
   }
   if (memory.deletedAt !== null) {
     return { sent: false, skipped: "deleted" };
+  }
+  // A memory sent with others gets one receipt for the whole send (Task 15,
+  // `confirmSubmission`), never a per-memory email, the anchor included.
+  if (memory.submissionId !== null) {
+    return { sent: false, skipped: "in_submission" };
   }
   if (claimToken !== undefined && hashClaimToken(claimToken) !== memory.claimTokenHash) {
     return { sent: false, skipped: "not_found" };

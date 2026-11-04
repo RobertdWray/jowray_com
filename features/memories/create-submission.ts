@@ -2,6 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
+import { completeSubmission } from "@/features/memories/complete-submission";
 import { createPendingMediaRow, resolveFile, type ResolvedFile, TX_OPTIONS, withinBudget } from "@/features/memories/create-memory";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
@@ -149,5 +150,13 @@ export async function createSubmission(raw: unknown): Promise<CreateSubmissionRe
     return { ok: false, code: "budget_exceeded", message: "We are receiving a lot of memories right now. Please try again later.", memoryIndex: null, fileIndex: null };
   }
   log.info({ action: "submission_created", submissionId, memories: created.length, files: created.reduce((n, m) => n + m.files.length, 0) }, "submission created");
-  return { ok: true, submissionId, memories: created, emailed: false };
+  // A send with no files is complete now: the receipt goes out while this
+  // request still holds every raw token, and the admin alerts follow the
+  // response. A send with files is completed by the browser after its uploads.
+  let emailed = false;
+  if (!hasFiles) {
+    const completion = await completeSubmission({ claimTokens: created.map((m) => m.claimToken) }, { thumbnailWaitMs: 0 });
+    emailed = completion.ok && completion.emailed;
+  }
+  return { ok: true, submissionId, memories: created, emailed };
 }

@@ -31,6 +31,8 @@ vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
 const afterCalls: Array<() => Promise<void>> = [];
 vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
+const completeMock = vi.fn(async (_input: unknown, _options?: unknown) => ({ ok: true as const, emailed: true }));
+vi.mock("@/features/memories/complete-submission", () => ({ completeSubmission: (input: unknown, options?: unknown) => completeMock(input, options) }));
 
 import { createSubmission } from "@/features/memories/create-submission";
 
@@ -47,7 +49,7 @@ const twoMemories = {
 };
 
 beforeEach(() => {
-  afterCalls.length = 0;
+  afterCalls.length = 0; completeMock.mockClear();
   memories.length = 0; medias.length = 0; contributors.length = 0; memorial = { id: "memorial_1", slug: "jo" };
   process.env.UPLOAD_TICKET_SECRET = "s".repeat(32);
   process.env.DAILY_MEMORY_BUDGET = "5";
@@ -148,8 +150,20 @@ describe("createSubmission", () => {
     expect(contributors).toHaveLength(0);
   });
 
-  it("does not send any email or alert itself in this step (completion owns the receipt once the files land)", async () => {
-    await createSubmission(twoMemories);
+  it("a send with files is completed by the browser later: no email, no alert here", async () => {
+    const result = await createSubmission(twoMemories);
+    expect(result).toMatchObject({ ok: true, emailed: false });
+    expect(completeMock).not.toHaveBeenCalled();
     expect(afterCalls).toHaveLength(0);
+  });
+
+  it("a text-only send is completed inline, once, with every raw token and no thumbnail wait", async () => {
+    const result = await createSubmission({ ...contributor, memories: [{ note: "a", files: [] }, { note: "b", files: [] }] });
+    expect(result).toMatchObject({ ok: true, emailed: true });
+    if (!result.ok) { return; }
+    expect(completeMock).toHaveBeenCalledTimes(1);
+    expect(completeMock).toHaveBeenCalledWith({ claimTokens: result.memories.map((m) => m.claimToken) }, { thumbnailWaitMs: 0 });
+    completeMock.mockResolvedValueOnce({ ok: true, emailed: false });
+    expect(await createSubmission({ ...contributor, memories: [{ note: "c", files: [] }] })).toMatchObject({ ok: true, emailed: false });
   });
 });

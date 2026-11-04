@@ -9,6 +9,7 @@ interface MemoryRow {
   id: string;
   type: "VOICE" | "VIDEO" | "PHOTO" | "TEXT";
   deletedAt: Date | null;
+  submissionId: string | null;
   claimTokenHash: string;
   contributorNote: string | null;
   approxDateText: string | null;
@@ -41,6 +42,7 @@ beforeEach(() => {
     id: "mem_1",
     type: "PHOTO",
     deletedAt: null,
+    submissionId: null,
     claimTokenHash: hashClaimToken(TOKEN),
     contributorNote: null,
     approxDateText: "Summer 1985",
@@ -168,5 +170,15 @@ describe("removed files", () => {
     expect((await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).sent).toBe(true);
     const arg = sendMock.mock.calls.at(-1)?.[0] as unknown as { media: unknown[] };
     expect(arg.media).toHaveLength(1);
+  });
+});
+
+describe("memories that belong to a send (Task 15)", () => {
+  it("returns in_submission for any memory with a submissionId, the anchor included, and sends nothing", async () => {
+    memory!.submissionId = "sub_1";
+    expect(await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).toEqual({ sent: false, skipped: "in_submission" });
+    expect(await confirmMemory({ memoryId: "mem_1" })).toEqual({ sent: false, skipped: "in_submission" });
+    expect(sendMock).not.toHaveBeenCalled();
+    expect(dbStub.memory.update).not.toHaveBeenCalled();
   });
 });

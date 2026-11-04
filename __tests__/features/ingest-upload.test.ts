@@ -32,7 +32,7 @@ function matches(row: MediaRow, where: Record<string, unknown>): boolean {
 }
 let media: MediaRow[] = [];
 let p2002Once = false;
-const memories = [{ id: "mem_1", claimTokenHash: hashClaimToken(CLAIM), deletedAt: null as Date | null, contributorNote: null as string | null, consentVersion: "2026-11-v2" }];
+const memories = [{ id: "mem_1", claimTokenHash: hashClaimToken(CLAIM), deletedAt: null as Date | null, contributorNote: null as string | null, consentVersion: "2026-11-v2", submissionId: null as string | null }];
 const afterCalls: Array<() => Promise<void>> = [];
 vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
 const dbStub = {
@@ -339,5 +339,24 @@ describe("finalizeUpload", () => {
     expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_1" });
     expect(media[0]?.checksumSha256).toBeNull();
     expect(dbStub.media.update.mock.calls.some((c) => "checksumSha256" in ((c[0] as { data: Record<string, unknown> }).data ?? {}))).toBe(false);
+  });
+});
+
+describe("finalizeUpload for a memory that belongs to a send (Task 15)", () => {
+  it("records the file but sends no confirmation and schedules no admin alert; completion owns both", async () => {
+    const claims = { mediaId: "med_1", memoryId: "mem_1", pathname: "originals/mem_1/abc.jpg", mimeType: "image/jpeg", maxBytes: 25 * 1024 * 1024 };
+    confirmMock.mockClear();
+    memories[0]!.submissionId = "sub_1";
+    try {
+      const result = await finalizeUpload({ ticket: mintUploadTicket(claims), claimToken: CLAIM });
+      expect(result).toEqual({ status: "READY", claimLink: `https://www.jowray.com/m/${CLAIM}`, emailed: false });
+      expect(confirmMock).not.toHaveBeenCalled();
+      expect(afterCalls).toHaveLength(1); // the checksum and derived copies only
+      for (const cb of afterCalls) { await cb(); }
+      expect(notifyMock).not.toHaveBeenCalled();
+      expect(deriveMock).toHaveBeenCalled();
+    } finally {
+      memories[0]!.submissionId = null;
+    }
   });
 });

@@ -96,6 +96,7 @@ export type SkipReason =
   | "outbound_disabled"
   | "recipient_capped"
   | "no_recipients"
+  | "nothing_to_send"
   | "failed";
 
 export type SendResult =

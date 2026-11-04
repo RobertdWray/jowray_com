@@ -275,6 +275,30 @@ export async function sendAdminNewMemory(content: AdminNewMemoryContent): Promis
   });
 }
 
+/**
+ * Record that there is nothing to send for this memory and type, as a
+ * terminal SKIPPED row, so the reconcile cron stops selecting it. A SENT or
+ * SENDING row is never touched (a send of several memories whose anchor was
+ * removed is still emailed for its live siblings; this is only for a send
+ * with no live memory at all).
+ */
+export async function skipDelivery({ memoryId, emailType, reason }: { memoryId: string; emailType: EmailType; reason: "nothing_to_send" }): Promise<SendResult> {
+  const db = getDb();
+  const existing = await db.emailLog.findUnique({ where: { memoryId_emailType: { memoryId, emailType } } });
+  if (existing?.status === "SENT") {
+    return { sent: false, skipped: "already_sent" };
+  }
+  if (!existing) {
+    await createOrLoad(memoryId, emailType, "");
+  }
+  await db.emailLog.updateMany({
+    where: { memoryId, emailType, status: { in: ["PENDING", "FAILED", "SKIPPED"] } },
+    data: { status: "SKIPPED", errorMessage: reason },
+  });
+  log.info({ action: "skip", memoryId, emailType, reason }, "nothing to send");
+  return { sent: false, skipped: reason };
+}
+
 /** The row for this memory and type, creating it when absent; a concurrent creator's row is loaded instead. */
 async function createOrLoad(memoryId: string, emailType: EmailType, recipientEmail: string) {
   const db = getDb();
