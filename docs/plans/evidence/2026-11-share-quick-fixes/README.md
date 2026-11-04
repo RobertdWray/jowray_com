@@ -69,6 +69,19 @@ Before (PR A, same pages): 1440×900 → 2837px (3.15 screens); 2560×1440 → 2
 | Header on every page | `/`, `/obituary`, a claim page, `/admin` (signed-out shell): at 1280×800 the inner box is 1152px with 64px side padding (unchanged); at 2560×1440 it is the full 1200px (was 1200 − 2×128 = 944), centred at x = 680; nothing else moves | `b-header-{home,obituary,claim,admin}-{1280.png,2560.jpeg}` |
 | Console | No errors or warnings across the PR B checks | — |
 
+## Team Code Review round 1 (George on gemini-4-argon, Oscar on codex; 2026-11-04)
+
+Findings numbered George #1–#4, Oscar #1 (= George #4). Fixes: PR A `0d441b5`, PR B (this folder's commit). Log: `~/Downloads/team-review-20261104-135752-jowray_com-stack-35-36-09d2b0a.md`.
+
+| Finding | Fix | Verified | File |
+|---|---|---|---|
+| George #1: a failed client check left a pending "sounds silent" warning and the "Send anyway" label in place | `setConfirmSilent(null)` in the failed-check branch | By reading: the branch now withdraws the warning; a silent clip needs the recorder smoke script to reproduce, so not scripted | — |
+| George #2: a card's inline error cleared only when its words were typed | `clearFieldIssue` on add/remove media, a recording, and clear | 390×844: after an empty-card Send, adding `photo.jpg` through the file input clears `aria-invalid` and the error line; the summary is unchanged | (script output) |
+| George #3: a 121-character name got zod's default "Too big…" | `NAME_TOO_LONG_MESSAGE` on `.max(120, …)`, test in `validations-memory.test.ts` | RED → GREEN, suite 1004/1004 | — |
+| George #4 / Oscar #1: centring the stretched words cell put the label above and the error line below the fold on a short `roomy` window | `lib/reveal-scroll.ts` (pure, tested): the reveal measures label text, field and error line and scrolls by the exact delta; a block taller than the window has its top aligned. PR B: the words block takes the contributor fields' shape (label text, textarea, error line in one growing box) with the textarea capped at `calc(100dvh - 14rem)`, so the error line always sits 8px under the textarea | 1280×480: label top 55, textarea 92–392 (capped to the 300px minimum), error line 400–424, all on screen, weight 400. 1440×900: textarea 482 with the error line, block centred (450 = 450); without an error the textarea is 515 as before, card and grid heights unchanged | `b-1280x480-empty-card-reveal.png`, `b-1440x900-empty-card-reveal.png` |
+| 390×844 regression after the scroll change | — | blank Send, with a name, and an empty card each land centred (422 = 422); a failed send with no field named leaves focus on Send with the alert on screen | (script output) |
+| Deferred minor (bold error lines) | `font-normal` on `errorClass`, needed once the card's error line moved inside the bold wrapper | computed weight 400 on `#c1-error` | — |
+
 ## Part 3 — assistive technology and devices (owner: Rob; does not gate the drafts)
 
 Not run: VoiceOver (iPhone Safari, macOS Chrome), TalkBack, iOS reduced motion. Checklist in the plan § Verification part 3.

@@ -129,24 +129,23 @@ export function MemoryCardSection({
           />
         </div>
 
-        {/* `data-field` on the cell, not the label, so the reveal centres label, words and error line together (a 515px
-            textarea at a 560px-high window otherwise leaves the line below the fold). */}
-        <div className="flex flex-col gap-[22px]" data-field>
-          <label htmlFor={ids.note} className={`${labelClass} roomy:flex-1`}>
-            <span>Your memory of Jo</span>
-            <textarea
-              id={ids.note}
-              value={card.note}
-              onChange={(e) => onField("note", e.target.value)}
-              rows={7}
-              maxLength={10_000}
-              className={`${textareaClass} roomy:min-h-[300px] roomy:max-h-[calc(100dvh-14rem)] roomy:flex-1`}
-              placeholder="She once…"
-              aria-invalid={issue ? "true" : undefined}
-              aria-describedby={issue ? ids.error : undefined}
-              disabled={disabled}
-            />
-          </label>
+        {/* Same shape as the contributor fields: label text, the field, then its error line, all in one box that grows
+            with the row at `roomy`. The error line sits right under the textarea however tall the row is, and the
+            textarea is capped to the window so label, words and error fit a short one (review, 2026-11-04). */}
+        <div className={`${labelClass} roomy:flex-1`} data-field>
+          <label htmlFor={ids.note}>Your memory of Jo</label>
+          <textarea
+            id={ids.note}
+            value={card.note}
+            onChange={(e) => onField("note", e.target.value)}
+            rows={7}
+            maxLength={10_000}
+            className={`${textareaClass} roomy:min-h-[300px] roomy:max-h-[calc(100dvh-14rem)] roomy:flex-1`}
+            placeholder="She once…"
+            aria-invalid={issue ? "true" : undefined}
+            aria-describedby={issue ? ids.error : undefined}
+            disabled={disabled}
+          />
           {issue && (
             <p id={ids.error} className={errorClass}>
               {issue.message}
