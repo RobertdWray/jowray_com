@@ -1,7 +1,10 @@
 export const labelClass = "flex min-w-0 flex-col gap-2 text-label font-bold";
 export const helperClass = "font-normal text-walnut-soft";
+// `font-normal`: Preflight gives form controls `font: inherit`, so without it every field inside a bold label is bold too
+// (Rob's item 4). `aria-[invalid=true]`: the invalid state is set by the form after a failed Send (never on first paint,
+// MDN); the 2px jo-red-deep border is the 3:1 state indicator (SC 1.4.11), the 40% ring reinforces it.
 export const inputClass =
-  "min-h-tap w-full rounded-input border-2 border-wood bg-white px-4 py-3 text-body text-walnut";
+  "min-h-tap w-full rounded-input border-2 border-wood bg-white px-4 py-3 text-body font-normal text-walnut aria-[invalid=true]:border-jo-red-deep aria-[invalid=true]:ring-4 aria-[invalid=true]:ring-jo-red-deep/40";
 export const textareaClass = inputClass + " resize-y leading-[1.5]";
 export const selectClass = inputClass;
 export const fileInputClass =

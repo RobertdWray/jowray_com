@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { hasContent, type CardTextField, type MemoryCard, type SendIssue } from "@/lib/memory-cards";
+import { type CardIssue, hasContent, type CardTextField, type MemoryCard } from "@/lib/memory-cards";
 
 import { SecondaryButton, TertiaryButton } from "../_components/buttons";
 import { errorClass, helperClass, inputClass, labelClass, textareaClass } from "../_components/field-classes";
@@ -56,7 +56,7 @@ export function MemoryCardSection({
   position: number;
   isFirst: boolean;
   disabled: boolean;
-  issue: SendIssue | null;
+  issue: CardIssue | null;
   recording: CardMediaRecording;
   progress: Record<string, number>;
   onField: (field: CardTextField, value: string) => void;
@@ -94,7 +94,7 @@ export function MemoryCardSection({
             onChange={(e) => onField("approxDateText", e.target.value)}
             maxLength={120}
             className={inputClass}
-            placeholder="Summer 1985 · Lake George, late 90s · her classroom"
+            placeholder="Summer 1985"
             disabled={disabled}
           />
         </label>
@@ -106,7 +106,7 @@ export function MemoryCardSection({
             onChange={(e) => onField("place", e.target.value)}
             maxLength={200}
             className={inputClass}
-            placeholder="her classroom · Lake George · Broadmead"
+            placeholder="her classroom"
             disabled={disabled}
           />
         </label>
@@ -124,7 +124,7 @@ export function MemoryCardSection({
         onBeforeCamera={onBeforeCamera}
       />
 
-      <label htmlFor={ids.note} className={labelClass}>
+      <label htmlFor={ids.note} className={labelClass} data-field>
         <span>Your memory of Jo</span>
         <textarea
           id={ids.note}

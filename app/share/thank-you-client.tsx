@@ -18,7 +18,7 @@ export interface SentMemory {
  * link per memory, partial failures named, and the share button called only
  * from its click (C57). The heading takes focus so the result is announced (C48).
  */
-export function ThankYou({ memories, emailed, hasEmail, onAnother }: { memories: SentMemory[]; emailed: boolean; hasEmail: boolean; onAnother: () => void }) {
+export function ThankYou({ memories, emailed, onAnother }: { memories: SentMemory[]; emailed: boolean; onAnother: () => void }) {
   const origin = window.location.origin;
   const several = memories.length > 1;
   // Focus once when the screen appears (C48); a re-render of the parent must not pull focus off a link.
@@ -89,7 +89,8 @@ export function ThankYou({ memories, emailed, hasEmail, onAnother }: { memories:
             <p>We have also emailed you {several ? "these links" : "this link"}.</p>
           ) : (
             <p>
-              {hasEmail ? "We couldn't email you just now, so this" : "This"} page is the only copy of {several ? "these links" : "this link"}, so keep it open or save
+              {/* Email is required since 2026-11-04, so "not emailed" only ever means the send was capped or the mail failed. */}
+              We couldn&apos;t email you just now, so this page is the only copy of {several ? "these links" : "this link"}, so keep it open or save
               {several ? " them" : " it"}.
             </p>
           )}

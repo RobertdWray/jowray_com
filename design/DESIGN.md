@@ -59,11 +59,12 @@ never a glossy icon or emoji.
    same tokens and the field styling in § 5.4. **Keep every existing field,
    name and validation** — the comp shows a simplified field set only to
    establish the look. Map as follows:
-   - `name` → "Your name"
-   - `relationship` → "How you knew Jo" (placeholder: *former student · church friend · neighbor · family*)
-   - `email` → "Email" (helper: *so we can say thank you*)
-   - `approxDateText` → "When is this memory from? (roughly is fine)"
-   - `place` → "Where? (optional)" (placeholder: *her classroom · Lake George · Broadmead*)
+   - `name` → "Your name" (placeholder: *Jane Doe*; required since 2026-11-04)
+   - `relationship` → "How you knew Jo (optional)" (placeholder: *former student*)
+   - `email` → "Email" (placeholder: *your@email.com*; required since 2026-11-04: it is where the private link goes)
+   - `approxDateText` → "When is this memory from? (roughly is fine)" (placeholder: *Summer 1985*)
+   - `place` → "Where? (optional)" (placeholder: *her classroom*)
+   Placeholders are one short example each, never a sentence: they vanish on focus and a long one is cropped or read as entered text.
    - `note` → "Your memory of Jo"
    - `file` + recorder → the "Rather say it than type it?" periwinkle box, then the dashed file field
    - `visibility` → keep as a labelled select, styled like an input, below the file field
@@ -151,9 +152,12 @@ Keep them inline and `aria-hidden="true"`.
 ### 5.4 Form
 `paper` ground, 20px radius, 3px `wood-light` border, `shadow-form`, 32px
 padding, 22px gap. Labels 19px 700 above the input, helper text 400
-`walnut-soft` inline in the label. Inputs: 56px min height, 20px text,
-2px `wood` border, 12px radius, white inside, placeholder `wood`. Textarea
-7 rows. File input on `muslin` with a 2px dashed `wood` border. Focus:
+`walnut-soft` inline in the label. Inputs: 56px min height, 20px text at
+regular weight (400; form controls inherit the label's 700 unless told
+otherwise), 2px `wood` border, 12px radius, white inside, placeholder `wood`
+(4.53:1 on white, the AA floor, so it is never lightened). Invalid, only after
+a failed Send: 2px `jo-red-deep` border plus a 4px `jo-red-deep` ring at 40%,
+cleared as soon as the person types in that field. Textarea 7 rows. File input on `muslin` with a 2px dashed `wood` border. Focus:
 4px `goldenrod` outline. Submit: primary button (below). Errors: `jo-red-deep`
 text at 17px under the field, kind in tone ("We'll need a name so the family
 knows who to thank").
