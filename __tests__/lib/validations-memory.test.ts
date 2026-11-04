@@ -62,3 +62,62 @@ describe("memory file validation", () => {
     expect(uploadTicketRequestSchema.parse(input)).toEqual(input);
   });
 });
+
+describe("createSubmissionInputSchema (Task 15)", async () => {
+  const { createSubmissionInputSchema, MAX_MEMORIES_PER_SUBMISSION, submissionIssueLocation } = await import("@/lib/validations/memory");
+  const memory = (over: Record<string, unknown> = {}) => ({ note: "words", files: [], ...over });
+  const send = (memories: unknown[]) => ({ name: "Kay", email: "kay@example.com", memories });
+
+  it("takes 1 to 10 memories, each with at most 10 files", () => {
+    expect(MAX_MEMORIES_PER_SUBMISSION).toBe(10);
+    expect(createSubmissionInputSchema.safeParse(send([])).success).toBe(false);
+    expect(createSubmissionInputSchema.safeParse(send([memory()])).success).toBe(true);
+    expect(createSubmissionInputSchema.safeParse(send(Array.from({ length: 10 }, () => memory()))).success).toBe(true);
+    expect(createSubmissionInputSchema.safeParse(send(Array.from({ length: 11 }, () => memory()))).success).toBe(false);
+    const tenFiles = Array.from({ length: 10 }, (_, i) => ({ ...file, name: `f${i}.webm` }));
+    expect(createSubmissionInputSchema.safeParse(send([memory({ files: tenFiles })])).success).toBe(true);
+    expect(createSubmissionInputSchema.safeParse(send([memory({ files: [...tenFiles, file] })])).success).toBe(false);
+  });
+
+  it("each memory needs files or words; blank words do not count", () => {
+    expect(createSubmissionInputSchema.safeParse(send([memory({ note: "   ", files: [] })])).success).toBe(false);
+    expect(createSubmissionInputSchema.safeParse(send([memory({ note: null, files: [file] })])).success).toBe(true);
+    expect(createSubmissionInputSchema.safeParse(send([memory(), memory({ note: "", files: [] })])).success).toBe(false);
+  });
+
+  it("shares one set of contributor fields and defaults with the single-memory form", () => {
+    const parsed = createSubmissionInputSchema.parse(send([memory()]));
+    expect(parsed).toMatchObject({ visibility: "PUBLIC", contactOptIn: false, mailingListOptIn: false, notifyWhenPosted: true, email: "kay@example.com" });
+    expect(createSubmissionInputSchema.safeParse({ ...send([memory()]), email: "not-an-address" }).success).toBe(false);
+  });
+
+  it("issues carry memoryIndex and fileIndex", () => {
+    const result = createSubmissionInputSchema.safeParse(send([memory(), memory({ note: "", files: [] }), memory({ files: [{ ...file, size: -1 }] })]));
+    expect(result.success).toBe(false);
+    if (result.success) { return; }
+    const locations = result.error.issues.map((issue) => submissionIssueLocation(issue));
+    expect(locations).toContainEqual({ memoryIndex: 1, fileIndex: null, message: "Add a file, a recording, or a few words" });
+    expect(locations).toContainEqual(expect.objectContaining({ memoryIndex: 2, fileIndex: 0 }));
+    const top = createSubmissionInputSchema.safeParse({ ...send([memory()]), email: "nope" });
+    expect(top.success).toBe(false);
+    if (!top.success) {
+      expect(submissionIssueLocation(top.error.issues[0]!)).toMatchObject({ memoryIndex: null, fileIndex: null });
+    }
+  });
+});
+
+describe("ticket and completion schemas (Task 15)", async () => {
+  const { completeSubmissionSchema, issueTicketRequestSchema } = await import("@/lib/validations/memory");
+
+  it("a per-file ticket request names the claim token and the media row", () => {
+    expect(issueTicketRequestSchema.safeParse({ claimToken: "t".repeat(43), mediaId: "med_1" }).success).toBe(true);
+    expect(issueTicketRequestSchema.safeParse({ claimToken: "short", mediaId: "med_1" }).success).toBe(false);
+    expect(issueTicketRequestSchema.safeParse({ claimToken: "t".repeat(43), mediaId: "" }).success).toBe(false);
+  });
+
+  it("completion takes 1 to 10 claim tokens", () => {
+    expect(completeSubmissionSchema.safeParse({ claimTokens: [] }).success).toBe(false);
+    expect(completeSubmissionSchema.safeParse({ claimTokens: ["t".repeat(43)] }).success).toBe(true);
+    expect(completeSubmissionSchema.safeParse({ claimTokens: Array.from({ length: 11 }, () => "t".repeat(43)) }).success).toBe(false);
+  });
+});
