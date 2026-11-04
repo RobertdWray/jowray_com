@@ -4,7 +4,7 @@
 // Usage: npx tsx scripts/render-email-preview.ts [out.html] [confirmation|admin]
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { buildSampleAdminAlert } from "./sample-admin-alert";
 import { buildSampleConfirmation } from "./sample-confirmation";
@@ -39,7 +39,8 @@ async function main(): Promise<void> {
   console.log(`${out} (${template}: ${Buffer.byteLength(rendered.html)} bytes of HTML before inlining; text part beside it)`);
 }
 
-const isEntrypoint = process.argv[1]?.endsWith("render-email-preview.ts") ?? false;
+// Entrypoint check that survives `tsx scripts/render-email-preview` (no extension): compare the basename without `.ts`.
+const isEntrypoint = basename(process.argv[1] ?? "").replace(/\.ts$/, "") === "render-email-preview";
 if (isEntrypoint) {
   main().catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : error);
