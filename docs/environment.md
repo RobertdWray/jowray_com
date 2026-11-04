@@ -44,6 +44,8 @@ The integration was provisioned with Neon Auth and Realtime **off**, so `NEON_AU
 | `NEXT_PUBLIC_SENTRY_DSN` | The DSN for Sentry project `med3ai/jowray_com` (API host `https://us.sentry.io`). It holds a **real value**: DSNs aren't secrets. ([Sentry docs](https://docs.sentry.io/security-legal-pii/security/token-formats/#excluding-dsns), [Next.js SDK](https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/#initialize-sentry-sdks)) |
 | `SENTRY_AUTH_TOKEN` | **Placeholder (empty) locally; set in Vercel only.** A Sentry **organization** token (`org:ci`) that lets Vercel builds upload source maps. It is never copied into local `.env`, so local and worker builds skip the upload (`sourcemaps.disable` in `next.config.ts`). ([Sentry docs](https://docs.sentry.io/platforms/javascript/guides/nextjs/#add-readable-stack-traces-with-source-maps)) |
 
+The alpha telemetry (plan `docs/plans/2026-11-04-sentry-full-telemetry.md`: 100 % traces and replays, feedback widget, browser profiling, cron monitor, metrics) needs no further keys. `VERCEL_ENV` (set by Vercel) decides where the cron monitor checks in (`production` only) and the `environment` tag; `NEXT_PUBLIC_VERCEL_ENV` does the same in the browser. Browser profiling is a response header (`Document-Policy: js-profiling`, `next.config.ts`), not an env var.
+
 ## Phase 1: orchestrator and CI keys
 
 These are used by the agent running the Phase 1 plan and by GitHub Actions, never by the app.
