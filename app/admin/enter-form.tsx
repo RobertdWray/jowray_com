@@ -19,19 +19,25 @@ export function EnterForm() {
   const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
-    const key = new URLSearchParams(window.location.hash.slice(1)).get("key");
-    if (!key) {
-      return;
+    function takeKeyFromFragment() {
+      const key = new URLSearchParams(window.location.hash.slice(1)).get("key");
+      if (!key) {
+        return;
+      }
+      // Out of the address bar (and so out of any later Referer or history copy) before anything else.
+      window.history.replaceState(null, "", "/admin/enter");
+      const form = formRef.current;
+      const input = form?.elements.namedItem("key");
+      if (form && input instanceof HTMLInputElement) {
+        // Through the form, so the state change happens in the submit handler, not in this effect.
+        input.value = key;
+        form.requestSubmit();
+      }
     }
-    // Out of the address bar (and so out of any later Referer or history copy) before anything else.
-    window.history.replaceState(null, "", "/admin/enter");
-    const form = formRef.current;
-    const input = form?.elements.namedItem("key");
-    if (form && input instanceof HTMLInputElement) {
-      // Through the form, so the state change happens in the submit handler, not in this effect.
-      input.value = key;
-      form.requestSubmit();
-    }
+    takeKeyFromFragment();
+    // A fresh link opened while this page is already showing changes only the fragment: no reload, so listen for it.
+    window.addEventListener("hashchange", takeKeyFromFragment);
+    return () => window.removeEventListener("hashchange", takeKeyFromFragment);
   }, []);
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {

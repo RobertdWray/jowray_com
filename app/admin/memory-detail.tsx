@@ -55,7 +55,7 @@ export function MemoryDetail({ memory }: { memory: AdminMemoryView }) {
   return (
     <article className="flex min-w-0 max-w-[72ch] flex-col gap-5">
       <p className="wide:hidden">
-        <Link href="/admin" prefetch={false} className={linkClass}>
+        <Link href="/admin" prefetch={false} className={`${linkClass} inline-flex min-h-tap items-center`}>
           ← All memories
         </Link>
       </p>

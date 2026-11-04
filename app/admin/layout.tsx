@@ -17,7 +17,7 @@ export default function AdminLayout({ children }: LayoutProps<"/admin">) {
   return (
     <main className="flex w-full flex-1 flex-col gap-6 px-[max(16px,2%)] py-6">
       <nav aria-label="Family admin" className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b-[3px] border-wood-light pb-3">
-        <Link href="/admin" prefetch={false} className="font-display text-card-title font-bold text-walnut no-underline">
+        <Link href="/admin" prefetch={false} className="inline-flex min-h-tap items-center font-display text-card-title font-bold text-walnut no-underline">
           Family admin
         </Link>
         <Link href="/admin" prefetch={false} className={barLinkClass}>
