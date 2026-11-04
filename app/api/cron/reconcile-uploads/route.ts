@@ -3,6 +3,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { confirmMemory } from "@/features/memories/confirm";
 import { DERIVED_KINDS, deriveMedia, MAX_DECODE_ATTEMPTS, MAX_PIXELS, STALE_CLAIM_MS } from "@/features/memories/derive-media";
 import { computeChecksum, recordMedia } from "@/features/memories/ingest-upload";
+import { ADMIN_ALERT_SINCE, notifyAdminsOfMemory } from "@/features/memories/notify-admins";
 import { safeEqualHex } from "@/lib/claim-token";
 import { posterStagingKeyFor } from "@/lib/derived-keys";
 import { createLogger, logError } from "@/lib/logger";
@@ -39,6 +40,7 @@ interface Counts {
   eventsReplayed: number;
   emailsRetried: number;
   confirmationsSent: number;
+  adminAlertsSent: number;
   deletedBlobsRemoved: number;
   derived: number;
   errors: number;
@@ -64,6 +66,7 @@ export async function GET(request: NextRequest): Promise<Response> {
     eventsReplayed: 0,
     emailsRetried: 0,
     confirmationsSent: 0,
+    adminAlertsSent: 0,
     deletedBlobsRemoved: 0,
     derived: 0,
     errors: 0,
@@ -146,25 +149,28 @@ export async function GET(request: NextRequest): Promise<Response> {
       break;
     }
     try {
-      const result = await confirmMemory({ memoryId: row.memoryId });
+      // Each email type has its own sender; the row says which one owns it.
+      const result = row.emailType === "ADMIN_NEW_MEMORY" ? await notifyAdminsOfMemory({ memoryId: row.memoryId }) : await confirmMemory({ memoryId: row.memoryId });
       if (result.sent) {
         counts.emailsRetried += 1;
       }
     } catch (error) {
       counts.errors += 1;
-      logError("reconcile: email retry failed", error, { category: "cron", memoryId: row.memoryId });
+      logError("reconcile: email retry failed", error, { category: "cron", memoryId: row.memoryId, emailType: row.emailType });
     }
   }
 
   // (e) Memories with an address and something READY (or TEXT) that were never
   // emailed and are old enough that no request-path confirm is still running.
+  // `none` is filtered by type: an admin-alert row alone must not count as "emailed".
+  const ready = [{ type: "TEXT" as const }, { contributorNote: { not: null } }, { media: { some: { status: "READY" as const, deletedAt: null } } }];
   const unconfirmed = await db.memory.findMany({
     where: {
       deletedAt: null,
       createdAt: { lt: new Date(now - CONFIRM_MIN_AGE_MS) },
       contributor: { email: { not: null } },
-      emails: { none: {} },
-      OR: [{ type: "TEXT" }, { contributorNote: { not: null } }, { media: { some: { status: "READY", deletedAt: null } } }],
+      emails: { none: { emailType: "MEMORY_CONFIRMATION" } },
+      OR: ready,
     },
     orderBy: { createdAt: "asc" },
     take: 50,
@@ -181,6 +187,36 @@ export async function GET(request: NextRequest): Promise<Response> {
     } catch (error) {
       counts.errors += 1;
       logError("reconcile: confirmation failed", error, { category: "cron", memoryId: memory.id });
+    }
+  }
+
+  // (e2) The same for the family-admin alert: no contributor address needed,
+  // only memories created since the alert existed (never a backfill of old
+  // ones), and not while an upload younger than an hour is still in flight
+  // (the request path alerts the moment it lands; step (a) gives up on older ones).
+  const unalerted = await db.memory.findMany({
+    where: {
+      deletedAt: null,
+      createdAt: { gte: ADMIN_ALERT_SINCE, lt: new Date(now - CONFIRM_MIN_AGE_MS) },
+      emails: { none: { emailType: "ADMIN_NEW_MEMORY" } },
+      OR: ready,
+      NOT: { media: { some: { status: "PENDING", deletedAt: null, createdAt: { gt: new Date(now - HOUR_MS) } } } },
+    },
+    orderBy: { createdAt: "asc" },
+    take: 50,
+  });
+  for (const memory of unalerted) {
+    if (outOfTime()) {
+      break;
+    }
+    try {
+      const result = await notifyAdminsOfMemory({ memoryId: memory.id });
+      if (result.sent) {
+        counts.adminAlertsSent += 1;
+      }
+    } catch (error) {
+      counts.errors += 1;
+      logError("reconcile: admin alert failed", error, { category: "cron", memoryId: memory.id });
     }
   }
 

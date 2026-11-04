@@ -30,11 +30,38 @@ export interface MemoryConfirmationInput extends MemoryConfirmationContent {
   rotateToClaimTokenHash?: string;
 }
 
+export type MemoryVisibility = "PUBLIC" | "FAMILY" | "PRIVATE";
+
+/**
+ * Everything the family-admin alert renders. Every field except `memoryId`,
+ * `submittedAt`, `visibility`, the flags and `media[].preview` is untrusted
+ * contributor input. There is deliberately no link: the claim link belongs to
+ * the contributor (ruling R2, 2026-11-03).
+ */
+export interface AdminNewMemoryContent {
+  memoryId: string;
+  submittedAt: Date;
+  name?: string | null;
+  relationship?: string | null;
+  email?: string | null;
+  contactOptIn: boolean;
+  mailingListOptIn: boolean;
+  notifyWhenPosted: boolean;
+  approxDateText?: string | null;
+  place?: string | null;
+  note?: string | null;
+  visibility: MemoryVisibility;
+  media: MemoryMediaSummary[];
+  /** Files the contributor started that are not READY (still uploading or failed), so the alert can say so. */
+  filesNotReady: number;
+}
+
 export type SkipReason =
   | "already_sent"
   | "in_progress"
   | "outbound_disabled"
   | "recipient_capped"
+  | "no_recipients"
   | "failed";
 
 export type SendResult =
@@ -55,9 +82,9 @@ export interface EmailAttachment {
   contentId: string;
 }
 
-/** A fully rendered message, ready for a transport. */
+/** A fully rendered message, ready for a transport. Several recipients means one message they all see (the admin alert). */
 export interface OutboundEmail {
-  to: string;
+  to: string | string[];
   from: string;
   subject: string;
   text: string;

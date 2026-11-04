@@ -259,5 +259,10 @@ subset). Rules that differ from the web pages:
   `design/reference/*.svg` at 2x by `scripts/make-email-assets.ts`).
 - Badges (`badge-play`, `badge-audio`, `badge-video`, `badge-photo`) are
   the calico heart's idiom: jo-red disc, paper stitch ring, paper glyph.
-- Preview with `npx tsx scripts/render-email-preview.ts`; the sample
-  comps are in `docs/plans/evidence/2026-11-confirmation-email/`.
+- Two transactional emails share the chrome in
+  `services/email/templates/shared.ts`: the contributor confirmation and
+  the family-admin alert (`admin-new-memory.ts`). The admin alert carries
+  **no links** by ruling: the edit link belongs to the contributor.
+- Preview with `npx tsx scripts/render-email-preview.ts [out.html] [confirmation|admin]`;
+  the sample comps are in `docs/plans/evidence/2026-11-confirmation-email/`
+  and `docs/plans/evidence/2026-11-admin-alert/`.

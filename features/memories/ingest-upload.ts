@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { confirmMemory } from "@/features/memories/confirm";
 import { deriveMedia } from "@/features/memories/derive-media";
 import { lockMemory } from "@/features/memories/lock";
+import { notifyAdminsOfMemory } from "@/features/memories/notify-admins";
 import { appendClaimRevision, recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger, logError, logErrorAndFlush } from "@/lib/logger";
@@ -210,8 +211,11 @@ export async function finalizeUpload({
   let emailed = false;
   if (outcome.status === "READY") {
     emailed = await confirmQuietly(memory.id, claimToken);
-    // After the response: the checksum (small files) and the web copy and
-    // thumbnail (photos; other kinds return not_eligible at once).
+    // After the response: the admin alert, then the checksum (small files) and
+    // the web copy and thumbnail (photos; other kinds return not_eligible at once).
+    afterWithFlush(async () => {
+      await notifyAdminsQuietly(memory.id);
+    });
     afterWithFlush(async () => {
       if (outcome.sizeBytes <= INLINE_HASH_MAX_BYTES) {
         await computeChecksum({ mediaId: outcome.mediaId });
@@ -231,6 +235,16 @@ export async function confirmQuietly(memoryId: string, claimToken: string): Prom
     return (await confirmMemory({ memoryId, claimToken })).sent;
   } catch (error) {
     await logErrorAndFlush("confirmation email failed after save", error, { category: "email", memoryId });
+    return false;
+  }
+}
+
+/** Same contract for the family-admin alert: reported, never thrown, left to the cron on failure. */
+export async function notifyAdminsQuietly(memoryId: string): Promise<boolean> {
+  try {
+    return (await notifyAdminsOfMemory({ memoryId })).sent;
+  } catch (error) {
+    await logErrorAndFlush("admin alert failed after save", error, { category: "email", memoryId });
     return false;
   }
 }

@@ -4,15 +4,16 @@ import { resetEnvCache } from "@/server/config/env";
 
 // --- stubs -------------------------------------------------------------
 const sendMock = vi.fn();
+const setTimeoutMock = vi.fn();
 vi.mock("@sendgrid/mail", () => ({
-  default: { setApiKey: vi.fn(), send: (...args: unknown[]) => sendMock(...args) },
+  default: { setApiKey: vi.fn(), setTimeout: (...args: unknown[]) => setTimeoutMock(...args), send: (...args: unknown[]) => sendMock(...args) },
 }));
 
 interface Row {
   id: string;
   memoryId: string;
   recipientEmail: string;
-  emailType: "MEMORY_CONFIRMATION";
+  emailType: "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY";
   status: "PENDING" | "SENDING" | "SENT" | "FAILED" | "SKIPPED";
   attempts: number;
   nextAttemptAt: Date | null;
@@ -28,22 +29,29 @@ const dbStub = {
   $transaction: vi.fn(async (ops: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) => (typeof ops === "function" ? ops(dbStub) : Promise.all(ops))),
   memory: { update: (arg: unknown) => memoryUpdateMock(arg) },
   emailLog: {
-    findUnique: vi.fn(async ({ where }: { where: { memoryId_emailType: { memoryId: string } } }) =>
-      rows.find((r) => r.memoryId === where.memoryId_emailType.memoryId) ?? null
+    findUnique: vi.fn(async ({ where }: { where: { memoryId_emailType: { memoryId: string; emailType: Row["emailType"] } } }) =>
+      rows.find((r) => r.memoryId === where.memoryId_emailType.memoryId && r.emailType === where.memoryId_emailType.emailType) ?? null
     ),
-    count: vi.fn(async ({ where }: { where: { recipientEmail: string; createdAt?: { gte: Date }; updatedAt?: { gte: Date }; status?: { in: Row["status"][] } } }) =>
-      rows.filter((r) => r.recipientEmail === where.recipientEmail && (where.updatedAt ?? where.createdAt)!.gte <= r.updatedAt && (!where.status || where.status.in.includes(r.status))).length
+    count: vi.fn(async ({ where }: { where: { recipientEmail: string; emailType?: Row["emailType"]; createdAt?: { gte: Date }; updatedAt?: { gte: Date }; status?: { in: Row["status"][] }; NOT?: { memoryId: string } } }) =>
+      rows.filter(
+        (r) =>
+          r.recipientEmail === where.recipientEmail &&
+          (!where.emailType || r.emailType === where.emailType) &&
+          (where.updatedAt ?? where.createdAt)!.gte <= r.updatedAt &&
+          (!where.status || where.status.in.includes(r.status)) &&
+          (!where.NOT || r.memoryId !== where.NOT.memoryId)
+      ).length
     ),
     create: vi.fn(async ({ data }: { data: Pick<Row, "memoryId" | "recipientEmail" | "emailType" | "status"> & { errorMessage?: string } }) => {
-      if (rows.some((r) => r.memoryId === data.memoryId)) {
+      if (rows.some((r) => r.memoryId === data.memoryId && r.emailType === data.emailType)) {
         throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
       }
       const row: Row = { id: `log_${rows.length + 1}`, createdAt: new Date(), updatedAt: new Date(), attempts: 0, nextAttemptAt: null, errorMessage: null, sendgridMessageId: null, sentAt: null, ...data };
       rows.push(row);
       return row;
     }),
-    upsert: vi.fn(async ({ where, create }: { where: { memoryId_emailType: { memoryId: string } }; create: Pick<Row, "memoryId" | "recipientEmail" | "emailType" | "status"> }) => {
-      const existing = rows.find((r) => r.memoryId === where.memoryId_emailType.memoryId);
+    upsert: vi.fn(async ({ where, create }: { where: { memoryId_emailType: { memoryId: string; emailType: Row["emailType"] } }; create: Pick<Row, "memoryId" | "recipientEmail" | "emailType" | "status"> }) => {
+      const existing = rows.find((r) => r.memoryId === where.memoryId_emailType.memoryId && r.emailType === where.memoryId_emailType.emailType);
       if (existing) {
         return existing;
       }
@@ -69,7 +77,7 @@ const dbStub = {
       Object.assign(row, data, { updatedAt: new Date() });
       return row;
     }),
-    updateMany: vi.fn(async ({ where, data }: { where: { id?: string; memoryId?: string; OR?: Array<{ status?: { in: Row["status"][] } | Row["status"]; updatedAt?: { lt: Date } }>; status?: { in: Row["status"][] } }; data: Partial<Row> }) => {
+    updateMany: vi.fn(async ({ where, data }: { where: { id?: string; memoryId?: string; emailType?: Row["emailType"]; OR?: Array<{ status?: { in: Row["status"][] } | Row["status"]; updatedAt?: { lt: Date } }>; status?: { in: Row["status"][] } }; data: Partial<Row> }) => {
       const matchesStatus = (r: Row) => {
         if (where.OR) {
           return where.OR.some((c) => {
@@ -80,7 +88,7 @@ const dbStub = {
         }
         return where.status ? where.status.in.includes(r.status) : true;
       };
-      const row = rows.find((r) => (where.id ? r.id === where.id : r.memoryId === where.memoryId) && matchesStatus(r));
+      const row = rows.find((r) => (where.id ? r.id === where.id : r.memoryId === where.memoryId && (!where.emailType || r.emailType === where.emailType)) && matchesStatus(r));
       if (!row) {
         return { count: 0 };
       }
@@ -91,7 +99,8 @@ const dbStub = {
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
-import { sendMemoryConfirmation } from "@/services/email";
+import { sendAdminNewMemory, sendMemoryConfirmation } from "@/services/email";
+import type { AdminNewMemoryContent } from "@/services/email/types";
 
 const base = {
   memoryId: "mem_1",
@@ -111,8 +120,32 @@ beforeEach(() => {
   process.env.OUTBOUND_ENABLED = "false";
   process.env.OUTBOUND_ALLOWLIST = "person@example.com, Other@Example.org";
   process.env.CONSENT_VERSION = "2026-11-v1";
+  process.env.ADMIN_ALERT_EMAILS = "robwray@gmail.com, rjwray@hotmail.com";
   resetEnvCache();
 });
+
+const adminContent: AdminNewMemoryContent = {
+  memoryId: "mem_1",
+  submittedAt: new Date("2026-11-03T19:38:00Z"),
+  name: "Jo Contributor",
+  relationship: "neighbour",
+  email: "person@example.com",
+  contactOptIn: true,
+  mailingListOptIn: false,
+  notifyWhenPosted: true,
+  approxDateText: "Summer 1998",
+  place: "the lake",
+  note: "She once taught me to quilt.",
+  visibility: "FAMILY",
+  media: [],
+  filesNotReady: 0,
+};
+function adminRow(memoryId = "mem_1") {
+  return rows.find((r) => r.memoryId === memoryId && r.emailType === "ADMIN_NEW_MEMORY");
+}
+function confirmationRow(memoryId = "mem_1") {
+  return rows.find((r) => r.memoryId === memoryId && r.emailType === "MEMORY_CONFIRMATION");
+}
 
 describe("sendMemoryConfirmation", () => {
   it("sends once and records SENT with the message id", async () => {
@@ -212,6 +245,141 @@ describe("sendMemoryConfirmation", () => {
   });
 });
 
+describe("sendAdminNewMemory", () => {
+  beforeEach(() => {
+    process.env.OUTBOUND_ENABLED = "true";
+    resetEnvCache();
+  });
+
+  it("sends one message to every configured admin and records the attempted set on an ADMIN_NEW_MEMORY row", async () => {
+    const result = await sendAdminNewMemory(adminContent);
+    expect(result).toEqual({ sent: true, messageId: "msg-1" });
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    const msg = sendMock.mock.calls[0]?.[0] as { to: unknown; subject: string; html: string };
+    expect(msg.to).toEqual(["robwray@gmail.com", "rjwray@hotmail.com"]);
+    expect(msg.subject).toBe("New memory from Jo Contributor");
+    expect(msg.html).not.toContain("href=");
+    expect(adminRow()).toMatchObject({ status: "SENT", recipientEmail: "robwray@gmail.com, rjwray@hotmail.com", sendgridMessageId: "msg-1" });
+    expect(confirmationRow()).toBeUndefined();
+  });
+
+  it("is idempotent per memory and claims atomically under concurrency", async () => {
+    expect((await sendAdminNewMemory(adminContent)).sent).toBe(true);
+    expect(await sendAdminNewMemory(adminContent)).toEqual({ sent: false, skipped: "already_sent" });
+    rows.length = 0;
+    sendMock.mockClear();
+    const [a, b] = await Promise.all([sendAdminNewMemory(adminContent), sendAdminNewMemory(adminContent)]);
+    expect([a, b].filter((r) => r.sent)).toHaveLength(1);
+    expect([a, b].filter((r) => !r.sent && r.skipped === "in_progress")).toHaveLength(1);
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("has no daily cap: a fourth memory in a day still alerts", async () => {
+    for (let i = 1; i <= 4; i += 1) {
+      expect((await sendAdminNewMemory({ ...adminContent, memoryId: `mem_${i}` })).sent).toBe(true);
+    }
+    expect(sendMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("writes no row at all when ADMIN_ALERT_EMAILS is empty, so the cron can alert once it is set", async () => {
+    process.env.ADMIN_ALERT_EMAILS = "";
+    resetEnvCache();
+    expect(await sendAdminNewMemory(adminContent)).toEqual({ sent: false, skipped: "no_recipients" });
+    expect(rows).toHaveLength(0);
+    expect(sendMock).not.toHaveBeenCalled();
+    delete process.env.ADMIN_ALERT_EMAILS;
+    resetEnvCache();
+    expect(await sendAdminNewMemory(adminContent)).toEqual({ sent: false, skipped: "no_recipients" });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("sends only to allowlisted admins when outbound is disabled, and records that subset", async () => {
+    process.env.OUTBOUND_ENABLED = "false";
+    process.env.OUTBOUND_ALLOWLIST = "robwray@gmail.com";
+    resetEnvCache();
+    expect((await sendAdminNewMemory(adminContent)).sent).toBe(true);
+    const msg = sendMock.mock.calls[0]?.[0] as { to: unknown };
+    expect(msg.to).toEqual(["robwray@gmail.com"]);
+    expect(adminRow()?.recipientEmail).toBe("robwray@gmail.com");
+  });
+
+  it("skips with a terminal SKIPPED row when no admin is allowlisted and outbound is disabled", async () => {
+    process.env.OUTBOUND_ENABLED = "false";
+    process.env.OUTBOUND_ALLOWLIST = "person@example.com";
+    resetEnvCache();
+    expect(await sendAdminNewMemory(adminContent)).toEqual({ sent: false, skipped: "outbound_disabled" });
+    expect(adminRow()).toMatchObject({ status: "SKIPPED", errorMessage: "outbound_disabled" });
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("marks FAILED with attempts and nextAttemptAt when SendGrid fails", async () => {
+    sendMock.mockRejectedValue(Object.assign(new Error("bad"), { code: 401 }));
+    const result = await sendAdminNewMemory(adminContent);
+    expect(result).toMatchObject({ sent: false, skipped: "failed" });
+    expect(adminRow()).toMatchObject({ status: "FAILED", attempts: 1 });
+    expect(adminRow()?.nextAttemptAt).toBeInstanceOf(Date);
+  });
+
+  it("never touches the memory's claim hash", async () => {
+    memoryUpdateMock.mockClear();
+    await sendAdminNewMemory(adminContent);
+    expect(memoryUpdateMock).not.toHaveBeenCalled();
+    expect(dbStub.$transaction).not.toHaveBeenCalledWith(expect.arrayContaining([expect.anything(), expect.anything()]));
+  });
+
+  it("a render error leaves no SENDING row behind (rendering happens before the claim)", async () => {
+    const bad = { ...adminContent, media: [{ kind: "PHOTO" as const, originalFilename: "x.jpg", durationSeconds: null, preview: { contentId: "bad id<", contentBase64: "aGVhcnQ=", width: 10, height: 10 } }] };
+    await expect(sendAdminNewMemory(bad)).rejects.toThrow(/content id/i);
+    expect(rows.filter((r) => r.status === "SENDING")).toHaveLength(0);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("two email types on one memory", () => {
+  beforeEach(() => {
+    process.env.OUTBOUND_ENABLED = "true";
+    resetEnvCache();
+  });
+
+  it("confirmation then admin, and admin then confirmation, each produce their own SENT row", async () => {
+    expect((await sendMemoryConfirmation(base)).sent).toBe(true);
+    expect((await sendAdminNewMemory(adminContent)).sent).toBe(true);
+    expect(confirmationRow()?.status).toBe("SENT");
+    expect(adminRow()?.status).toBe("SENT");
+    rows.length = 0;
+    sendMock.mockClear();
+    expect((await sendAdminNewMemory(adminContent)).sent).toBe(true);
+    expect((await sendMemoryConfirmation(base)).sent).toBe(true);
+    expect(sendMock).toHaveBeenCalledTimes(2);
+    expect(rows).toHaveLength(2);
+  });
+
+  it("concurrently: both send exactly once", async () => {
+    const [a, b] = await Promise.all([sendMemoryConfirmation(base), sendAdminNewMemory(adminContent)]);
+    expect(a.sent && b.sent).toBe(true);
+    expect(sendMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("one type failing or skipping never changes the other", async () => {
+    sendMock.mockRejectedValueOnce(Object.assign(new Error("bad"), { code: 401 }));
+    expect((await sendMemoryConfirmation(base)).sent).toBe(false);
+    expect((await sendAdminNewMemory(adminContent)).sent).toBe(true);
+    expect(confirmationRow()?.status).toBe("FAILED");
+    expect(adminRow()?.status).toBe("SENT");
+  });
+
+  it("admin rows never count toward a contributor's daily cap, even when the addresses overlap", async () => {
+    process.env.OUTBOUND_ENABLED = "false";
+    process.env.OUTBOUND_ALLOWLIST = "robwray@gmail.com";
+    process.env.ADMIN_ALERT_EMAILS = "robwray@gmail.com";
+    resetEnvCache();
+    for (let i = 1; i <= 3; i += 1) {
+      expect((await sendAdminNewMemory({ ...adminContent, memoryId: `mem_${i}` })).sent).toBe(true);
+    }
+    expect((await sendMemoryConfirmation({ ...base, memoryId: "mem_4", to: "robwray@gmail.com" })).sent).toBe(true);
+  });
+});
+
 describe("transport attachments", () => {
   it("sends inline attachments with a content id and keeps tracking off", async () => {
     const { SendGridTransport } = await import("@/integrations/sendgrid");
@@ -224,7 +392,8 @@ describe("transport attachments", () => {
       attachments: [{ filename: "heart.png", contentType: "image/png", contentBase64: "aGVhcnQ=", contentId: "brand-heart" }],
     });
     const msg = sendMock.mock.calls[0]?.[0] as { attachments?: unknown[]; trackingSettings: { openTracking: { enable: boolean }; clickTracking: { enable: boolean } } };
-    expect(msg.attachments).toEqual([{ content: "aGVhcnQ=", filename: "heart.png", type: "image/png", disposition: "inline", contentId: "brand-heart" }]);
+    // `content_id` is the v3 API field name; SendGrid answers 400 "content_id parameter is required if disposition = 'inline'" to `contentId`.
+    expect(msg.attachments).toEqual([{ content: "aGVhcnQ=", filename: "heart.png", type: "image/png", disposition: "inline", content_id: "brand-heart" }]);
     expect(msg.trackingSettings.openTracking.enable).toBe(false);
     expect(msg.trackingSettings.clickTracking.enable).toBe(false);
   });
@@ -242,6 +411,27 @@ describe("transport attachments", () => {
     await new SendGridTransport().send({ to: base.to, from: "memories@jowray.com", subject: "s", text: "t", html: "<p>t</p>" });
     const msg = sendMock.mock.calls[0]?.[0] as Record<string, unknown>;
     expect("attachments" in msg).toBe(false);
+  });
+
+  it("passes an array of recipients through as one message", async () => {
+    const { SendGridTransport } = await import("@/integrations/sendgrid");
+    await new SendGridTransport().send({ to: ["a@example.com", "b@example.org"], from: "memories@jowray.com", subject: "s", text: "t", html: "<p>t</p>" });
+    const msg = sendMock.mock.calls[0]?.[0] as { to: unknown };
+    expect(msg.to).toEqual(["a@example.com", "b@example.org"]);
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the request timeout together with the API key, once per key", async () => {
+    // Fresh module state: `configuredKey` lives in the client module, so earlier tests in this file already configured it.
+    vi.resetModules();
+    setTimeoutMock.mockClear();
+    const { getSendGridClient, SENDGRID_REQUEST_TIMEOUT_MS } = await import("@/integrations/sendgrid/client");
+    getSendGridClient();
+    getSendGridClient();
+    expect(SENDGRID_REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(5_000);
+    expect(SENDGRID_REQUEST_TIMEOUT_MS).toBeLessThanOrEqual(15_000);
+    expect(setTimeoutMock).toHaveBeenCalledTimes(1);
+    expect(setTimeoutMock).toHaveBeenCalledWith(SENDGRID_REQUEST_TIMEOUT_MS);
   });
 });
 
