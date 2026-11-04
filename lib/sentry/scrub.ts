@@ -57,18 +57,86 @@ export function isSecretKey(key: string): boolean {
 }
 
 // Server Function inputs and results reach Sentry as serialized text too
-// (`request.data`, recorded responses, replay network bodies), sometimes
-// double-encoded (the Blob client's `clientPayload` is a JSON string inside
-// JSON). Text that parses as JSON is scrubbed as a value, which handles any
-// nesting and any encoding depth; text that does not parse (truncated bodies,
-// `key=value` fragments) goes through this regex, which matches a JSON member
-// whose key is a secret, quotes escaped or not, and replaces its value up to
-// the next unescaped quote, bracket or brace, or the end of the text.
+// (`request.data`, recorded responses, replay network bodies, log messages),
+// sometimes double-encoded (the Blob client's `clientPayload` is a JSON string
+// inside JSON) and sometimes as React Flight lines (`1:{...}`), which are not
+// standalone JSON. Text that parses as JSON is scrubbed as a value, which
+// handles any nesting and any encoding depth. Everything else goes through a
+// scanner: every JSON member whose key is a secret (quotes escaped or not) has
+// its whole value replaced, however deeply nested, and a value cut off by
+// truncation is replaced to the end of the text (fail closed).
 const JSON_SECRET_KEY = `(?:${SECRET_FIELD_KEYS.join("|")}|[^"\\\\]*(?:${SECRET_KEY_FRAGMENTS.join("|")})[^"\\\\]*)`;
-const JSON_SECRET_MEMBER = new RegExp(
-  `\\\\?"(${JSON_SECRET_KEY})\\\\?"\\s*:\\s*(?:\\\\?"(?:[^"\\\\]|\\\\.)*"?|\\[[^\\]]*\\]?|\\{[^}]*\\}?|[^,}\\]\\s]*)`,
-  "gi"
-);
+const SECRET_MEMBER_KEY = new RegExp(`(\\\\?")(${JSON_SECRET_KEY})(\\\\?")\\s*:\\s*`, "gi");
+
+/** Index just past a JSON string starting at `i` (after its opening quote). `escaped`: the string lives inside an outer JSON string, so its quotes are `\"`. */
+function stringEnd(text: string, i: number, escaped: boolean): number {
+  while (i < text.length) {
+    const c = text[i];
+    if (c === "\\") {
+      if (escaped && text[i + 1] === '"') {
+        return i + 2; // `\"` closes an escaped string
+      }
+      i += escaped && text[i + 1] === "\\" ? 4 : 2; // `\\\\` is one escaped backslash; `\x` is one plain escape
+      continue;
+    }
+    if (c === '"' && !escaped) {
+      return i + 1;
+    }
+    i += 1;
+  }
+  return text.length;
+}
+
+/** Index just past the JSON value starting at `i`, or `text.length` when the value is cut off. */
+function valueEnd(text: string, i: number, escaped: boolean): number {
+  const opensString = (at: number): number => (text[at] === '"' ? 1 : escaped && text[at] === "\\" && text[at + 1] === '"' ? 2 : 0);
+  const quote = opensString(i);
+  if (quote > 0) {
+    return stringEnd(text, i + quote, escaped);
+  }
+  if (text[i] === "[" || text[i] === "{") {
+    let depth = 0;
+    let at = i;
+    while (at < text.length) {
+      const c = text[at];
+      const q = opensString(at);
+      if (q > 0) {
+        at = stringEnd(text, at + q, escaped);
+        continue;
+      }
+      if (c === "[" || c === "{") {
+        depth += 1;
+      } else if (c === "]" || c === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          return at + 1;
+        }
+      }
+      at += 1;
+    }
+    return text.length;
+  }
+  const scalar = /[^,}\]\s]*/y;
+  scalar.lastIndex = i;
+  return i + (scalar.exec(text)?.[0].length ?? 0);
+}
+
+function scrubMembers(text: string): string {
+  let out = "";
+  let last = 0;
+  SECRET_MEMBER_KEY.lastIndex = 0;
+  for (let match = SECRET_MEMBER_KEY.exec(text); match !== null; match = SECRET_MEMBER_KEY.exec(text)) {
+    if (match.index < last) {
+      continue; // inside a value already replaced
+    }
+    const [whole, open, key, close] = match;
+    const end = valueEnd(text, match.index + whole.length, open === '\\"');
+    out += `${text.slice(last, match.index)}${open}${key}${close}:"${FILTERED}"`;
+    last = end;
+    SECRET_MEMBER_KEY.lastIndex = end;
+  }
+  return out + text.slice(last);
+}
 
 function scrubText(text: string, depth: number): string {
   if (text.length > 1 && (text[0] === "{" || text[0] === "[") && depth <= MAX_DEPTH) {
@@ -76,21 +144,24 @@ function scrubText(text: string, depth: number): string {
     try {
       parsed = JSON.parse(text) as unknown;
     } catch {
-      parsed = undefined; // not JSON (or cut off): the regex below is the fallback
+      parsed = undefined; // not JSON (or cut off): the scanner below is the fallback
     }
     if (parsed !== undefined && typeof parsed === "object" && parsed !== null) {
       return JSON.stringify(scrubValue(parsed, depth + 1));
     }
   }
-  return scrubUrl(text.replace(JSON_SECRET_MEMBER, `"$1":"${FILTERED}"`));
+  return scrubUrl(scrubMembers(text));
 }
 
 function scrubValue(value: unknown, depth: number): unknown {
   if (typeof value === "string") {
     return scrubText(value, depth);
   }
-  if (depth > MAX_DEPTH || value === null || typeof value !== "object") {
+  if (value === null || typeof value !== "object") {
     return value;
+  }
+  if (depth > MAX_DEPTH) {
+    return FILTERED; // never let an uninspected subtree through (cycles end here too)
   }
   if (Array.isArray(value)) {
     return value.map((entry) => scrubValue(entry, depth + 1));
@@ -111,14 +182,19 @@ export function scrubSecrets(value: unknown): unknown {
   return scrubValue(value, 0);
 }
 
+/** One string (a message, a description, a header value): claim URLs and serialized secret members removed. */
+export function scrubString(text: string): string {
+  return scrubText(text, 0);
+}
+
 const SECRET_HEADER_SET = new Set<string>(SECRET_HEADER_KEYS);
 
-/** Drops the bearer headers (case-insensitive) and keeps the rest. */
+/** Drops the bearer and routing headers (case-insensitive); the kept values lose claim URLs (`next-url`, `referer`). */
 export function scrubHeaders<H extends Record<string, unknown>>(headers: H): H {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(headers)) {
     if (!SECRET_HEADER_SET.has(key.toLowerCase())) {
-      out[key] = value;
+      out[key] = typeof value === "string" ? scrubString(value) : value;
     }
   }
   return out as H;
@@ -172,7 +248,7 @@ export function scrubEvent<E extends Event>(event: E): E {
 
 export function scrubBreadcrumb(breadcrumb: Breadcrumb): Breadcrumb {
   if (breadcrumb.message) {
-    breadcrumb.message = scrubUrl(breadcrumb.message);
+    breadcrumb.message = scrubString(breadcrumb.message);
   }
   if (breadcrumb.data) {
     breadcrumb.data = scrubSecrets(breadcrumb.data) as typeof breadcrumb.data;
@@ -187,10 +263,10 @@ export function scrubBreadcrumb(breadcrumb: Breadcrumb): Breadcrumb {
  */
 export function scrubSpan<S extends StreamedSpan>(span: S): S {
   if (typeof span.description === "string") {
-    span.description = scrubUrl(span.description);
+    span.description = scrubString(span.description);
   }
   if (typeof span.name === "string") {
-    span.name = scrubUrl(span.name);
+    span.name = scrubString(span.name);
   }
   if (span.data) {
     span.data = scrubSecrets(span.data) as S["data"];
@@ -213,7 +289,7 @@ export interface ScrubbableLog {
  */
 export function scrubLog<L extends ScrubbableLog>(log: L): L {
   if (typeof log.message === "string") {
-    log.message = scrubUrl(log.message);
+    log.message = scrubString(log.message);
   }
   if (log.attributes) {
     log.attributes = scrubSecrets(log.attributes) as L["attributes"];

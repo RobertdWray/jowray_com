@@ -6,7 +6,18 @@ import { scrubBreadcrumb, scrubEvent, scrubLog, scrubSpan } from "@/lib/sentry/s
 import { instrumentedAction } from "@/lib/sentry/server-action";
 
 // `headers()` only works inside a request; the wrapper reads it for trace propagation.
-vi.mock("next/headers", () => ({ headers: async () => new Headers({ "x-forwarded-for": "203.0.113.9" }) }));
+// The headers a Server Function POST from a claim page carries: Next's router state encodes the claim-token
+// segment, and the Vercel protection cookie rides along on a protected preview.
+const ROUTE_TOKEN = "SENTRYTEST_" + "h".repeat(32);
+vi.mock("next/headers", () => ({
+  headers: async () =>
+    new Headers({
+      "x-forwarded-for": "203.0.113.9",
+      "next-router-state-tree": encodeURIComponent(JSON.stringify(["", { children: ["m", { children: [["claimToken", "SENTRYTEST_" + "h".repeat(32), "d"], { children: ["__PAGE__", {}] }] }] }])),
+      "next-url": "/m/SENTRYTEST_" + "h".repeat(32),
+      cookie: "_vercel_jwt=SENTRYTEST_" + "j".repeat(32),
+    }),
+}));
 
 /**
  * The decisive gate for the expanded data policy (plan §7.4): the real server
@@ -86,6 +97,8 @@ describe("server SDK envelopes with the alpha data policy", () => {
       Sentry.captureException(error);
     }
     Sentry.logger.info(`confirming /m/${CLAIM_TOKEN}`, { claimLink: `https://preview.test/m/${CLAIM_TOKEN}` });
+    // console.warn of a serialized object becomes a Sentry Log *message* (consoleLoggingIntegration in the browser).
+    Sentry.logger.warn(`upload refused ${JSON.stringify({ ticket: { sig: TICKET_SIG, pathname: "uploads/x" } })}`);
     await Sentry.flush(5000);
 
     expect(sent.length).toBeGreaterThan(0);
@@ -135,6 +148,10 @@ describe("instrumentedAction (plan §8.5)", () => {
     const envelope = sent.slice(before).find((item) => item.includes("inside the action"));
     expect(envelope).toBeDefined();
     expect(envelope).toContain('"transaction":"serverAction/createSubmission"');
+    expect(envelope).toContain("x-forwarded-for");
+    expect(envelope).not.toContain("next-router-state-tree");
+    expect(envelope).not.toContain("_vercel_jwt");
+    expect(envelope).not.toContain(ROUTE_TOKEN);
     expect(envelope).toContain('"server_action_input":{"email":"sentry-test@jowray.com","memories":[{"note":"hi","files":[{"name":"a.jpg"}]}],"claimTokens":"[Filtered]"}');
     expect(envelope).not.toContain("SENTRYTEST_");
   });

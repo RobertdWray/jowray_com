@@ -125,7 +125,7 @@ describe("secrets constants", () => {
   it("name the bearer fields, key fragments and headers", () => {
     expect(SECRET_FIELD_KEYS).toEqual(["claimToken", "claimTokens", "claimLink", "ticket", "clientPayload", "sig", "key"]);
     expect(SECRET_KEY_FRAGMENTS).toEqual(["token", "ticket"]);
-    expect(SECRET_HEADER_KEYS).toEqual(["cookie", "authorization", "x-vercel-protection-bypass", "x-vercel-signature"]);
+    expect(SECRET_HEADER_KEYS).toEqual(["cookie", "authorization", "x-vercel-protection-bypass", "x-vercel-signature", "next-router-state-tree"]);
   });
 });
 
@@ -304,5 +304,65 @@ describe("scrubReplayEvent covers every event type beforeSend never sees", () =>
     const replay = scrubReplayEvent({ type: "replay_event", request: { url: `https://www.jowray.com/m/${TEST_TOKEN}?t=${TEST_TOKEN}` }, urls: [`/m/${TEST_TOKEN}`] } as never);
     expect(JSON.stringify(replay)).not.toContain(TEST_TOKEN);
     expect((replay as { urls: string[] }).urls).toEqual(["/m/[claimToken]"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Team Code Review (Oscar, 2026-11-04): headers, messages, Flight text, depth.
+// ---------------------------------------------------------------------------
+describe("scrubHeaders drops Next's routing headers and scrubs URL-bearing values", () => {
+  it("removes next-router-state-tree (the encoded router state carries the claim-token segment) and scrubs next-url and referer", () => {
+    const tree = encodeURIComponent(JSON.stringify(["", { children: ["m", { children: [["claimToken", TEST_TOKEN, "d"], { children: ["__PAGE__", {}] }] }] }]));
+    const out = scrubHeaders({ "Next-Router-State-Tree": tree, "next-url": `/m/${TEST_TOKEN}`, referer: `https://www.jowray.com/m/${TEST_TOKEN}`, "content-type": "text/plain" });
+    expect(JSON.stringify(out)).not.toContain(TEST_TOKEN);
+    expect(out["Next-Router-State-Tree"]).toBeUndefined();
+    expect(out["next-url"]).toBe("/m/[claimToken]");
+    expect(out["content-type"]).toBe("text/plain");
+    expect(SECRET_HEADER_KEYS).toContain("next-router-state-tree");
+  });
+});
+
+describe("messages get the same key-aware scrubbing as attributes", () => {
+  it("scrubs a serialized ticket in a log message, a breadcrumb message and a span description", () => {
+    const text = JSON.stringify({ ticket: { sig: TEST_TOKEN }, note: "keep" });
+    expect(scrubLog({ message: `upload refused ${text}` }).message).not.toContain(TEST_TOKEN);
+    expect(scrubLog({ message: text }).message).toContain("keep");
+    expect(scrubBreadcrumb({ message: `console: {"sig":"${TEST_TOKEN}"}` }).message).not.toContain(TEST_TOKEN);
+    expect(scrubSpan({ description: `POST /share {"claimTokens":["${TEST_TOKEN}"]}` }).description).not.toContain(TEST_TOKEN);
+  });
+});
+
+describe("the non-JSON fallback fails closed on React Flight text", () => {
+  it("filters nested arrays and objects under a secret key inside a record-prefixed line", () => {
+    const flight = `1:{"claimTokens":[["${TEST_TOKEN}"],["${TEST_TOKEN_2}"]],"anchorId":"mem_1"}\n2:{"ticket":{"sig":"${TEST_TOKEN}","inner":{"deep":[1,2]}},"ok":true}\n`;
+    const out = scrubSecrets(flight) as string;
+    expect(out).not.toContain("SENTRYTEST_");
+    expect(out).toContain('"anchorId":"mem_1"');
+    expect(out).toContain('"ok":true');
+  });
+
+  it("filters escaped keys and values in Flight text, and a truncated nested value to the end of the text", () => {
+    const escaped = `0:["$@1",{\\"claimToken\\":\\"${TEST_TOKEN}\\",\\"note\\":\\"n\\"}]`;
+    expect(scrubSecrets(escaped)).not.toContain(TEST_TOKEN);
+    const truncated = `1:{"ticket":{"sig":"${TEST_TOKEN}","inner":{"deep":[1,`;
+    expect(scrubSecrets(truncated)).not.toContain(TEST_TOKEN);
+  });
+});
+
+describe("the depth cap fails closed", () => {
+  it("replaces anything deeper than the cap with the filtered marker, in objects and in serialized bodies", () => {
+    const root: Record<string, unknown> = {};
+    let cursor = root;
+    for (let depth = 0; depth < 25; depth += 1) {
+      const next: Record<string, unknown> = {};
+      cursor.child = next;
+      cursor = next;
+    }
+    cursor.claimToken = TEST_TOKEN;
+    cursor.note = "deep";
+    expect(JSON.stringify(scrubSecrets(root))).not.toContain(TEST_TOKEN);
+    expect(scrubSecrets(JSON.stringify(root))).not.toContain(TEST_TOKEN);
+    const shallow = { a: { b: { claimToken: TEST_TOKEN, note: "keep" } } };
+    expect(scrubSecrets(shallow)).toEqual({ a: { b: { claimToken: FILTERED, note: "keep" } } });
   });
 });
