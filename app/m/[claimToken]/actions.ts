@@ -5,6 +5,7 @@ import {
   type ClaimMediaResult,
   removeMediaFromClaim,
   type ClaimUpdateResult,
+  updateMediaFromClaim as updateMediaFromClaimFeature,
   updateMemoryFromClaim,
 } from "@/features/memories/claim";
 import {
@@ -46,4 +47,8 @@ export async function cancelReservation(input: unknown): Promise<ClaimMediaResul
 /** A fresh ticket for a file that was reserved but never arrived ("Try again"); the same path the share page uses per file. */
 export async function retryUploadTicket(input: unknown): Promise<IssueTicketResult> {
   return issueUploadTicketFeature(input);
+}
+
+export async function updateMediaWords(input: unknown): Promise<ClaimMediaResult> {
+  return updateMediaFromClaimFeature(input);
 }

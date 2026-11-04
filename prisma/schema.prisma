@@ -135,7 +135,7 @@ model Memory {
   claimTokenHash  String         @unique     // sha256 of the 32-byte base64url token; the raw token is never stored [C1]
   submissionId    String?                    // memories sent together from /share share one id; legacy rows are NULL (Task 15)
   submissionIndex Int?                       // 0..N-1 within the send; 0 is the anchor that carries the lease and the email row
-  uploadLeaseUntil DateTime?                 // anchor only: while live, the cron must not email or rotate the send's tokens
+  uploadLeaseUntil DateTime?                 // submission lease on the anchor (index 0; legacy rows carry their own): while live, the cron must not email or rotate
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
   deletedAt       DateTime?
@@ -166,6 +166,9 @@ model Media {
   height           Int?
   capturedAt       DateTime?                // from EXIF when present
   exif             Json?
+  caption          String?                  // per-file words from the contributor (max 2000); the memory's contributorNote stays the shared story
+  approxDateText   String?                  // per-file "roughly when" (max 120), independent of the memory's
+  place            String?                  // per-file "where" (max 200), independent of the memory's
   deletedAt        DateTime?                // soft delete: removed file, cancelled reservation or cancelled replacement; blobs purged by cron step (f)
   replacesMediaId  String?                  // set on a PENDING replacement; the target is retired when this row reaches READY (one-to-many so a FAILED attempt can be retried)
   sortOrder        Int         @default(0)  // display order chosen by the contributor; a replacement copies its target's

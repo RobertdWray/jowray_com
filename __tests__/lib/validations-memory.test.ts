@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { createSubmissionInputSchema, fileInputSchema, uploadTicketRequestSchema } from "@/lib/validations/memory";
+import { MAX_FILES_PER_MEMORY } from "@/lib/media-types";
+import { createSubmissionInputSchema, fileInputSchema, memoryFileInputSchema, submissionMemorySchema, uploadTicketRequestSchema } from "@/lib/validations/memory";
 
 const textOnly = { memories: [{ note: "She once taught me to quilt.", files: [] }] };
 const file = { name: "clip.webm", type: "audio/webm;codecs=opus", size: 10 };
@@ -57,9 +58,24 @@ describe("memory file validation", () => {
     expect(parsed.memories[0]?.files[0]?.durationSeconds).toBe(24);
   });
 
-  it("accepts a claim-page upload ticket without a duration", () => {
+  it("a card takes up to the per-memory cap of files and needs a file or a few words", () => {
+    const files = Array.from({ length: MAX_FILES_PER_MEMORY }, (_, i) => ({ ...file, name: `f${i}.webm` }));
+    expect(submissionMemorySchema.parse({ files }).files).toHaveLength(MAX_FILES_PER_MEMORY);
+    expect(submissionMemorySchema.safeParse({ files: [...files, file] }).success).toBe(false);
+    expect(submissionMemorySchema.safeParse({ files: [], note: "   " }).success).toBe(false);
+    expect(submissionMemorySchema.safeParse({ files: [file] }).success).toBe(true);
+  });
+
+  it("caps per-file text lengths", () => {
+    expect(memoryFileInputSchema.safeParse({ ...file, caption: "x".repeat(2001) }).success).toBe(false);
+    expect(memoryFileInputSchema.safeParse({ ...file, approxDateText: "x".repeat(121) }).success).toBe(false);
+    expect(memoryFileInputSchema.safeParse({ ...file, place: "x".repeat(201) }).success).toBe(false);
+  });
+
+  it("accepts a claim-page upload ticket without a duration, with optional per-file fields", () => {
     const input = { claimToken: "t".repeat(43), file };
     expect(uploadTicketRequestSchema.parse(input)).toEqual(input);
+    expect(uploadTicketRequestSchema.parse({ ...input, file: { ...file, caption: "the lake" } }).file).toMatchObject({ caption: "the lake" });
   });
 });
 

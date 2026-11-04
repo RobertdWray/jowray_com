@@ -10,7 +10,7 @@ import { extensionFor, MAX_FILES_PER_MEMORY, maxBytesFor, memoryTypeFor, normali
 import { storagePrefix } from "@/lib/site-url";
 import { mintUploadTicket, type UploadTicket } from "@/lib/upload-ticket";
 import { replaceRequestSchema } from "@/lib/validations/media";
-import { type FileInput, uploadTicketRequestSchema } from "@/lib/validations/memory";
+import { type MemoryFileInput, uploadTicketRequestSchema } from "@/lib/validations/memory";
 import { getUploadEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 
@@ -35,9 +35,12 @@ export interface ResolvedFile {
   extension: string;
   originalFilename: string;
   durationSeconds: number | null;
+  caption: string | null;
+  approxDateText: string | null;
+  place: string | null;
 }
 
-export function resolveFile(file: FileInput): ResolvedFile | "unsupported_type" | "too_large" {
+export function resolveFile(file: MemoryFileInput): ResolvedFile | "unsupported_type" | "too_large" {
   const mimeType = normalizeMime(file.type, file.name);
   if (!mimeType) {
     return "unsupported_type";
@@ -49,7 +52,16 @@ export function resolveFile(file: FileInput): ResolvedFile | "unsupported_type" 
   const durationSeconds = memoryTypeFor(mimeType) !== "PHOTO" && file.durationSeconds !== undefined && file.durationSeconds > 0
     ? file.durationSeconds
     : null;
-  return { mimeType, maxBytes, extension: extensionFor(mimeType), originalFilename: file.name.slice(0, 255), durationSeconds };
+  return {
+    mimeType,
+    maxBytes,
+    extension: extensionFor(mimeType),
+    originalFilename: file.name.slice(0, 255),
+    durationSeconds,
+    caption: file.caption ?? null,
+    approxDateText: file.approxDateText ?? null,
+    place: file.place ?? null,
+  };
 }
 
 /** True when `addMemories` more memories and `addBytes` more ticketed bytes fit in today's budgets. */
@@ -92,6 +104,9 @@ export async function createPendingMediaRow(
       maxBytes: file.maxBytes,
       originalFilename: file.originalFilename,
       durationSeconds: file.durationSeconds,
+      caption: file.caption,
+      approxDateText: file.approxDateText,
+      place: file.place,
       status: "PENDING",
       sortOrder: placement.sortOrder,
       replacesMediaId: placement.replacesMediaId,
@@ -141,6 +156,7 @@ export async function createUploadTicket(raw: unknown): Promise<UploadTicketResu
     if (!(await withinBudget(tx, file.maxBytes, 0))) {
       return "budget_exceeded" as const;
     }
+    // No lease here: the memory's one email was handled with its first submission; cron must not be held off.
     return createPendingMedia(tx, memory.id, file, { sortOrder: await nextSortOrder(tx, memory.id), replacesMediaId: null });
   }, TX_OPTIONS);
   if (typeof result === "string") {
@@ -187,7 +203,14 @@ export async function createReplacementTicket(raw: unknown): Promise<UploadTicke
     if (!(await withinBudget(tx, file.maxBytes, 0))) {
       return "budget_exceeded" as const;
     }
-    return createPendingMedia(tx, memory.id, file, { sortOrder: target.sortOrder, replacesMediaId: target.id });
+    // The replacement keeps the target's words unless the contributor typed new ones.
+    const inherited: ResolvedFile = {
+      ...file,
+      caption: file.caption ?? target.caption,
+      approxDateText: file.approxDateText ?? target.approxDateText,
+      place: file.place ?? target.place,
+    };
+    return createPendingMedia(tx, memory.id, inherited, { sortOrder: target.sortOrder, replacesMediaId: target.id });
   }, TX_OPTIONS);
   if (typeof result === "string") {
     return { ok: false, code: result };

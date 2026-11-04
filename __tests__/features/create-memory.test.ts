@@ -5,7 +5,7 @@ import { verifyUploadTicket } from "@/lib/upload-ticket";
 import { resetEnvCache } from "@/server/config/env";
 
 interface MemoryRow { id: string; memorialId: string; contributorId: string; type: string; source: string; status: string; claimTokenHash: string; consentVersion: string; consentedAt: Date; createdAt: Date; deletedAt: Date | null; approxDateText: string | null; contributorNote: string | null; visibility: string; notifyWhenPosted: boolean; submissionId?: string | null; submissionIndex?: number | null; uploadLeaseUntil?: Date | null }
-interface MediaRow { id: string; memoryId: string; storageKey: string; mimeType: string; maxBytes: number; status: string; createdAt: Date; originalFilename: string | null; durationSeconds?: number | null; deletedAt: Date | null; sortOrder: number; replacesMediaId: string | null }
+interface MediaRow { id: string; memoryId: string; storageKey: string; mimeType: string; maxBytes: number; status: string; createdAt: Date; originalFilename: string | null; durationSeconds?: number | null; deletedAt: Date | null; sortOrder: number; replacesMediaId: string | null; caption?: string | null; approxDateText?: string | null; place?: string | null }
 const lockCalls: string[] = [];
 function matchesMedia(row: MediaRow, where: Record<string, unknown>): boolean {
   for (const [k, v] of Object.entries(where)) {
@@ -32,6 +32,7 @@ const tx = {
     count: vi.fn(async ({ where }: { where?: { createdAt?: { gt: Date } } } = {}) => memories.filter((m) => !where?.createdAt || m.createdAt > where.createdAt.gt).length),
     create: vi.fn(async ({ data }: { data: Omit<MemoryRow, "id" | "createdAt" | "deletedAt"> }) => { const row: MemoryRow = { id: `mem_${memories.length + 1}`, createdAt: new Date(), deletedAt: null, submissionId: null, submissionIndex: null, uploadLeaseUntil: null, ...data }; memories.push(row); return row; }),
     findUnique: vi.fn(async ({ where }: { where: { claimTokenHash: string } }) => memories.find((m) => m.claimTokenHash === where.claimTokenHash) ?? null),
+    update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MemoryRow> }) => { const m = memories.find((x) => x.id === where.id)!; Object.assign(m, data); return m; }),
   },
   media: {
     aggregate: vi.fn(async ({ where }: { where?: { createdAt?: { gt: Date } } } = {}) => ({ _sum: { maxBytes: medias.filter((m) => !where?.createdAt || m.createdAt > where.createdAt.gt).reduce((s, m) => s + m.maxBytes, 0) || null } })),
@@ -97,6 +98,7 @@ describe("createUploadTicket cap counts live rows only", () => {
     }
     expect(lockCalls.at(-1)).toContain("FOR UPDATE|mem_1");
     expect(await createUploadTicket({ claimToken: created.claimToken, file: { name: "p.jpg", type: "image/jpeg", size: 1 } })).toEqual({ ok: false, code: "too_many_files" });
+    expect(memories[0]!.uploadLeaseUntil ?? null).toBeNull();
     medias[3]!.deletedAt = new Date();
     expect((await createUploadTicket({ claimToken: created.claimToken, file: { name: "again.jpg", type: "image/jpeg", size: 1 } })).ok).toBe(true);
     expect(medias.at(-1)!.sortOrder).toBe(10);
@@ -106,8 +108,9 @@ describe("createUploadTicket cap counts live rows only", () => {
 describe("createReplacementTicket", () => {
   async function seeded() {
     const created = await seedMemory();
-    medias.push({ id: "med_1", memoryId: created.memoryId, storageKey: "k", mimeType: "image/jpeg", maxBytes: 1, status: "PENDING", createdAt: new Date(), originalFilename: "a.jpg", deletedAt: null, sortOrder: 0, replacesMediaId: null });
+    medias.push({ id: "med_1", memoryId: created.memoryId, storageKey: "k", mimeType: "image/jpeg", maxBytes: 1, status: "PENDING", createdAt: new Date(), originalFilename: "a.jpg", deletedAt: null, sortOrder: 0, replacesMediaId: null, caption: "first", approxDateText: "1998", place: "the lake" });
     if (!created.ok) { throw new Error("setup"); }
+    memories[0]!.uploadLeaseUntil = null; // the submission was completed
     medias[0]!.status = "READY";
     medias[0]!.sortOrder = 4;
     medias[0]!.id = "00000000-0000-4000-8000-000000000001";
@@ -120,7 +123,9 @@ describe("createReplacementTicket", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) { return; }
     expect(lockCalls.at(-1)).toContain("FOR UPDATE|mem_1");
-    expect(medias[1]).toMatchObject({ status: "PENDING", replacesMediaId: "00000000-0000-4000-8000-000000000001", sortOrder: 4, mimeType: "image/heic" });
+    expect(medias[1]).toMatchObject({ status: "PENDING", replacesMediaId: "00000000-0000-4000-8000-000000000001", sortOrder: 4, mimeType: "image/heic", caption: "first", approxDateText: "1998", place: "the lake" });
+    // Claim-page tickets do not reopen the submission lease: the memory's one email was already handled.
+    expect(memories[0]!.uploadLeaseUntil ?? null).toBeNull();
     expect(verifyUploadTicket(result.upload.ticket).ok).toBe(true);
   });
 

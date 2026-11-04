@@ -298,7 +298,8 @@ export async function completeSubmission(raw: unknown, options: CompletionOption
   const liveIds = liveOfSend.map((m) => m.id);
   afterWithFlush(async () => {
     for (const memoryId of liveIds) {
-      await notifyAdminsQuietly(memoryId);
+      // The send is settled: alert with what arrived, whatever is still marked in flight.
+      await notifyAdminsQuietly(memoryId, { settleNow: true });
     }
   });
   log.info({ action: "submission_completed", memoryId: anchorId, memories: liveIds.length, emailed }, "submission completed");

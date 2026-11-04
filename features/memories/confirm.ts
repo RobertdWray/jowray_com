@@ -1,6 +1,6 @@
 import "server-only";
 
-import { summarizeReadyMedia } from "@/features/memories/media-summary";
+import { submissionInFlight, summarizeReadyMedia } from "@/features/memories/media-summary";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { getSiteUrl } from "@/lib/site-url";
@@ -9,7 +9,7 @@ import { sendMemoryConfirmation, type SendResult } from "@/services/email";
 
 const log = createLogger({ category: "email" });
 
-export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "no_email" | "not_ready" | "in_submission" };
+export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "no_email" | "not_ready" | "in_submission" | "leased" };
 
 /**
  * Send the one confirmation email for a memory, if there is an address and
@@ -28,7 +28,16 @@ export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "
  * therefore supersedes the on-screen one (ledger ruling), and a skipped or
  * failed send changes nothing.
  */
-export async function confirmMemory({ memoryId, claimToken }: { memoryId: string; claimToken?: string }): Promise<ConfirmResult> {
+export async function confirmMemory({
+  memoryId,
+  claimToken,
+  settleNow = false,
+}: {
+  memoryId: string;
+  claimToken?: string;
+  /** The submission is being closed by its contributor: send with what is READY now, whatever is still in flight. */
+  settleNow?: boolean;
+}): Promise<ConfirmResult> {
   const db = getDb();
   const memory = await db.memory.findUnique({
     where: { id: memoryId },
@@ -36,7 +45,7 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
       contributor: { select: { name: true, email: true, relationship: true } },
       media: {
         where: { deletedAt: null },
-        select: { id: true, status: true, mimeType: true, originalFilename: true, durationSeconds: true },
+        select: { id: true, status: true, mimeType: true, originalFilename: true, durationSeconds: true, createdAt: true },
         orderBy: { createdAt: "asc" },
       },
     },
@@ -66,8 +75,17 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
   if (memory.type !== "TEXT" && media.length === 0 && !hasWords) {
     return { sent: false, skipped: "not_ready" };
   }
+  // The one email should list the whole submission; completeSubmission settles regardless.
+  if (!settleNow && submissionInFlight(memory)) {
+    return { sent: false, skipped: "not_ready" };
+  }
 
   const rotating = claimToken === undefined;
+  // The cron (no raw token) rotates the link; it must not do that while the
+  // contributor is still sending files with the link they have.
+  if (rotating && memory.uploadLeaseUntil !== null && memory.uploadLeaseUntil.getTime() > Date.now()) {
+    return { sent: false, skipped: "leased" };
+  }
   const token = claimToken ?? newClaimToken();
 
   // Cron path: the service writes the new hash together with SENT in one

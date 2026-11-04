@@ -24,6 +24,17 @@ const optionalText = (max: number) =>
     .nullable()
     .optional();
 
+/** A file's own words (the memory keeps its own); the claim page edits them, and a claim-page add or replacement may carry them. */
+export const mediaWordsFields = {
+  caption: optionalText(2000),
+  approxDateText: optionalText(120),
+  place: optionalText(200),
+} as const;
+
+/** What the browser knows about a file plus, optionally, the contributor's words for that file. */
+export const memoryFileInputSchema = fileInputSchema.extend(mediaWordsFields);
+export type MemoryFileInput = z.infer<typeof memoryFileInputSchema>;
+
 const NEEDS_CONTENT = "Add a file, a recording, or a few words";
 
 /** Who is sending, and the preferences asked once per send (D5). */
@@ -105,5 +116,5 @@ export const completeSubmissionSchema = z.object({
 
 export const uploadTicketRequestSchema = z.object({
   claimToken: claimTokenSchema,
-  file: fileInputSchema,
+  file: memoryFileInputSchema,
 });
