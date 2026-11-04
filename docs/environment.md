@@ -59,7 +59,7 @@ These are used by the agent running the Phase 1 plan and by GitHub Actions, neve
 |---|---|
 | `MEMORIAL_NAME` | Display name of the one Phase 1 memorial; the seed creates the `Memorial` and its `Person` row from it (`update: {}`, so later edits in Prisma Studio survive). Production + Preview + local `.env`. |
 | `MEMORIAL_SLUG` | URL-safe identifier of that memorial; the seed's upsert key. Production + Preview + local `.env`. |
-| `CONSENT_VERSION` | Version label of the consent sentences in force (e.g. `2026-11-v1`); stored on every memory. The text lives in `docs/consent/<CONSENT_VERSION>.md`. Production + Preview + local `.env`. |
+| `CONSENT_VERSION` | Version label of the consent sentences in force (`2026-11-v2` since the draft-memory feature; stamped when a drafted memory is shared); stored on every memory. The text lives in `docs/consent/<CONSENT_VERSION>.md`. Production + Preview + local `.env`. |
 | `UPLOAD_TICKET_SECRET` | HMAC key (32+ random bytes) for upload tickets minted by `createMemory()` and verified by `/api/upload` and `finalizeUpload()`. Different random values in Production, Preview and local `.env`. Generate with `openssl rand -base64 48`. |
 | `DAILY_MEMORY_BUDGET` | Maximum memories created per rolling 24 h (default 200); beyond it the form answers "try again later". Production + Preview. Cost ceiling; launch value set in Task 10. |
 | `CRON_SECRET` | Bearer secret Vercel Cron sends to `/api/cron/reconcile-uploads`; the route fails closed when it is unset. Production + Preview (and local `.env` for manual runs). Generate with `openssl rand -hex 32`. |
@@ -75,6 +75,8 @@ These are used by the agent running the Phase 1 plan and by GitHub Actions, neve
 | `OUTBOUND_ENABLED` | Strict `"true"`/`"false"`. When false, email goes only to `OUTBOUND_ALLOWLIST`. `true` in Production only. |
 | `OUTBOUND_ALLOWLIST` | Comma-separated addresses that may receive email even when outbound is disabled (lower-cased, trimmed). Production + Preview. |
 | `ADMIN_ALERT_EMAILS` | Comma-separated family-admin addresses that get the "new memory" alert (`ADMIN_NEW_MEMORY`), one message to all of them; trimmed, lower-cased, each validated as an address. Empty or unset turns the alert off (the reconcile cron catches up once it is set). Still subject to `OUTBOUND_ENABLED` / `OUTBOUND_ALLOWLIST`. Production + Preview + local `.env`. |
+| `ADMIN_API_SECRET` | Bearer secret for the admin API (`POST /api/admin/memories`, `POST /api/admin/memories/[id]/claim-link`), used by `scripts/draft-memory.ts` for the `jowray-draft-memory` skill. 32+ characters; the routes answer 401 to everything when it is unset. Production + local `.env` (same value in both). Generate with `openssl rand -hex 32`. |
+| `ADMIN_API_URL` | Where `scripts/draft-memory.ts` posts; default `https://www.jowray.com`. Plain http is refused except to localhost. Set only for a local check. `.env` only, optional. |
 | `NEXT_PUBLIC_SITE_URL` | `https://www.jowray.com` in Production only; previews derive their own host from `VERCEL_BRANCH_URL`, local falls back to `http://localhost:3000`. Production refuses to run without it. |
 
 ## Phase 1: DNS automation
