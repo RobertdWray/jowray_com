@@ -25,7 +25,7 @@ function fakeDeps(options: { uploadFails?: string[]; finalizeAfterFail?: "READY"
     createSubmission: vi.fn(async (input: unknown) => {
       calls.push("create");
       if (options.createFails) {
-        return { ok: false as const, code: "budget_exceeded" as const, message: "Busy", memoryIndex: null, fileIndex: null };
+        return { ok: false as const, code: "budget_exceeded" as const, message: "Busy", memoryIndex: null, fileIndex: null, field: null };
       }
       const cards = (input as { memories: Array<{ files: unknown[] }> }).memories;
       return {
@@ -136,11 +136,18 @@ describe("runSubmission", () => {
   it("when create fails nothing is uploaded, nothing is completed, and the card is named", async () => {
     const { deps, calls } = fakeDeps({ createFails: true });
     const result = await runSubmission({ ...contributor, cards: [card("c1", [media("p1", "PHOTO", 10)])] }, deps, { origin: "https://x" });
-    expect(result).toEqual({ ok: false, code: "budget_exceeded", message: "Busy", memoryIndex: null, fileIndex: null });
+    expect(result).toEqual({ ok: false, code: "budget_exceeded", message: "Busy", memoryIndex: null, fileIndex: null, field: null });
     expect(calls).toEqual(["create"]);
     const { deps: offline } = fakeDeps();
     offline.createSubmission = vi.fn(async () => { throw new TypeError("fetch failed"); });
-    expect(await runSubmission({ ...contributor, cards: [card("c1", [])] }, offline, { origin: "https://x" })).toEqual({ ok: false, code: "unreachable", message: "We couldn't get through just now. Nothing was lost; your words are still here. Check your connection and press Send again.", memoryIndex: null, fileIndex: null });
+    expect(await runSubmission({ ...contributor, cards: [card("c1", [])] }, offline, { origin: "https://x" })).toEqual({ ok: false, code: "unreachable", message: "We couldn't get through just now. Nothing was lost; your words are still here. Check your connection and press Send again.", memoryIndex: null, fileIndex: null, field: null });
+  });
+
+  it("a refusal that names a contributor field passes through untouched, so the form can land it on that field", async () => {
+    const { deps } = fakeDeps();
+    const refusal = { ok: false as const, code: "invalid", message: "Add your email address, please.", memoryIndex: null, fileIndex: null, field: "email" as const };
+    deps.createSubmission = vi.fn(async () => refusal);
+    expect(await runSubmission({ ...contributor, cards: [card("c1", [])] }, deps, { origin: "https://x" })).toEqual(refusal);
   });
 
   it("a send with no files completes on the server: no completion call from the browser", async () => {

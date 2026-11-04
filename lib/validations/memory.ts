@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { MAX_FILES_PER_MEMORY } from "@/lib/media-types";
+import { CONTRIBUTOR_VISIBILITIES } from "@/lib/visibility";
 
 export const MAX_DURATION_SECONDS = 86_400;
 /** Memory cards one send may carry (Task 15). */
@@ -37,22 +38,35 @@ export type MemoryFileInput = z.infer<typeof memoryFileInputSchema>;
 
 const NEEDS_CONTENT = "Add a file, a recording, or a few words";
 
-/** Who is sending, and the preferences asked once per send (D5). */
+/**
+ * Name and email are required since 2026-11-04 (Rob's items 1 and 6, ruling 2):
+ * the family must know whom to thank, and the private link has to go somewhere.
+ * The messages are the ones the form shows under the field and in its summary;
+ * `NAME_REQUIRED_MESSAGE` is DESIGN.md § 5.4 verbatim. Browser and server share
+ * these two schemas so trimming, case and length never disagree.
+ */
+export const NAME_REQUIRED_MESSAGE = "We'll need a name so the family knows who to thank.";
+export const EMAIL_REQUIRED_MESSAGE = "Add your email address, please. It's where your private link goes.";
+export const EMAIL_INVALID_MESSAGE = "That email address doesn't look quite right. Have a look for a typo.";
+
+/** A string that must be there: an omitted or null value gets `message` instead of zod's type error; every other issue keeps its own words. */
+const requiredString = (message: string) =>
+  z.string({ error: (issue) => (issue.input === undefined || issue.input === null ? message : undefined) }).trim();
+
+export const contributorNameSchema = requiredString(NAME_REQUIRED_MESSAGE).min(1, NAME_REQUIRED_MESSAGE).max(120);
+// Trim and lower-case first, then check the format: zod 4's `z.email()` checks the string as given, so it is piped after the overwrites.
+export const contributorEmailSchema = requiredString(EMAIL_REQUIRED_MESSAGE)
+  .toLowerCase()
+  .min(1, EMAIL_REQUIRED_MESSAGE)
+  .max(254, EMAIL_INVALID_MESSAGE)
+  .pipe(z.email(EMAIL_INVALID_MESSAGE));
+
+/** Who is sending, and the preferences asked once per send (D5). PRIVATE is the admins' to set (ruling 3). */
 const contributorFields = {
-  name: optionalText(120),
+  name: contributorNameSchema,
   relationship: optionalText(120),
-  email: z
-    .string()
-    .trim()
-    .toLowerCase()
-    .max(254)
-    .transform((value) => (value.length === 0 ? null : value))
-    .nullable()
-    .optional()
-    .refine((value) => value === null || value === undefined || z.email().safeParse(value).success, {
-      message: "Enter a valid email address",
-    }),
-  visibility: z.enum(["PUBLIC", "FAMILY", "PRIVATE"]).default("PUBLIC"),
+  email: contributorEmailSchema,
+  visibility: z.enum(CONTRIBUTOR_VISIBILITIES).default("PUBLIC"),
   contactOptIn: z.boolean().default(false),
   mailingListOptIn: z.boolean().default(false),
   notifyWhenPosted: z.boolean().default(true),
@@ -86,19 +100,27 @@ export const createSubmissionInputSchema = z.object({
 });
 export type CreateSubmissionInput = z.infer<typeof createSubmissionInputSchema>;
 
+/** The contributor fields a refusal can point at; null when it points at a card, a file, or nothing in particular. */
+export type SubmissionIssueField = "name" | "email" | null;
+
 /**
  * Where a validation issue sits in a send: the path `["memories", 2, "files", 0, "size"]`
- * names card 2 and its first file; a top-level field has neither index.
+ * names card 2 and its first file; `["email"]` names the contributor's email; any
+ * other top-level field has neither index nor field.
  */
 export function submissionIssueLocation(issue: { path: ReadonlyArray<PropertyKey>; message: string }): {
   memoryIndex: number | null;
   fileIndex: number | null;
+  field: SubmissionIssueField;
   message: string;
 } {
-  const [root, memoryIndex, field, fileIndex] = issue.path;
+  const [root, memoryIndex, memoryField, fileIndex] = issue.path;
+  if (issue.path.length === 1 && (root === "name" || root === "email")) {
+    return { memoryIndex: null, fileIndex: null, field: root, message: issue.message };
+  }
   const atMemory = root === "memories" && typeof memoryIndex === "number" ? memoryIndex : null;
-  const atFile = atMemory !== null && field === "files" && typeof fileIndex === "number" ? fileIndex : null;
-  return { memoryIndex: atMemory, fileIndex: atFile, message: issue.message };
+  const atFile = atMemory !== null && memoryField === "files" && typeof fileIndex === "number" ? fileIndex : null;
+  return { memoryIndex: atMemory, fileIndex: atFile, field: null, message: issue.message };
 }
 
 const claimTokenSchema = z.string().min(16).max(128);

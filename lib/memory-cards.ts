@@ -1,6 +1,13 @@
 import type { ClipVerdict } from "@/lib/audio-level";
 import { MAX_FILES_PER_MEMORY, maxBytesFor, memoryTypeFor, normalizeMime, type MediaKind } from "@/lib/media-types";
-import { MAX_MEMORIES_PER_SUBMISSION } from "@/lib/validations/memory";
+import {
+  contributorEmailSchema,
+  contributorNameSchema,
+  EMAIL_REQUIRED_MESSAGE,
+  MAX_MEMORIES_PER_SUBMISSION,
+  NAME_REQUIRED_MESSAGE,
+  type SubmissionIssueField,
+} from "@/lib/validations/memory";
 
 /**
  * The memory cards of the /share form (Task 15), as plain data and a pure
@@ -132,12 +139,40 @@ export function labelFor(card: Pick<MemoryCard, "approxDateText" | "place" | "no
   return head;
 }
 
-export interface SendIssue {
+/** A problem with who is sending: the field it belongs to and the words shown under it and in the summary. */
+export interface ContributorIssue {
+  target: "name" | "email";
+  message: string;
+}
+
+/** A problem with one card's words. */
+export interface CardIssue {
+  target: "note";
   cardId: string;
   /** 1-based, among the open cards. */
   position: number;
-  field: "note";
   message: string;
+}
+
+/** What stops a send, in the form's order: the contributor's fields first, then the cards (WCAG 3.3.1). */
+export type SendIssue = ContributorIssue | CardIssue;
+
+/**
+ * The browser's check of the contributor before a send, with the server's own
+ * schemas so trimming, case and length never disagree (Rob's items 1 and 6).
+ * Name before email: the order the fields appear in.
+ */
+export function validateContributor(contributor: { name: string; email: string }): ContributorIssue[] {
+  const issues: ContributorIssue[] = [];
+  const name = contributorNameSchema.safeParse(contributor.name);
+  if (!name.success) {
+    issues.push({ target: "name", message: name.error.issues[0]?.message ?? NAME_REQUIRED_MESSAGE });
+  }
+  const email = contributorEmailSchema.safeParse(contributor.email);
+  if (!email.success) {
+    issues.push({ target: "email", message: email.error.issues[0]?.message ?? EMAIL_REQUIRED_MESSAGE });
+  }
+  return issues;
 }
 
 /**
@@ -145,17 +180,38 @@ export interface SendIssue {
  * file and no words, or nothing at all anywhere. Empty placeholders and empty
  * open cards beyond the first are simply not sent.
  */
-export function validateForSend(cards: MemoryCard[]): SendIssue[] {
+export function validateForSend(cards: MemoryCard[]): CardIssue[] {
   const open = cards.filter((card) => card.open);
-  const issues: SendIssue[] = [];
+  const issues: CardIssue[] = [];
   open.forEach((card, i) => {
     const position = i + 1;
     const needsContent = card.media.length === 0 && !hasWords(card);
     if (needsContent && (hasContent(card) || (position === 1 && open.every((c) => isEmpty(c))))) {
-      issues.push({ cardId: card.id, position, field: "note", message: `Memory ${position} needs a recording, a file or a few words.` });
+      issues.push({ target: "note", cardId: card.id, position, message: `Memory ${position} needs a recording, a file or a few words.` });
     }
   });
   return issues;
+}
+
+/**
+ * Where the server's refusal of a send lands: on the contributor field it
+ * names, else on the words of the card it names (`cards` are the cards that
+ * were sent, in order), else nowhere (the message is shown above the button).
+ */
+export function issuesFromSendFailure(
+  result: { field: SubmissionIssueField; memoryIndex: number | null; message: string },
+  cards: ReadonlyArray<Pick<MemoryCard, "id">>,
+): SendIssue[] {
+  if (result.field) {
+    return [{ target: result.field, message: result.message }];
+  }
+  if (result.memoryIndex !== null) {
+    const card = cards[result.memoryIndex];
+    if (card) {
+      return [{ target: "note", cardId: card.id, position: result.memoryIndex + 1, message: result.message }];
+    }
+  }
+  return [];
 }
 
 export type RefusalReason = "unsupported_type" | "too_large" | "duplicate" | "too_many";
