@@ -387,210 +387,223 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
   const recordingHeading = activeRecordingCardId ? headingFor(openCards.findIndex((c) => c.id === activeRecordingCardId) + 1) : null;
 
   return (
-    <section id="form" className="mx-auto flex w-full max-w-[860px] flex-col gap-8 px-[max(16px,5%)] py-[56px]">
-      <div className="flex flex-col gap-[18px]">{intro}</div>
-      <form ref={formRef} onSubmit={onSubmit} onInput={saveDraft} className="flex flex-col gap-8" aria-busy={busy} noValidate>
-        <p aria-live="polite" className={live ? "text-body text-walnut-soft" : "sr-only"}>
-          {live}
-        </p>
-        {restored && (
-          <p role="status" className="text-small text-walnut-soft">
-            We kept the words you typed last time. Change anything you like before you send.
+    // Side padding on the full-width box, the cap on the box inside it (item 7, 2026-11-04): on one box the 5% resolved
+    // against the whole window and the usable column shrank as the window grew (604px at 2560). `roomy` widens to 1040px.
+    <div className="px-[max(16px,5%)] py-[56px]">
+      <section id="form" className="mx-auto flex w-full max-w-[860px] roomy:max-w-[1040px] flex-col gap-8">
+        <div className="flex flex-col gap-[18px]">{intro}</div>
+        <form ref={formRef} onSubmit={onSubmit} onInput={saveDraft} className="flex flex-col gap-8" aria-busy={busy} noValidate>
+          <p aria-live="polite" className={live ? "text-body text-walnut-soft" : "sr-only"}>
+            {live}
           </p>
-        )}
+          {restored && (
+            <p role="status" className="text-small text-walnut-soft">
+              We kept the words you typed last time. Change anything you like before you send.
+            </p>
+          )}
 
-        <section aria-labelledby="about-you" className="flex flex-col gap-[22px] rounded-form border-[3px] border-wood-light bg-paper p-6 shadow-form sm:p-8">
-          <h2 id="about-you" className="font-display text-card-title font-bold">
-            About you
-          </h2>
-          {/* Name and email are required (Rob, 2026-11-04). `required` is for assistive tech: the form is noValidate and
-              shows its own words. The error line is a sibling of the label, so it is described, not part of the name. */}
-          <div className="flex flex-wrap gap-5">
-            <div data-field className={`${labelClass} flex-[1_1_200px]`}>
-              <label htmlFor="contributor-name">Your name</label>
-              <input
-                id="contributor-name"
-                name="name"
-                maxLength={120}
-                required
-                className={inputClass}
-                autoComplete="name"
-                placeholder="Jane Doe"
-                defaultValue={draft?.contributor.name || remembered?.name}
-                disabled={sending}
-                aria-invalid={nameIssue ? "true" : undefined}
-                aria-describedby={nameIssue ? "contributor-name-error" : undefined}
-                onInput={() => clearFieldIssue("name")}
-              />
-              {nameIssue && (
-                <p id="contributor-name-error" className={errorClass}>
-                  {nameIssue.message}
-                </p>
-              )}
+          <section aria-labelledby="about-you" className="flex flex-col gap-[22px] rounded-form border-[3px] border-wood-light bg-paper p-6 shadow-form sm:p-8">
+            <h2 id="about-you" className="font-display text-card-title font-bold">
+              About you
+            </h2>
+            {/* Name and email are required (Rob, 2026-11-04). `required` is for assistive tech: the form is noValidate and
+                shows its own words. The error line is a sibling of the label, so it is described, not part of the name. */}
+            <div className="grid gap-5 sm:grid-cols-2 roomy:grid-cols-3">
+              <div data-field className={labelClass}>
+                <label htmlFor="contributor-name">Your name</label>
+                <input
+                  id="contributor-name"
+                  name="name"
+                  maxLength={120}
+                  required
+                  className={inputClass}
+                  autoComplete="name"
+                  placeholder="Jane Doe"
+                  defaultValue={draft?.contributor.name || remembered?.name}
+                  disabled={sending}
+                  aria-invalid={nameIssue ? "true" : undefined}
+                  aria-describedby={nameIssue ? "contributor-name-error" : undefined}
+                  onInput={() => clearFieldIssue("name")}
+                />
+                {nameIssue && (
+                  <p id="contributor-name-error" className={errorClass}>
+                    {nameIssue.message}
+                  </p>
+                )}
+              </div>
+              <div data-field className={labelClass}>
+                <label htmlFor="contributor-email">Email</label>
+                <input
+                  id="contributor-email"
+                  name="email"
+                  type="email"
+                  maxLength={254}
+                  required
+                  className={inputClass}
+                  autoComplete="email"
+                  placeholder="your@email.com"
+                  defaultValue={remembered?.email}
+                  disabled={sending}
+                  aria-invalid={emailIssue ? "true" : undefined}
+                  aria-describedby={emailIssue ? "contributor-email-error" : undefined}
+                  onInput={() => clearFieldIssue("email")}
+                />
+                {emailIssue && (
+                  <p id="contributor-email-error" className={errorClass}>
+                    {emailIssue.message}
+                  </p>
+                )}
+              </div>
+              {/* Full width on two columns, one of three with room to spare, so it never orphans at half width. */}
+              <div data-field className={`${labelClass} sm:col-span-2 roomy:col-span-1`}>
+                <label htmlFor="contributor-relationship">
+                  How you knew Jo <span className={helperClass}>(optional)</span>
+                </label>
+                <input
+                  id="contributor-relationship"
+                  name="relationship"
+                  maxLength={120}
+                  className={inputClass}
+                  placeholder="former student"
+                  defaultValue={draft?.contributor.relationship || remembered?.relationship}
+                  disabled={sending}
+                />
+              </div>
             </div>
-            <div data-field className={`${labelClass} flex-[1_1_200px]`}>
-              <label htmlFor="contributor-email">Email</label>
-              <input
-                id="contributor-email"
-                name="email"
-                type="email"
-                maxLength={254}
-                required
-                className={inputClass}
-                autoComplete="email"
-                placeholder="your@email.com"
-                defaultValue={remembered?.email}
-                disabled={sending}
-                aria-invalid={emailIssue ? "true" : undefined}
-                aria-describedby={emailIssue ? "contributor-email-error" : undefined}
-                onInput={() => clearFieldIssue("email")}
-              />
-              {emailIssue && (
-                <p id="contributor-email-error" className={errorClass}>
-                  {emailIssue.message}
-                </p>
-              )}
-            </div>
+            <p className="narrow:hidden text-small text-walnut-soft">One memory is plenty. Add more if they come to you.</p>
+          </section>
+
+          {/* With room to spare the placeholders sit two abreast and an open card spans both columns (item 7). */}
+          <div className="flex flex-col gap-8 roomy:grid roomy:grid-cols-2">
+            {state.cards.map((card, index) => {
+              const position = openCards.indexOf(card) + 1;
+              if (!card.open) {
+                return <MemoryPlaceholder key={card.id} position={index + 1} onOpen={() => openPlaceholder(card.id)} disabled={busy} />;
+              }
+              const isFirst = index === 0;
+              // The phone layout hides the extra empty cards only: a card with something in it (a desktop window made
+              // narrow, a restored draft) stays visible, because it will be sent and may need its error shown.
+              return (
+                <div key={card.id} className={isFirst || hasContent(card) ? "roomy:col-span-2" : "narrow:hidden roomy:col-span-2"}>
+                  <MemoryCardSection
+                    card={card}
+                    position={position}
+                    isFirst={isFirst}
+                    disabled={sending}
+                    issue={cardIssueFor(card.id)}
+                    recording={{
+                      rec,
+                      canRecord,
+                      isHere: activeRecordingCardId === card.id,
+                      elsewhere: activeRecordingCardId !== null && activeRecordingCardId !== card.id ? recordingHeading : null,
+                      start: () => startRecording(card.id),
+                    }}
+                    progress={progress}
+                    onField={(field, value) => {
+                      dispatch({ type: "field", id: card.id, field, value });
+                      if (field === "note") {
+                        clearFieldIssue(`note:${card.id}`);
+                      }
+                    }}
+                    onAddMedia={(items) => {
+                      dispatch({ type: "addMedia", id: card.id, items });
+                      clearFieldIssue(`note:${card.id}`);
+                    }}
+                    onRemoveMedia={(mediaId) => {
+                      dispatch({ type: "removeMedia", id: card.id, mediaId });
+                      clearFieldIssue(`note:${card.id}`);
+                    }}
+                    onRemove={() => apply({ type: "remove", id: card.id })}
+                    onClear={() => {
+                      dispatch({ type: "clear", id: card.id });
+                      clearFieldIssue(`note:${card.id}`);
+                    }}
+                    onBeforeCamera={saveDraftNow}
+                  />
+                </div>
+              );
+            })}
+
+            {/* While a placeholder is waiting it already offers "Add a … memory"; the duplicate button appears once every card is open. */}
+            {state.cards.every((card) => card.open) && (
+              <div className="narrow:hidden roomy:col-span-2">
+                <SecondaryButton onClick={() => apply({ type: "add" })} disabled={busy || state.cards.length >= MAX_CARDS}>
+                  + Add another memory
+                </SecondaryButton>
+              </div>
+            )}
           </div>
-          <div data-field className={labelClass}>
-            <label htmlFor="contributor-relationship">
-              How you knew Jo <span className={helperClass}>(optional)</span>
+
+          <section className="flex flex-col gap-[22px] rounded-form border-[3px] border-wood-light bg-paper p-6 shadow-form sm:p-8">
+            {issues.length > 0 && (
+              <div role="alert" className={errorClass}>
+                <p>We couldn&apos;t send this yet:</p>
+                <ul className="list-disc pl-6">
+                  {issues.map((issue) => (
+                    <li key={keyFor(issue)}>
+                      <a
+                        className={linkClass}
+                        href={`#${idFor(issue)}`}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          setReveal({ id: idFor(issue), n: Date.now() });
+                        }}
+                      >
+                        {issue.message}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {/* A refusal that landed on a field or a card is already in the summary above; only a general one is shown here. */}
+            {phase.kind === "error" && issues.length === 0 && (
+              <p role="alert" className={errorClass}>
+                {phase.message}
+              </p>
+            )}
+            {confirmSilent && (
+              <p role="alert" className={errorClass}>
+                The recording in {confirmSilent.join(" and ")} sounds silent. Play it back first. Press &quot;Send anyway&quot; to send it as it is, or record it again.
+              </p>
+            )}
+            {/* The alerts sit above this row; with room to spare the audience and the Send button share it (item 7). */}
+            <div className="flex flex-col gap-[22px] roomy:flex-row roomy:items-end roomy:gap-5">
+              <label className={`${labelClass} roomy:flex-1`}>
+                <span>Who can see {several ? "these" : "this"}?</span>
+                {/* Everyone (default) or Family; the admin-only third value is never offered here (Rob's item 5, ruling 3). */}
+                <select name="visibility" defaultValue="PUBLIC" className={selectClass} disabled={sending}>
+                  {contributorVisibilityOptions().map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <PrimaryButton type="submit" disabled={busy}>
+                <SolidHeart size={24} fill="#fff" stitch={false} />
+                {sendLabel}
+              </PrimaryButton>
+            </div>
+            <p className="text-small text-walnut-soft">
+              Memories go to Richard, Rob and Tracy first. Later, with your okay, they&apos;ll join a shared collection the whole family can read.
+            </p>
+            <label className="flex items-start gap-3 text-small">
+              <input name="contactOptIn" type="checkbox" defaultChecked className="mt-1 size-6 accent-jo-red" disabled={sending} />
+              <span>{CONTACT_OPT_IN_LABEL}</span>
             </label>
-            <input
-              id="contributor-relationship"
-              name="relationship"
-              maxLength={120}
-              className={inputClass}
-              placeholder="former student"
-              defaultValue={draft?.contributor.relationship || remembered?.relationship}
-              disabled={sending}
-            />
-          </div>
-          <p className="narrow:hidden text-small text-walnut-soft">One memory is plenty. Add more if they come to you.</p>
-        </section>
-
-        {state.cards.map((card, index) => {
-          const position = openCards.indexOf(card) + 1;
-          if (!card.open) {
-            return <MemoryPlaceholder key={card.id} position={index + 1} onOpen={() => openPlaceholder(card.id)} disabled={busy} />;
-          }
-          const isFirst = index === 0;
-          // The phone layout hides the extra empty cards only: a card with something in it (a desktop window made
-          // narrow, a restored draft) stays visible, because it will be sent and may need its error shown.
-          return (
-            <div key={card.id} className={isFirst || hasContent(card) ? undefined : "narrow:hidden"}>
-              <MemoryCardSection
-                card={card}
-                position={position}
-                isFirst={isFirst}
-                disabled={sending}
-                issue={cardIssueFor(card.id)}
-                recording={{
-                  rec,
-                  canRecord,
-                  isHere: activeRecordingCardId === card.id,
-                  elsewhere: activeRecordingCardId !== null && activeRecordingCardId !== card.id ? recordingHeading : null,
-                  start: () => startRecording(card.id),
-                }}
-                progress={progress}
-                onField={(field, value) => {
-                  dispatch({ type: "field", id: card.id, field, value });
-                  if (field === "note") {
-                    clearFieldIssue(`note:${card.id}`);
-                  }
-                }}
-                onAddMedia={(items) => {
-                  dispatch({ type: "addMedia", id: card.id, items });
-                  clearFieldIssue(`note:${card.id}`);
-                }}
-                onRemoveMedia={(mediaId) => {
-                  dispatch({ type: "removeMedia", id: card.id, mediaId });
-                  clearFieldIssue(`note:${card.id}`);
-                }}
-                onRemove={() => apply({ type: "remove", id: card.id })}
-                onClear={() => {
-                  dispatch({ type: "clear", id: card.id });
-                  clearFieldIssue(`note:${card.id}`);
-                }}
-                onBeforeCamera={saveDraftNow}
-              />
-            </div>
-          );
-        })}
-
-        <div className="narrow:hidden">
-          <SecondaryButton onClick={() => apply({ type: "add" })} disabled={busy || state.cards.length >= MAX_CARDS}>
-            + Add another memory
-          </SecondaryButton>
-        </div>
-
-        <section className="flex flex-col gap-[22px] rounded-form border-[3px] border-wood-light bg-paper p-6 shadow-form sm:p-8">
-          <label className={labelClass}>
-            <span>Who can see {several ? "these" : "this"}?</span>
-            {/* Everyone (default) or Family; the admin-only third value is never offered here (Rob's item 5, ruling 3). */}
-            <select name="visibility" defaultValue="PUBLIC" className={selectClass} disabled={sending}>
-              {contributorVisibilityOptions().map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {issues.length > 0 && (
-            <div role="alert" className={errorClass}>
-              <p>We couldn&apos;t send this yet:</p>
-              <ul className="list-disc pl-6">
-                {issues.map((issue) => (
-                  <li key={keyFor(issue)}>
-                    <a
-                      className={linkClass}
-                      href={`#${idFor(issue)}`}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        setReveal({ id: idFor(issue), n: Date.now() });
-                      }}
-                    >
-                      {issue.message}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {/* A refusal that landed on a field or a card is already in the summary above; only a general one is shown here. */}
-          {phase.kind === "error" && issues.length === 0 && (
-            <p role="alert" className={errorClass}>
-              {phase.message}
-            </p>
-          )}
-          {confirmSilent && (
-            <p role="alert" className={errorClass}>
-              The recording in {confirmSilent.join(" and ")} sounds silent. Play it back first. Press &quot;Send anyway&quot; to send it as it is, or record it again.
-            </p>
-          )}
-          <PrimaryButton type="submit" disabled={busy}>
-            <SolidHeart size={24} fill="#fff" stitch={false} />
-            {sendLabel}
-          </PrimaryButton>
-          <p className="text-small text-walnut-soft">
-            Memories go to Richard, Rob and Tracy first. Later, with your okay, they&apos;ll join a shared collection the whole family can read.
-          </p>
-          <label className="flex items-start gap-3 text-small">
-            <input name="contactOptIn" type="checkbox" defaultChecked className="mt-1 size-6 accent-jo-red" disabled={sending} />
-            <span>{CONTACT_OPT_IN_LABEL}</span>
-          </label>
-          <label className="flex items-start gap-3 text-small">
-            <input name="notifyWhenPosted" type="checkbox" defaultChecked className="mt-1 size-6 accent-jo-red" disabled={sending} />
-            <span>{NOTIFY_WHEN_POSTED_LABEL}</span>
-          </label>
-          <label className="flex items-start gap-3 text-small">
-            <input name="mailingListOptIn" type="checkbox" className="mt-1 size-6 accent-jo-red" disabled={sending} />
-            <span>{MAILING_LIST_LABEL}</span>
-          </label>
-          <p className="text-small text-walnut-soft">{IMPLICIT_CONSENT_NOTE}</p>
-        </section>
-      </form>
-    </section>
+            <label className="flex items-start gap-3 text-small">
+              <input name="notifyWhenPosted" type="checkbox" defaultChecked className="mt-1 size-6 accent-jo-red" disabled={sending} />
+              <span>{NOTIFY_WHEN_POSTED_LABEL}</span>
+            </label>
+            <label className="flex items-start gap-3 text-small">
+              <input name="mailingListOptIn" type="checkbox" className="mt-1 size-6 accent-jo-red" disabled={sending} />
+              <span>{MAILING_LIST_LABEL}</span>
+            </label>
+            <p className="text-small text-walnut-soft">{IMPLICIT_CONSENT_NOTE}</p>
+          </section>
+        </form>
+      </section>
+    </div>
   );
 }

@@ -85,65 +85,74 @@ export function MemoryCardSection({
           heading
         )}
       </h2>
-      <div className="flex flex-wrap gap-5">
-        <label htmlFor={ids.date} className={`${labelClass} flex-[1_1_220px]`}>
-          <span>When is this memory from? <span className={helperClass}>(roughly is fine)</span></span>
-          <input
-            id={ids.date}
-            value={card.approxDateText}
-            onChange={(e) => onField("approxDateText", e.target.value)}
-            maxLength={120}
-            className={inputClass}
-            placeholder="Summer 1985"
+      {/* Item 7 (2026-11-04): with room to spare (`roomy`) the card is two columns, when/where and the media on the
+          left, the words on the right filling the row's height (about 52 characters a line, SC 1.4.8 guidance). */}
+      <div className="flex flex-col gap-[22px] roomy:grid roomy:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] roomy:gap-x-8">
+        <div className="flex flex-col gap-[22px]">
+          <div className="flex flex-wrap gap-5 roomy:flex-col">
+            <label htmlFor={ids.date} className={`${labelClass} flex-[1_1_220px] roomy:flex-none`}>
+              <span>When is this memory from? <span className={helperClass}>(roughly is fine)</span></span>
+              <input
+                id={ids.date}
+                value={card.approxDateText}
+                onChange={(e) => onField("approxDateText", e.target.value)}
+                maxLength={120}
+                className={inputClass}
+                placeholder="Summer 1985"
+                disabled={disabled}
+              />
+            </label>
+            <label htmlFor={ids.place} className={`${labelClass} flex-[1_1_220px] roomy:flex-none`}>
+              <span>Where? <span className={helperClass}>(optional)</span></span>
+              <input
+                id={ids.place}
+                value={card.place}
+                onChange={(e) => onField("place", e.target.value)}
+                maxLength={200}
+                className={inputClass}
+                placeholder="her classroom"
+                disabled={disabled}
+              />
+            </label>
+          </div>
+
+          <CardMedia
+            card={card}
+            heading={heading}
+            isFirst={isFirst}
+            disabled={disabled}
+            recording={recording}
+            progress={progress}
+            onAdd={onAddMedia}
+            onRemove={onRemoveMedia}
+            onBeforeCamera={onBeforeCamera}
+          />
+        </div>
+
+        {/* Same shape as the contributor fields: label text, the field, then its error line, all in one box that grows
+            with the row at `roomy`. The error line sits right under the textarea however tall the row is, and the
+            textarea is capped to the window so label, words and error fit a short one (review, 2026-11-04). */}
+        <div className={`${labelClass} roomy:flex-1`} data-field>
+          <label htmlFor={ids.note}>Your memory of Jo</label>
+          <textarea
+            id={ids.note}
+            value={card.note}
+            onChange={(e) => onField("note", e.target.value)}
+            rows={7}
+            maxLength={10_000}
+            className={`${textareaClass} roomy:min-h-[300px] roomy:max-h-[calc(100dvh-14rem)] roomy:flex-1`}
+            placeholder="She once…"
+            aria-invalid={issue ? "true" : undefined}
+            aria-describedby={issue ? ids.error : undefined}
             disabled={disabled}
           />
-        </label>
-        <label htmlFor={ids.place} className={`${labelClass} flex-[1_1_220px]`}>
-          <span>Where? <span className={helperClass}>(optional)</span></span>
-          <input
-            id={ids.place}
-            value={card.place}
-            onChange={(e) => onField("place", e.target.value)}
-            maxLength={200}
-            className={inputClass}
-            placeholder="her classroom"
-            disabled={disabled}
-          />
-        </label>
+          {issue && (
+            <p id={ids.error} className={errorClass}>
+              {issue.message}
+            </p>
+          )}
+        </div>
       </div>
-
-      <CardMedia
-        card={card}
-        heading={heading}
-        isFirst={isFirst}
-        disabled={disabled}
-        recording={recording}
-        progress={progress}
-        onAdd={onAddMedia}
-        onRemove={onRemoveMedia}
-        onBeforeCamera={onBeforeCamera}
-      />
-
-      <label htmlFor={ids.note} className={labelClass} data-field>
-        <span>Your memory of Jo</span>
-        <textarea
-          id={ids.note}
-          value={card.note}
-          onChange={(e) => onField("note", e.target.value)}
-          rows={7}
-          maxLength={10_000}
-          className={textareaClass}
-          placeholder="She once…"
-          aria-invalid={issue ? "true" : undefined}
-          aria-describedby={issue ? ids.error : undefined}
-          disabled={disabled}
-        />
-      </label>
-      {issue && (
-        <p id={ids.error} className={errorClass}>
-          {issue.message}
-        </p>
-      )}
 
       {isFirst
         ? filled &&

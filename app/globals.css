@@ -13,6 +13,12 @@
     @slot;
   }
 }
+/*
+ * Item 7 (2026-11-04): a computer with room to spare gets side-by-side rows
+ * inside the one column (1040px). Width like Tailwind's `xl`, with the same
+ * height clause as `wide`, so a short window keeps the stacked layout.
+ */
+@custom-variant roomy (@media (width >= 80rem) and (height >= 30rem));
 
 @theme {
   /* Palette — see DESIGN.md § Color for where each one is allowed */
