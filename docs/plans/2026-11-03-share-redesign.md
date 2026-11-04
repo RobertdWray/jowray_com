@@ -25,7 +25,7 @@ Constraints found in the code:
 | D2 | Date | Keep the free-text `approxDateText` ("roughly is fine"). |
 | D3 | Email for a multi-memory send | One email per send, listing every memory with its own private link. |
 | D4 | Phone video and photo | The phone's own camera or picker (`<input type="file" capture>`) [C40]. Voice keeps the in-page recorder. |
-| D5 | "Who can see this?" | Asked once per send. Each claim page can change its own memory. |
+| D5 | "Who can see this?" | Asked once per send. Each claim page can change its own memory. Amended 2026-11-04 (Task 16): contributor forms offer "Everyone" and "Family" only; a claim page whose memory the family set PRIVATE keeps that value listed so a save never changes it. Name and email are required on /share. |
 | D6 | "Where?" | Kept on each card, optional. |
 | D7 | Shipping | **Release 1:** cards, multiple files, phone camera, voice, batch email; computers upload video files. **Release 2:** in-page webcam recording. |
 | D8 | "Name of the memory" field | **Not added.** The UX review and the technical review agree. A derived label (`labelFor`) is used instead. Family-side titles are a Phase 2 idea (parking lot). |
@@ -33,7 +33,7 @@ Constraints found in the code:
 | D10 | Per-file caption, date and place (PR C's `Media.caption/approxDateText/place`) | Not built; the card carries date, place and words. Flag to Rob (parking lot). |
 | D11 | Cards 2–3 on computers | **Compact placeholders** that open with one click. Under "About you": "One memory is plenty. Add more if they come to you." |
 | D12 | Phone tip about using a computer | **On the thank-you screen only.** |
-| D13 | Visibility option labels | Plainer: "Everyone who visits jowray.com" · "The whole family" · "Richard, Rob and Tracy only". Applies to the share and claim forms; the stored values are unchanged [C59, C60]. |
+| D13 | Visibility option labels | Plainer: "Everyone who visits jowray.com" · "The whole family" · "Richard, Rob and Tracy only". Applies to the share and claim forms; the stored values are unchanged [C59, C60]. Amended 2026-11-04 (Task 16, Rob's ruling 3): the share and claim forms show "Everyone" · "Family" (PRIVATE is admin-only, `contributorVisibilityOptions` in `lib/visibility.ts`); the admin forms keep the three D13 labels. |
 | D14 | Long multi-memory emails | Links first. Each memory's words are shortened ("…read it all from its link") **only** when the email would pass Gmail's clipping size. One-memory emails are unchanged. This amends Rob's R1 for multi-memory sends [C38]. |
 | D15 | Per-recipient email cap | Raised from 3 to **15 per day**. The requester is not worried about abuse; the firewall rule is the abuse control [C39]. |
 | D16 | Photo thumbnails in the email | `completeSubmission` waits **up to 10 seconds** for READY thumbnails, then sends with whatever is ready. Amends issue #17 § 3.6 "must not wait" [C6]. |
@@ -177,7 +177,7 @@ Progress, as the person sees it:
 - The h1 is focused through a ref callback [C48]. The approved copy stays, with plural variants.
 - Each memory is listed by `labelFor`: "Memory 2 · Summer 1985 · Lake George", falling back to the first ~6 words, then the media kind. Each has its link.
 - Partial failures are named: "One file didn't make it: IMG_2231.MOV. Your words and the other files are safe. Open this memory's link to add it again."
-- If nothing was emailed (no address, or capped): "This page is the only copy of these links, so keep it open or save it."
+- If nothing was emailed (no address, or capped): "This page is the only copy of these links, so keep it open or save it." Amended 2026-11-04 (Task 16): email is required, so only the capped/failed case remains and the line reads "We couldn't email you just now, so this page is the only copy…".
 - Phone tip (D12, `narrow` only): "Have another? Tap "Tell another one". On a computer, jowray.com/share lets you send several at once."
 - The share button keeps its click-only rule and the mailto fallback [C57].
 
