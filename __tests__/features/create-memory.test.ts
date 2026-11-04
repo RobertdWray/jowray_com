@@ -4,7 +4,7 @@ import { hashClaimToken } from "@/lib/claim-token";
 import { verifyUploadTicket } from "@/lib/upload-ticket";
 import { resetEnvCache } from "@/server/config/env";
 
-interface MemoryRow { id: string; memorialId: string; contributorId: string; type: string; source: string; status: string; claimTokenHash: string; consentVersion: string; consentedAt: Date; createdAt: Date; deletedAt: Date | null; approxDateText: string | null; contributorNote: string | null; visibility: string; notifyWhenPosted: boolean }
+interface MemoryRow { id: string; memorialId: string; contributorId: string; type: string; source: string; status: string; claimTokenHash: string; consentVersion: string; consentedAt: Date; createdAt: Date; deletedAt: Date | null; approxDateText: string | null; contributorNote: string | null; visibility: string; notifyWhenPosted: boolean; submissionId?: string | null; submissionIndex?: number | null; uploadLeaseUntil?: Date | null }
 interface MediaRow { id: string; memoryId: string; storageKey: string; mimeType: string; maxBytes: number; status: string; createdAt: Date; originalFilename: string | null; durationSeconds?: number | null; deletedAt: Date | null; sortOrder: number; replacesMediaId: string | null }
 const lockCalls: string[] = [];
 function matchesMedia(row: MediaRow, where: Record<string, unknown>): boolean {
@@ -23,8 +23,14 @@ const tx = {
   $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; }),
   memorial: { findUnique: vi.fn(async () => memorial) },
   memory: {
+    updateMany: vi.fn(async ({ where, data }: { where: { submissionId: string; submissionIndex: number }; data: { uploadLeaseUntil: Date } }) => {
+      lockCalls.push(`lease|${where.submissionId}/${where.submissionIndex}`);
+      const rows = memories.filter((m) => m.submissionId === where.submissionId && m.submissionIndex === where.submissionIndex);
+      for (const r of rows) { r.uploadLeaseUntil = data.uploadLeaseUntil; }
+      return { count: rows.length };
+    }),
     count: vi.fn(async ({ where }: { where?: { createdAt?: { gt: Date } } } = {}) => memories.filter((m) => !where?.createdAt || m.createdAt > where.createdAt.gt).length),
-    create: vi.fn(async ({ data }: { data: Omit<MemoryRow, "id" | "createdAt" | "deletedAt"> }) => { const row: MemoryRow = { id: `mem_${memories.length + 1}`, createdAt: new Date(), deletedAt: null, ...data }; memories.push(row); return row; }),
+    create: vi.fn(async ({ data }: { data: Omit<MemoryRow, "id" | "createdAt" | "deletedAt"> }) => { const row: MemoryRow = { id: `mem_${memories.length + 1}`, createdAt: new Date(), deletedAt: null, submissionId: null, submissionIndex: null, uploadLeaseUntil: null, ...data }; memories.push(row); return row; }),
     findUnique: vi.fn(async ({ where }: { where: { claimTokenHash: string } }) => memories.find((m) => m.claimTokenHash === where.claimTokenHash) ?? null),
   },
   media: {
@@ -261,5 +267,42 @@ describe("createReplacementTicket", () => {
     expect(await createReplacementTicket({ claimToken: "w".repeat(43), mediaId: "00000000-0000-4000-8000-000000000001", file })).toEqual({ ok: false, code: "not_found" });
     expect(await createReplacementTicket({ claimToken, mediaId: "nope", file })).toEqual({ ok: false, code: "invalid" });
     expect(medias).toHaveLength(1);
+  });
+});
+
+describe("claim-page tickets on a memory that belongs to a send (Task 15)", () => {
+  const SECOND = "b".repeat(43);
+  function seedSend(): void {
+    const base = { memorialId: "memorial_1", contributorId: "con_1", type: "TEXT", source: "WEB_UPLOAD", status: "PENDING", consentVersion: "v", consentedAt: new Date(), createdAt: new Date(), deletedAt: null, approxDateText: null, contributorNote: "words", visibility: "PUBLIC", notifyWhenPosted: true };
+    memories.push({ ...base, id: "mem_1", claimTokenHash: hashClaimToken("a".repeat(43)), submissionId: "sub_1", submissionIndex: 0, uploadLeaseUntil: null });
+    memories.push({ ...base, id: "mem_2", claimTokenHash: hashClaimToken(SECOND), submissionId: "sub_1", submissionIndex: 1, uploadLeaseUntil: null });
+  }
+
+  it("createUploadTicket renews the anchor's lease before taking the memory lock", async () => {
+    seedSend();
+    const result = await createUploadTicket({ claimToken: SECOND, file: { name: "p.jpg", type: "image/jpeg", size: 1 } });
+    expect(result.ok).toBe(true);
+    expect(lockCalls).toEqual(["lease|sub_1/0", expect.stringContaining("FOR UPDATE|mem_2")]);
+    expect(memories[0]!.uploadLeaseUntil).toBeInstanceOf(Date);
+    expect(memories[1]!.uploadLeaseUntil).toBeNull();
+  });
+
+  it("createReplacementTicket renews the anchor's lease before taking the memory lock", async () => {
+    seedSend();
+    const target = "00000000-0000-4000-8000-0000000000aa";
+    medias.push({ id: target, memoryId: "mem_2", storageKey: "k", mimeType: "image/jpeg", maxBytes: 1, status: "READY", createdAt: new Date(), originalFilename: null, deletedAt: null, sortOrder: 0, replacesMediaId: null });
+    const result = await createReplacementTicket({ claimToken: SECOND, mediaId: target, file: { name: "p.jpg", type: "image/jpeg", size: 1 } });
+    expect(result).toMatchObject({ ok: true });
+    expect(lockCalls).toEqual(["lease|sub_1/0", expect.stringContaining("FOR UPDATE|mem_2")]);
+    expect(memories[0]!.uploadLeaseUntil).toBeInstanceOf(Date);
+  });
+
+  it("a legacy memory has no lease: the claim paths only take the lock", async () => {
+    const created = await createMemory({ ...valid, file: null });
+    if (!created.ok) { throw new Error("setup"); }
+    lockCalls.length = 0;
+    await createUploadTicket({ claimToken: created.claimToken, file: { name: "p.jpg", type: "image/jpeg", size: 1 } });
+    expect(lockCalls).toEqual([expect.stringContaining("FOR UPDATE|mem_1")]);
+    expect(memories[0]!.uploadLeaseUntil ?? null).toBeNull();
   });
 });

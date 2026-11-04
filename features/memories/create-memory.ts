@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import { confirmQuietly, notifyAdminsQuietly } from "@/features/memories/ingest-upload";
 import { lockMemory, type Tx } from "@/features/memories/lock";
+import { renewUploadLease } from "@/features/memories/upload-lease";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { afterWithFlush } from "@/lib/sentry/after-flush";
@@ -216,6 +217,8 @@ export async function createUploadTicket(raw: unknown): Promise<UploadTicketResu
     if (!memory || memory.deletedAt !== null) {
       return "not_found" as const;
     }
+    // Anchor first, then this memory: the one lock order every multi-memory writer shares (C25).
+    await renewUploadLease(tx, memory);
     await lockMemory(tx, memory.id);
     if ((await liveFileCount(tx, memory.id)) >= MAX_FILES_PER_MEMORY) {
       return "too_many_files" as const;
@@ -253,6 +256,7 @@ export async function createReplacementTicket(raw: unknown): Promise<UploadTicke
     if (!memory || memory.deletedAt !== null) {
       return "not_found" as const;
     }
+    await renewUploadLease(tx, memory);
     await lockMemory(tx, memory.id);
     const target = await tx.media.findFirst({ where: { id: mediaId, memoryId: memory.id, deletedAt: null, status: "READY" } });
     if (!target) {
