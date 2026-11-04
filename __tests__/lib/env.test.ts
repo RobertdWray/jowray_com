@@ -5,6 +5,7 @@ import {
   csvList,
   getAdminAlertEnv,
   getAdminEnv,
+  getAdminPageEnv,
   getDbEnv,
   getSiteEnv,
   resetEnvCache,
@@ -19,6 +20,7 @@ const KEYS = [
   "VERCEL_BRANCH_URL",
   "ADMIN_ALERT_EMAILS",
   "ADMIN_API_SECRET",
+  "ADMIN_PAGE_SECRET",
 ] as const;
 const saved: Partial<Record<(typeof KEYS)[number], string | undefined>> = {};
 
@@ -185,5 +187,26 @@ describe("getAdminEnv", () => {
     process.env.ADMIN_API_SECRET = "a".repeat(32);
     resetEnvCache();
     expect(getAdminEnv().ADMIN_API_SECRET).toBe("a".repeat(32));
+  });
+});
+
+describe("getAdminPageEnv", () => {
+  it("is optional: unset means every admin page check fails closed", () => {
+    expect(getAdminPageEnv().ADMIN_PAGE_SECRET).toBeUndefined();
+  });
+
+  it("treats an empty value as unset (the `KEY=` convention), so the page shows signed-out rather than 500", () => {
+    process.env.ADMIN_PAGE_SECRET = "";
+    resetEnvCache();
+    expect(getAdminPageEnv().ADMIN_PAGE_SECRET).toBeUndefined();
+  });
+
+  it("requires at least 32 characters when set", () => {
+    process.env.ADMIN_PAGE_SECRET = "short";
+    resetEnvCache();
+    expect(() => getAdminPageEnv()).toThrow(/ADMIN_PAGE_SECRET/);
+    process.env.ADMIN_PAGE_SECRET = "p".repeat(32);
+    resetEnvCache();
+    expect(getAdminPageEnv().ADMIN_PAGE_SECRET).toBe("p".repeat(32));
   });
 });
