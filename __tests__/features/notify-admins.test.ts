@@ -6,8 +6,10 @@ interface MediaRow { id: string; status: "PENDING" | "READY" | "FAILED"; mimeTyp
 interface MemoryRow {
   id: string;
   type: "VOICE" | "VIDEO" | "PHOTO" | "TEXT";
+  status: "DRAFT" | "PENDING" | "APPROVED" | "HIDDEN";
   deletedAt: Date | null;
   createdAt: Date;
+  consentedAt: Date | null;
   claimTokenHash: string;
   contributorNote: string | null;
   approxDateText: string | null;
@@ -43,8 +45,10 @@ beforeEach(() => {
   memory = {
     id: "mem_1",
     type: "PHOTO",
+    status: "PENDING",
     deletedAt: null,
     createdAt: SUBMITTED,
+    consentedAt: SUBMITTED,
     claimTokenHash: "h".repeat(64),
     contributorNote: null,
     approxDateText: "Summer 1985",
@@ -142,6 +146,25 @@ describe("notifyAdminsOfMemory", () => {
     expect(Object.keys(arg)).not.toContain("claimLink");
     expect(Object.keys(arg)).not.toContain("rotateToClaimTokenHash");
     expect(JSON.stringify(arg)).not.toContain("h".repeat(64));
+  });
+});
+
+describe("drafts", () => {
+  it("dates a shared draft by the moment the person pressed Share, not the moment the admin drafted it", async () => {
+    const SHARED = new Date("2026-11-05T09:00:00Z");
+    memory!.type = "TEXT";
+    memory!.contributorNote = "words from a condolence note";
+    memory!.consentedAt = SHARED;
+    await notifyAdminsOfMemory({ memoryId: "mem_1" });
+    expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({ submittedAt: SHARED }));
+  });
+
+  it("does not alert the admins about a DRAFT: the admin drafted it, and the alert fires when the person shares", async () => {
+    memory!.type = "TEXT";
+    memory!.status = "DRAFT";
+    memory!.contributorNote = "words from a condolence note";
+    expect(await notifyAdminsOfMemory({ memoryId: "mem_1" })).toEqual({ sent: false, skipped: "draft" });
+    expect(sendMock).not.toHaveBeenCalled();
   });
 });
 

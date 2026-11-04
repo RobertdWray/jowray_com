@@ -1,6 +1,7 @@
 import "server-only";
 
 import { submissionInFlight, summarizeReadyMedia } from "@/features/memories/media-summary";
+import { siteEmailsConfirmation } from "@/features/memories/site-email";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { getSiteUrl } from "@/lib/site-url";
@@ -9,12 +10,14 @@ import { sendMemoryConfirmation, type SendResult } from "@/services/email";
 
 const log = createLogger({ category: "email" });
 
-export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "no_email" | "not_ready" | "in_submission" | "leased" };
+export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "no_site_email" | "no_email" | "not_ready" | "in_submission" | "leased" };
 
 /**
  * Send the one confirmation email for a memory, if there is an address and
- * something READY to confirm (or the memory is TEXT). Memories that belong to
- * a send are left to `confirmSubmission` (`in_submission`). Idempotency, the
+ * something READY to confirm (or the memory is TEXT). Memories the admin
+ * drafted on someone's behalf are never confirmed by the site
+ * (`siteEmailsConfirmation`, `no_site_email`); memories that belong to a send
+ * are left to `confirmSubmission` (`in_submission`). Idempotency, the
  * outbound guard and the per-recipient cap live in the email service.
  *
  * The email echoes the contributor's words and details (ruling R1) and lists
@@ -55,6 +58,11 @@ export async function confirmMemory({
   }
   if (memory.deletedAt !== null) {
     return { sent: false, skipped: "deleted" };
+  }
+  if (!siteEmailsConfirmation(memory)) {
+    // Logged so a local walk-through can see the skip, not only the absence of an EmailLog row.
+    log.info({ action: "confirmation_skipped", memoryId, reason: "no_site_email" }, "no site confirmation for an admin-drafted memory");
+    return { sent: false, skipped: "no_site_email" };
   }
   // A memory sent with others gets one receipt for the whole send (Task 15,
   // `confirmSubmission`), never a per-memory email, the anchor included.

@@ -11,7 +11,7 @@ interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" |
 interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
 type EmailType = "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY" | "SUBMISSION_CONFIRMATION";
 interface EmailRow { id: string; memoryId: string; emailType: EmailType; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null; uploadLeaseUntil?: Date | null } }
-interface MemoryRow { id: string; type: string; deletedAt: Date | null; createdAt: Date; contributorNote?: string | null; contributor: { email: string | null } | null; media: Array<{ status: string; deletedAt: Date | null; createdAt?: Date }>; emails: EmailRow[]; submissionId?: string | null; submissionIndex?: number | null; uploadLeaseUntil?: Date | null }
+interface MemoryRow { id: string; type: string; status?: "DRAFT" | "PENDING" | "APPROVED" | "HIDDEN"; source?: "WEB_UPLOAD" | "EMAIL" | "SMS" | "OTHER" | "PHONE_CALL"; deletedAt: Date | null; createdAt: Date; contributorNote?: string | null; contributor: { email: string | null } | null; media: Array<{ status: string; deletedAt: Date | null; createdAt?: Date }>; emails: EmailRow[]; submissionId?: string | null; submissionIndex?: number | null; uploadLeaseUntil?: Date | null }
 
 let media: MediaRow[] = [];
 let events: EventRow[] = [];
@@ -47,14 +47,19 @@ function finder<T extends Record<string, unknown>>(rows: () => T[]) {
   return vi.fn(async ({ where, take }: { where: Record<string, unknown>; take?: number }) => rows().filter((r) => matches(r, where)).slice(0, take ?? 1000));
 }
 const derivedDeletes: Array<Record<string, unknown>> = [];
+/** Fixture rows are /share memories unless a row says otherwise (the real columns are NOT NULL). */
+function shareMemory(row: MemoryRow): MemoryRow {
+  return { status: "PENDING", source: "WEB_UPLOAD", ...row };
+}
 const dbStub = {
   // Prisma always returns `derivatives` as an array when it is included; fixtures may omit it.
   media: { findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => (await finder(() => media as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }) },
   derivedMedia: { deleteMany: vi.fn(async ({ where }: { where: { mediaId: string; storageKey?: { in: string[] } } }) => { derivedDeletes.push(where); const m = media.find((x) => x.id === where.mediaId); if (m?.derivatives) { m.derivatives = m.derivatives.filter((d) => where.storageKey ? !where.storageKey.in.includes(d.storageKey) : false); } return { count: 1 }; }) },
   webhookEvent: { findMany: finder(() => events as unknown as Record<string, unknown>[]), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<EventRow> }) => { Object.assign(events.find((e) => e.id === where.id)!, data); }) },
-  // Prisma returns every scalar; fixtures may omit the submission columns and the lease (null = legacy row / no open submission).
+  // Prisma returns every scalar; fixtures may omit the submission columns and the lease (null = legacy row / no open submission)
+  // and status/source (a /share memory unless the row says otherwise).
   emailLog: { findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => finder(() => emails.map((e) => ({ ...e, memory: e.memory ? { uploadLeaseUntil: null, ...e.memory } : e.memory })) as unknown as Record<string, unknown>[])(args)) },
-  memory: { findMany: finder(() => memories.map((m) => ({ submissionId: null, submissionIndex: null, uploadLeaseUntil: null, ...m })) as unknown as Record<string, unknown>[]) },
+  memory: { findMany: finder(() => memories.map((m) => shareMemory({ submissionId: null, submissionIndex: null, uploadLeaseUntil: null, ...m })) as unknown as Record<string, unknown>[]) },
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
@@ -154,6 +159,14 @@ beforeEach(() => {
     { id: "mem_skipped", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "e@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [emails[2]!] },
     // Its only READY file was removed and it has no words: nothing to confirm.
     { id: "mem_emptied", type: "PHOTO", deletedAt: null, createdAt: old, contributorNote: null, contributor: { email: "f@example.com" }, media: [{ status: "READY", deletedAt: old }], emails: [] },
+    // Drafted by the admin on a sender's behalf and not yet shared: no confirmation (Rob's reply is the only message;
+    // a cron confirmation would also rotate the token and kill the link he sent) and no admin alert (Rob made it).
+    { id: "mem_draft", type: "TEXT", status: "DRAFT", source: "EMAIL", deletedAt: null, createdAt: old, contributorNote: "words from a condolence note", contributor: { email: "h@example.com" }, media: [], emails: [] },
+    // The same memory after the person pressed Share: still no site confirmation, but the admins are told it landed.
+    { id: "mem_draft_shared", type: "TEXT", status: "PENDING", source: "EMAIL", deletedAt: null, createdAt: old, contributorNote: "words from a condolence note", contributor: { email: "i@example.com" }, media: [], emails: [] },
+    // Drafted and shared within the same half hour: no request-path alert exists for a Share, so the 30-minute
+    // "finalize may still be running" wait does not apply; the admins hear on the next run.
+    { id: "mem_draft_shared_young", type: "TEXT", status: "PENDING", source: "EMAIL", deletedAt: null, createdAt: new Date(), contributorNote: "words", contributor: { email: "j@example.com" }, media: [], emails: [] },
     // (Task 15) A send whose lease has run out: (e) leaves both memories alone, (e3) emails the anchor once, (e2) alerts the sibling (the anchor already has its admin row).
     { id: "mem_sub0", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "s@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [emails[5]!], submissionId: "sub_1", submissionIndex: 0, uploadLeaseUntil: new Date(Date.now() - 5 * 60 * 1000) },
     { id: "mem_sub1", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "s@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [], submissionId: "sub_1", submissionIndex: 1, uploadLeaseUntil: null },
@@ -201,8 +214,14 @@ describe("GET /api/cron/reconcile-uploads", () => {
     // (d) the failed admin alert is retried through the admin path; (e2) ready memories without an admin row are
     // alerted (with or without a contributor address, and even when the contributor's confirmation was skipped),
     // not the young one, not the one with a 20-minute-old upload, not the pre-cutoff one
-    // (Task 15) plus the sibling of a send whose lease ran out; nothing from the send still under its lease, and no sibling-less text anchors (they have no admin row yet but are alerted: mem_subfail0 and mem_subnoemail0 are ready text memories)
-    expect(notifyMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5", "mem_noemail", "mem_skipped", "mem_sub1", "mem_subfail0", "mem_subnoemail0"]);
+    // (Task 15) plus the sibling of a send whose lease ran out; nothing from the send still under its lease, and no sibling-less text anchors (they have no admin row yet but are alerted: mem_subfail0 and mem_subnoemail0 are ready text memories);
+    // plus the two shared admin drafts (one of them younger than 30 minutes: a Share has no request-path alert to wait for)
+    expect(notifyMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5", "mem_draft_shared", "mem_draft_shared_young", "mem_noemail", "mem_skipped", "mem_sub1", "mem_subfail0", "mem_subnoemail0"]);
+    // admin-drafted memories: never confirmed by the site (DRAFT or shared), never alerted while DRAFT (see the fixture comments)
+    expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_draft");
+    expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_draft_shared");
+    expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_draft_shared_young");
+    expect(notifyMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_draft");
     // (e) never confirms a memory that belongs to a send
     expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_sub0");
     expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_sub1");
@@ -240,7 +259,7 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(deriveMediaMock.mock.calls[0]![0].deadlineMs).toBeGreaterThan(25_000);
     // the staging pathname is only ever deleted for videos
     expect(delMock.mock.calls.map((c) => c[0] as string).filter((k) => k.endsWith(".upload.jpg"))).toEqual([]);
-    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 3, confirmationsSent: 2, adminAlertsSent: 6, submissionReceiptsSent: 1, deletedBlobsRemoved: 3, derived: 3 });
+    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 3, confirmationsSent: 2, adminAlertsSent: 8, submissionReceiptsSent: 1, deletedBlobsRemoved: 3, derived: 3 });
   });
 
   it("(e2) waits for a send's lease before alerting any of its memories, and (e3) emails the anchor once the lease is gone", async () => {

@@ -22,12 +22,15 @@ enum MemoryType {
   PHOTO
   TEXT
 }
-enum MemorySource {  // all design-doc values kept; only WEB_UPLOAD is written in Phase 1
+enum MemorySource {  // all design-doc values kept; WEB_UPLOAD from /share; EMAIL / SMS / OTHER from admin drafts (draft-memory.ts)
   PHONE_CALL
   SMS
   WEB_UPLOAD
+  EMAIL
+  OTHER
 }
 enum MemoryStatus {
+  DRAFT                                   // saved by the family admin on someone's behalf; invisible and silent until they press Share
   PENDING
   APPROVED
   HIDDEN
@@ -120,6 +123,7 @@ model Memory {
   contributorId   String?
   type            MemoryType
   source          MemorySource
+  sourceRef       String?        @unique     // opaque, unique reference to where the words came from; never an address or number in clear (lib/validations/memory.ts)
   approxDateText  String?        // as given: "Summer 1998"
   approxYear      Int?
   approxMonth     Int?
@@ -128,8 +132,8 @@ model Memory {
   language        String         @default("en")
   visibility      Visibility     @default(FAMILY)
   notifyWhenPosted Boolean       @default(true)  // "let me know when my story is posted" checkbox; on by default (Rob, 2026-11-03)
-  consentVersion  String
-  consentedAt     DateTime       // required: web submissions always carry it
+  consentVersion  String                     // provisional while status = DRAFT (the version in force when drafted); restamped by Share
+  consentedAt     DateTime?      // null only while status = DRAFT (CHECK constraint Memory_consent_when_not_draft); stamped when the person presses Share
   status          MemoryStatus   @default(PENDING)
   analysisStatus  AnalysisStatus @default(NOT_STARTED)
   claimTokenHash  String         @unique     // sha256 of the 32-byte base64url token; the raw token is never stored [C1]

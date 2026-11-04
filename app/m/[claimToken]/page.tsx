@@ -18,7 +18,6 @@ export default function ClaimPage(props: PageProps<"/m/[claimToken]">) {
   return (
     <main className="mx-auto flex w-full max-w-[760px] flex-1 flex-col gap-6 px-[max(16px,5%)] py-10">
       <meta name="referrer" content="no-referrer" />
-      <h1 className="font-display text-h2-sm font-bold sm:text-h2">Your memory</h1>
       <Suspense fallback={<p className="text-body text-walnut-soft">Loading…</p>}>
         <ClaimContent params={props.params} />
       </Suspense>
@@ -37,8 +36,16 @@ async function ClaimContent({ params }: { params: PageProps<"/m/[claimToken]">["
   if (!memory) {
     notFound();
   }
+  // The heading depends on the status, so it lives inside the request-time part (AGENTS.md, Cache Components rule).
+  const draft = memory.status === "DRAFT";
   return (
     <>
+      <h1 className="font-display text-h2-sm font-bold sm:text-h2">{draft ? "A memory of Jo, in your words" : "Your memory"}</h1>
+      {draft && (
+        <p className="text-body">
+          Rob saved these words from your note so they can be part of Jo&rsquo;s memorial. Change anything you like, add a photo or a recording, then press Share.
+        </p>
+      )}
       <section className="space-y-3">
         {memory.contributorNote && (
           <blockquote className="whitespace-pre-wrap rounded-card border-[3px] border-wood-light bg-paper p-6 text-body shadow-card">

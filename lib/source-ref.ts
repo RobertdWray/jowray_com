@@ -1,0 +1,99 @@
+import { createHash } from "node:crypto";
+
+import { SOURCE_REF_PATTERN } from "@/lib/validations/memory";
+
+/**
+ * Builders for `Memory.sourceRef` (scheme in lib/validations/memory.ts). Pure:
+ * no `server-only`, so the repo script and the skill can use them too. The
+ * sms and other forms hash their inputs so no phone number or address ever
+ * sits in the column in clear; `other` is keyed on the full original text
+ * (not the excerpt) so an edited cut cannot create a second memory and two
+ * people's identical words cannot collide. Inputs are canonicalised first
+ * (UTC minute for the timestamp; NFC, LF, trimmed line ends for the text) so
+ * the same message retyped or re-pasted cannot create a second draft.
+ */
+
+const GMAIL_MESSAGE_ID = /^[0-9a-f]{8,32}$/i;
+const E164 = /^\+[1-9]\d{6,14}$/;
+/** Shape check only (the zod schema validates the stored address); enough to refuse an empty or obviously wrong key. */
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function hash32(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex").slice(0, 32);
+}
+
+function checked(ref: string): string {
+  if (!SOURCE_REF_PATTERN.test(ref)) {
+    throw new Error("sourceRef does not follow the scheme");
+  }
+  return ref;
+}
+
+/** The Gmail id of the sender's message that contains the excerpt (not the thread id). */
+export function gmailSourceRef(messageId: string): string {
+  if (!GMAIL_MESSAGE_ID.test(messageId)) {
+    throw new Error("A Gmail message id is 8 to 32 hex characters");
+  }
+  return checked(`gmail:${messageId.toLowerCase()}`);
+}
+
+/** ISO-8601 with an explicit zone: `Z` or `±HH:MM` (also `±HHMM`). A zone-less value would be read in the process's zone and hash differently elsewhere. */
+const EXPLICIT_ZONE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+
+/** `2026-11-03T14:05Z`: the instant to the minute, in UTC, whatever zone or precision was typed. */
+function canonicalMinute(sentAtIso: string): string {
+  const trimmed = sentAtIso.trim();
+  if (!EXPLICIT_ZONE.test(trimmed)) {
+    throw new Error("The text's timestamp must carry an explicit zone or offset, for example 2026-11-03T14:05-04:00 or 2026-11-03T18:05Z");
+  }
+  const ms = Date.parse(trimmed);
+  if (Number.isNaN(ms)) {
+    throw new Error("The text's timestamp must be ISO-8601 (for example 2026-11-03T14:05-04:00)");
+  }
+  return `${new Date(ms).toISOString().slice(0, 16)}Z`;
+}
+
+/** NFC, LF line ends, no trailing whitespace on a line, no leading or trailing blank lines. */
+export function canonicalText(text: string): string {
+  return text
+    .normalize("NFC")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .replace(/^\n+|\n+$/g, "");
+}
+
+function nonEmptyText(text: string): string {
+  const canonical = canonicalText(text);
+  if (canonical.length === 0) {
+    throw new Error("The original text is required");
+  }
+  return canonical;
+}
+
+function emailKey(email: string): string {
+  const key = email.trim().toLowerCase();
+  if (!EMAIL_SHAPE.test(key)) {
+    throw new Error("The sender's email is required");
+  }
+  return key;
+}
+
+/**
+ * A text message: the E.164 number, the timestamp of the text (to the UTC
+ * minute) and the canonical text, hashed. The text is part of the key so two
+ * messages in the same minute stay distinct while a retyped timestamp does not
+ * make a second draft.
+ */
+export function smsSourceRef(e164Number: string, sentAtIso: string, text: string): string {
+  if (!E164.test(e164Number)) {
+    throw new Error("The number must be E.164 (+ and 7 to 15 digits)");
+  }
+  return checked(`sms:${hash32(`${e164Number}|${canonicalMinute(sentAtIso)}|${nonEmptyText(text)}`)}`);
+}
+
+/** Anything else: the sender's email (lower-cased) and the full original message text (canonicalised), hashed. */
+export function otherSourceRef(senderEmail: string, originalText: string): string {
+  return checked(`other:${hash32(`${emailKey(senderEmail)}|${nonEmptyText(originalText)}`)}`);
+}

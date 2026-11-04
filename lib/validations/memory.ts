@@ -118,3 +118,41 @@ export const uploadTicketRequestSchema = z.object({
   claimToken: claimTokenSchema,
   file: memoryFileInputSchema,
 });
+
+/**
+ * `Memory.sourceRef`: an opaque, unique reference to where an admin-drafted
+ * memory's words came from. Never an address or a number in clear:
+ * `gmail:<sender's message id>`, `sms:<32 hex of sha256(E.164|UTC minute|canonical text)>`,
+ * `other:<32 hex of sha256(lower-cased email|full original text)>`.
+ * The builders live in `lib/source-ref.ts`.
+ */
+export const SOURCE_REF_PATTERN = /^(?:gmail:[0-9a-f]{8,32}|sms:[0-9a-f]{32}|other:[0-9a-f]{32})$/;
+
+const SOURCE_REF_PREFIX = { EMAIL: "gmail:", SMS: "sms:", OTHER: "other:" } as const;
+
+/** What the family admin sends to draft a memory on a sender's behalf (features/memories/draft-memory.ts). */
+export const draftMemoryInputSchema = z
+  .object({
+  contributor: z.object({
+    name: optionalText(120),
+    // Trim and lower-case first, then check the format: zod 4's `z.email().trim()` would check the padded string.
+    email: z.string().trim().toLowerCase().max(254).pipe(z.email("Enter a valid email address")),
+    relationship: optionalText(120),
+    phone: optionalText(40),
+  }),
+  // Verbatim: the sender's own paragraphs, never trimmed or rewritten here.
+  note: z.string().max(10_000).refine((value) => value.trim().length > 0, { message: "The note needs some words" }),
+  approxDateText: optionalText(120),
+  place: optionalText(200),
+  source: z.enum(["EMAIL", "SMS", "OTHER"]),
+  sourceRef: z.string().regex(SOURCE_REF_PATTERN, "sourceRef must follow the gmail:/sms:/other: scheme"),
+  visibility: z.enum(["PUBLIC", "FAMILY", "PRIVATE"]).default("PUBLIC"),
+  })
+  .refine((value) => value.sourceRef.startsWith(SOURCE_REF_PREFIX[value.source]), {
+    message: "sourceRef must match source (EMAIL ↔ gmail:, SMS ↔ sms:, OTHER ↔ other:)",
+    path: ["sourceRef"],
+  });
+export type DraftMemoryInput = z.infer<typeof draftMemoryInputSchema>;
+
+/** Admin request to rotate a DRAFT's claim link (features/memories/draft-memory.ts). */
+export const reissueClaimLinkSchema = z.object({ memoryId: z.uuid() });

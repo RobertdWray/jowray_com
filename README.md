@@ -41,3 +41,4 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 - [Environment variables](docs/environment.md)
 - [Bootstrap runbook and decisions](docs/plans/2026-11-02-bootstrap.md)
 - [Bootstrap completion report](docs/plans/2026-11-02-bootstrap-report.md)
+- [Skill: draft a memory on someone's behalf](docs/skills/jowray-draft-memory/SKILL.md) (symlinked into `~/.claude/skills/`; see its prerequisites)

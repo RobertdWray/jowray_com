@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { MAX_FILES_PER_MEMORY } from "@/lib/media-types";
-import { createSubmissionInputSchema, fileInputSchema, memoryFileInputSchema, submissionMemorySchema, uploadTicketRequestSchema } from "@/lib/validations/memory";
+import { createSubmissionInputSchema, draftMemoryInputSchema, fileInputSchema, memoryFileInputSchema, submissionMemorySchema, uploadTicketRequestSchema } from "@/lib/validations/memory";
 
 const textOnly = { memories: [{ note: "She once taught me to quilt.", files: [] }] };
 const file = { name: "clip.webm", type: "audio/webm;codecs=opus", size: 10 };
@@ -135,5 +135,58 @@ describe("ticket and completion schemas (Task 15)", async () => {
     expect(completeSubmissionSchema.safeParse({ claimTokens: [] }).success).toBe(false);
     expect(completeSubmissionSchema.safeParse({ claimTokens: ["t".repeat(43)] }).success).toBe(true);
     expect(completeSubmissionSchema.safeParse({ claimTokens: Array.from({ length: 11 }, () => "t".repeat(43)) }).success).toBe(false);
+  });
+});
+
+describe("draftMemoryInputSchema", () => {
+  const valid = {
+    contributor: { name: "Joyce", email: "Joyce@Example.com", relationship: "Friend from church" },
+    note: "Jo always had a kind word.",
+    source: "EMAIL",
+    sourceRef: "gmail:1a1a2317fba34eec",
+  };
+
+  it("accepts a drafted memory, lower-cases the email and defaults visibility to PUBLIC", () => {
+    const parsed = draftMemoryInputSchema.parse(valid);
+    expect(parsed.contributor.email).toBe("joyce@example.com");
+    expect(parsed.visibility).toBe("PUBLIC");
+    expect(parsed.contributor.phone).toBeUndefined();
+    expect(draftMemoryInputSchema.parse({ ...valid, contributor: { ...valid.contributor, phone: "  " } }).contributor.phone).toBeNull();
+  });
+
+  it("trims and lower-cases a padded address before checking it (zod 4 checks the format first unless piped)", () => {
+    expect(draftMemoryInputSchema.parse({ ...valid, contributor: { email: "  Joyce@Example.com " } }).contributor.email).toBe("joyce@example.com");
+  });
+
+  it("requires a valid email: an admin draft is only ever reached through the sender's address", () => {
+    expect(draftMemoryInputSchema.safeParse({ ...valid, contributor: { name: "Joyce" } }).success).toBe(false);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, contributor: { email: "not-an-address" } }).success).toBe(false);
+  });
+
+  it("requires words: an empty or whitespace note is rejected, a 10 001-character one too", () => {
+    expect(draftMemoryInputSchema.safeParse({ ...valid, note: "   " }).success).toBe(false);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, note: "x".repeat(10_001) }).success).toBe(false);
+  });
+
+  it("only accepts the admin sources and a sourceRef that follows the scheme", () => {
+    expect(draftMemoryInputSchema.safeParse({ ...valid, source: "WEB_UPLOAD" }).success).toBe(false);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, source: "SMS", sourceRef: `sms:${"a".repeat(32)}` }).success).toBe(true);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, source: "OTHER", sourceRef: `other:${"b".repeat(32)}` }).success).toBe(true);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, sourceRef: "gmail:thread-f:123" }).success).toBe(false);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, sourceRef: "sms:+14105551234" }).success).toBe(false);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, sourceRef: "" }).success).toBe(false);
+  });
+
+  it("requires the sourceRef scheme to match the source", () => {
+    expect(draftMemoryInputSchema.safeParse({ ...valid, source: "SMS", sourceRef: "gmail:1a1a2317fba34eec" }).success).toBe(false);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, source: "EMAIL", sourceRef: `other:${"b".repeat(32)}` }).success).toBe(false);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, source: "OTHER", sourceRef: `sms:${"a".repeat(32)}` }).success).toBe(false);
+  });
+
+  it("keeps the note exactly as given (never trimmed or rewritten) and turns empty optional fields into null", () => {
+    const parsed = draftMemoryInputSchema.parse({ ...valid, note: "  Two spaces lead.\n\nAnd a blank line.  ", approxDateText: "", place: " Broadmead " });
+    expect(parsed.note).toBe("  Two spaces lead.\n\nAnd a blank line.  ");
+    expect(parsed.approxDateText).toBeNull();
+    expect(parsed.place).toBe("Broadmead");
   });
 });
