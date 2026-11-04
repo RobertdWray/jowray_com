@@ -8,7 +8,8 @@
  */
 
 /** Keys whose values are bearer secrets; matched case-insensitively as whole keys. */
-export const SECRET_FIELD_KEYS = ["claimToken", "claimTokens", "claimLink", "ticket", "clientPayload", "sig"] as const;
+// `key` is the family admin entry key (the argument of the admin `enterAdmin` Server Function, PR #31).
+export const SECRET_FIELD_KEYS = ["claimToken", "claimTokens", "claimLink", "ticket", "clientPayload", "sig", "key"] as const;
 
 /** Key fragments: any key containing one of these is a secret (covers future `*Token*` fields). */
 export const SECRET_KEY_FRAGMENTS = ["token", "ticket"] as const;

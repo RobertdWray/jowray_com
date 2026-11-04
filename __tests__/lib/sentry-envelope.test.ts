@@ -1,8 +1,12 @@
 import * as Sentry from "@sentry/nextjs";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { DATA_COLLECTION } from "@/lib/sentry/data-collection";
 import { scrubBreadcrumb, scrubEvent, scrubLog, scrubSpan } from "@/lib/sentry/scrub";
+import { instrumentedAction } from "@/lib/sentry/server-action";
+
+// `headers()` only works inside a request; the wrapper reads it for trace propagation.
+vi.mock("next/headers", () => ({ headers: async () => new Headers({ "x-forwarded-for": "203.0.113.9" }) }));
 
 /**
  * The decisive gate for the expanded data policy (plan §7.4): the real server
@@ -37,6 +41,8 @@ beforeAll(() => {
   Sentry.init({
     dsn: "https://public@o0.ingest.sentry.io/0",
     environment: "test",
+    // As in both inits: Server Function inputs and results nest four or five deep (cards → files).
+    normalizeDepth: 6,
     dataCollection: DATA_COLLECTION,
     transport: (options: TransportOptions) =>
       Sentry.createTransport(options, async (request) => {
@@ -110,5 +116,23 @@ describe("tunnel route (handler mode, plan §7.1)", () => {
       })
     );
     expect(response.status).toBe(403);
+  });
+});
+
+describe("instrumentedAction (plan §8.5)", () => {
+  it("names the transaction, attaches the scrubbed input as context, and nothing inside the action leaks a token", async () => {
+    const before = sent.length;
+    const result = await instrumentedAction("createSubmission", { email: EMAIL, memories: [{ note: "hi", files: [{ name: "a.jpg" }] }], claimTokens: [CLAIM_TOKEN] }, async () => {
+      // An error reported while the action runs (what the features do) carries the action's context.
+      Sentry.captureMessage("inside the action");
+      return { ok: true, memories: [{ index: 0, memoryId: "mem_1", claimToken: CLAIM_TOKEN, files: [] }] };
+    });
+    expect(result.memories[0]?.claimToken).toBe(CLAIM_TOKEN); // the caller still gets the real token
+    await Sentry.flush(5000);
+    const envelope = sent.slice(before).find((item) => item.includes("inside the action"));
+    expect(envelope).toBeDefined();
+    expect(envelope).toContain('"transaction":"serverAction/createSubmission"');
+    expect(envelope).toContain('"server_action_input":{"email":"sentry-test@jowray.com","memories":[{"note":"hi","files":[{"name":"a.jpg"}]}],"claimTokens":"[Filtered]"}');
+    expect(envelope).not.toContain("SENTRYTEST_");
   });
 });
