@@ -11,7 +11,7 @@ interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" |
 interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
 type EmailType = "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY";
 interface EmailRow { id: string; memoryId: string; emailType: EmailType; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null } }
-interface MemoryRow { id: string; type: string; deletedAt: Date | null; createdAt: Date; contributorNote?: string | null; contributor: { email: string | null } | null; media: Array<{ status: string; deletedAt: Date | null; createdAt?: Date }>; emails: EmailRow[] }
+interface MemoryRow { id: string; type: string; status?: "DRAFT" | "PENDING" | "APPROVED" | "HIDDEN"; source?: "WEB_UPLOAD" | "EMAIL" | "SMS" | "OTHER" | "PHONE_CALL"; deletedAt: Date | null; createdAt: Date; contributorNote?: string | null; contributor: { email: string | null } | null; media: Array<{ status: string; deletedAt: Date | null; createdAt?: Date }>; emails: EmailRow[] }
 
 let media: MediaRow[] = [];
 let events: EventRow[] = [];
@@ -47,13 +47,17 @@ function finder<T extends Record<string, unknown>>(rows: () => T[]) {
   return vi.fn(async ({ where, take }: { where: Record<string, unknown>; take?: number }) => rows().filter((r) => matches(r, where)).slice(0, take ?? 1000));
 }
 const derivedDeletes: Array<Record<string, unknown>> = [];
+/** Fixture rows are /share memories unless a row says otherwise (the real columns are NOT NULL). */
+function shareMemory(row: MemoryRow): MemoryRow {
+  return { status: "PENDING", source: "WEB_UPLOAD", ...row };
+}
 const dbStub = {
   // Prisma always returns `derivatives` as an array when it is included; fixtures may omit it.
   media: { findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => (await finder(() => media as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }) },
   derivedMedia: { deleteMany: vi.fn(async ({ where }: { where: { mediaId: string; storageKey?: { in: string[] } } }) => { derivedDeletes.push(where); const m = media.find((x) => x.id === where.mediaId); if (m?.derivatives) { m.derivatives = m.derivatives.filter((d) => where.storageKey ? !where.storageKey.in.includes(d.storageKey) : false); } return { count: 1 }; }) },
   webhookEvent: { findMany: finder(() => events as unknown as Record<string, unknown>[]), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<EventRow> }) => { Object.assign(events.find((e) => e.id === where.id)!, data); }) },
   emailLog: { findMany: finder(() => emails as unknown as Record<string, unknown>[]) },
-  memory: { findMany: finder(() => memories as unknown as Record<string, unknown>[]) },
+  memory: { findMany: finder(() => memories.map(shareMemory) as unknown as Record<string, unknown>[]) },
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
@@ -141,6 +145,11 @@ beforeEach(() => {
     { id: "mem_skipped", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "e@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [emails[2]!] },
     // Its only READY file was removed and it has no words: nothing to confirm.
     { id: "mem_emptied", type: "PHOTO", deletedAt: null, createdAt: old, contributorNote: null, contributor: { email: "f@example.com" }, media: [{ status: "READY", deletedAt: old }], emails: [] },
+    // Drafted by the admin on a sender's behalf and not yet shared: no confirmation (Rob's reply is the only message;
+    // a cron confirmation would also rotate the token and kill the link he sent) and no admin alert (Rob made it).
+    { id: "mem_draft", type: "TEXT", status: "DRAFT", source: "EMAIL", deletedAt: null, createdAt: old, contributorNote: "words from a condolence note", contributor: { email: "h@example.com" }, media: [], emails: [] },
+    // The same memory after the person pressed Share: still no site confirmation, but the admins are told it landed.
+    { id: "mem_draft_shared", type: "TEXT", status: "PENDING", source: "EMAIL", deletedAt: null, createdAt: old, contributorNote: "words from a condolence note", contributor: { email: "i@example.com" }, media: [], emails: [] },
   ];
   recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
   recordMediaMock.mockImplementation(async ({ mediaId }) => mediaId === "med_orphan" ? { status: "PENDING", mediaId, memoryId: "mem_2" } : { status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 });
@@ -174,7 +183,11 @@ describe("GET /api/cron/reconcile-uploads", () => {
     // (d) the failed admin alert is retried through the admin path; (e2) ready memories without an admin row are
     // alerted (with or without a contributor address, and even when the contributor's confirmation was skipped),
     // not the young one, not the one with a 20-minute-old upload, not the pre-cutoff one
-    expect(notifyMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5", "mem_noemail", "mem_skipped"]);
+    expect(notifyMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5", "mem_draft_shared", "mem_noemail", "mem_skipped"]);
+    // admin-drafted memories: never confirmed by the site (DRAFT or shared), never alerted while DRAFT (see the fixture comments)
+    expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_draft");
+    expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_draft_shared");
+    expect(notifyMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_draft");
     // removed rows are neither re-recorded (a) nor hashed (b)
     expect(recordMediaMock.mock.calls.map((c) => c[0].mediaId)).not.toContain("med_cancelled");
     expect(checksumMock).not.toHaveBeenCalledWith({ mediaId: "med_removed" });
@@ -200,7 +213,7 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(deriveMediaMock.mock.calls[0]![0].deadlineMs).toBeGreaterThan(25_000);
     // the staging pathname is only ever deleted for videos
     expect(delMock.mock.calls.map((c) => c[0] as string).filter((k) => k.endsWith(".upload.jpg"))).toEqual([]);
-    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 2, confirmationsSent: 2, adminAlertsSent: 3, deletedBlobsRemoved: 3, derived: 3 });
+    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 2, confirmationsSent: 2, adminAlertsSent: 4, deletedBlobsRemoved: 3, derived: 3 });
   });
 
   it("alerts a failed upload only when words were saved, and never resends", async () => {

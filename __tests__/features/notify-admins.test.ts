@@ -6,6 +6,7 @@ interface MediaRow { id: string; status: "PENDING" | "READY" | "FAILED"; mimeTyp
 interface MemoryRow {
   id: string;
   type: "VOICE" | "VIDEO" | "PHOTO" | "TEXT";
+  status: "DRAFT" | "PENDING" | "APPROVED" | "HIDDEN";
   deletedAt: Date | null;
   createdAt: Date;
   claimTokenHash: string;
@@ -42,6 +43,7 @@ beforeEach(() => {
   memory = {
     id: "mem_1",
     type: "PHOTO",
+    status: "PENDING",
     deletedAt: null,
     createdAt: SUBMITTED,
     claimTokenHash: "h".repeat(64),
@@ -140,5 +142,15 @@ describe("notifyAdminsOfMemory", () => {
     expect(Object.keys(arg)).not.toContain("claimLink");
     expect(Object.keys(arg)).not.toContain("rotateToClaimTokenHash");
     expect(JSON.stringify(arg)).not.toContain("h".repeat(64));
+  });
+});
+
+describe("drafts", () => {
+  it("does not alert the admins about a DRAFT: the admin drafted it, and the alert fires when the person shares", async () => {
+    memory!.type = "TEXT";
+    memory!.status = "DRAFT";
+    memory!.contributorNote = "words from a condolence note";
+    expect(await notifyAdminsOfMemory({ memoryId: "mem_1" })).toEqual({ sent: false, skipped: "draft" });
+    expect(sendMock).not.toHaveBeenCalled();
   });
 });

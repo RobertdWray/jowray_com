@@ -1,6 +1,7 @@
 import "server-only";
 
 import { summarizeReadyMedia } from "@/features/memories/media-summary";
+import { siteEmailsConfirmation } from "@/features/memories/site-email";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { getSiteUrl } from "@/lib/site-url";
@@ -9,12 +10,14 @@ import { sendMemoryConfirmation, type SendResult } from "@/services/email";
 
 const log = createLogger({ category: "email" });
 
-export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "no_email" | "not_ready" };
+export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "no_site_email" | "no_email" | "not_ready" };
 
 /**
  * Send the one confirmation email for a memory, if there is an address and
- * something READY to confirm (or the memory is TEXT). Idempotency, the
- * outbound guard and the per-recipient cap live in the email service.
+ * something READY to confirm (or the memory is TEXT). Memories the admin
+ * drafted on someone's behalf are never confirmed by the site
+ * (`siteEmailsConfirmation`). Idempotency, the outbound guard and the
+ * per-recipient cap live in the email service.
  *
  * The email echoes the contributor's words and details (ruling R1) and lists
  * every READY file in upload order.
@@ -45,6 +48,9 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
   }
   if (memory.deletedAt !== null) {
     return { sent: false, skipped: "deleted" };
+  }
+  if (!siteEmailsConfirmation(memory)) {
+    return { sent: false, skipped: "no_site_email" };
   }
   if (claimToken !== undefined && hashClaimToken(claimToken) !== memory.claimTokenHash) {
     return { sent: false, skipped: "not_found" };

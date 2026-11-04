@@ -1,6 +1,7 @@
 import "server-only";
 
 import { summarizeReadyMedia } from "@/features/memories/media-summary";
+import { siteAlertsAdmins } from "@/features/memories/site-email";
 import { getDb } from "@/server/db/client";
 import { sendAdminNewMemory, type SendResult } from "@/services/email";
 
@@ -12,14 +13,15 @@ import { sendAdminNewMemory, type SendResult } from "@/services/email";
  */
 export const ADMIN_ALERT_SINCE = new Date("2026-11-03T22:00:00Z");
 
-export type NotifyAdminsResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "not_ready" };
+export type NotifyAdminsResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "draft" | "not_ready" };
 
 /**
  * Send the one "new memory" alert to the family admins, if there is
  * something to show (a READY file, or words, or a TEXT memory): the same
  * readiness rule as `confirmMemory`, but with no contributor address
- * required. Idempotency, the outbound guard and the recipient list live in
- * the email service.
+ * required. Not for a DRAFT the admin made themselves (`siteAlertsAdmins`);
+ * the alert goes when the person shares it. Idempotency, the outbound guard
+ * and the recipient list live in the email service.
  *
  * This never reads or mints the claim token: the alert carries no link by
  * ruling (R2), so the admins are told, not handed the edit capability.
@@ -42,6 +44,9 @@ export async function notifyAdminsOfMemory({ memoryId }: { memoryId: string }): 
   }
   if (memory.deletedAt !== null) {
     return { sent: false, skipped: "deleted" };
+  }
+  if (!siteAlertsAdmins(memory)) {
+    return { sent: false, skipped: "draft" };
   }
   const media = summarizeReadyMedia(memory.media);
   const hasWords = (memory.contributorNote ?? "").trim().length > 0;

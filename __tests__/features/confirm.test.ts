@@ -8,6 +8,8 @@ interface MediaRow { id: string; status: "PENDING" | "READY" | "FAILED"; mimeTyp
 interface MemoryRow {
   id: string;
   type: "VOICE" | "VIDEO" | "PHOTO" | "TEXT";
+  status: "DRAFT" | "PENDING" | "APPROVED" | "HIDDEN";
+  source: "WEB_UPLOAD" | "EMAIL" | "SMS" | "OTHER" | "PHONE_CALL";
   deletedAt: Date | null;
   claimTokenHash: string;
   contributorNote: string | null;
@@ -40,6 +42,8 @@ beforeEach(() => {
   memory = {
     id: "mem_1",
     type: "PHOTO",
+    status: "PENDING",
+    source: "WEB_UPLOAD",
     deletedAt: null,
     claimTokenHash: hashClaimToken(TOKEN),
     contributorNote: null,
@@ -168,5 +172,26 @@ describe("removed files", () => {
     expect((await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).sent).toBe(true);
     const arg = sendMock.mock.calls.at(-1)?.[0] as unknown as { media: unknown[] };
     expect(arg.media).toHaveLength(1);
+  });
+});
+
+describe("admin-drafted memories get no site email", () => {
+  it("skips a DRAFT before any send: Rob's own reply is the only message the person gets", async () => {
+    memory!.type = "TEXT";
+    memory!.status = "DRAFT";
+    memory!.source = "EMAIL";
+    memory!.contributorNote = "words from a condolence note";
+    expect(await confirmMemory({ memoryId: "mem_1" })).toEqual({ sent: false, skipped: "no_site_email" });
+    expect(sendMock).not.toHaveBeenCalled();
+    expect(dbStub.memory.update).not.toHaveBeenCalled();
+  });
+
+  it("still skips once the person has pressed Share (source stays EMAIL), so the cron never rotates the link Rob sent", async () => {
+    memory!.type = "TEXT";
+    memory!.status = "PENDING";
+    memory!.source = "EMAIL";
+    memory!.contributorNote = "words from a condolence note";
+    expect(await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).toEqual({ sent: false, skipped: "no_site_email" });
+    expect(sendMock).not.toHaveBeenCalled();
   });
 });

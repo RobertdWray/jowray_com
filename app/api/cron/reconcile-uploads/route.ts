@@ -4,6 +4,7 @@ import { confirmMemory } from "@/features/memories/confirm";
 import { DERIVED_KINDS, deriveMedia, MAX_DECODE_ATTEMPTS, MAX_PIXELS, STALE_CLAIM_MS } from "@/features/memories/derive-media";
 import { computeChecksum, recordMedia } from "@/features/memories/ingest-upload";
 import { ADMIN_ALERT_SINCE, notifyAdminsOfMemory } from "@/features/memories/notify-admins";
+import { ADMIN_ALERT_WHERE, SITE_EMAIL_WHERE } from "@/features/memories/site-email";
 import { safeEqualHex } from "@/lib/claim-token";
 import { posterStagingKeyFor } from "@/lib/derived-keys";
 import { createLogger, logError } from "@/lib/logger";
@@ -163,9 +164,12 @@ export async function GET(request: NextRequest): Promise<Response> {
   // (e) Memories with an address and something READY (or TEXT) that were never
   // emailed and are old enough that no request-path confirm is still running.
   // `none` is filtered by type: an admin-alert row alone must not count as "emailed".
+  // Admin-drafted memories are excluded (SITE_EMAIL_WHERE): a confirmation here
+  // would also rotate the token and kill the link the admin sent by hand.
   const ready = [{ type: "TEXT" as const }, { contributorNote: { not: null } }, { media: { some: { status: "READY" as const, deletedAt: null } } }];
   const unconfirmed = await db.memory.findMany({
     where: {
+      ...SITE_EMAIL_WHERE,
       deletedAt: null,
       createdAt: { lt: new Date(now - CONFIRM_MIN_AGE_MS) },
       contributor: { email: { not: null } },
@@ -194,8 +198,10 @@ export async function GET(request: NextRequest): Promise<Response> {
   // only memories created since the alert existed (never a backfill of old
   // ones), and not while an upload younger than an hour is still in flight
   // (the request path alerts the moment it lands; step (a) gives up on older ones).
+  // Not while a memory is a DRAFT the admin made; once shared it is alerted like any other.
   const unalerted = await db.memory.findMany({
     where: {
+      ...ADMIN_ALERT_WHERE,
       deletedAt: null,
       createdAt: { gte: ADMIN_ALERT_SINCE, lt: new Date(now - CONFIRM_MIN_AGE_MS) },
       emails: { none: { emailType: "ADMIN_NEW_MEMORY" } },
