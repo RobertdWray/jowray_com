@@ -16,6 +16,15 @@ const log = createLogger({ category: "email" });
 
 /** D16: completion waits at most this long for the send's photo thumbnails before emailing with whatever is ready. */
 export const THUMBNAIL_WAIT_MS = 10_000;
+/**
+ * How long the anchor's lease is left live once completion starts: long enough
+ * for the thumbnail wait and the send to finish under a live request, short
+ * enough that the cron takes over soon after a request that died here. Never
+ * clear the lease outright: a slow send older than the cron's 30-minute age
+ * would otherwise have its tokens rotated by (e3) while the browser still
+ * holds the raw ones and its page says they are the only copy.
+ */
+export const COMPLETION_GRACE_MS = 2 * 60_000;
 const THUMBNAIL_POLL_MS = 1_000;
 /** The template shows at most four previews; fetching more would be wasted bytes. */
 const MAX_PREVIEW_FETCHES = 4;
@@ -158,15 +167,15 @@ export async function confirmSubmission({ anchorId, claimTokens }: { anchorId: s
   }
 
   let rows = await loadSubmission(anchor.submissionId);
-  if (rotating) {
-    // The lease has run out: anything still PENDING either landed without a finalize or never will.
-    const pending = rows.flatMap((m) => (m.deletedAt === null ? m.media.filter((row) => row.status === "PENDING") : []));
-    for (const row of pending) {
-      await recordMedia({ mediaId: row.id });
-    }
-    if (pending.length > 0) {
-      rows = await loadSubmission(anchor.submissionId);
-    }
+  // Anything still PENDING is checked against the store once more: on the cron path the lease has
+  // run out and the file either landed without a finalize or never will; on the request path a
+  // file whose finalize saw the blob a moment too early must not be told "didn't arrive".
+  const pending = rows.flatMap((m) => (m.deletedAt === null ? m.media.filter((row) => row.status === "PENDING") : []));
+  for (const row of pending) {
+    await recordMedia({ mediaId: row.id });
+  }
+  if (pending.length > 0) {
+    rows = await loadSubmission(anchor.submissionId);
   }
 
   const live = rows.filter((m) => m.deletedAt === null);
@@ -227,9 +236,10 @@ const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(reso
  * The browser calls this once, in a `finally`, after its uploads: it holds
  * every raw token of the send, so the receipt can carry every link without
  * rotating anything. The tokens must cover every live memory of exactly one
- * send (C2). The anchor's lease is cleared in its own statement (so the cron
- * may take over if the email fails), the photo thumbnails get up to ten
- * seconds (D16), then the receipt is sent outside any transaction. Email
+ * send (C2). The anchor's lease is shortened to a brief grace in its own
+ * statement (so the cron takes over soon if this request dies, and never while
+ * it is still running), the photo thumbnails get up to ten seconds (D16), then
+ * the receipt is sent outside any transaction. Email
  * problems are reported and never hide the links; `already_sent` and
  * `in_progress` count as emailed. The admin alerts, one per live memory,
  * run after the response (D18).
@@ -257,8 +267,9 @@ export async function completeSubmission(raw: unknown, options: CompletionOption
     return { ok: false, code: "not_found" };
   }
 
-  // Its own statement, committed before anything slow: from here the cron may finish the send if this request dies.
-  await db.memory.updateMany({ where: { submissionId, submissionIndex: 0 }, data: { uploadLeaseUntil: null } });
+  // Its own statement, committed before anything slow: the lease shrinks to a short grace, so the cron
+  // finishes the send a couple of minutes after a request that dies here, and never during a live one.
+  await db.memory.updateMany({ where: { submissionId, submissionIndex: 0 }, data: { uploadLeaseUntil: new Date(Date.now() + COMPLETION_GRACE_MS) } });
 
   const waitMs = options.thumbnailWaitMs ?? THUMBNAIL_WAIT_MS;
   const now = options.now ?? Date.now;

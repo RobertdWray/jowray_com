@@ -31,6 +31,20 @@ describe("buildSubmissionConfirmation: one memory", () => {
   });
 });
 
+describe("buildSubmissionConfirmation: one memory with a missing file", () => {
+  it("reads in the singular everywhere and names the file", () => {
+    const { subject, text, html } = build([memory(0, { missingFiles: ["IMG_2231.MOV"] })]);
+    expect(subject).toBe(MEMORY_CONFIRMATION_SUBJECT);
+    expect(text).toContain("Your memory is on its way to Richard, Rob and Tracy.");
+    expect(text).not.toMatch(/1 memories/);
+    expect(text).toContain("Your private link (keep it private: anyone who has it can edit this memory):");
+    expect(text.trimEnd().endsWith("Keep this link private: anyone who has it can edit this memory.")).toBe(true);
+    expect(html).toContain("Your private link");
+    expect(html).not.toContain("Your private links");
+    expect(html).toContain("IMG_2231.MOV");
+  });
+});
+
 describe("buildSubmissionConfirmation: several memories", () => {
   it("has a plural subject, puts every link first, and names each memory", () => {
     const { subject, html, text } = build([memory(0), memory(1), memory(2)]);

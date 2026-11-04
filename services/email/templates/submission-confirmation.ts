@@ -52,6 +52,19 @@ const MEMORY_BUTTON = "See or add to this memory";
 const PRIVACY_PLURAL = "Keep these links private: anyone who has one can edit that memory.";
 const LINKS_HEADING = "Your private links";
 
+/** The copy that changes with the number of memories; one memory reaches this layout only when a file is missing. */
+function wording(count: number) {
+  const several = count > 1;
+  return {
+    lead: several
+      ? `Your ${count} memories are on their way to Richard, Rob and Tracy. We read every single one, usually more than once.`
+      : CONFIRMATION_COPY.leadRest,
+    linksHeading: several ? LINKS_HEADING : "Your private link",
+    privacy: several ? PRIVACY_PLURAL : CONFIRMATION_COPY.privacy,
+    linksNote: several ? "keep them private: anyone who has one can edit that memory" : "keep it private: anyone who has it can edit this memory",
+  };
+}
+
 export function submissionConfirmationSubject(count: number): string {
   return count === 1 ? MEMORY_CONFIRMATION_SUBJECT : `Thank you for sharing ${count} memories`;
 }
@@ -152,7 +165,8 @@ function render(input: SubmissionConfirmationContent, noteCap: number): Rendered
   const memories = prepare(input.memories, noteCap);
   const count = memories.length;
   const greeting = name ? `Thank you, ${name}.` : "Thank you.";
-  const lead = `Your ${count} memories are on their way to Richard, Rob and Tracy. We read every single one, usually more than once.`;
+  const words = wording(count);
+  const lead = words.lead;
   const subject = submissionConfirmationSubject(count);
 
   // ---- text part -----------------------------------------------------------
@@ -161,7 +175,7 @@ function render(input: SubmissionConfirmationContent, noteCap: number): Rendered
     "",
     `${greeting} ${lead}`,
     "",
-    `${LINKS_HEADING} (${PRIVACY_PLURAL.charAt(0).toLowerCase()}${PRIVACY_PLURAL.slice(1, -1)}):`,
+    `${words.linksHeading} (${words.linksNote}):`,
     ...memories.flatMap((m) => [`- ${m.label}`, `  ${m.link}`]),
     ...(name || relationship ? ["", ...(name ? [`Your name: ${name}`] : []), ...(relationship ? [`How you knew Jo: ${relationship}`] : [])] : []),
     ...memories.flatMap((m) => [
@@ -182,18 +196,18 @@ function render(input: SubmissionConfirmationContent, noteCap: number): Rendered
     CONFIRMATION_COPY.madeWithLove,
     CONFIRMATION_COPY.questions,
     "",
-    PRIVACY_PLURAL,
+    words.privacy,
   ].join("\n");
 
   // ---- html part -----------------------------------------------------------
   const linksCard = cardHtml(
     [
-      cardHeading(LINKS_HEADING, 12),
+      cardHeading(words.linksHeading, 12),
       ...memories.map(
         (m) =>
           `<tr><td style="padding:0 0 12px 0;font-family:${BODY_FONT};font-size:20px;line-height:1.5;"><a href="${escapeHtml(m.link)}" style="color:${JO_RED_DEEP};font-weight:700;text-decoration:underline;">${escapeHtml(m.label)}</a></td></tr>`
       ),
-      `<tr><td style="padding:6px 0 0 0;font-family:${BODY_FONT};font-size:17px;line-height:1.5;color:${WALNUT_SOFT};">${escapeHtml(PRIVACY_PLURAL)}</td></tr>`,
+      `<tr><td style="padding:6px 0 0 0;font-family:${BODY_FONT};font-size:17px;line-height:1.5;color:${WALNUT_SOFT};">${escapeHtml(words.privacy)}</td></tr>`,
     ].join("\n")
   );
   const whoRows = [name ? detailRow("Your name", name) : "", relationship ? detailRow("How you knew Jo", relationship) : ""].join("");
