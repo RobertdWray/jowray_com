@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type Re
 
 import { CONTACT_OPT_IN_LABEL, IMPLICIT_CONSENT_NOTE, MAILING_LIST_LABEL, NOTIFY_WHEN_POSTED_LABEL } from "@/lib/consent";
 import { durationSecondsFor } from "@/lib/format-duration";
-import { type CardMediaItem, type CardsAction, type CardsState, cardsReducer, contentCards, labelFor, MAX_CARDS, type SendIssue, validateForSend } from "@/lib/memory-cards";
+import { type CardMediaItem, type CardsAction, type CardsState, cardsReducer, contentCards, hasContent, labelFor, MAX_CARDS, type SendIssue, validateForSend } from "@/lib/memory-cards";
 import {
   getRememberedServerSnapshot,
   getRememberedSnapshot,
@@ -342,8 +342,10 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
             return <MemoryPlaceholder key={card.id} position={index + 1} onOpen={() => openPlaceholder(card.id)} disabled={busy} />;
           }
           const isFirst = index === 0;
+          // The phone layout hides the extra empty cards only: a card with something in it (a desktop window made
+          // narrow, a restored draft) stays visible, because it will be sent and may need its error shown.
           return (
-            <div key={card.id} className={isFirst ? undefined : "narrow:hidden"}>
+            <div key={card.id} className={isFirst || hasContent(card) ? undefined : "narrow:hidden"}>
               <MemoryCardSection
                 card={card}
                 position={position}

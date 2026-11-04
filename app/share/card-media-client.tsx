@@ -109,7 +109,7 @@ export function CardMedia({
   progress: Record<string, number>;
   onAdd: (items: CardMediaItem[]) => void;
   onRemove: (mediaId: string) => void;
-  /** The last reliable moment to save the draft before a phone's camera app takes over (C45). */
+  /** The last reliable moment to save the draft before a picker or the camera app takes the browser away (C45). */
   onBeforeCamera: () => void;
 }) {
   const urls = useObjectUrls(card.media);
@@ -135,9 +135,10 @@ export function CardMedia({
     }
   }
 
-  function openCamera() {
+  /** Any picker can take the browser away on a phone (the camera app most of all), so the draft is saved first (C45). */
+  function openPicker(input: HTMLInputElement | null) {
     onBeforeCamera();
-    cameraRef.current?.click();
+    input?.click();
   }
 
   // Every capture control on the page waits while any card is recording (here or elsewhere).
@@ -219,13 +220,13 @@ export function CardMedia({
         <input ref={cameraRef} type="file" accept="video/*" capture="user" className="sr-only" tabIndex={-1} aria-hidden="true" onChange={onPick} disabled={captureDisabled} />
         <input ref={pickerRef} type="file" accept={ACCEPT_ATTRIBUTE} multiple className="sr-only" tabIndex={-1} aria-hidden="true" onChange={onPick} disabled={captureDisabled} />
         <input ref={uploadRef} type="file" accept={ACCEPT_ATTRIBUTE} multiple className="sr-only" tabIndex={-1} aria-hidden="true" onChange={onPick} disabled={captureDisabled} />
-        <SecondaryButton onClick={openCamera} disabled={captureDisabled} className="wide:hidden">
+        <SecondaryButton onClick={() => openPicker(cameraRef.current)} disabled={captureDisabled} className="wide:hidden">
           Record a video
         </SecondaryButton>
-        <SecondaryButton onClick={() => pickerRef.current?.click()} disabled={captureDisabled} className="wide:hidden">
+        <SecondaryButton onClick={() => openPicker(pickerRef.current)} disabled={captureDisabled} className="wide:hidden">
           Add photos or videos
         </SecondaryButton>
-        <SecondaryButton onClick={() => uploadRef.current?.click()} disabled={captureDisabled} className="narrow:hidden">
+        <SecondaryButton onClick={() => openPicker(uploadRef.current)} disabled={captureDisabled} className="narrow:hidden">
           Upload photos, videos or recordings
         </SecondaryButton>
       </div>

@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useRef } from "react";
+
 import { PrimaryButton, secondaryButtonClass } from "../_components/buttons";
 import { linkClass } from "../_components/field-classes";
 import { SolidHeart } from "../_components/hearts";
@@ -19,6 +21,11 @@ export interface SentMemory {
 export function ThankYou({ memories, emailed, hasEmail, onAnother }: { memories: SentMemory[]; emailed: boolean; hasEmail: boolean; onAnother: () => void }) {
   const origin = window.location.origin;
   const several = memories.length > 1;
+  // Focus once when the screen appears (C48); a re-render of the parent must not pull focus off a link.
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
   const mailto = `mailto:?subject=${encodeURIComponent("Tell a Jo story")}&body=${encodeURIComponent(`Jo's family is collecting memories of her. If you knew Jo, tell yours here: ${origin}/`)}`;
   const failed = memories.flatMap((m) => m.failedFiles);
 
@@ -44,11 +51,7 @@ export function ThankYou({ memories, emailed, hasEmail, onAnother }: { memories:
             <SolidHeart size={96} stitchColor="#fffdf8" label="A stitched red heart" />
           </div>
         </div>
-        <h1
-          tabIndex={-1}
-          ref={(node) => node?.focus()}
-          className="font-display text-display-sm font-extrabold outline-none sm:text-thanks"
-        >
+        <h1 tabIndex={-1} ref={headingRef} className="font-display text-display-sm font-extrabold outline-none sm:text-thanks">
           Jo would have loved {several ? "these" : "this"}.
         </h1>
         <p className="max-w-[30em] text-lead">
