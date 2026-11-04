@@ -9,8 +9,9 @@ const HOUR = 60 * 60 * 1000;
 interface DerivedRow { kind: string; status: string; error: string | null; attempts: number; claimedAt: Date | null; storageKey: string }
 interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; mimeType?: string; derivatives?: DerivedRow[]; memory: { deletedAt: Date | null } }
 interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
-interface EmailRow { id: string; memoryId: string; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null } }
-interface MemoryRow { id: string; type: string; deletedAt: Date | null; createdAt: Date; contributorNote?: string | null; contributor: { email: string | null } | null; media: Array<{ status: string; deletedAt: Date | null }>; emails: EmailRow[] }
+type EmailType = "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY";
+interface EmailRow { id: string; memoryId: string; emailType: EmailType; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null } }
+interface MemoryRow { id: string; type: string; deletedAt: Date | null; createdAt: Date; contributorNote?: string | null; contributor: { email: string | null } | null; media: Array<{ status: string; deletedAt: Date | null; createdAt?: Date }>; emails: EmailRow[] }
 
 let media: MediaRow[] = [];
 let events: EventRow[] = [];
@@ -23,15 +24,16 @@ function matches(row: Record<string, unknown>, where: Record<string, unknown>): 
     if (k === "NOT") { return !matches(row, v as Record<string, unknown>); }
     if (k === "OR") { return (v as Record<string, unknown>[]).some((w) => matches(row, w)); }
     if (k === "AND") { return (v as Record<string, unknown>[]).every((w) => matches(row, w)); }
-    if (k === "emails") { const n = v as { none?: unknown }; return n.none !== undefined ? (row.emails as unknown[]).length === 0 : true; }
+    if (k === "emails") { const n = v as { none?: Record<string, unknown> }; return n.none !== undefined ? !(row.emails as Record<string, unknown>[]).some((e) => matches(e, n.none!)) : true; }
     if (k === "media") { const s = v as { some?: Record<string, unknown> }; return s.some ? (row.media as Record<string, unknown>[]).some((m) => matches(m, s.some!)) : true; }
     if (k === "derivatives") { const d = v as { some?: Record<string, unknown>; none?: Record<string, unknown> }; const rows = (row.derivatives as Record<string, unknown>[] | undefined) ?? []; if (d.none) { return !rows.some((r) => matches(r, d.none!)); } if (d.some) { return rows.some((r) => matches(r, d.some!)); } return true; }
     if (k === "contributor") { const c = v as { email?: { not: null } }; if (c.email?.not !== null) { return true; } const email = (row.contributor as { email: string | null } | null)?.email; return email !== null && email !== undefined; }
     const actual = row[k];
     if (v !== null && typeof v === "object" && !(v instanceof Date)) {
-      const cond = v as { lt?: Date; lte?: Date; gt?: Date; not?: unknown; startsWith?: string; in?: unknown[] };
+      const cond = v as { lt?: Date; lte?: Date; gt?: Date; gte?: Date; not?: unknown; startsWith?: string; in?: unknown[] };
       if (cond.in !== undefined && !cond.in.includes(actual)) { return false; }
       if (cond.lt !== undefined && !((actual as Date) < cond.lt)) { return false; }
+      if (cond.gte !== undefined && !((actual as Date) >= cond.gte)) { return false; }
       if (cond.lte !== undefined && !((actual as Date) <= cond.lte)) { return false; }
       if (cond.gt !== undefined && !((actual as Date) > cond.gt)) { return false; }
       if ("not" in cond && actual === cond.not) { return false; }
@@ -59,8 +61,20 @@ type RecordOutcome = { status: "READY"; mediaId: string; memoryId: string; sizeB
 const recordMediaMock = vi.fn(async ({ mediaId }: { mediaId: string }): Promise<RecordOutcome> => ({ status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 }));
 const checksumMock = vi.fn(async ({ mediaId }: { mediaId: string }) => { media.find((m) => m.id === mediaId)!.checksumSha256 = "a".repeat(64); return "a".repeat(64); });
 vi.mock("@/features/memories/ingest-upload", () => ({ recordMedia: (a: { mediaId: string }) => recordMediaMock(a), computeChecksum: (a: { mediaId: string }) => checksumMock(a) }));
-const confirmMock = vi.fn(async ({ memoryId }: { memoryId: string }) => { const existing = emails.find((e) => e.memoryId === memoryId); if (existing) { existing.status = "SENT"; } else { emails.push({ id: `log_${memoryId}`, memoryId, status: "SENT", attempts: 1, nextAttemptAt: null, createdAt: new Date(), memory: { deletedAt: null } }); } const mem = memories.find((m) => m.id === memoryId); if (mem) { mem.emails = emails.filter((e) => e.memoryId === memoryId); } return { sent: true }; });
+/** Records a SENT row of one type for the memory (or flips its existing row of that type to SENT), like the real service. */
+function recordSent(memoryId: string, emailType: EmailType) {
+  const existing = emails.find((e) => e.memoryId === memoryId && e.emailType === emailType);
+  if (existing) { existing.status = "SENT"; } else { emails.push({ id: `log_${emailType}_${memoryId}`, memoryId, emailType, status: "SENT", attempts: 1, nextAttemptAt: null, createdAt: new Date(), memory: { deletedAt: null } }); }
+  const mem = memories.find((m) => m.id === memoryId);
+  if (mem) { mem.emails = emails.filter((e) => e.memoryId === memoryId); }
+  return { sent: true };
+}
+const confirmMock = vi.fn(async ({ memoryId }: { memoryId: string }) => recordSent(memoryId, "MEMORY_CONFIRMATION"));
 vi.mock("@/features/memories/confirm", () => ({ confirmMemory: (a: { memoryId: string }) => confirmMock(a) }));
+// The activation cutoff is a day in the past here so the fixtures (created 2 h ago) fall after it; the real constant is the merge day.
+const ADMIN_ALERT_SINCE = vi.hoisted(() => new Date(Date.now() - 24 * 60 * 60 * 1000));
+const notifyMock = vi.fn(async ({ memoryId }: { memoryId: string }) => recordSent(memoryId, "ADMIN_NEW_MEMORY"));
+vi.mock("@/features/memories/notify-admins", () => ({ ADMIN_ALERT_SINCE, notifyAdminsOfMemory: (a: { memoryId: string }) => notifyMock(a) }));
 const deriveMediaMock = vi.fn(async ({ mediaId }: { mediaId: string; deadlineMs: number }) => { const m = media.find((x) => x.id === mediaId)!; m.derivatives = [{ kind: "WEB_IMAGE", status: "READY", error: null, attempts: 1, claimedAt: new Date(), storageKey: "dev/derived/x/a.jpg" }, { kind: "THUMBNAIL", status: "READY", error: null, attempts: 1, claimedAt: new Date(), storageKey: "dev/derived/x/b.jpg" }]; return { WEB_IMAGE: "derived", THUMBNAIL: "derived" }; });
 vi.mock("@/features/memories/derive-media", async (importOriginal) => { const actual = await importOriginal<Record<string, unknown>>(); return { ...actual, deriveMedia: (a: { mediaId: string; deadlineMs: number }) => deriveMediaMock(a) }; });
 const delMock = vi.fn();
@@ -104,12 +118,23 @@ beforeEach(() => {
   ];
   events = [{ id: "evt_1", processedAt: null, attempts: 1, error: "boom", payload: { tokenPayload: JSON.stringify({ mediaId: "med_stale" }) } }];
   emails = [
-    { id: "log_1", memoryId: "mem_4", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: null } },
-    { id: "log_gone", memoryId: "mem_gone", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: ancient } },
-    { id: "log_skipped", memoryId: "mem_skipped", status: "SKIPPED", attempts: 0, nextAttemptAt: null, createdAt: old, memory: { deletedAt: null } },
+    { id: "log_1", memoryId: "mem_4", emailType: "MEMORY_CONFIRMATION", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: null } },
+    { id: "log_gone", memoryId: "mem_gone", emailType: "MEMORY_CONFIRMATION", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: ancient } },
+    { id: "log_skipped", memoryId: "mem_skipped", emailType: "MEMORY_CONFIRMATION", status: "SKIPPED", attempts: 0, nextAttemptAt: null, createdAt: old, memory: { deletedAt: null } },
+    // A failed admin alert is retried through the admin path, never the confirmation.
+    { id: "log_admin_failed", memoryId: "mem_4", emailType: "ADMIN_NEW_MEMORY", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: null } },
+    // An admin row alone must not stop the contributor's confirmation (step (e) filters `none` by type).
+    { id: "log_admin_only", memoryId: "mem_adminonly", emailType: "ADMIN_NEW_MEMORY", status: "SENT", attempts: 1, nextAttemptAt: null, createdAt: old, memory: { deletedAt: null } },
   ];
   memories = [
-    { id: "mem_4", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "a@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [emails[0]!] },
+    { id: "mem_4", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "a@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [emails[0]!, emails[3]!] },
+    { id: "mem_adminonly", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "g@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [emails[4]!] },
+    // No contributor address: the confirmation cannot go, the admin alert must.
+    { id: "mem_noemail", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: null }, media: [{ status: "READY", deletedAt: null }], emails: [] },
+    // Words saved, upload still in flight (20 minutes): the alert waits for the file.
+    { id: "mem_pending_upload", type: "VIDEO", deletedAt: null, createdAt: old, contributorNote: "words", contributor: { email: null }, media: [{ status: "PENDING", deletedAt: null, createdAt: new Date(Date.now() - 20 * 60 * 1000) }], emails: [] },
+    // Existed before the alert feature: never announced as new.
+    { id: "mem_before_cutoff", type: "PHOTO", deletedAt: null, createdAt: new Date(ADMIN_ALERT_SINCE.getTime() - HOUR), contributor: { email: null }, media: [{ status: "READY", deletedAt: null }], emails: [] },
     { id: "mem_5", type: "PHOTO", deletedAt: null, createdAt: old, contributor: { email: "b@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [] },
     { id: "mem_young", type: "PHOTO", deletedAt: null, createdAt: new Date(), contributor: { email: "c@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [] },
     { id: "mem_gone", type: "PHOTO", deletedAt: ancient, createdAt: old, contributor: { email: "d@example.com" }, media: [{ status: "READY", deletedAt: null }], emails: [emails[1]!] },
@@ -117,7 +142,7 @@ beforeEach(() => {
     // Its only READY file was removed and it has no words: nothing to confirm.
     { id: "mem_emptied", type: "PHOTO", deletedAt: null, createdAt: old, contributorNote: null, contributor: { email: "f@example.com" }, media: [{ status: "READY", deletedAt: old }], emails: [] },
   ];
-  recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
+  recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
   recordMediaMock.mockImplementation(async ({ mediaId }) => mediaId === "med_orphan" ? { status: "PENDING", mediaId, memoryId: "mem_2" } : { status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 });
 });
 
@@ -145,7 +170,11 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(events[0]?.processedAt).toBeInstanceOf(Date);
     // (d) failed email retried (not for a deleted memory), (e) READY memory with email and no log confirmed
     // (not one younger than 30 minutes, not one with a terminal SKIPPED row)
-    expect(confirmMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5"]);
+    expect(confirmMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5", "mem_adminonly"]);
+    // (d) the failed admin alert is retried through the admin path; (e2) ready memories without an admin row are
+    // alerted (with or without a contributor address, and even when the contributor's confirmation was skipped),
+    // not the young one, not the one with a 20-minute-old upload, not the pre-cutoff one
+    expect(notifyMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5", "mem_noemail", "mem_skipped"]);
     // removed rows are neither re-recorded (a) nor hashed (b)
     expect(recordMediaMock.mock.calls.map((c) => c[0].mediaId)).not.toContain("med_cancelled");
     expect(checksumMock).not.toHaveBeenCalledWith({ mediaId: "med_removed" });
@@ -171,20 +200,54 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(deriveMediaMock.mock.calls[0]![0].deadlineMs).toBeGreaterThan(25_000);
     // the staging pathname is only ever deleted for videos
     expect(delMock.mock.calls.map((c) => c[0] as string).filter((k) => k.endsWith(".upload.jpg"))).toEqual([]);
-    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 1, confirmationsSent: 1, deletedBlobsRemoved: 3, derived: 3 });
+    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 2, confirmationsSent: 2, adminAlertsSent: 3, deletedBlobsRemoved: 3, derived: 3 });
+  });
+
+  it("alerts a failed upload only when words were saved, and never resends", async () => {
+    const old = new Date(Date.now() - 2 * HOUR);
+    memories.push(
+      { id: "mem_failed_words", type: "VIDEO", deletedAt: null, createdAt: old, contributorNote: "the words were saved", contributor: { email: null }, media: [{ status: "FAILED", deletedAt: null, createdAt: old }], emails: [] },
+      { id: "mem_failed_nowords", type: "VIDEO", deletedAt: null, createdAt: old, contributorNote: null, contributor: { email: null }, media: [{ status: "FAILED", deletedAt: null, createdAt: old }], emails: [] }
+    );
+    await run(`Bearer ${SECRET}`);
+    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_failed_words" });
+    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_failed_nowords" });
+    notifyMock.mockClear();
+    const res = await run(`Bearer ${SECRET}`);
+    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_failed_words" });
+    expect(((await res.json()) as { data: Record<string, number> }).data.adminAlertsSent).toBe(0);
+  });
+
+  it("alerts the admins once a pending upload lands, never while it is in flight", async () => {
+    await run(`Bearer ${SECRET}`);
+    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_pending_upload" });
+    const pending = memories.find((m) => m.id === "mem_pending_upload")!;
+    pending.media[0]!.status = "READY";
+    notifyMock.mockClear();
+    const res = await run(`Bearer ${SECRET}`);
+    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_pending_upload" });
+    expect(((await res.json()) as { data: Record<string, number> }).data.adminAlertsSent).toBe(1);
+  });
+
+  it("never announces a memory created before the alert feature was activated", async () => {
+    await run(`Bearer ${SECRET}`);
+    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_before_cutoff" });
+    expect(memories.find((m) => m.id === "mem_before_cutoff")?.emails).toHaveLength(0);
   });
 
   it("is a no-op on a second run", async () => {
     await run(`Bearer ${SECRET}`);
-    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
+    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
     const res = await run(`Bearer ${SECRET}`);
     const body = (await res.json()) as { data: Record<string, number> };
     expect(checksumMock).not.toHaveBeenCalled();
     expect(confirmMock).not.toHaveBeenCalled();
+    expect(notifyMock).not.toHaveBeenCalled();
     expect(delMock).not.toHaveBeenCalled();
     expect(deriveMediaMock).not.toHaveBeenCalled();
     expect(body.data.checksumsComputed).toBe(0);
     expect(body.data.confirmationsSent).toBe(0);
+    expect(body.data.adminAlertsSent).toBe(0);
   });
 
   it("gives up on a webhook event after three attempts", async () => {

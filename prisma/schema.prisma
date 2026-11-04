@@ -63,6 +63,7 @@ enum MediaStatus {
 }
 enum EmailType {
   MEMORY_CONFIRMATION
+  ADMIN_NEW_MEMORY                        // family admins: "a new memory landed" (Task 13)
 }
 enum EmailStatus {
   PENDING
@@ -240,7 +241,7 @@ model WebhookEvent {                        // raw audit; insert first, process 
 model EmailLog {                            // mirrors EmpathIQ, keyed per memory and type [C8]
   id                String      @id @default(uuid())
   memoryId          String
-  recipientEmail    String
+  recipientEmail    String                   // one address, or the attempted admin recipients joined with ", " (ADMIN_NEW_MEMORY)
   emailType         EmailType
   status            EmailStatus @default(PENDING)
   sendgridMessageId String?     @unique

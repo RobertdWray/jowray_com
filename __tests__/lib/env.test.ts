@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { derivedPrefix, getSiteUrl, storagePrefix } from "@/lib/site-url";
 import {
   csvList,
+  getAdminAlertEnv,
   getDbEnv,
   getSiteEnv,
   resetEnvCache,
@@ -15,6 +16,7 @@ const KEYS = [
   "NEXT_PUBLIC_SITE_URL",
   "VERCEL_ENV",
   "VERCEL_BRANCH_URL",
+  "ADMIN_ALERT_EMAILS",
 ] as const;
 const saved: Partial<Record<(typeof KEYS)[number], string | undefined>> = {};
 
@@ -54,6 +56,22 @@ describe("csvList", () => {
       "b@example.org",
     ]);
     expect(csvList.parse("")).toEqual([]);
+  });
+});
+
+describe("getAdminAlertEnv", () => {
+  it("defaults to no recipients when ADMIN_ALERT_EMAILS is unset", () => {
+    expect(getAdminAlertEnv().ADMIN_ALERT_EMAILS).toEqual([]);
+  });
+
+  it("splits, trims and lower-cases the list", () => {
+    process.env.ADMIN_ALERT_EMAILS = " RobWray@gmail.com , rjwray@Hotmail.com ,";
+    expect(getAdminAlertEnv().ADMIN_ALERT_EMAILS).toEqual(["robwray@gmail.com", "rjwray@hotmail.com"]);
+  });
+
+  it("rejects an entry that is not an email address, naming the sub-schema", () => {
+    process.env.ADMIN_ALERT_EMAILS = "robwray@gmail.com, not-an-address";
+    expect(() => getAdminAlertEnv()).toThrow(/Invalid environment \(adminAlert\)/);
   });
 });
 

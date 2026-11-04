@@ -40,6 +40,10 @@ vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
 const confirmMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m1" }));
 vi.mock("@/features/memories/confirm", () => ({ confirmMemory: (arg: unknown) => confirmMock(arg) }));
+const notifyMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m2" }));
+vi.mock("@/features/memories/notify-admins", () => ({ notifyAdminsOfMemory: (arg: unknown) => notifyMock(arg) }));
+const afterCalls: Array<() => Promise<void>> = [];
+vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
 
 import { createMemory, createReplacementTicket, createUploadTicket } from "@/features/memories/create-memory";
 
@@ -57,6 +61,8 @@ const valid = {
 };
 
 beforeEach(() => {
+  afterCalls.length = 0;
+  notifyMock.mockClear();
   memories.length = 0; medias.length = 0; contributors.length = 0; lockCalls.length = 0; memorial = { id: "memorial_1", slug: "jo" };
   process.env.UPLOAD_TICKET_SECRET = "s".repeat(32);
   process.env.DAILY_MEMORY_BUDGET = "3";
@@ -138,6 +144,18 @@ describe("createMemory", () => {
     expect(confirmMock).toHaveBeenCalledWith({ memoryId: "mem_1", claimToken: result.ok ? result.claimToken : "" });
     expect(memories[0]?.type).toBe("TEXT");
     expect(medias).toHaveLength(0);
+    // The admin alert runs after the response and needs only the id.
+    expect(notifyMock).not.toHaveBeenCalled();
+    expect(afterCalls).toHaveLength(1);
+    await afterCalls[0]!();
+    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_1" });
+  });
+
+  it("does not alert the admins for a memory with a file (finalizeUpload does, once the file is READY)", async () => {
+    const result = await createMemory(valid);
+    expect(result.ok).toBe(true);
+    expect(afterCalls).toHaveLength(0);
+    expect(notifyMock).not.toHaveBeenCalled();
   });
 
   it("still returns the claim link for a text memory when the confirmation email throws", async () => {

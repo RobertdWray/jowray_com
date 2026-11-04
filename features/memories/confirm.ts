@@ -1,24 +1,15 @@
 import "server-only";
 
+import { summarizeReadyMedia } from "@/features/memories/media-summary";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { getSiteUrl } from "@/lib/site-url";
 import { getDb } from "@/server/db/client";
-import { type MediaKind, type MemoryMediaSummary, sendMemoryConfirmation, type SendResult } from "@/services/email";
+import { sendMemoryConfirmation, type SendResult } from "@/services/email";
 
 const log = createLogger({ category: "email" });
 
 export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "deleted" | "no_email" | "not_ready" };
-
-function kindOf(mimeType: string): MediaKind {
-  if (mimeType.startsWith("image/")) {
-    return "PHOTO";
-  }
-  if (mimeType.startsWith("audio/")) {
-    return "VOICE";
-  }
-  return "VIDEO";
-}
 
 /**
  * Send the one confirmation email for a memory, if there is an address and
@@ -62,20 +53,13 @@ export async function confirmMemory({ memoryId, claimToken }: { memoryId: string
   if (!email) {
     return { sent: false, skipped: "no_email" };
   }
-  const ready = memory.media.filter((m) => m.status === "READY");
+  const media = summarizeReadyMedia(memory.media);
   const hasWords = (memory.contributorNote ?? "").trim().length > 0;
   // Something to confirm: a file that arrived, or words (a TEXT memory, or a
   // memory whose file failed but whose note was saved).
-  if (memory.type !== "TEXT" && ready.length === 0 && !hasWords) {
+  if (memory.type !== "TEXT" && media.length === 0 && !hasWords) {
     return { sent: false, skipped: "not_ready" };
   }
-
-  const media: MemoryMediaSummary[] = ready.map((m) => ({
-    kind: kindOf(m.mimeType),
-    originalFilename: m.originalFilename,
-    durationSeconds: m.durationSeconds,
-    preview: null,
-  }));
 
   const rotating = claimToken === undefined;
   const token = claimToken ?? newClaimToken();

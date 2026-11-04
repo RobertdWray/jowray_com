@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "EmailType" ADD VALUE 'ADMIN_NEW_MEMORY';
