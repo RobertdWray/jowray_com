@@ -82,10 +82,12 @@ export async function confirmMemory({
   if (memory.type !== "TEXT" && ready.length === 0 && !hasWords) {
     return { sent: false, skipped: "not_ready" };
   }
-  // The one email should list the whole submission: wait while a file ticketed
-  // less than a ticket-lifetime ago may still arrive, unless the contributor
-  // closed the submission (completeSubmission) or the reservation is older.
-  const inFlight = memory.media.some((m) => m.status === "PENDING" && m.createdAt.getTime() > Date.now() - TICKET_TTL_MS);
+  // The one email should list the whole submission. Rows are created when the
+  // memory is, tickets come later, so a reservation counts as in flight while
+  // the submission lease is open, or (claim-page adds, no lease) while it is
+  // younger than a ticket lifetime; completeSubmission settles regardless.
+  const leaseOpen = memory.uploadLeaseUntil !== null && memory.uploadLeaseUntil.getTime() > Date.now();
+  const inFlight = memory.media.some((m) => m.status === "PENDING" && (leaseOpen || m.createdAt.getTime() > Date.now() - TICKET_TTL_MS));
   if (inFlight && !settleNow) {
     return { sent: false, skipped: "not_ready" };
   }
@@ -138,8 +140,8 @@ export async function completeSubmission({ claimToken }: { claimToken: string })
   const claimTokenHash = hashClaimToken(claimToken);
   const db = getDb();
   const memoryId = await db.$transaction(async (tx) => {
-    const memory = await tx.memory.findUnique({ where: { claimTokenHash }, select: { id: true, deletedAt: true, claimTokenHash: true } });
-    if (!memory || memory.deletedAt !== null || memory.claimTokenHash !== claimTokenHash) {
+    const memory = await tx.memory.findUnique({ where: { claimTokenHash }, select: { id: true, deletedAt: true } });
+    if (!memory || memory.deletedAt !== null) {
       return null;
     }
     await lockMemory(tx, memory.id);

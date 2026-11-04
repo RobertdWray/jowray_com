@@ -296,7 +296,7 @@ export async function updateMediaFromClaim({ claimToken, mediaId, changes }: { c
       return "not_found" as const;
     }
     await lockMemory(tx, memory.id);
-    const target = await tx.media.findFirst({ where: { id: ref.data.mediaId, memoryId: memory.id, deletedAt: null } });
+    const target = await tx.media.findFirst({ where: { id: ref.data.mediaId, memoryId: memory.id, deletedAt: null, status: "READY" } });
     if (!target) {
       return "not_found" as const;
     }

@@ -220,6 +220,7 @@ describe("createUploadTicket cap counts live rows only", () => {
     }
     expect(lockCalls.at(-1)).toContain("FOR UPDATE|mem_1");
     expect(await createUploadTicket({ claimToken: created.claimToken, file: { name: "p.jpg", type: "image/jpeg", size: 1 } })).toEqual({ ok: false, code: "too_many_files" });
+    expect(memories[0]!.uploadLeaseUntil ?? null).toBeNull();
     medias[3]!.deletedAt = new Date();
     expect((await createUploadTicket({ claimToken: created.claimToken, file: { name: "again.jpg", type: "image/jpeg", size: 1 } })).ok).toBe(true);
     expect(medias.at(-1)!.sortOrder).toBe(10);
@@ -230,6 +231,7 @@ describe("createReplacementTicket", () => {
   async function seeded() {
     const created = await createMemory({ ...valid, files: [{ name: "a.jpg", type: "image/jpeg", size: 1, caption: "first", approxDateText: "1998", place: "the lake" }] });
     if (!created.ok) { throw new Error("setup"); }
+    memories[0]!.uploadLeaseUntil = null; // the submission was completed
     medias[0]!.status = "READY";
     medias[0]!.sortOrder = 4;
     medias[0]!.id = "00000000-0000-4000-8000-000000000001";
@@ -243,7 +245,8 @@ describe("createReplacementTicket", () => {
     if (!result.ok) { return; }
     expect(lockCalls.at(-1)).toContain("FOR UPDATE|mem_1");
     expect(medias[1]).toMatchObject({ status: "PENDING", replacesMediaId: "00000000-0000-4000-8000-000000000001", sortOrder: 4, mimeType: "image/heic", caption: "first", approxDateText: "1998", place: "the lake" });
-    expect(memories[0]!.uploadLeaseUntil!.getTime()).toBeGreaterThan(Date.now() + LEASE_MS - 5_000);
+    // Claim-page tickets do not reopen the submission lease: the memory's one email was already handled.
+    expect(memories[0]!.uploadLeaseUntil ?? null).toBeNull();
     expect(verifyUploadTicket(result.upload.ticket).ok).toBe(true);
   });
 

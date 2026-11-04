@@ -47,8 +47,9 @@ type FileOutcome = "READY" | "PENDING" | "FAILED" | "ERROR";
 
 type Phase =
   | { kind: "idle" }
-  | { kind: "saving"; current?: number; total?: number; progress?: number }
-  | { kind: "done"; claimLink: string; emailed: boolean; outcomes: Array<{ name: string; status: FileOutcome }> }
+  /** `claimLink` is set as soon as the memory exists: it survives every later failure and a closed tab. */
+  | { kind: "saving"; claimLink?: string; current?: number; total?: number; progress?: number }
+  | { kind: "done"; claimLink: string; emailed: boolean; hadWords: boolean; outcomes: Array<{ name: string; status: FileOutcome }> }
   | { kind: "error"; message: string; claimLink?: string };
 
 function subscribeNever(): () => void {
@@ -66,8 +67,6 @@ function formatSize(bytes: number): string {
   }
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
-
-let rowSeq = 0;
 
 export function ShareForm({ intro }: { intro: ReactNode }) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
@@ -119,17 +118,16 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
     const room = slotsLeft;
     const accepted = picked.slice(0, room);
     setRowsError(picked.length > room ? `You can add up to ${MAX_FILES_PER_MEMORY} files to one memory; the first ${room} were kept.` : null);
-    setRows((current) => [
-      ...current,
-      ...accepted.map((file) => ({
-        id: `row_${(rowSeq += 1)}`,
-        file,
-        previewUrl: canPreview(file) ? URL.createObjectURL(file) : null,
-        caption: "",
-        approxDateText: "",
-        place: "",
-      })),
-    ]);
+    // Ids and object URLs are made here, outside the updater (updaters may run twice in development).
+    const added: FileRow[] = accepted.map((file) => ({
+      id: crypto.randomUUID(),
+      file,
+      previewUrl: canPreview(file) ? URL.createObjectURL(file) : null,
+      caption: "",
+      approxDateText: "",
+      place: "",
+    }));
+    setRows((current) => [...current, ...added]);
   }
 
   function removeRow(id: string) {
@@ -224,46 +222,52 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
     }
     rememberContributor(contributor);
     const claimLink = `${window.location.origin}/m/${created.claimToken}`;
-    // The memory is saved: whatever happens to the files now, the link survives.
+    const hadWords = String(form.get("note") ?? "").trim().length > 0;
+    // The memory is saved: whatever happens to the files now, the link survives and is shown from here on.
     clearDraft();
+    setPhase({ kind: "saving", claimLink });
 
     if (created.media.length === 0) {
-      setPhase({ kind: "done", claimLink, emailed: created.emailed, outcomes: [] });
+      setPhase({ kind: "done", claimLink, emailed: created.emailed, hadWords, outcomes: [] });
       return;
     }
 
     // One file at a time: ticket just before the upload (tickets expire), then upload, then finalize.
     const outcomes: Array<{ name: string; status: FileOutcome }> = [];
+    let emailed = created.emailed;
     const byOrder = [...created.media].sort((a, b) => a.sortOrder - b.sortOrder);
     for (const [index, entry] of byOrder.entries()) {
       const item = batch[index];
       if (!item) {
         break;
       }
-      setPhase({ kind: "saving", current: index + 1, total: byOrder.length });
+      setPhase({ kind: "saving", claimLink, current: index + 1, total: byOrder.length });
       try {
         const ticketed = await issueUploadTicket({ claimToken: created.claimToken, mediaId: entry.mediaId });
         if (!ticketed.ok) {
           outcomes.push({ name: item.file.name, status: "ERROR" });
           continue;
         }
-        await uploadWithTicket(ticketed.upload, item.file, (percentage) => setPhase({ kind: "saving", current: index + 1, total: byOrder.length, progress: percentage }));
+        await uploadWithTicket(ticketed.upload, item.file, (percentage) => setPhase({ kind: "saving", claimLink, current: index + 1, total: byOrder.length, progress: percentage }));
         const finalized = await finalizeUpload({ ticket: ticketed.upload.ticket, claimToken: created.claimToken });
         outcomes.push({ name: item.file.name, status: finalized.status === "REJECTED" ? "ERROR" : finalized.status });
+        emailed = emailed || (finalized.status !== "REJECTED" && finalized.emailed);
       } catch {
         outcomes.push({ name: item.file.name, status: "ERROR" });
       }
     }
-    let emailed = created.emailed;
     try {
       // Closes the submission and sends the one email with everything that arrived; the link is never rotated here.
+      // "already_sent" means the last finalize sent it a moment ago.
       const completed = await completeSubmission({ claimToken: created.claimToken });
-      emailed = completed.sent;
+      emailed = emailed || completed.sent || (!completed.sent && completed.skipped === "already_sent");
     } catch {
       // The reconcile cron sends later; the contributor keeps the link either way.
     }
     clearRows();
-    setPhase({ kind: "done", claimLink, emailed, outcomes });
+    // Anything typed into the story during the upload belongs to a memory that is already sent.
+    clearDraft();
+    setPhase({ kind: "done", claimLink, emailed, hadWords, outcomes });
   }
 
   if (phase.kind === "done") {
@@ -271,6 +275,8 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
     const mailto = `mailto:?subject=${encodeURIComponent("Tell a Jo story")}&body=${encodeURIComponent(`Jo's family is collecting memories of her. If you knew Jo, tell yours here: ${origin}/`)}`;
     const pending = phase.outcomes.filter((o) => o.status === "PENDING");
     const failed = phase.outcomes.filter((o) => o.status === "FAILED" || o.status === "ERROR");
+    // Files only, and none of them arrived: nothing is on its way yet; the link is how they try again.
+    const nothingArrived = phase.outcomes.length > 0 && failed.length === phase.outcomes.length && !phase.hadWords;
 
     function share(event: React.MouseEvent<HTMLAnchorElement>) {
       if (typeof navigator.share === "function") {
@@ -296,9 +302,11 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
               <SolidHeart size={96} stitchColor="#fffdf8" label="A stitched red heart" />
             </div>
           </div>
-          <h1 className="font-display text-display-sm font-extrabold sm:text-thanks">Jo would have loved this.</h1>
+          <h1 className="font-display text-display-sm font-extrabold sm:text-thanks">{nothingArrived ? "Almost there." : "Jo would have loved this."}</h1>
           <p className="max-w-[30em] text-lead">
-            Thank you. Your memory is on its way to Richard, Rob and Tracy. We read every single one, usually more than once.
+            {nothingArrived
+              ? "Your memory was saved, but none of the files arrived. Open your private link below to add them again; nothing else is needed."
+              : "Thank you. Your memory is on its way to Richard, Rob and Tracy. We read every single one, usually more than once."}
           </p>
           <p className="max-w-[30em] text-body">
             On November 10th, after we have some stories, photos and videos collected, we&apos;ll be sharing them with
@@ -324,10 +332,10 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
                 {pending.length === 1 ? "One file is" : `${pending.length} files are`} still being checked; they will appear on your page shortly.
               </p>
             )}
-            {failed.length > 0 && (
+            {failed.length > 0 && !nothingArrived && (
               <p>
-                {failed.length === 1 ? "One file could not be received" : `${failed.length} files could not be received`} ({failed.map((f) => f.name).join(", ")}). Your words
-                were saved; use your link to try again.
+                {failed.length === 1 ? "One file could not be received" : `${failed.length} files could not be received`} ({failed.map((f) => f.name).join(", ")}).
+                {phase.hadWords ? " Your words were saved;" : ""} use your link to try again.
               </p>
             )}
             <p className="text-small text-walnut-soft">Keep this link private: anyone who has it can edit this memory.</p>
@@ -350,7 +358,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
     <section id="form" className="mx-auto flex w-full max-w-[1200px] flex-wrap items-start gap-x-16 gap-y-10 px-[max(16px,5%)] py-[72px]">
       <div className="flex min-w-0 flex-[1_1_300px] flex-col gap-[18px]">
         {intro}
-        <RecorderPanel rec={rec} canRecord={canRecord} disabled={saving || slotsLeft === 0 && clip === null} />
+        <RecorderPanel rec={rec} canRecord={canRecord} disabled={saving || (slotsLeft === 0 && clip === null)} />
       </div>
       <form
         ref={attachForm}
@@ -364,6 +372,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
             We kept the words you typed last time. Change anything you like before you send.
           </p>
         )}
+        <fieldset disabled={saving} className="contents">
         <div className="flex flex-wrap gap-5">
           <label className={`${labelClass} flex-[1_1_200px]`}>
             <span>Your name</span>
@@ -459,6 +468,15 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
             <option value="PRIVATE">Only me and the family admins</option>
           </select>
         </label>
+        </fieldset>
+        {saving && phase.claimLink && (
+          <p role="status" className="text-body">
+            Your memory is saved. Your private link, in case this page closes:{" "}
+            <a className={`${linkClass} break-all`} href={phase.claimLink}>
+              {phase.claimLink}
+            </a>
+          </p>
+        )}
 
         {phase.kind === "error" && (
           <p role="alert" className={errorClass}>

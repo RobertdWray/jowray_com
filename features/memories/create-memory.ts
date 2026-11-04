@@ -295,7 +295,7 @@ export async function createUploadTicket(raw: unknown): Promise<UploadTicketResu
     if (!(await withinBudget(tx, file.maxBytes, false))) {
       return "budget_exceeded" as const;
     }
-    await renewLease(tx, memory.id);
+    // No lease here: the memory's one email was handled with its first submission; cron must not be held off.
     return createPendingMedia(tx, memory.id, file, { sortOrder: await nextSortOrder(tx, memory.id), replacesMediaId: null });
   }, TX_OPTIONS);
   if (typeof result === "string") {
@@ -341,7 +341,6 @@ export async function createReplacementTicket(raw: unknown): Promise<UploadTicke
     if (!(await withinBudget(tx, file.maxBytes, false))) {
       return "budget_exceeded" as const;
     }
-    await renewLease(tx, memory.id);
     // The replacement keeps the target's words unless the contributor typed new ones.
     const inherited: ResolvedFile = {
       ...file,

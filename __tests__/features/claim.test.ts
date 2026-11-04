@@ -247,6 +247,8 @@ describe("updateMediaFromClaim", () => {
     expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "x".repeat(2001) } })).toEqual({ ok: false, code: "invalid" });
     mediaRows[0]!.deletedAt = new Date();
     expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "x" } })).toEqual({ ok: false, code: "not_found" });
+    mediaRows[0]!.deletedAt = null; mediaRows[0]!.status = "PENDING";
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "x" } })).toEqual({ ok: false, code: "not_found" });
     expect(revisions).toHaveLength(0);
   });
 

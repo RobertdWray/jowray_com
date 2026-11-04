@@ -184,9 +184,16 @@ describe("multi-file submissions", () => {
     expect(arg.media).toHaveLength(1);
   });
 
-  it("does not wait for a reservation older than the ticket lifetime (abandoned upload)", async () => {
+  it("does not wait for a reservation older than the ticket lifetime once the submission lease is closed (abandoned upload)", async () => {
     memory!.media = [readyPhoto(), { id: "med_2", status: "PENDING", mimeType: "image/jpeg", originalFilename: "b.jpg", durationSeconds: null, createdAt: new Date(Date.now() - 16 * 60_000) }];
     expect((await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).sent).toBe(true);
+  });
+
+  it("keeps waiting for an old reservation while the submission lease is open: rows are created at the start, tickets come later", async () => {
+    memory!.uploadLeaseUntil = new Date(Date.now() + 30 * 60_000);
+    memory!.media = [readyPhoto(), { id: "med_2", status: "PENDING", mimeType: "image/jpeg", originalFilename: "b.jpg", durationSeconds: null, createdAt: new Date(Date.now() - 40 * 60_000) }];
+    expect(await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).toEqual({ sent: false, skipped: "not_ready" });
+    expect((await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN, settleNow: true })).sent).toBe(true);
   });
 
   it("the cron path never sends while the submission lease is open, so it cannot rotate a link still in use", async () => {
