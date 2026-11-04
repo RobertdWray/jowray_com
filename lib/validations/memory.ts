@@ -81,3 +81,6 @@ export const draftMemoryInputSchema = z.object({
   visibility: z.enum(["PUBLIC", "FAMILY", "PRIVATE"]).default("PUBLIC"),
 });
 export type DraftMemoryInput = z.infer<typeof draftMemoryInputSchema>;
+
+/** Admin request to rotate a DRAFT's claim link (features/memories/draft-memory.ts). */
+export const reissueClaimLinkSchema = z.object({ memoryId: z.uuid() });

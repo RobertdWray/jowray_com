@@ -2,6 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
+import { TX_OPTIONS, withinBudget } from "@/features/memories/budget";
 import { confirmQuietly, notifyAdminsQuietly } from "@/features/memories/ingest-upload";
 import { lockMemory, type Tx } from "@/features/memories/lock";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
@@ -12,16 +13,13 @@ import { storagePrefix } from "@/lib/site-url";
 import { mintUploadTicket, type UploadTicket } from "@/lib/upload-ticket";
 import { replaceRequestSchema } from "@/lib/validations/media";
 import { createMemoryInputSchema, type FileInput, uploadTicketRequestSchema } from "@/lib/validations/memory";
-import { getMemorialEnv, getUploadEnv } from "@/server/config/env";
+import { getMemorialEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 
 const log = createLogger({ category: "upload" });
 
 /** Re-exported for existing callers; the constant lives in lib/media-types so validation can import it. */
 export { MAX_FILES_PER_MEMORY };
-const DAY_MS = 24 * 60 * 60 * 1000;
-/** Neon computes can take a couple of seconds to wake; Prisma's defaults (2 s / 5 s) are too tight. */
-const TX_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;
 
 export type UploadGrant = { pathname: string; ticket: UploadTicket };
 
@@ -54,25 +52,6 @@ function resolveFile(file: FileInput): ResolvedFile | "unsupported_type" | "too_
     ? file.durationSeconds
     : null;
   return { mimeType, maxBytes, extension: extensionFor(mimeType), originalFilename: file.name.slice(0, 255), durationSeconds };
-}
-
-/** True when one more memory and `addBytes` more ticketed bytes fit in today's budgets. */
-async function withinBudget(tx: Tx, addBytes: number, countMemory: boolean): Promise<boolean> {
-  const env = getUploadEnv();
-  const since = new Date(Date.now() - DAY_MS);
-  if (countMemory) {
-    const memories = await tx.memory.count({ where: { createdAt: { gt: since } } });
-    if (memories >= env.DAILY_MEMORY_BUDGET) {
-      return false;
-    }
-  }
-  if (addBytes > 0) {
-    const bytes = await tx.media.aggregate({ _sum: { maxBytes: true }, where: { createdAt: { gt: since } } });
-    if ((bytes._sum.maxBytes ?? 0) + addBytes > env.DAILY_BYTE_BUDGET) {
-      return false;
-    }
-  }
-  return true;
 }
 
 /** Live rows (READY or PENDING, not removed) count against MAX_FILES_PER_MEMORY; FAILED and removed rows do not. */

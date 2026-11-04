@@ -4,6 +4,7 @@ import { derivedPrefix, getSiteUrl, storagePrefix } from "@/lib/site-url";
 import {
   csvList,
   getAdminAlertEnv,
+  getAdminEnv,
   getDbEnv,
   getSiteEnv,
   resetEnvCache,
@@ -17,6 +18,7 @@ const KEYS = [
   "VERCEL_ENV",
   "VERCEL_BRANCH_URL",
   "ADMIN_ALERT_EMAILS",
+  "ADMIN_API_SECRET",
 ] as const;
 const saved: Partial<Record<(typeof KEYS)[number], string | undefined>> = {};
 
@@ -162,5 +164,20 @@ describe("derivedPrefix", () => {
     expect(derivedPrefix()).toBe("preview/derived/");
     delete process.env.VERCEL_ENV; resetEnvCache();
     expect(derivedPrefix()).toBe("dev/derived/");
+  });
+});
+
+describe("getAdminEnv", () => {
+  it("is optional: unset means the admin API is off", () => {
+    expect(getAdminEnv().ADMIN_API_SECRET).toBeUndefined();
+  });
+
+  it("requires at least 32 characters when set", () => {
+    process.env.ADMIN_API_SECRET = "short";
+    resetEnvCache();
+    expect(() => getAdminEnv()).toThrow(/ADMIN_API_SECRET/);
+    process.env.ADMIN_API_SECRET = "a".repeat(32);
+    resetEnvCache();
+    expect(getAdminEnv().ADMIN_API_SECRET).toBe("a".repeat(32));
   });
 });

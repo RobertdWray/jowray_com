@@ -82,7 +82,13 @@ const adminAlertSchema = z.object({
   ADMIN_ALERT_EMAILS: csvList.pipe(z.array(z.email())).default([]),
 });
 
+/** Bearer secret for the admin API (/api/admin/*); unset means the routes answer 401 to everything. */
+const adminSchema = z.object({
+  ADMIN_API_SECRET: z.string().min(32, "ADMIN_API_SECRET must be at least 32 characters").optional(),
+});
+
 export type DbEnv = z.infer<typeof dbSchema>;
+export type AdminEnv = z.infer<typeof adminSchema>;
 export type CronEnv = z.infer<typeof cronSchema>;
 export type AdminAlertEnv = z.infer<typeof adminAlertSchema>;
 export type MemorialEnv = z.infer<typeof memorialSchema>;
@@ -123,6 +129,7 @@ export const getUploadEnv = memoized("upload", uploadSchema);
 export const getMemorialEnv = memoized("memorial", memorialSchema);
 export const getCronEnv = memoized("cron", cronSchema);
 export const getAdminAlertEnv = memoized("adminAlert", adminAlertSchema);
+export const getAdminEnv = memoized("admin", adminSchema);
 
 /** Test helper: forget every parsed sub-schema so the next call re-reads `process.env`. */
 export function resetEnvCache(): void {
