@@ -13,7 +13,7 @@ export function AdminShell({ list, detail, aside, showList }: { list: ReactNode;
     <div className="grid min-w-0 grid-cols-1 gap-6 wide:max-[100rem]:grid-cols-[minmax(320px,420px)_minmax(0,1fr)] min-[100rem]:grid-cols-[440px_minmax(0,1fr)_minmax(420px,600px)]">
       <div className={`${showList === "wide" ? "hidden wide:block" : ""} min-w-0 wide:sticky wide:top-4 wide:max-h-[calc(100dvh-2rem)] wide:overflow-y-auto`}>{list}</div>
       {/* Below 100rem the editor and its aside stack in one column; `contents` lifts them into the grid above it. */}
-      <div className={`${showList === "always" ? "hidden wide:flex" : "flex"} min-w-0 flex-col gap-6 min-[100rem]:contents`}>
+      <div className={`${showList === "always" ? "hidden wide:max-[100rem]:flex" : "flex"} min-w-0 flex-col gap-6 min-[100rem]:contents`}>
         <div className="min-w-0">{detail}</div>
         {aside !== undefined && <div className="min-w-0">{aside}</div>}
       </div>

@@ -14,6 +14,7 @@ interface MediaRow {
   storageKey: string;
   originalFilename: string | null;
   deletedAt: Date | null;
+  purgedAt?: Date | null;
   derivatives?: Array<{ kind: "WEB_IMAGE" | "THUMBNAIL" | "POSTER"; status: "PENDING" | "READY" | "FAILED"; storageKey: string; mimeType: string | null }>;
   memory: { claimTokenHash: string; deletedAt: Date | null };
 }
@@ -24,7 +25,7 @@ const dbStub = {
       const row = media.find((m) => m.id === where.id);
       if (!row) { return null; }
       const wanted = include?.derivatives?.where?.status;
-      return { ...row, derivatives: (row.derivatives ?? []).filter((d) => !wanted || d.status === wanted) };
+      return { purgedAt: null, ...row, derivatives: (row.derivatives ?? []).filter((d) => !wanted || d.status === wanted) };
     }),
   },
 };
@@ -48,6 +49,8 @@ beforeEach(() => {
     { id: "med_of_deleted_memory", sizeBytes: 9, status: "READY", mimeType: "audio/mp4", storageKey: "originals/mem_2/v.m4a", originalFilename: null, deletedAt: null, derivatives: [], memory: { claimTokenHash: "h".repeat(64), deletedAt: new Date() } },
     { id: "med_removed", sizeBytes: 9, status: "READY", mimeType: "image/png", storageKey: "originals/mem_1/r.png", originalFilename: null, deletedAt: new Date(), derivatives: [], memory: { claimTokenHash: "h".repeat(64), deletedAt: null } },
     { id: "med_purged", sizeBytes: 9, status: "FAILED", mimeType: "image/png", storageKey: "originals/mem_1/p.png", originalFilename: null, deletedAt: null, derivatives: [], memory: { claimTokenHash: "h".repeat(64), deletedAt: null } },
+    // Marked for purge but not yet flipped (the cron claim and the flip are one transaction; this pins the gate itself).
+    { id: "med_marked", sizeBytes: 9, status: "READY", mimeType: "audio/mp4", storageKey: "originals/mem_1/m.m4a", originalFilename: null, deletedAt: null, purgedAt: new Date(), derivatives: [], memory: { claimTokenHash: "h".repeat(64), deletedAt: null } },
   ];
   presignMock.mockClear();
 });
@@ -86,6 +89,8 @@ describe("GET /admin/media/[id] (V13)", () => {
     expect(res.headers.get("location")).toBe("https://blob.test/originals/mem_2/v.m4a?signed=1");
     expect((await request("med_removed", "", cookie)).status).toBe(404);
     expect((await request("med_purged", "", cookie)).status).toBe(404);
+    expect((await request("med_marked", "", cookie)).status).toBe(404);
+    expect((await request("med_marked", "?download=1", cookie)).status).toBe(404);
     expect((await request("nope", "", cookie)).status).toBe(404);
   });
 });

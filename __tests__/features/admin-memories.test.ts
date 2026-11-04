@@ -210,10 +210,12 @@ describe("updateMemoryAsAdmin (V7)", () => {
     const before = versions();
     const result = await updateMemoryAsAdmin({ memoryId: MEM, ...before, changes: { name: "Joyce G", place: "Baltimore" } });
     // The post-write versions come back so the form can keep its typed values and save again without a reload.
-    expect(result).toEqual({ ok: true, written: ["name", "place"], memoryVersion: memories[0]!.updatedAt.toISOString(), contributorVersion: contributors[0]!.updatedAt.toISOString() });
+    // The committed snapshot comes back (every editable value plus both post-write versions) so the form can
+    // keep its typed values, refresh what it did not touch, and save again without a reload.
+    expect(result).toEqual({ ok: true, written: ["name", "place"], current: { name: "Joyce G", relationship: "friend", approxDateText: "Summer 1998", place: "Baltimore", note: "old note", visibility: "FAMILY", memoryVersion: memories[0]!.updatedAt.toISOString(), contributorVersion: contributors[0]!.updatedAt.toISOString() } });
     if (!result.ok) { return; }
-    expect(result.memoryVersion).not.toBe(before.memoryVersion);
-    expect(result.contributorVersion).not.toBe(before.contributorVersion);
+    expect(result.current.memoryVersion).not.toBe(before.memoryVersion);
+    expect(result.current.contributorVersion).not.toBe(before.contributorVersion);
     expect(lockCalls.map((c) => c.split("|")[0]!.includes('"Memory"') ? "memory" : "contributor")).toEqual(["memory", "contributor"]);
     expect(memories[0]).toMatchObject({ place: "Baltimore", contributorNote: "old note", approxDateText: "Summer 1998" });
     expect(contributors[0]).toMatchObject({ name: "Joyce G", relationship: "friend" });
@@ -221,12 +223,12 @@ describe("updateMemoryAsAdmin (V7)", () => {
     expect(revisions[0]).toMatchObject({ memoryId: MEM, changedVia: "ADMIN", before: { name: "Joyce", place: null }, after: { name: "Joyce G", place: "Baltimore", consentVersion: "2026-11-v2" } });
     expect(Object.keys(revisions[0]!.before)).toEqual(["name", "place"]);
     // The returned versions open the next save without a reload.
-    expect(await updateMemoryAsAdmin({ memoryId: MEM, memoryVersion: result.memoryVersion, contributorVersion: result.contributorVersion, changes: { place: "Ocean City" } })).toMatchObject({ ok: true, written: ["place"] });
+    expect(await updateMemoryAsAdmin({ memoryId: MEM, memoryVersion: result.current.memoryVersion, contributorVersion: result.current.contributorVersion, changes: { place: "Ocean City" } })).toMatchObject({ ok: true, written: ["place"] });
   });
 
   it("takes only the memory lock when no contributor key is dirty", async () => {
     const result = await updateMemoryAsAdmin({ memoryId: MEM, ...versions(), changes: { visibility: "PUBLIC" } });
-    expect(result).toMatchObject({ ok: true, written: ["visibility"], contributorVersion: T0.toISOString() });
+    expect(result).toMatchObject({ ok: true, written: ["visibility"], current: { visibility: "PUBLIC", contributorVersion: T0.toISOString() } });
     expect(lockCalls).toHaveLength(1);
     expect(lockCalls[0]).toContain('"Memory"');
     expect(memories[0]!.visibility).toBe("PUBLIC");
@@ -254,7 +256,7 @@ describe("updateMemoryAsAdmin (V7)", () => {
   });
 
   it("drops keys equal to the fresh value; nothing left means ok with no revision", async () => {
-    expect(await updateMemoryAsAdmin({ memoryId: MEM, ...versions(), changes: { place: "", approxDateText: "Summer 1998", name: "Joyce" } })).toEqual({ ok: true, written: [], ...versions() });
+    expect(await updateMemoryAsAdmin({ memoryId: MEM, ...versions(), changes: { place: "", approxDateText: "Summer 1998", name: "Joyce" } })).toEqual({ ok: true, written: [], current: { name: "Joyce", relationship: "friend", approxDateText: "Summer 1998", place: null, note: "old note", visibility: "FAMILY", ...versions() } });
     expect(revisions).toHaveLength(0);
     expect(lockCalls).toHaveLength(2);
   });
@@ -263,6 +265,11 @@ describe("updateMemoryAsAdmin (V7)", () => {
     media[0]!.status = "PENDING";
     expect(await updateMemoryAsAdmin({ memoryId: MEM, ...versions(), changes: { note: "" } })).toEqual({ ok: false, code: "last_words" });
     expect(memories[0]!.contributorNote).toBe("old note");
+    // A READY file already marked for purge is gone or going: it cannot hold the memory up.
+    media[0]!.status = "READY";
+    media[0]!.purgedAt = T1;
+    expect(await updateMemoryAsAdmin({ memoryId: MEM, ...versions(), changes: { note: "" } })).toEqual({ ok: false, code: "last_words" });
+    media[0]!.purgedAt = null;
     media[0]!.status = "READY";
     memories[0]!.type = "TEXT";
     expect(await updateMemoryAsAdmin({ memoryId: MEM, ...versions(), changes: { note: "" } })).toMatchObject({ ok: true, written: ["note"] });
@@ -281,7 +288,7 @@ describe("updateMemoryAsAdmin (V7)", () => {
 
   it("edits a memory without a contributor (memory keys only; a contributor key is ignored as nothing to write)", async () => {
     memories[0]!.contributorId = null;
-    expect(await updateMemoryAsAdmin({ memoryId: MEM, memoryVersion: T0.toISOString(), contributorVersion: null, changes: { place: "x", name: "nobody" } })).toMatchObject({ ok: true, written: ["place"], contributorVersion: null });
+    expect(await updateMemoryAsAdmin({ memoryId: MEM, memoryVersion: T0.toISOString(), contributorVersion: null, changes: { place: "x", name: "nobody" } })).toMatchObject({ ok: true, written: ["place"], current: { name: null, place: "x", contributorVersion: null } });
     expect(lockCalls).toHaveLength(1);
   });
 });

@@ -69,9 +69,31 @@ function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage:
   const [busy, setBusy] = useState(false);
   const hasContributor = memory.contributor !== null;
 
+  /**
+   * Adopt the server's snapshot: fields the person has not touched take the server's value (shown in the
+   * input and used as the new baseline), fields they typed keep their text. Both versions come from the snapshot.
+   */
+  function adopt(formElement: HTMLFormElement, typed: Values, current: AdminMemoryEditable) {
+    const nextInitial: Values = { ...initial };
+    for (const key of KEYS) {
+      const touched = typed[key] !== initial[key];
+      const value = touched ? typed[key] : current[key];
+      nextInitial[key] = value as never;
+      if (!touched) {
+        const input = formElement.elements.namedItem(key);
+        if (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement || input instanceof HTMLSelectElement) {
+          input.value = key === "visibility" ? (value as string) : text(value as string | null);
+        }
+      }
+    }
+    setInitial(nextInitial);
+    setVersions({ memoryVersion: current.memoryVersion, contributorVersion: current.contributorVersion });
+  }
+
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     const typed: Values = {
       name: stored(String(form.get("name") ?? "")),
       relationship: stored(String(form.get("relationship") ?? "")),
@@ -102,8 +124,8 @@ function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage:
           ? await saveMemory({ memoryId: memory.id, memoryVersion: first.current.memoryVersion, contributorVersion: first.current.contributorVersion, changes })
           : first;
       if (result.ok) {
-        setInitial(typed);
-        setVersions({ memoryVersion: result.memoryVersion, contributorVersion: result.contributorVersion });
+        // Everything typed is now committed; untouched fields show what the server holds.
+        adopt(formElement, typed, result.current);
         setServerChanged(null);
         onMessage(result.written.length === 0 ? "Already saved." : "Saved.");
         router.refresh();
@@ -111,8 +133,10 @@ function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage:
       }
       if (result.code === "stale") {
         const { current } = result;
-        setVersions({ memoryVersion: current.memoryVersion, contributorVersion: current.contributorVersion });
-        setServerChanged(KEYS.filter((key) => current[key] !== initial[key]).map((key) => LABEL[key]));
+        const changedElsewhere = KEYS.filter((key) => current[key] !== initial[key]);
+        // Untouched fields take the other editor's values now; the person's own typing stays until they press Save.
+        adopt(formElement, typed, current);
+        setServerChanged(changedElsewhere.map((key) => LABEL[key]));
         return;
       }
       onMessage(
@@ -136,7 +160,7 @@ function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage:
       {serverChanged !== null && (
         <div className="flex flex-col gap-3 rounded-card border-[3px] border-goldenrod bg-muslin p-4" role="alert">
           <p className="text-body">
-            Someone changed {serverChanged.length > 0 ? serverChanged.join(" and ") : "this memory"} since you opened this. Your edits are still here; press Save to keep them, or Reload to discard them.
+            Someone changed {serverChanged.length > 0 ? serverChanged.join(" and ") : "this memory"} since you opened this. The fields you did not touch now show their change; your own edits are still here. Press Save to keep them, or Reload to discard them.
           </p>
           <SecondaryButton onClick={() => window.location.reload()} disabled={busy}>
             Reload

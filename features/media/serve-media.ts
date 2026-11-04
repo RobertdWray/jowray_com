@@ -50,7 +50,7 @@ export interface ServeMediaOptions {
  * (plan P17); `original` and `download=1` return the untouched file. Downloads
  * up to the proxy cap stream through; everything else is a 60-second presigned
  * redirect. Every refusal is the same 404 (no oracle). A soft-deleted media row
- * or a purged (FAILED) one is never served.
+ * or one marked for purge (`purgedAt`, whatever its status) is never served.
  */
 export async function serveMedia({ id, variant, download, allowDeletedMemory, authorize }: ServeMediaOptions): Promise<Response> {
   const media = await getDb().media.findUnique({
@@ -63,6 +63,8 @@ export async function serveMedia({ id, variant, download, allowDeletedMemory, au
   if (
     !media ||
     media.status !== "READY" ||
+    // Marked for purge by the cron (the bytes are gone or going): never served again, whatever the status says.
+    media.purgedAt !== null ||
     media.deletedAt !== null ||
     (!allowDeletedMemory && media.memory.deletedAt !== null) ||
     !isAllowedMime(media.mimeType) ||

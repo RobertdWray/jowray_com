@@ -11,8 +11,8 @@ import { helperClass, inputClass, labelClass, linkClass, selectClass, textareaCl
 import { createDraft, reissueLink } from "./actions";
 
 type Outcome =
-  | { kind: "created"; memoryId: string; claimLink: string }
-  | { kind: "duplicate"; memoryId: string; status: AdminMemoryStatus; deleted: boolean; claimLink: string | null };
+  | { kind: "created"; memoryId: string; email: string; claimLink: string }
+  | { kind: "duplicate"; memoryId: string; email: string; status: AdminMemoryStatus; deleted: boolean; claimLink: string | null };
 
 /** The draft-on-behalf form (plan §3.5, §3.8): words pasted verbatim, an email, and a link the family sends by hand. */
 export function DraftForm() {
@@ -24,8 +24,12 @@ export function DraftForm() {
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
+    const email = String(form.get("email") ?? "").trim().toLowerCase();
     setBusy(true);
     setMessage(null);
+    // A new attempt clears the previous person's result, so a failure here can never leave their link on screen.
+    setOutcome(null);
+    setCopied(false);
     try {
       const result = await createDraft({
         name: String(form.get("name") ?? ""),
@@ -37,12 +41,11 @@ export function DraftForm() {
         visibility: String(form.get("visibility") ?? "PUBLIC"),
       });
       if (result.ok) {
-        setOutcome({ kind: "created", memoryId: result.memoryId, claimLink: result.claimLink });
-        setCopied(false);
+        setOutcome({ kind: "created", memoryId: result.memoryId, email, claimLink: result.claimLink });
         return;
       }
       if (result.code === "duplicate") {
-        setOutcome({ kind: "duplicate", memoryId: result.memoryId, status: result.status, deleted: result.deletedAt !== null, claimLink: null });
+        setOutcome({ kind: "duplicate", memoryId: result.memoryId, email, status: result.status, deleted: result.deletedAt !== null, claimLink: null });
         return;
       }
       setMessage(
@@ -61,6 +64,7 @@ export function DraftForm() {
 
   async function onReissue(memoryId: string) {
     setBusy(true);
+    setMessage(null);
     try {
       const result = await reissueLink({ memoryId });
       if (result.ok) {
@@ -91,7 +95,10 @@ export function DraftForm() {
     <div className="flex flex-col gap-4">
       {outcome && (
         <div className="flex flex-col gap-3 rounded-card border-[3px] border-wood-light bg-paper p-5 shadow-card" role="status">
-          <p className="text-body font-bold">{outcome.kind === "created" ? "Drafted." : outcome.deleted ? "Already drafted; it's in Deleted." : "Already drafted."}</p>
+          <p className="text-body font-bold">
+            {outcome.kind === "created" ? "Drafted for " : outcome.deleted ? "Already drafted (it's in Deleted) for " : "Already drafted for "}
+            <span className="break-all">{outcome.email}</span>.
+          </p>
           {link && (
             <>
               <p className="min-w-0 break-all text-small">

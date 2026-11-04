@@ -22,8 +22,8 @@ export interface AdminMemoryEditable {
 }
 
 export type AdminUpdateResult =
-  /** `memoryVersion`/`contributorVersion` are the post-write values, so the form can keep what it holds and save again without reloading. */
-  | { ok: true; written: Array<keyof AdminMemoryChanges>; memoryVersion: string; contributorVersion: string | null }
+  /** `current` is the committed snapshot after the write (every editable value and both versions): the form keeps what it typed, refreshes what it did not touch, and saves again without a reload. */
+  | { ok: true; written: Array<keyof AdminMemoryChanges>; current: AdminMemoryEditable }
   | { ok: false; code: "invalid" | "not_found" | "last_words" }
   | { ok: false; code: "stale"; current: AdminMemoryEditable };
 
@@ -86,11 +86,12 @@ export async function updateMemoryAsAdmin(raw: unknown): Promise<AdminUpdateResu
     const contributorWrites = wantsContributor ? dirtyContributorKeys.filter((key) => changes[key] !== current[key]) : [];
     const written: Array<MemoryKey | ContributorKey> = [...contributorWrites, ...memoryWrites];
     if (written.length === 0) {
-      return { code: "ok" as const, written, memoryVersion: current.memoryVersion, contributorVersion: current.contributorVersion };
+      return { code: "ok" as const, written, current };
     }
     const note = memoryWrites.includes("note") ? (changes.note ?? null) : current.note;
     if (hasWords(current.note) && !hasWords(note)) {
-      const readyFiles = await tx.media.count({ where: { memoryId, deletedAt: null, status: "READY" } });
+      // A file marked for purge is gone or going, whatever its status still says: it cannot hold the memory up.
+      const readyFiles = await tx.media.count({ where: { memoryId, deletedAt: null, status: "READY", purgedAt: null } });
       if (readyFiles === 0) {
         return { code: "last_words" as const };
       }
@@ -125,17 +126,27 @@ export async function updateMemoryAsAdmin(raw: unknown): Promise<AdminUpdateResu
       await recomputeMemoryType(tx, memoryId, note);
     }
     await appendRevision(tx, { memoryId, changedVia: "ADMIN", before, after, consentVersion: memory.consentVersion });
-    // The versions after this write (`@updatedAt` moved them), read inside the same transaction.
-    const after_ = await tx.memory.findUniqueOrThrow({ where: { id: memoryId }, select: { updatedAt: true } });
-    const contributorAfter = contributorId === null ? null : await tx.contributor.findUniqueOrThrow({ where: { id: contributorId }, select: { updatedAt: true } });
-    return { code: "ok" as const, written, memoryVersion: after_.updatedAt.toISOString(), contributorVersion: contributorAfter?.updatedAt.toISOString() ?? null };
+    // The committed snapshot (`@updatedAt` moved the versions), read inside the same transaction.
+    const memoryAfter = await tx.memory.findUniqueOrThrow({ where: { id: memoryId }, select: { updatedAt: true, approxDateText: true, place: true, contributorNote: true, visibility: true } });
+    const contributorAfter = contributorId === null ? null : await tx.contributor.findUniqueOrThrow({ where: { id: contributorId }, select: { updatedAt: true, name: true, relationship: true } });
+    const committed: AdminMemoryEditable = {
+      name: contributorAfter?.name ?? null,
+      relationship: contributorAfter?.relationship ?? null,
+      approxDateText: memoryAfter.approxDateText,
+      place: memoryAfter.place,
+      note: memoryAfter.contributorNote,
+      visibility: memoryAfter.visibility,
+      memoryVersion: memoryAfter.updatedAt.toISOString(),
+      contributorVersion: contributorAfter?.updatedAt.toISOString() ?? null,
+    };
+    return { code: "ok" as const, written, current: committed };
   }, TX_OPTIONS);
 
   if (result.code === "ok") {
     if (result.written.length > 0) {
       log.info({ action: "admin_memory_updated", memoryId, keys: result.written }, "memory edited from the admin page");
     }
-    return { ok: true, written: result.written, memoryVersion: result.memoryVersion, contributorVersion: result.contributorVersion };
+    return { ok: true, written: result.written, current: result.current };
   }
   if (result.code === "stale") {
     return { ok: false, code: "stale", current: result.current };
