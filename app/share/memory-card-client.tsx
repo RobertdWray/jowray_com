@@ -140,7 +140,7 @@ export function MemoryCardSection({
               onChange={(e) => onField("note", e.target.value)}
               rows={7}
               maxLength={10_000}
-              className={`${textareaClass} roomy:min-h-[300px] roomy:flex-1`}
+              className={`${textareaClass} roomy:min-h-[300px] roomy:max-h-[calc(100dvh-14rem)] roomy:flex-1`}
               placeholder="She once…"
               aria-invalid={issue ? "true" : undefined}
               aria-describedby={issue ? ids.error : undefined}

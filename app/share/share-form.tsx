@@ -26,6 +26,7 @@ import {
   subscribeRemembered,
 } from "@/lib/remembered-contributor";
 import type { ShareDraft } from "@/lib/share-draft";
+import { revealScrollDelta, unionRect } from "@/lib/reveal-scroll";
 import { type PipelineProgress, runSubmission } from "@/lib/submission-pipeline";
 import { uploadWithTicket } from "@/lib/upload-client";
 import { contributorVisibilityOptions, isContributorVisibility } from "@/lib/visibility";
@@ -142,6 +143,11 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
   // Server snapshot is false, client snapshot asks the browser: same markup on both sides at hydration (C9).
   const canRecord = useSyncExternalStore(subscribeNever, () => pickRecordingType() !== null, () => false);
 
+  /** The field has been worked on since the last Send: its inline state goes, the summary stays as it was. */
+  const clearFieldIssue = useCallback((key: string) => {
+    setCleared((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+  }, []);
+
   // One recorder for the whole form; a finished take becomes a row on the card that started it.
   const recordingCardRef = useRef<string | null>(null);
   const onClip = useCallback(
@@ -152,6 +158,8 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
       if (!cardId) {
         return;
       }
+      // A recording answers "needs a recording, a file or a few words" as well as typing does.
+      clearFieldIssue(`note:${cardId}`);
       const item: CardMediaItem = {
         id: `${cardId}-${crypto.randomUUID()}`,
         kind: "VOICE",
@@ -165,7 +173,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
       };
       dispatch({ type: "addMedia", id: cardId, items: [item] });
     },
-    [dispatch],
+    [clearFieldIssue, dispatch],
   );
   const rec = useRecorder({ onClip });
   const recorderActive = rec.snapshot.status.kind === "requesting" || rec.snapshot.status.kind === "recording" || rec.snapshot.status.kind === "finishing";
@@ -184,16 +192,18 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
     if (!input) {
       return;
     }
-    // The wrapper holds label, field and error line together; centring it keeps all three on screen.
+    // Label text, field and error line are measured as content, not as their wrapper: at `roomy` the words cell and
+    // its label stretch to the card row's height, and centring that would put the label above the fold and the error
+    // line below it on a short window (review finding, 2026-11-04).
     const block = input.closest("[data-field]") ?? input;
+    const label = block instanceof HTMLLabelElement ? block : block.querySelector("label");
+    const error = input.getAttribute("aria-describedby") ? document.getElementById(input.getAttribute("aria-describedby")!) : null;
+    const parts = [label?.firstElementChild ?? label, input, error].filter((el): el is Element => el !== null);
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     input.focus({ preventScroll: true });
-    block.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+    window.scrollBy({ top: revealScrollDelta(unionRect(parts.map((el) => el.getBoundingClientRect())), window.innerHeight), behavior: reduce ? "auto" : "smooth" });
   }, [reveal, phase.kind]);
 
-  function clearFieldIssue(key: string) {
-    setCleared((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
-  }
   const shownIssue = (key: string) => issues.find((issue) => keyFor(issue) === key && !cleared.has(key)) ?? null;
   const nameIssue = shownIssue("name");
   const emailIssue = shownIssue("email");
@@ -252,6 +262,8 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
     setIssues(found);
     setCleared(new Set());
     if (found.length > 0) {
+      // A pending "sounds silent" warning is withdrawn too: the next Send that passes asks again if it still applies.
+      setConfirmSilent(null);
       setPhase({ kind: "idle" });
       setReveal({ id: idFor(found[0]!), n: Date.now() });
       return;
@@ -482,10 +494,19 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
                         clearFieldIssue(`note:${card.id}`);
                       }
                     }}
-                    onAddMedia={(items) => dispatch({ type: "addMedia", id: card.id, items })}
-                    onRemoveMedia={(mediaId) => dispatch({ type: "removeMedia", id: card.id, mediaId })}
+                    onAddMedia={(items) => {
+                      dispatch({ type: "addMedia", id: card.id, items });
+                      clearFieldIssue(`note:${card.id}`);
+                    }}
+                    onRemoveMedia={(mediaId) => {
+                      dispatch({ type: "removeMedia", id: card.id, mediaId });
+                      clearFieldIssue(`note:${card.id}`);
+                    }}
                     onRemove={() => apply({ type: "remove", id: card.id })}
-                    onClear={() => dispatch({ type: "clear", id: card.id })}
+                    onClear={() => {
+                      dispatch({ type: "clear", id: card.id });
+                      clearFieldIssue(`note:${card.id}`);
+                    }}
                     onBeforeCamera={saveDraftNow}
                   />
                 </div>

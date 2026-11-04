@@ -48,12 +48,13 @@ const NEEDS_CONTENT = "Add a file, a recording, or a few words";
 export const NAME_REQUIRED_MESSAGE = "We'll need a name so the family knows who to thank.";
 export const EMAIL_REQUIRED_MESSAGE = "Add your email address, please. It's where your private link goes.";
 export const EMAIL_INVALID_MESSAGE = "That email address doesn't look quite right. Have a look for a typo.";
+export const NAME_TOO_LONG_MESSAGE = "That name is longer than we can keep. 120 characters is the most.";
 
 /** A string that must be there: an omitted or null value gets `message` instead of zod's type error; every other issue keeps its own words. */
 const requiredString = (message: string) =>
   z.string({ error: (issue) => (issue.input === undefined || issue.input === null ? message : undefined) }).trim();
 
-export const contributorNameSchema = requiredString(NAME_REQUIRED_MESSAGE).min(1, NAME_REQUIRED_MESSAGE).max(120);
+export const contributorNameSchema = requiredString(NAME_REQUIRED_MESSAGE).min(1, NAME_REQUIRED_MESSAGE).max(120, NAME_TOO_LONG_MESSAGE);
 // Trim and lower-case first, then check the format: zod 4's `z.email()` checks the string as given, so it is piped after the overwrites.
 export const contributorEmailSchema = requiredString(EMAIL_REQUIRED_MESSAGE)
   .toLowerCase()
