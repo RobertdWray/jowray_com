@@ -71,13 +71,14 @@ function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage:
 
   /**
    * Adopt the server's snapshot: fields the person has not touched take the server's value (shown in the
-   * input and used as the new baseline), fields they typed keep their text. Both versions come from the snapshot.
+   * input and used as the new baseline); fields they typed keep their text. After a successful save the typed
+   * values are the new baseline too; after a stale reply they stay dirty, so the next Save still sends them.
    */
-  function adopt(formElement: HTMLFormElement, typed: Values, current: AdminMemoryEditable) {
+  function adopt(formElement: HTMLFormElement, typed: Values, current: AdminMemoryEditable, committed: boolean) {
     const nextInitial: Values = { ...initial };
     for (const key of KEYS) {
       const touched = typed[key] !== initial[key];
-      const value = touched ? typed[key] : current[key];
+      const value = touched ? (committed ? typed[key] : initial[key]) : current[key];
       nextInitial[key] = value as never;
       if (!touched) {
         const input = formElement.elements.namedItem(key);
@@ -125,7 +126,7 @@ function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage:
           : first;
       if (result.ok) {
         // Everything typed is now committed; untouched fields show what the server holds.
-        adopt(formElement, typed, result.current);
+        adopt(formElement, typed, result.current, true);
         setServerChanged(null);
         onMessage(result.written.length === 0 ? "Already saved." : "Saved.");
         router.refresh();
@@ -135,7 +136,7 @@ function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage:
         const { current } = result;
         const changedElsewhere = KEYS.filter((key) => current[key] !== initial[key]);
         // Untouched fields take the other editor's values now; the person's own typing stays until they press Save.
-        adopt(formElement, typed, current);
+        adopt(formElement, typed, current, false);
         setServerChanged(changedElsewhere.map((key) => LABEL[key]));
         return;
       }
