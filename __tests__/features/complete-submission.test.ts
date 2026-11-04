@@ -61,7 +61,8 @@ const sendMock = vi.fn(async (_arg: unknown): Promise<{ sent: boolean; messageId
 const skipMock = vi.fn(async (_arg: unknown) => ({ sent: false as const, skipped: "nothing_to_send" as const }));
 vi.mock("@/services/email", () => ({ sendSubmissionConfirmation: (arg: unknown) => sendMock(arg), skipDelivery: (arg: unknown) => skipMock(arg) }));
 
-const recordMediaMock = vi.fn(async ({ mediaId }: { mediaId: string }) => { const row = media.find((m) => m.id === mediaId)!; return { status: row.status, mediaId, memoryId: row.memoryId, sizeBytes: 1 }; });
+const recordMediaAsIs = async ({ mediaId }: { mediaId: string }) => { const row = media.find((m) => m.id === mediaId)!; return { status: row.status, mediaId, memoryId: row.memoryId, sizeBytes: 1 }; };
+const recordMediaMock = vi.fn(recordMediaAsIs);
 const notifyMock = vi.fn(async (_memoryId: string) => true);
 vi.mock("@/features/memories/ingest-upload", () => ({ recordMedia: (arg: { mediaId: string }) => recordMediaMock(arg), notifyAdminsQuietly: (id: string) => notifyMock(id) }));
 
@@ -71,7 +72,7 @@ vi.mock("@/services/storage", () => ({ createStorageService: () => ({ get: stora
 const afterCalls: Array<() => Promise<void>> = [];
 vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (cb: () => Promise<void>) => { afterCalls.push(cb); } }));
 
-import { completeSubmission, confirmSubmission } from "@/features/memories/complete-submission";
+import { completeSubmission, COMPLETION_GRACE_MS, confirmSubmission } from "@/features/memories/complete-submission";
 
 const contributor = { name: "Kay", email: "kay@example.com", relationship: "former student" };
 function mem(i: number, over: Partial<MemoryRow> = {}): MemoryRow {
@@ -88,7 +89,7 @@ beforeEach(() => {
   memories = [mem(0), mem(1), mem(2)];
   media = [];
   transactions.length = 0; afterCalls.length = 0;
-  sendMock.mockClear(); skipMock.mockClear(); recordMediaMock.mockClear(); notifyMock.mockClear(); storageGetMock.mockClear();
+  sendMock.mockClear(); skipMock.mockClear(); recordMediaMock.mockReset(); recordMediaMock.mockImplementation(recordMediaAsIs); notifyMock.mockClear(); storageGetMock.mockClear();
   dbStub.$transaction.mockClear(); dbStub.memory.updateMany.mockClear();
   process.env.NEXT_PUBLIC_SITE_URL = "https://www.jowray.com";
   resetEnvCache();
@@ -107,12 +108,19 @@ describe("completeSubmission (request path)", () => {
     expect(afterCalls).toHaveLength(0);
   });
 
-  it("clears the anchor's lease, then sends once with every raw link in index order, without rotating and never inside a transaction", async () => {
-    memories[0]!.uploadLeaseUntil = new Date(Date.now() + 60_000);
+  it("shortens the anchor's lease to a brief grace (never clears it under a live request), then sends once with every raw link in index order, without rotating and never inside a transaction", async () => {
+    memories[0]!.uploadLeaseUntil = new Date(Date.now() + 60 * 60_000);
+    const before = Date.now();
     const result = await completeSubmission({ claimTokens: [T(2), T(0), T(1)] });
     expect(result).toEqual({ ok: true, emailed: true });
-    expect(memories[0]!.uploadLeaseUntil).toBeNull();
-    expect(dbStub.memory.updateMany).toHaveBeenCalledWith({ where: { submissionId: "sub_1", submissionIndex: 0 }, data: { uploadLeaseUntil: null } });
+    // A slow send that has run past the cron's 30-minute age must not have its tokens rotated by (e3)
+    // during the thumbnail wait: the lease stays live for a couple of minutes and runs out on its own.
+    const lease = memories[0]!.uploadLeaseUntil!.getTime();
+    expect(lease).toBeGreaterThan(before + 60_000);
+    expect(lease).toBeLessThanOrEqual(Date.now() + COMPLETION_GRACE_MS);
+    expect(dbStub.memory.updateMany).toHaveBeenCalledWith({ where: { submissionId: "sub_1", submissionIndex: 0 }, data: { uploadLeaseUntil: expect.any(Date) } });
+    // While that grace lease is live the cron path still answers `leased`.
+    expect(await confirmSubmission({ anchorId: "mem_0" })).toEqual({ sent: false, skipped: "leased" });
     expect(sendMock).toHaveBeenCalledTimes(1);
     const arg = lastSend();
     expect(arg.anchorMemoryId).toBe("mem_0");
@@ -158,6 +166,21 @@ describe("completeSubmission (request path)", () => {
     expect(storageGetMock).toHaveBeenCalledTimes(4);
     const previews = lastSend().memories.flatMap((m) => m.media.map((x) => x.preview?.contentId ?? null));
     expect(previews.filter((p) => p !== null)).toHaveLength(4);
+  });
+
+  it("re-checks PENDING rows against the store before building, so a file that landed late is not called missing", async () => {
+    media = [photo("p1", "mem_0"), photo("p2", "mem_0", { status: "PENDING", sortOrder: 1, originalFilename: "late.jpg" })];
+    recordMediaMock.mockImplementation(async ({ mediaId }) => {
+      const row = media.find((m) => m.id === mediaId)!;
+      row.status = "READY";
+      return { status: "READY", mediaId, memoryId: row.memoryId, sizeBytes: 1 };
+    });
+    await completeSubmission({ claimTokens: [T(0), T(1), T(2)] }, { thumbnailWaitMs: 0 });
+    expect(recordMediaMock).toHaveBeenCalledWith({ mediaId: "p2" });
+    expect(recordMediaMock).not.toHaveBeenCalledWith({ mediaId: "p1" });
+    const arg = lastSend();
+    expect(arg.memories[0]!.missingFiles).toEqual([]);
+    expect(arg.memories[0]!.media).toHaveLength(2);
   });
 
   it("lists files that are not READY as missing, so the person can add them again", async () => {
