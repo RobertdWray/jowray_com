@@ -82,7 +82,10 @@ function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage:
       nextInitial[key] = value as never;
       if (!touched) {
         const input = formElement.elements.namedItem(key);
-        if (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement || input instanceof HTMLSelectElement) {
+        // Only an input the person has not started typing into since pressing Save (the fields stay enabled during the round trip).
+        const untouchedSinceSubmit = (field: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) =>
+          field.value === (key === "visibility" ? (initial[key] as string) : text(initial[key] as string | null));
+        if ((input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement || input instanceof HTMLSelectElement) && untouchedSinceSubmit(input)) {
           input.value = key === "visibility" ? (value as string) : text(value as string | null);
         }
       }
