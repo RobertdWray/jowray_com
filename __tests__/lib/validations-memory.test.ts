@@ -1,9 +1,24 @@
 import { describe, expect, it } from "vitest";
 
 import { MAX_FILES_PER_MEMORY } from "@/lib/media-types";
-import { createSubmissionInputSchema, draftMemoryInputSchema, fileInputSchema, memoryFileInputSchema, submissionMemorySchema, uploadTicketRequestSchema } from "@/lib/validations/memory";
+import {
+  contributorEmailSchema,
+  contributorNameSchema,
+  createSubmissionInputSchema,
+  draftMemoryInputSchema,
+  EMAIL_INVALID_MESSAGE,
+  EMAIL_REQUIRED_MESSAGE,
+  fileInputSchema,
+  memoryFileInputSchema,
+  NAME_REQUIRED_MESSAGE,
+  NAME_TOO_LONG_MESSAGE,
+  submissionIssueLocation,
+  submissionMemorySchema,
+  uploadTicketRequestSchema,
+} from "@/lib/validations/memory";
 
-const textOnly = { memories: [{ note: "She once taught me to quilt.", files: [] }] };
+// Name and email are required since 2026-11-04 (Rob's items 1 and 6, ruling 2), so every fixture carries both.
+const textOnly = { name: "Kay", email: "kay@example.com", memories: [{ note: "She once taught me to quilt.", files: [] }] };
 const file = { name: "clip.webm", type: "audio/webm;codecs=opus", size: 10 };
 
 describe("createSubmissionInputSchema defaults", () => {
@@ -12,9 +27,12 @@ describe("createSubmissionInputSchema defaults", () => {
     expect(parsed.visibility).toBe("PUBLIC");
   });
 
-  it("keeps an explicit visibility", () => {
+  it("keeps an explicit FAMILY", () => {
     expect(createSubmissionInputSchema.parse({ ...textOnly, visibility: "FAMILY" }).visibility).toBe("FAMILY");
-    expect(createSubmissionInputSchema.parse({ ...textOnly, visibility: "PRIVATE" }).visibility).toBe("PRIVATE");
+  });
+
+  it("refuses PRIVATE on /share: contributors choose Everyone or Family only; admin forms keep all three (Rob, 2026-11-04)", () => {
+    expect(createSubmissionInputSchema.safeParse({ ...textOnly, visibility: "PRIVATE" }).success).toBe(false);
   });
 
   it("rejects an unknown visibility", () => {
@@ -54,7 +72,7 @@ describe("fileInputSchema", () => {
 
 describe("memory file validation", () => {
   it("keeps the duration on a new memory's file", () => {
-    const parsed = createSubmissionInputSchema.parse({ memories: [{ files: [{ ...file, durationSeconds: 24 }] }] });
+    const parsed = createSubmissionInputSchema.parse({ name: "Kay", email: "kay@example.com", memories: [{ files: [{ ...file, durationSeconds: 24 }] }] });
     expect(parsed.memories[0]?.files[0]?.durationSeconds).toBe(24);
   });
 
@@ -112,13 +130,75 @@ describe("createSubmissionInputSchema (Task 15)", async () => {
     expect(result.success).toBe(false);
     if (result.success) { return; }
     const locations = result.error.issues.map((issue) => submissionIssueLocation(issue));
-    expect(locations).toContainEqual({ memoryIndex: 1, fileIndex: null, message: "Add a file, a recording, or a few words" });
+    expect(locations).toContainEqual({ memoryIndex: 1, fileIndex: null, field: null, message: "Add a file, a recording, or a few words" });
     expect(locations).toContainEqual(expect.objectContaining({ memoryIndex: 2, fileIndex: 0 }));
     const top = createSubmissionInputSchema.safeParse({ ...send([memory()]), email: "nope" });
     expect(top.success).toBe(false);
     if (!top.success) {
-      expect(submissionIssueLocation(top.error.issues[0]!)).toMatchObject({ memoryIndex: null, fileIndex: null });
+      expect(submissionIssueLocation(top.error.issues[0]!)).toMatchObject({ memoryIndex: null, fileIndex: null, field: "email" });
     }
+  });
+});
+
+describe("required name and email (Rob's items 1 and 6, ruling 2, 2026-11-04)", () => {
+  const base = { name: "Kay", email: "kay@example.com", memories: [{ note: "words", files: [] }] };
+  const without = (key: "name" | "email") => Object.fromEntries(Object.entries(base).filter(([k]) => k !== key));
+  const messageFor = (input: unknown, field: "name" | "email") => {
+    const result = createSubmissionInputSchema.safeParse(input);
+    if (result.success) {
+      return "accepted";
+    }
+    return result.error.issues.find((issue) => issue.path[0] === field)?.message;
+  };
+
+  it.each([
+    ["omitted", without("name")],
+    ["null", { ...base, name: null }],
+    ["empty", { ...base, name: "" }],
+    ["blank", { ...base, name: "   " }],
+  ])("a %s name gets the family's own words, not a type error", (_label, input) => {
+    expect(messageFor(input, "name")).toBe(NAME_REQUIRED_MESSAGE);
+  });
+
+  it.each([
+    ["omitted", without("email")],
+    ["null", { ...base, email: null }],
+    ["empty", { ...base, email: "" }],
+    ["blank", { ...base, email: "   " }],
+  ])("a %s email says where the private link goes", (_label, input) => {
+    expect(messageFor(input, "email")).toBe(EMAIL_REQUIRED_MESSAGE);
+  });
+
+  it.each(["kay@", "not-an-address", "kay@example"])("a malformed email (%s) suggests looking for a typo", (email) => {
+    expect(messageFor({ ...base, email }, "email")).toBe(EMAIL_INVALID_MESSAGE);
+  });
+
+  it("trims and lower-cases before judging, so the client and server agree on a padded address", () => {
+    const parsed = createSubmissionInputSchema.parse({ ...base, name: "  Jane Doe ", email: " Jane@Example.COM " });
+    expect(parsed.name).toBe("Jane Doe");
+    expect(parsed.email).toBe("jane@example.com");
+  });
+
+  it("keeps the length ceilings: 254 characters of email, 120 of name, each in the house voice", () => {
+    expect(messageFor({ ...base, email: `${"a".repeat(243)}@example.com` }, "email")).toBe(EMAIL_INVALID_MESSAGE);
+    expect(messageFor({ ...base, name: "x".repeat(121) }, "name")).toBe(NAME_TOO_LONG_MESSAGE);
+    expect(createSubmissionInputSchema.safeParse({ ...base, name: "x".repeat(120) }).success).toBe(true);
+  });
+
+  it("the field schemas stand alone for the browser's pre-check", () => {
+    expect(contributorNameSchema.safeParse(undefined).error?.issues[0]?.message).toBe(NAME_REQUIRED_MESSAGE);
+    expect(contributorNameSchema.safeParse(" Kay ").data).toBe("Kay");
+    expect(contributorEmailSchema.safeParse("").error?.issues[0]?.message).toBe(EMAIL_REQUIRED_MESSAGE);
+    expect(contributorEmailSchema.safeParse("kay@").error?.issues[0]?.message).toBe(EMAIL_INVALID_MESSAGE);
+    expect(contributorEmailSchema.safeParse(" Kay@Example.com ").data).toBe("kay@example.com");
+  });
+
+  it("submissionIssueLocation names the contributor field for a top-level issue and nothing else", () => {
+    expect(submissionIssueLocation({ path: ["name"], message: "m" })).toEqual({ memoryIndex: null, fileIndex: null, field: "name", message: "m" });
+    expect(submissionIssueLocation({ path: ["email"], message: "m" })).toEqual({ memoryIndex: null, fileIndex: null, field: "email", message: "m" });
+    expect(submissionIssueLocation({ path: ["memories", 1, "note"], message: "m" })).toEqual({ memoryIndex: 1, fileIndex: null, field: null, message: "m" });
+    expect(submissionIssueLocation({ path: ["memories", 0, "files", 2, "size"], message: "m" })).toEqual({ memoryIndex: 0, fileIndex: 2, field: null, message: "m" });
+    expect(submissionIssueLocation({ path: ["visibility"], message: "m" })).toEqual({ memoryIndex: null, fileIndex: null, field: null, message: "m" });
   });
 });
 

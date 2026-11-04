@@ -7,12 +7,15 @@ import {
   hasContent,
   initialCardsState,
   isEmpty,
+  issuesFromSendFailure,
   labelFor,
   MAX_CARDS,
   type MemoryCard,
   type CardMediaItem,
+  validateContributor,
   validateForSend,
 } from "@/lib/memory-cards";
+import { EMAIL_INVALID_MESSAGE, EMAIL_REQUIRED_MESSAGE, NAME_REQUIRED_MESSAGE } from "@/lib/validations/memory";
 
 const MB = 1024 * 1024;
 function file(name: string, type: string, size = 10): File {
@@ -57,12 +60,48 @@ describe("initial state and helpers", () => {
 describe("validateForSend", () => {
   it("names each card that has details but neither files nor words, and passes when every open card has content or is empty", () => {
     const cards = [card({ id: "c1", note: "words" }), card({ id: "c2", open: true, approxDateText: "1985" }), card({ id: "c3", open: true }), card({ id: "c4", open: true, media: [item()] })];
-    expect(validateForSend(cards)).toEqual([{ cardId: "c2", position: 2, field: "note", message: "Memory 2 needs a recording, a file or a few words." }]);
+    expect(validateForSend(cards)).toEqual([{ target: "note", cardId: "c2", position: 2, message: "Memory 2 needs a recording, a file or a few words." }]);
     expect(validateForSend([card({ id: "c1", note: "words" }), card({ id: "c2", open: true })])).toEqual([]);
   });
 
   it("asks for something when nothing at all was given, in the card's own words", () => {
-    expect(validateForSend([card()])).toEqual([{ cardId: "c1", position: 1, field: "note", message: "Memory 1 needs a recording, a file or a few words." }]);
+    expect(validateForSend([card()])).toEqual([{ target: "note", cardId: "c1", position: 1, message: "Memory 1 needs a recording, a file or a few words." }]);
+  });
+});
+
+describe("validateContributor (Rob's items 1 and 6: the browser says what is missing before the server does)", () => {
+  it("names the name first, then the email, in the form's own order", () => {
+    expect(validateContributor({ name: "", email: "" })).toEqual([
+      { target: "name", message: NAME_REQUIRED_MESSAGE },
+      { target: "email", message: EMAIL_REQUIRED_MESSAGE },
+    ]);
+  });
+
+  it("judges the trimmed values with the server's schemas, so a padded address passes and spaces alone do not", () => {
+    expect(validateContributor({ name: "   ", email: "  kay@example.com " })).toEqual([{ target: "name", message: NAME_REQUIRED_MESSAGE }]);
+    expect(validateContributor({ name: "Kay", email: "kay@" })).toEqual([{ target: "email", message: EMAIL_INVALID_MESSAGE }]);
+  });
+
+  it("passes a valid pair", () => {
+    expect(validateContributor({ name: "Jane Doe", email: "jane@example.com" })).toEqual([]);
+  });
+});
+
+describe("issuesFromSendFailure (the server's refusal lands on the field or the card it names)", () => {
+  const cards = [card({ id: "c1", note: "one" }), card({ id: "c2", note: "two" })];
+
+  it("maps a contributor field to that field", () => {
+    expect(issuesFromSendFailure({ field: "email", memoryIndex: null, message: "Add your email" }, cards)).toEqual([{ target: "email", message: "Add your email" }]);
+    expect(issuesFromSendFailure({ field: "name", memoryIndex: 0, message: "Need a name" }, cards)).toEqual([{ target: "name", message: "Need a name" }]);
+  });
+
+  it("maps a memory index to that card's words", () => {
+    expect(issuesFromSendFailure({ field: null, memoryIndex: 1, message: "Too long" }, cards)).toEqual([{ target: "note", cardId: "c2", position: 2, message: "Too long" }]);
+  });
+
+  it("maps nothing when the refusal names neither, or names a card that is not there", () => {
+    expect(issuesFromSendFailure({ field: null, memoryIndex: null, message: "Busy" }, cards)).toEqual([]);
+    expect(issuesFromSendFailure({ field: null, memoryIndex: 5, message: "?" }, cards)).toEqual([]);
   });
 });
 

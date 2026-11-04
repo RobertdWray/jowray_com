@@ -1,4 +1,6 @@
 import type { CardMediaItem, MemoryCard } from "@/lib/memory-cards";
+import type { SubmissionIssueField } from "@/lib/validations/memory";
+import type { ContributorVisibility } from "@/lib/visibility";
 
 /**
  * The browser side of a send (Task 15): create the whole submission once,
@@ -24,7 +26,7 @@ export interface PipelineGrant {
 }
 export type PipelineCreateResult =
   | { ok: true; submissionId: string; memories: Array<{ index: number; memoryId: string; claimToken: string; files: Array<{ fileIndex: number; mediaId: string }> }>; emailed: boolean }
-  | { ok: false; code: string; message: string; memoryIndex: number | null; fileIndex: number | null };
+  | { ok: false; code: string; message: string; memoryIndex: number | null; fileIndex: number | null; field: SubmissionIssueField };
 export type PipelineTicketResult = { ok: true; upload: PipelineGrant } | { ok: false; code: string };
 export type PipelineFinalizeResult = { status: "READY" | "PENDING" | "FAILED" | "REJECTED" };
 export type PipelineCompleteResult = { ok: true; emailed: boolean } | { ok: false; code: string };
@@ -41,7 +43,7 @@ export interface PipelineInput {
   name: string;
   relationship: string;
   email: string;
-  visibility: "PUBLIC" | "FAMILY" | "PRIVATE";
+  visibility: ContributorVisibility;
   contactOptIn: boolean;
   mailingListOptIn: boolean;
   notifyWhenPosted: boolean;
@@ -70,7 +72,7 @@ export interface PipelineMemory {
 
 export type PipelineResult =
   | { ok: true; submissionId: string; memories: PipelineMemory[]; emailed: boolean }
-  | { ok: false; code: string; message: string; memoryIndex: number | null; fileIndex: number | null };
+  | { ok: false; code: string; message: string; memoryIndex: number | null; fileIndex: number | null; field: SubmissionIssueField };
 
 export interface PipelineHooks {
   /** `window.location.origin`, for the on-screen links. */
@@ -138,7 +140,7 @@ export async function runSubmission(input: PipelineInput, deps: PipelineDeps, ho
   } catch (error) {
     // Unknown outcome (network, timeout): never resend on our own.
     hooks.onError?.(error, { step: "create" });
-    return { ok: false, code: "unreachable", message: UNREACHABLE_MESSAGE, memoryIndex: null, fileIndex: null };
+    return { ok: false, code: "unreachable", message: UNREACHABLE_MESSAGE, memoryIndex: null, fileIndex: null, field: null };
   }
   if (!created.ok) {
     return created;

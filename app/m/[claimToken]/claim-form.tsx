@@ -8,7 +8,7 @@ import { CONTACT_OPT_IN_LABEL, IMPLICIT_CONSENT_NOTE, NOTIFY_WHEN_POSTED_LABEL }
 import { ACCEPT_ATTRIBUTE } from "@/lib/media-types";
 import { reportClientError } from "@/lib/sentry/report";
 import { identifyContributor, tagIds } from "@/lib/sentry/user";
-import { VISIBILITY_OPTIONS } from "@/lib/visibility";
+import { contributorVisibilityOptions } from "@/lib/visibility";
 import { uploadWithTicket } from "@/lib/upload-client";
 
 import { PrimaryButton } from "../../_components/buttons";
@@ -140,8 +140,9 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
         </label>
         <label className={labelClass}>
           <span>Who can see this?</span>
+          {/* Everyone or Family (ruling 3, 2026-11-04); a memory the family set PRIVATE keeps that choice listed (D5). */}
           <select name="visibility" defaultValue={memory.visibility} className={selectClass}>
-            {VISIBILITY_OPTIONS.map((option) => (
+            {contributorVisibilityOptions(memory.visibility).map((option) => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </select>

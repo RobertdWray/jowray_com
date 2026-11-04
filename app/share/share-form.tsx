@@ -4,7 +4,21 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type Re
 
 import { CONTACT_OPT_IN_LABEL, IMPLICIT_CONSENT_NOTE, MAILING_LIST_LABEL, NOTIFY_WHEN_POSTED_LABEL } from "@/lib/consent";
 import { durationSecondsFor } from "@/lib/format-duration";
-import { type CardMediaItem, type CardsAction, type CardsState, cardsReducer, contentCards, hasContent, labelFor, MAX_CARDS, type SendIssue, validateForSend } from "@/lib/memory-cards";
+import {
+  type CardIssue,
+  type CardMediaItem,
+  type CardsAction,
+  type CardsState,
+  cardsReducer,
+  contentCards,
+  hasContent,
+  issuesFromSendFailure,
+  labelFor,
+  MAX_CARDS,
+  type SendIssue,
+  validateContributor,
+  validateForSend,
+} from "@/lib/memory-cards";
 import {
   getRememberedServerSnapshot,
   getRememberedSnapshot,
@@ -12,11 +26,12 @@ import {
   subscribeRemembered,
 } from "@/lib/remembered-contributor";
 import type { ShareDraft } from "@/lib/share-draft";
+import { revealScrollDelta, unionRect } from "@/lib/reveal-scroll";
 import { reportClientError } from "@/lib/sentry/report";
 import { identifyContributor } from "@/lib/sentry/user";
 import { type PipelineProgress, runSubmission } from "@/lib/submission-pipeline";
 import { uploadWithTicket } from "@/lib/upload-client";
-import { VISIBILITY_OPTIONS } from "@/lib/visibility";
+import { contributorVisibilityOptions, isContributorVisibility } from "@/lib/visibility";
 
 import { PrimaryButton, SecondaryButton } from "../_components/buttons";
 import { errorClass, helperClass, inputClass, labelClass, linkClass, selectClass } from "../_components/field-classes";
@@ -32,7 +47,7 @@ import { useShareDraft } from "./use-share-draft";
 type Phase =
   | { kind: "idle" }
   | { kind: "sending"; text: string }
-  | { kind: "done"; memories: SentMemory[]; emailed: boolean; hasEmail: boolean }
+  | { kind: "done"; memories: SentMemory[]; emailed: boolean }
   | { kind: "error"; message: string };
 
 const KEEP_OPEN = "Please keep this page open. Videos can take a few minutes on a phone.";
@@ -41,6 +56,23 @@ const STALL_MS = 20_000;
 
 function subscribeNever(): () => void {
   return () => {};
+}
+
+/** The input an issue points at, so the summary links and the reveal agree on the target. */
+function idFor(issue: SendIssue): string {
+  switch (issue.target) {
+    case "name":
+      return "contributor-name";
+    case "email":
+      return "contributor-email";
+    case "note":
+      return cardIds(issue.cardId).note;
+  }
+}
+
+/** One key per issue, for React and for the set of fields typed in since the last Send. */
+function keyFor(issue: SendIssue): string {
+  return issue.target === "note" ? `note:${issue.cardId}` : issue.target;
 }
 
 /** Reads the elements themselves, not FormData, which leaves disabled fields out: a draft saved while sending must keep the name. */
@@ -61,7 +93,16 @@ function readContributor(form: HTMLFormElement | null) {
 export function ShareForm({ intro }: { intro: ReactNode }) {
   const formRef = useRef<HTMLFormElement>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  // Set on Send (by the browser's check or the server's refusal) and never changed by typing, so the alert is read once (G9.1).
   const [issues, setIssues] = useState<SendIssue[]>([]);
+  // The issues whose field has been typed in since: their inline state goes, the summary stays as it was.
+  const [cleared, setCleared] = useState<ReadonlySet<string>>(() => new Set());
+  // A request to show one field. The DOM work runs in an effect, after React has committed the render that
+  // re-enabled the inputs and mounted the error line; a synchronous focus() in the handler would find them disabled.
+  const [reveal, setReveal] = useState<{ id: string; n: number } | null>(null);
+  // The request already carried out, so a later change of phase (a send that fails with no field named) never
+  // re-runs it and pulls focus to a field that is no longer wrong (review finding, 2026-11-04).
+  const revealed = useRef<{ id: string; n: number } | null>(null);
   const [confirmSilent, setConfirmSilent] = useState<string[] | null>(null);
   const [live, setLive] = useState("");
   const [progress, setProgress] = useState<Record<string, number>>({});
@@ -110,6 +151,11 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
   // Server snapshot is false, client snapshot asks the browser: same markup on both sides at hydration (C9).
   const canRecord = useSyncExternalStore(subscribeNever, () => pickRecordingType() !== null, () => false);
 
+  /** The field has been worked on since the last Send: its inline state goes, the summary stays as it was. */
+  const clearFieldIssue = useCallback((key: string) => {
+    setCleared((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+  }, []);
+
   // One recorder for the whole form; a finished take becomes a row on the card that started it.
   const recordingCardRef = useRef<string | null>(null);
   const onClip = useCallback(
@@ -120,6 +166,8 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
       if (!cardId) {
         return;
       }
+      // A recording answers "needs a recording, a file or a few words" as well as typing does.
+      clearFieldIssue(`note:${cardId}`);
       const item: CardMediaItem = {
         id: `${cardId}-${crypto.randomUUID()}`,
         kind: "VOICE",
@@ -133,7 +181,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
       };
       dispatch({ type: "addMedia", id: cardId, items: [item] });
     },
-    [dispatch],
+    [clearFieldIssue, dispatch],
   );
   const rec = useRecorder({ onClip });
   const recorderActive = rec.snapshot.status.kind === "requesting" || rec.snapshot.status.kind === "recording" || rec.snapshot.status.kind === "finishing";
@@ -142,6 +190,33 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
   // The card showing the recorder: the one that started it, for as long as the engine is not idle
   // (an error keeps the panel and its help on that card until the person moves on).
   const activeRecordingCardId = rec.snapshot.status.kind === "idle" ? null : recordingCardId;
+
+  useEffect(() => {
+    if (!reveal || reveal === revealed.current || phase.kind === "sending") {
+      return;
+    }
+    revealed.current = reveal;
+    const input = document.getElementById(reveal.id);
+    if (!input) {
+      return;
+    }
+    // Label text, field and error line are measured as content, not as their wrapper: at `roomy` the words cell and
+    // its label stretch to the card row's height, and centring that would put the label above the fold and the error
+    // line below it on a short window (review finding, 2026-11-04).
+    const block = input.closest("[data-field]") ?? input;
+    const label = block instanceof HTMLLabelElement ? block : block.querySelector("label");
+    const error = input.getAttribute("aria-describedby") ? document.getElementById(input.getAttribute("aria-describedby")!) : null;
+    const parts = [label?.firstElementChild ?? label, input, error].filter((el): el is Element => el !== null);
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    input.focus({ preventScroll: true });
+    window.scrollBy({ top: revealScrollDelta(unionRect(parts.map((el) => el.getBoundingClientRect())), window.innerHeight), behavior: reduce ? "auto" : "smooth" });
+  }, [reveal, phase.kind]);
+
+  const shownIssue = (key: string) => issues.find((issue) => keyFor(issue) === key && !cleared.has(key)) ?? null;
+  const nameIssue = shownIssue("name");
+  const emailIssue = shownIssue("email");
+  const cardIssueFor = (cardId: string): CardIssue | null =>
+    issues.find((issue): issue is CardIssue => issue.target === "note" && issue.cardId === cardId && !cleared.has(keyFor(issue))) ?? null;
 
   // A desktop safeguard only while unsent media exists (C44); phones rely on the draft instead.
   const hasUnsentMedia = phase.kind !== "done" && state.cards.some((card) => card.media.length > 0);
@@ -163,6 +238,8 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
     clearDraft();
     dispatch({ type: "reset" });
     setIssues([]);
+    setCleared(new Set());
+    setReveal(null);
     setConfirmSilent(null);
     setProgress({});
     setLive("");
@@ -187,10 +264,16 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
     if (busy) {
       return;
     }
-    const found = validateForSend(state.cards);
+    const contributor = readContributor(event.currentTarget);
+    // The form's order: who is sending, then the cards. The first problem is the one brought into view.
+    const found: SendIssue[] = [...validateContributor(contributor), ...validateForSend(state.cards)];
     setIssues(found);
+    setCleared(new Set());
     if (found.length > 0) {
-      document.getElementById(cardIds(found[0]!.cardId).note)?.focus();
+      // A pending "sounds silent" warning is withdrawn too: the next Send that passes asks again if it still applies.
+      setConfirmSilent(null);
+      setPhase({ kind: "idle" });
+      setReveal({ id: idFor(found[0]!), n: Date.now() });
       return;
     }
     const cards = contentCards(state);
@@ -203,12 +286,12 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
     }
     setConfirmSilent(null);
     const form = new FormData(event.currentTarget);
-    const contributor = readContributor(event.currentTarget);
+    // Sentry learns who is sending only once a send actually starts (plan 2026-11-04 §8.3).
     identifyContributor(contributor);
     const visibility = String(form.get("visibility") ?? "PUBLIC");
     const sendInput = {
       ...contributor,
-      visibility: (VISIBILITY_OPTIONS.some((o) => o.value === visibility) ? visibility : "PUBLIC") as "PUBLIC" | "FAMILY" | "PRIVATE",
+      visibility: isContributorVisibility(visibility) ? visibility : "PUBLIC",
       contactOptIn: form.get("contactOptIn") === "on",
       notifyWhenPosted: form.get("notifyWhenPosted") === "on",
       mailingListOptIn: form.get("mailingListOptIn") === "on",
@@ -262,11 +345,11 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
         // Back to editable rows: a stuck progress bar would hide every Remove button.
         setProgress({});
         setPhase({ kind: "error", message: result.message });
-        if (result.memoryIndex !== null) {
-          const card = cards[result.memoryIndex];
-          if (card) {
-            setIssues([{ cardId: card.id, position: result.memoryIndex + 1, field: "note", message: result.message }]);
-          }
+        // A refusal that names a field or a card lands there (summary, inline line, focus); any other shows above the button.
+        const located = issuesFromSendFailure(result, cards);
+        setIssues(located);
+        if (located[0]) {
+          setReveal({ id: idFor(located[0]), n: Date.now() });
         }
         setLive("");
         return;
@@ -279,7 +362,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
         return { position: memory.position, label: labelFor(card, openCards.indexOf(card) + 1), claimLink: memory.claimLink, failedFiles: memory.failedFiles };
       });
       setLive("");
-      setPhase({ kind: "done", memories, emailed: result.emailed, hasEmail: contributor.email.trim().length > 0 });
+      setPhase({ kind: "done", memories, emailed: result.emailed });
     } finally {
       if (stall) {
         clearInterval(stall);
@@ -288,7 +371,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
   }
 
   if (phase.kind === "done") {
-    return <ThankYou memories={phase.memories} emailed={phase.emailed} hasEmail={phase.hasEmail} onAnother={resetForm} />;
+    return <ThankYou memories={phase.memories} emailed={phase.emailed} onAnother={resetForm} />;
   }
 
   const openCards = state.cards.filter((card) => card.open);
@@ -320,29 +403,69 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
           <h2 id="about-you" className="font-display text-card-title font-bold">
             About you
           </h2>
+          {/* Name and email are required (Rob, 2026-11-04). `required` is for assistive tech: the form is noValidate and
+              shows its own words. The error line is a sibling of the label, so it is described, not part of the name. */}
           <div className="flex flex-wrap gap-5">
-            <label className={`${labelClass} flex-[1_1_200px]`}>
-              <span>Your name</span>
-              <input name="name" maxLength={120} className={inputClass} autoComplete="name" placeholder="Kay Bartholomew" defaultValue={draft?.contributor.name || remembered?.name} disabled={sending} />
-            </label>
-            <label className={`${labelClass} flex-[1_1_200px]`}>
-              <span>
-                Email <span className={helperClass}>(optional · so we can say thank you and send your private link)</span>
-              </span>
-              <input name="email" type="email" maxLength={254} className={inputClass} autoComplete="email" placeholder="So we can say thank you" defaultValue={remembered?.email} disabled={sending} />
-            </label>
+            <div data-field className={`${labelClass} flex-[1_1_200px]`}>
+              <label htmlFor="contributor-name">Your name</label>
+              <input
+                id="contributor-name"
+                name="name"
+                maxLength={120}
+                required
+                className={inputClass}
+                autoComplete="name"
+                placeholder="Jane Doe"
+                defaultValue={draft?.contributor.name || remembered?.name}
+                disabled={sending}
+                aria-invalid={nameIssue ? "true" : undefined}
+                aria-describedby={nameIssue ? "contributor-name-error" : undefined}
+                onInput={() => clearFieldIssue("name")}
+              />
+              {nameIssue && (
+                <p id="contributor-name-error" className={errorClass}>
+                  {nameIssue.message}
+                </p>
+              )}
+            </div>
+            <div data-field className={`${labelClass} flex-[1_1_200px]`}>
+              <label htmlFor="contributor-email">Email</label>
+              <input
+                id="contributor-email"
+                name="email"
+                type="email"
+                maxLength={254}
+                required
+                className={inputClass}
+                autoComplete="email"
+                placeholder="your@email.com"
+                defaultValue={remembered?.email}
+                disabled={sending}
+                aria-invalid={emailIssue ? "true" : undefined}
+                aria-describedby={emailIssue ? "contributor-email-error" : undefined}
+                onInput={() => clearFieldIssue("email")}
+              />
+              {emailIssue && (
+                <p id="contributor-email-error" className={errorClass}>
+                  {emailIssue.message}
+                </p>
+              )}
+            </div>
           </div>
-          <label className={labelClass}>
-            <span>How you knew Jo</span>
+          <div data-field className={labelClass}>
+            <label htmlFor="contributor-relationship">
+              How you knew Jo <span className={helperClass}>(optional)</span>
+            </label>
             <input
+              id="contributor-relationship"
               name="relationship"
               maxLength={120}
               className={inputClass}
-              placeholder="former student · church friend · neighbor · family"
+              placeholder="former student"
               defaultValue={draft?.contributor.relationship || remembered?.relationship}
               disabled={sending}
             />
-          </label>
+          </div>
           <p className="narrow:hidden text-small text-walnut-soft">One memory is plenty. Add more if they come to you.</p>
         </section>
 
@@ -361,7 +484,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
                 position={position}
                 isFirst={isFirst}
                 disabled={sending}
-                issue={issues.find((issue) => issue.cardId === card.id) ?? null}
+                issue={cardIssueFor(card.id)}
                 recording={{
                   rec,
                   canRecord,
@@ -370,11 +493,25 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
                   start: () => startRecording(card.id),
                 }}
                 progress={progress}
-                onField={(field, value) => dispatch({ type: "field", id: card.id, field, value })}
-                onAddMedia={(items) => dispatch({ type: "addMedia", id: card.id, items })}
-                onRemoveMedia={(mediaId) => dispatch({ type: "removeMedia", id: card.id, mediaId })}
+                onField={(field, value) => {
+                  dispatch({ type: "field", id: card.id, field, value });
+                  if (field === "note") {
+                    clearFieldIssue(`note:${card.id}`);
+                  }
+                }}
+                onAddMedia={(items) => {
+                  dispatch({ type: "addMedia", id: card.id, items });
+                  clearFieldIssue(`note:${card.id}`);
+                }}
+                onRemoveMedia={(mediaId) => {
+                  dispatch({ type: "removeMedia", id: card.id, mediaId });
+                  clearFieldIssue(`note:${card.id}`);
+                }}
                 onRemove={() => apply({ type: "remove", id: card.id })}
-                onClear={() => dispatch({ type: "clear", id: card.id })}
+                onClear={() => {
+                  dispatch({ type: "clear", id: card.id });
+                  clearFieldIssue(`note:${card.id}`);
+                }}
                 onBeforeCamera={saveDraftNow}
               />
             </div>
@@ -390,8 +527,9 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
         <section className="flex flex-col gap-[22px] rounded-form border-[3px] border-wood-light bg-paper p-6 shadow-form sm:p-8">
           <label className={labelClass}>
             <span>Who can see {several ? "these" : "this"}?</span>
+            {/* Everyone (default) or Family; the admin-only third value is never offered here (Rob's item 5, ruling 3). */}
             <select name="visibility" defaultValue="PUBLIC" className={selectClass} disabled={sending}>
-              {VISIBILITY_OPTIONS.map((option) => (
+              {contributorVisibilityOptions().map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -401,16 +539,16 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
 
           {issues.length > 0 && (
             <div role="alert" className={errorClass}>
-              <p>Before we can send {several ? "these" : "this"}:</p>
+              <p>We couldn&apos;t send this yet:</p>
               <ul className="list-disc pl-6">
                 {issues.map((issue) => (
-                  <li key={issue.cardId}>
+                  <li key={keyFor(issue)}>
                     <a
                       className={linkClass}
-                      href={`#${cardIds(issue.cardId).note}`}
+                      href={`#${idFor(issue)}`}
                       onClick={(e) => {
                         e.preventDefault();
-                        document.getElementById(cardIds(issue.cardId).note)?.focus();
+                        setReveal({ id: idFor(issue), n: Date.now() });
                       }}
                     >
                       {issue.message}
@@ -420,7 +558,8 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
               </ul>
             </div>
           )}
-          {phase.kind === "error" && (
+          {/* A refusal that landed on a field or a card is already in the summary above; only a general one is shown here. */}
+          {phase.kind === "error" && issues.length === 0 && (
             <p role="alert" className={errorClass}>
               {phase.message}
             </p>

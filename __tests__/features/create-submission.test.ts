@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { hashClaimToken } from "@/lib/claim-token";
 import { UPLOAD_LEASE_MS } from "@/lib/upload-ticket";
+import { EMAIL_REQUIRED_MESSAGE, NAME_REQUIRED_MESSAGE } from "@/lib/validations/memory";
 import { resetEnvCache } from "@/server/config/env";
 
 interface MemoryRow {
@@ -147,12 +148,30 @@ describe("createSubmission", () => {
   });
 
   it("names the card and the file when the input is invalid or a file is refused", async () => {
-    expect(await createSubmission({ ...contributor, memories: [{ note: "ok", files: [] }, { note: "  ", files: [] }] })).toMatchObject({ ok: false, code: "invalid", memoryIndex: 1, fileIndex: null });
+    expect(await createSubmission({ ...contributor, memories: [{ note: "ok", files: [] }, { note: "  ", files: [] }] })).toMatchObject({ ok: false, code: "invalid", memoryIndex: 1, fileIndex: null, field: null });
     expect(await createSubmission({ ...contributor, memories: [{ note: "ok", files: [] }, { note: null, files: [photo, { name: "x.exe", type: "application/x-msdownload", size: 1 }] }] })).toMatchObject({ ok: false, code: "unsupported_type", memoryIndex: 1, fileIndex: 1 });
     expect(await createSubmission({ ...contributor, memories: [{ note: null, files: [{ ...photo, size: 30 * MB }] }] })).toMatchObject({ ok: false, code: "too_large", memoryIndex: 0, fileIndex: 0 });
-    expect(await createSubmission({ ...contributor, email: "nope", memories: [{ note: "ok", files: [] }] })).toMatchObject({ ok: false, code: "invalid", memoryIndex: null, fileIndex: null });
+    expect(await createSubmission({ ...contributor, email: "nope", memories: [{ note: "ok", files: [] }] })).toMatchObject({ ok: false, code: "invalid", memoryIndex: null, fileIndex: null, field: "email" });
     expect(memories).toHaveLength(0);
     expect(contributors).toHaveLength(0);
+  });
+
+  it("names the contributor field when the name or the email is missing, with the family's words (Rob, 2026-11-04)", async () => {
+    expect(await createSubmission({ ...contributor, name: "", memories: [{ note: "ok", files: [] }] })).toMatchObject({ ok: false, code: "invalid", field: "name", message: NAME_REQUIRED_MESSAGE, memoryIndex: null, fileIndex: null });
+    expect(await createSubmission({ ...contributor, email: "   ", memories: [{ note: "ok", files: [] }] })).toMatchObject({ ok: false, code: "invalid", field: "email", message: EMAIL_REQUIRED_MESSAGE, memoryIndex: null, fileIndex: null });
+    const { email: _email, ...noEmail } = contributor;
+    expect(await createSubmission({ ...noEmail, memories: [{ note: "ok", files: [] }] })).toMatchObject({ ok: false, code: "invalid", field: "email", message: EMAIL_REQUIRED_MESSAGE });
+    expect(contributors).toHaveLength(0);
+  });
+
+  it("stores the trimmed name and the lower-cased email, never null, now that both are required", async () => {
+    const result = await createSubmission({ ...contributor, name: " Kay ", email: " Kay@Example.com ", memories: [{ note: "ok", files: [] }] });
+    expect(result.ok).toBe(true);
+    expect(contributors[0]).toMatchObject({ name: "Kay", email: "kay@example.com" });
+  });
+
+  it("file refusals and the budget refusal carry field: null", async () => {
+    expect(await createSubmission({ ...contributor, memories: [{ note: null, files: [{ ...photo, size: 30 * MB }] }] })).toMatchObject({ ok: false, code: "too_large", field: null });
   });
 
   it("a send with files is completed by the browser later: no email, no alert here", async () => {

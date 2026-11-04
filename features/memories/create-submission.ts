@@ -10,7 +10,7 @@ import { memoryCreated } from "@/lib/sentry/metrics";
 import { identifyContributor, tagIds } from "@/lib/sentry/user";
 import { summarizeMemoryType } from "@/lib/media-types";
 import { UPLOAD_LEASE_MS } from "@/lib/upload-ticket";
-import { createSubmissionInputSchema, submissionIssueLocation, type SubmissionMemoryInput } from "@/lib/validations/memory";
+import { createSubmissionInputSchema, type SubmissionIssueField, submissionIssueLocation, type SubmissionMemoryInput } from "@/lib/validations/memory";
 import { getMemorialEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 
@@ -39,6 +39,8 @@ export type CreateSubmissionResult =
       /** The card and file the problem belongs to, when it belongs to one. */
       memoryIndex: number | null;
       fileIndex: number | null;
+      /** The contributor field the problem belongs to (name or email), when it belongs to one. */
+      field: SubmissionIssueField;
     };
 
 interface ResolvedMemory {
@@ -68,8 +70,8 @@ export async function createSubmission(raw: unknown): Promise<CreateSubmissionRe
   const parsed = createSubmissionInputSchema.safeParse(raw);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
-    const where = issue ? submissionIssueLocation(issue) : { memoryIndex: null, fileIndex: null, message: "Invalid input" };
-    return { ok: false, code: "invalid", message: where.message, memoryIndex: where.memoryIndex, fileIndex: where.fileIndex };
+    const where = issue ? submissionIssueLocation(issue) : { memoryIndex: null, fileIndex: null, field: null, message: "Invalid input" };
+    return { ok: false, code: "invalid", message: where.message, memoryIndex: where.memoryIndex, fileIndex: where.fileIndex, field: where.field };
   }
   const input = parsed.data;
   // Identity as soon as it is known (plan 2026-11-04 §8.2); the id follows once the row exists.
@@ -81,10 +83,10 @@ export async function createSubmission(raw: unknown): Promise<CreateSubmissionRe
     for (const [fileIndex, file] of memory.files.entries()) {
       const outcome = resolveFile(file);
       if (outcome === "unsupported_type") {
-        return { ok: false, code: outcome, message: "That kind of file is not supported", memoryIndex, fileIndex };
+        return { ok: false, code: outcome, message: "That kind of file is not supported", memoryIndex, fileIndex, field: null };
       }
       if (outcome === "too_large") {
-        return { ok: false, code: outcome, message: "That file is too large", memoryIndex, fileIndex };
+        return { ok: false, code: outcome, message: "That file is too large", memoryIndex, fileIndex, field: null };
       }
       files.push({ ...outcome, maxBytes: declaredBytes(outcome, file.size) });
     }
@@ -108,8 +110,8 @@ export async function createSubmission(raw: unknown): Promise<CreateSubmissionRe
     const contributor = await tx.contributor.create({
       data: {
         memorialId: memorial.id,
-        name: input.name ?? null,
-        email: input.email ?? null,
+        name: input.name,
+        email: input.email,
         relationship: input.relationship ?? null,
         contactOptIn: input.contactOptIn,
         mailingListOptIn: input.mailingListOptIn,
@@ -152,7 +154,7 @@ export async function createSubmission(raw: unknown): Promise<CreateSubmissionRe
 
   if (!created) {
     log.warn({ action: "budget_refusal", memories: resolved.length }, "daily budget reached");
-    return { ok: false, code: "budget_exceeded", message: "We are receiving a lot of memories right now. Please try again later.", memoryIndex: null, fileIndex: null };
+    return { ok: false, code: "budget_exceeded", message: "We are receiving a lot of memories right now. Please try again later.", memoryIndex: null, fileIndex: null, field: null };
   }
   tagIds({ submissionId });
   memoryCreated(created.length);
