@@ -7,6 +7,7 @@ import { appendClaimRevision, hasWords, LIVE_MEDIA_ORDER, recomputeMemoryType, v
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { claimMediaRefSchema } from "@/lib/validations/media";
+import { getMemorialEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 
 const log = createLogger({ category: "api" });
@@ -34,8 +35,14 @@ export const claimChangesSchema = z.object({
     .nullable()
     .optional(),
   visibility: z.enum(["PUBLIC", "FAMILY", "PRIVATE"]).optional(),
+  /** Press of "Share this memory" on a DRAFT: the act of sharing, which stamps consent. Ignored on any other status. */
+  share: z.boolean().optional(),
+  notifyWhenPosted: z.boolean().optional(),
+  contactOptIn: z.boolean().optional(),
 });
 export type ClaimChanges = z.infer<typeof claimChangesSchema>;
+
+export type MemoryStatus = "DRAFT" | "PENDING" | "APPROVED" | "HIDDEN";
 
 export type MediaStatus = "PENDING" | "READY" | "FAILED";
 
@@ -60,11 +67,14 @@ export interface ClaimMediaView {
 export interface ClaimView {
   id: string;
   type: "VOICE" | "VIDEO" | "PHOTO" | "TEXT";
+  /** DRAFT: saved by the family admin on this person's behalf; the page offers one button, Share. */
+  status: MemoryStatus;
   approxDateText: string | null;
   place: string | null;
   contributorNote: string | null;
   visibility: "PUBLIC" | "FAMILY" | "PRIVATE";
-  contributor: { name: string | null; relationship: string | null; email: string | null } | null;
+  notifyWhenPosted: boolean;
+  contributor: { name: string | null; relationship: string | null; email: string | null; contactOptIn: boolean } | null;
   /** Every live file (not removed), whatever its status, in display order. */
   media: ClaimMediaView[];
 }
@@ -81,7 +91,7 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
   const memory = await getDb().memory.findUnique({
     where: { claimTokenHash: hashClaimToken(claimToken) },
     include: {
-      contributor: { select: { name: true, relationship: true, email: true } },
+      contributor: { select: { name: true, relationship: true, email: true, contactOptIn: true } },
       media: {
         where: { deletedAt: null },
         select: {
@@ -104,10 +114,12 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
   return {
     id: memory.id,
     type: memory.type,
+    status: memory.status,
     approxDateText: memory.approxDateText,
     place: memory.place,
     contributorNote: memory.contributorNote,
     visibility: memory.visibility,
+    notifyWhenPosted: memory.notifyWhenPosted,
     contributor: memory.contributor,
     media: memory.media.map(({ id, status, mimeType, originalFilename, sortOrder, replacesMediaId, durationSeconds, derivatives }) => ({
       id,
@@ -122,13 +134,20 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
   };
 }
 
-export type ClaimUpdateResult = { ok: true } | { ok: false; code: "invalid" | "not_found" | "last_words" };
+export type ClaimUpdateResult = { ok: true; shared: boolean } | { ok: false; code: "invalid" | "not_found" | "last_words" };
 
 /**
  * Apply an edit from the claim page and append a MemoryRevision with the
  * before/after snapshot (changedVia CLAIM_LINK). The first revision also
  * records the consent version in force. Soft-deleted memories are ignored.
  * The note cannot be cleared while no READY file remains (`last_words`).
+ *
+ * `share` on a DRAFT (a memory the family admin saved on this person's
+ * behalf) is the act of sharing: the memory becomes PENDING and `consentedAt`
+ * / `consentVersion` are stamped then, under the same lock. On any other
+ * status `share` is ignored, so a repeated press never restamps consent. No
+ * email is sent here (site-email.ts). `shared` in the result says whether
+ * this call made the transition.
  */
 export async function updateMemoryFromClaim({ claimToken, changes }: { claimToken: string; changes: unknown }): Promise<ClaimUpdateResult> {
   const parsed = claimChangesSchema.safeParse(changes);
@@ -150,11 +169,22 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
     // Re-read under the lock: the invariants below must see what a concurrent editor committed first.
     const fresh = await tx.memory.findUniqueOrThrow({
       where: { id: memory.id },
-      select: { deletedAt: true, approxDateText: true, place: true, contributorNote: true, visibility: true, contributor: { select: { id: true, name: true, relationship: true } } },
+      select: {
+        deletedAt: true,
+        status: true,
+        consentedAt: true,
+        approxDateText: true,
+        place: true,
+        contributorNote: true,
+        visibility: true,
+        notifyWhenPosted: true,
+        contributor: { select: { id: true, name: true, relationship: true, contactOptIn: true } },
+      },
     });
     if (fresh.deletedAt !== null) {
       return "not_found" as const;
     }
+    const sharing = fresh.status === "DRAFT" && input.share === true;
     const before = {
       name: fresh.contributor?.name ?? null,
       relationship: fresh.contributor?.relationship ?? null,
@@ -162,7 +192,12 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
       place: fresh.place,
       contributorNote: fresh.contributorNote,
       visibility: fresh.visibility,
+      notifyWhenPosted: fresh.notifyWhenPosted,
+      contactOptIn: fresh.contributor?.contactOptIn ?? false,
+      // Named only when they change (a Share), so ordinary edits keep their compact snapshots.
+      ...(sharing && { status: fresh.status, consentedAt: fresh.consentedAt }),
     };
+    const consent = sharing ? { consentedAt: new Date(), consentVersion: getMemorialEnv().CONSENT_VERSION } : null;
     const after = {
       name: input.name === undefined ? before.name : input.name,
       relationship: input.relationship === undefined ? before.relationship : input.relationship,
@@ -170,6 +205,9 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
       place: input.place === undefined ? before.place : input.place,
       contributorNote: input.note === undefined ? before.contributorNote : input.note,
       visibility: input.visibility ?? before.visibility,
+      notifyWhenPosted: input.notifyWhenPosted ?? before.notifyWhenPosted,
+      contactOptIn: input.contactOptIn ?? before.contactOptIn,
+      ...(consent && { status: "PENDING" as const, ...consent }),
     };
     if (hasWords(before.contributorNote) && !hasWords(after.contributorNote)) {
       const readyFiles = await tx.media.count({ where: { memoryId: memory.id, deletedAt: null, status: "READY" } });
@@ -179,23 +217,34 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
     }
     await tx.memory.update({
       where: { id: memory.id },
-      data: { approxDateText: after.approxDateText, place: after.place, contributorNote: after.contributorNote, visibility: after.visibility },
+      data: {
+        approxDateText: after.approxDateText,
+        place: after.place,
+        contributorNote: after.contributorNote,
+        visibility: after.visibility,
+        notifyWhenPosted: after.notifyWhenPosted,
+        ...(consent && { status: "PENDING", ...consent }),
+      },
     });
-    if (fresh.contributor && (after.name !== before.name || after.relationship !== before.relationship)) {
-      await tx.contributor.update({ where: { id: fresh.contributor.id }, data: { name: after.name, relationship: after.relationship } });
+    if (fresh.contributor && (after.name !== before.name || after.relationship !== before.relationship || after.contactOptIn !== before.contactOptIn)) {
+      await tx.contributor.update({ where: { id: fresh.contributor.id }, data: { name: after.name, relationship: after.relationship, contactOptIn: after.contactOptIn } });
     }
     if (hasWords(before.contributorNote) !== hasWords(after.contributorNote)) {
       await recomputeMemoryType(tx, memory.id, after.contributorNote);
     }
-    await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: memory.consentVersion });
-    return "ok" as const;
+    await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: consent?.consentVersion ?? memory.consentVersion });
+    return sharing ? ("shared" as const) : ("ok" as const);
   }, TX_OPTIONS);
 
-  if (result !== "ok") {
+  if (result !== "ok" && result !== "shared") {
     return { ok: false, code: result };
   }
-  log.info({ action: "claim_edit" }, "memory edited through its claim link");
-  return { ok: true };
+  if (result === "shared") {
+    log.info({ action: "draft_shared" }, "drafted memory shared by its contributor");
+  } else {
+    log.info({ action: "claim_edit" }, "memory edited through its claim link");
+  }
+  return { ok: true, shared: result === "shared" };
 }
 
 export type ClaimMediaResult = { ok: true } | { ok: false; code: "invalid" | "not_found" | "last_file" };

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { hashClaimToken } from "@/lib/claim-token";
+import { resetEnvCache } from "@/server/config/env";
 
 const TOKEN = "t".repeat(43);
 interface Rev { memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown> }
@@ -60,14 +61,19 @@ beforeEach(() => {
     { id: "med_other", memoryId: "mem_2", status: "READY", mimeType: "image/jpeg", originalFilename: "x.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:03Z"), durationSeconds: null },
   );
   memory = {
-    id: "mem_1", type: "PHOTO", deletedAt: null, claimTokenHash: hashClaimToken(TOKEN), consentVersion: "2026-11-v1",
-    approxDateText: "Summer 1998", place: null, contributorNote: "old note", visibility: "FAMILY",
-    contributor: { id: "con_1", name: "Jo", relationship: "friend", email: "jo@example.com" },
+    id: "mem_1", type: "PHOTO", status: "PENDING", deletedAt: null, claimTokenHash: hashClaimToken(TOKEN), consentVersion: "2026-11-v1", consentedAt: new Date("2026-11-03T10:00:00Z"),
+    approxDateText: "Summer 1998", place: null, contributorNote: "old note", visibility: "FAMILY", notifyWhenPosted: true,
+    contributor: { id: "con_1", name: "Jo", relationship: "friend", email: "jo@example.com", contactOptIn: true },
     media: [{ id: "med_1", status: "READY", mimeType: "image/heic", originalFilename: "a.heic", durationSeconds: 24 }, { id: "med_2", status: "PENDING", mimeType: "video/mp4", originalFilename: null, durationSeconds: null }],
   };
 });
 
 describe("getMemoryForClaim", () => {
+  it("tells the page the memory's status and the two preferences", async () => {
+    const found = await getMemoryForClaim(TOKEN);
+    expect(found).toMatchObject({ status: "PENDING", notifyWhenPosted: true, contributor: { contactOptIn: true } });
+  });
+
   it("returns every live file with its status, in sort order, and hides removed ones", async () => {
     const found = await getMemoryForClaim(TOKEN);
     expect(found?.id).toBe("mem_1");
@@ -95,7 +101,7 @@ describe("getMemoryForClaim", () => {
 describe("updateMemoryFromClaim", () => {
   it("writes the change and appends one revision with before/after; the first revision records the consent version", async () => {
     const result = await updateMemoryFromClaim({ claimToken: TOKEN, changes: { name: "Jo Friend", approxDateText: "Autumn 1998", note: "new note", visibility: "PRIVATE" } });
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({ ok: true, shared: false });
     expect(memory).toMatchObject({ approxDateText: "Autumn 1998", contributorNote: "new note", visibility: "PRIVATE" });
     expect(memory!.contributor).toMatchObject({ name: "Jo Friend", relationship: "friend" });
     expect(revisions).toHaveLength(1);
@@ -180,7 +186,7 @@ describe("updateMemoryFromClaim non-empty invariant", () => {
 
   it("allows clearing the note while a READY file remains and recomputes the type", async () => {
     memory!.type = "TEXT";
-    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "" } })).toEqual({ ok: true });
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "" } })).toEqual({ ok: true, shared: false });
     expect(memory!.contributorNote).toBeNull();
     expect(memory!.type).toBe("PHOTO");
   });
@@ -221,5 +227,59 @@ describe("revision bookkeeping", () => {
     await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Baltimore" } });
     expect(revisions[0]!.before).toMatchObject({ name: "Renamed meanwhile" });
     expect((memory!.contributor as { name: string }).name).toBe("Renamed meanwhile");
+  });
+});
+
+describe("a DRAFT becomes the person's own by pressing Share", () => {
+  const DRAFTED = new Date("2026-11-04T12:00:00Z");
+  beforeEach(() => {
+    memory!.type = "TEXT";
+    memory!.status = "DRAFT";
+    memory!.consentedAt = null;
+    memory!.createdAt = DRAFTED;
+    mediaRows.length = 0;
+    process.env.MEMORIAL_SLUG = "jo";
+    process.env.CONSENT_VERSION = "2026-11-v2";
+    resetEnvCache();
+  });
+
+  it("share: DRAFT → PENDING with consent stamped now, at the version in force, recorded in the revision; no email is sent", async () => {
+    const before = Date.now();
+    const result = await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "my words, lightly edited", share: true } });
+    expect(result).toEqual({ ok: true, shared: true });
+    expect(memory).toMatchObject({ status: "PENDING", consentVersion: "2026-11-v2", contributorNote: "my words, lightly edited" });
+    expect((memory!.consentedAt as Date).getTime()).toBeGreaterThanOrEqual(before);
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]!.before).toMatchObject({ status: "DRAFT", consentedAt: null });
+    expect(revisions[0]!.after).toMatchObject({ status: "PENDING", consentVersion: "2026-11-v2" });
+    expect(revisions[0]!.after.consentedAt).toBeInstanceOf(Date);
+  });
+
+  it("an edit without share leaves the memory a DRAFT with no consent stamp", async () => {
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Broadmead" } })).toEqual({ ok: true, shared: false });
+    expect(memory).toMatchObject({ status: "DRAFT", consentedAt: null, place: "Broadmead" });
+    expect(revisions[0]!.after).not.toHaveProperty("status");
+  });
+
+  it("share on a memory that is no longer a DRAFT is ignored: consent is never restamped", async () => {
+    const stamped = new Date("2026-11-04T13:00:00Z");
+    memory!.status = "PENDING";
+    memory!.consentedAt = stamped;
+    memory!.consentVersion = "2026-11-v1";
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { share: true, note: "again" } })).toEqual({ ok: true, shared: false });
+    expect(memory).toMatchObject({ status: "PENDING", consentedAt: stamped, consentVersion: "2026-11-v1" });
+  });
+
+  it("stores the two preferences from the claim page", async () => {
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { share: true, notifyWhenPosted: false, contactOptIn: false } })).toEqual({ ok: true, shared: true });
+    expect(memory!.notifyWhenPosted).toBe(false);
+    expect((memory!.contributor as { contactOptIn: boolean }).contactOptIn).toBe(false);
+    expect(revisions[0]!.before).toMatchObject({ notifyWhenPosted: true, contactOptIn: true });
+    expect(revisions[0]!.after).toMatchObject({ notifyWhenPosted: false, contactOptIn: false });
+  });
+
+  it("the draft's words cannot be cleared before a file exists (same last_words rule)", async () => {
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "", share: true } })).toEqual({ ok: false, code: "last_words" });
+    expect(memory!.status).toBe("DRAFT");
   });
 });
