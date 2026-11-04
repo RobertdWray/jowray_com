@@ -170,7 +170,22 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 2, confirmationsSent: 2, adminAlertsSent: 3, deletedBlobsRemoved: 3 });
   });
 
-  it("alerts the admins once a pending upload lands (or fails), never while it is in flight", async () => {
+  it("alerts a failed upload only when words were saved, and never resends", async () => {
+    const old = new Date(Date.now() - 2 * HOUR);
+    memories.push(
+      { id: "mem_failed_words", type: "VIDEO", deletedAt: null, createdAt: old, contributorNote: "the words were saved", contributor: { email: null }, media: [{ status: "FAILED", deletedAt: null, createdAt: old }], emails: [] },
+      { id: "mem_failed_nowords", type: "VIDEO", deletedAt: null, createdAt: old, contributorNote: null, contributor: { email: null }, media: [{ status: "FAILED", deletedAt: null, createdAt: old }], emails: [] }
+    );
+    await run(`Bearer ${SECRET}`);
+    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_failed_words" });
+    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_failed_nowords" });
+    notifyMock.mockClear();
+    const res = await run(`Bearer ${SECRET}`);
+    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_failed_words" });
+    expect(((await res.json()) as { data: Record<string, number> }).data.adminAlertsSent).toBe(0);
+  });
+
+  it("alerts the admins once a pending upload lands, never while it is in flight", async () => {
     await run(`Bearer ${SECRET}`);
     expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_pending_upload" });
     const pending = memories.find((m) => m.id === "mem_pending_upload")!;
