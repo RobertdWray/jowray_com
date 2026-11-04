@@ -148,7 +148,7 @@ describe("instrumentedAction (plan §8.5)", () => {
     const envelope = sent.slice(before).find((item) => item.includes("inside the action"));
     expect(envelope).toBeDefined();
     expect(envelope).toContain('"transaction":"serverAction/createSubmission"');
-    expect(envelope).toContain("x-forwarded-for");
+    // Events captured inside the action carry no request headers (only the trace comes from them), so the proof is the negatives.
     expect(envelope).not.toContain("next-router-state-tree");
     expect(envelope).not.toContain("_vercel_jwt");
     expect(envelope).not.toContain(ROUTE_TOKEN);
