@@ -161,6 +161,11 @@ export async function confirmSubmission({ anchorId, claimTokens }: { anchorId: s
   if (!anchor || anchor.submissionId === null || anchor.submissionIndex !== 0) {
     return { sent: false, skipped: "not_found" };
   }
+  // A receipt that already went out needs no thumbnails fetched and no re-check: answer before any of that work.
+  const existing = await db.emailLog.findUnique({ where: { memoryId_emailType: { memoryId: anchor.id, emailType: "SUBMISSION_CONFIRMATION" } } });
+  if (existing?.status === "SENT") {
+    return { sent: false, skipped: "already_sent" };
+  }
   const rotating = claimTokens === undefined;
   if (rotating && anchor.uploadLeaseUntil !== null && anchor.uploadLeaseUntil.getTime() > Date.now()) {
     return { sent: false, skipped: "leased" };

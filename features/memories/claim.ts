@@ -53,6 +53,8 @@ export interface ClaimMediaView {
   originalFilename: string | null;
   sortOrder: number;
   durationSeconds: number | null;
+  /** The reservation's ceiling (the kind's maximum, or the declared size for a send): a "Try again" file must fit it. */
+  maxBytes: number;
   /** Set when this row is a pending replacement for another live file. */
   replacesMediaId: string | null;
 }
@@ -94,6 +96,7 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
           sortOrder: true,
           replacesMediaId: true,
           durationSeconds: true,
+          maxBytes: true,
           derivatives: { where: { kind: "WEB_IMAGE" }, select: { status: true, mimeType: true } },
         },
         orderBy: [...LIVE_MEDIA_ORDER],
@@ -116,7 +119,7 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
     visibility: memory.visibility,
     contributor: memory.contributor,
     submission,
-    media: memory.media.map(({ id, status, mimeType, originalFilename, sortOrder, replacesMediaId, durationSeconds, derivatives }) => ({
+    media: memory.media.map(({ id, status, mimeType, originalFilename, sortOrder, replacesMediaId, durationSeconds, maxBytes, derivatives }) => ({
       id,
       status,
       web: webCopyState(derivatives?.[0] ?? null),
@@ -125,6 +128,7 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
       sortOrder,
       replacesMediaId,
       durationSeconds,
+      maxBytes,
     })),
   };
 }

@@ -6,7 +6,7 @@ const TOKEN = "t".repeat(43);
 interface Rev { memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown> }
 const revisions: Rev[] = [];
 let memory: Record<string, unknown> | null;
-type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; sortOrder: number; deletedAt: Date | null; replacesMediaId: string | null; createdAt: Date; durationSeconds: number | null; derivatives?: Array<{ kind: string; status: string; mimeType: string | null }> };
+type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; sortOrder: number; deletedAt: Date | null; replacesMediaId: string | null; createdAt: Date; durationSeconds: number | null; maxBytes?: number; derivatives?: Array<{ kind: string; status: string; mimeType: string | null }> };
 const mediaRows: MediaRow[] = [];
 const lockCalls: string[] = [];
 /** Other memories of the same send, for the submission count. */
@@ -58,8 +58,8 @@ beforeEach(() => {
   siblings = [];
   mediaRows.length = 0;
   mediaRows.push(
-    { id: "med_1", memoryId: "mem_1", status: "READY", mimeType: "image/heic", originalFilename: "a.heic", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:00Z"), durationSeconds: 24, derivatives: [{ kind: "WEB_IMAGE", status: "READY", mimeType: "image/jpeg" }, { kind: "THUMBNAIL", status: "READY", mimeType: "image/jpeg" }] },
-    { id: "med_2", memoryId: "mem_1", status: "PENDING", mimeType: "video/mp4", originalFilename: null, sortOrder: 1, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:01Z"), durationSeconds: null },
+    { id: "med_1", memoryId: "mem_1", status: "READY", mimeType: "image/heic", originalFilename: "a.heic", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:00Z"), durationSeconds: 24, maxBytes: 25 * 1024 * 1024, derivatives: [{ kind: "WEB_IMAGE", status: "READY", mimeType: "image/jpeg" }, { kind: "THUMBNAIL", status: "READY", mimeType: "image/jpeg" }] },
+    { id: "med_2", memoryId: "mem_1", status: "PENDING", mimeType: "video/mp4", originalFilename: null, sortOrder: 1, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:01Z"), durationSeconds: null, maxBytes: 500 * 1024 * 1024 },
     { id: "med_gone", memoryId: "mem_1", status: "READY", mimeType: "image/jpeg", originalFilename: "old.jpg", sortOrder: 2, deletedAt: new Date("2026-11-03T11:00:00Z"), replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:02Z"), durationSeconds: null },
     { id: "med_other", memoryId: "mem_2", status: "READY", mimeType: "image/jpeg", originalFilename: "x.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:03Z"), durationSeconds: null },
   );
@@ -225,6 +225,13 @@ describe("revision bookkeeping", () => {
     await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Baltimore" } });
     expect(revisions[0]!.before).toMatchObject({ name: "Renamed meanwhile" });
     expect((memory!.contributor as { name: string }).name).toBe("Renamed meanwhile");
+  });
+});
+
+describe("getMemoryForClaim: reservation size (Task 15)", () => {
+  it("carries each file's ticketed ceiling so the claim page can refuse a bigger 'same file' before uploading", async () => {
+    const found = await getMemoryForClaim(TOKEN);
+    expect(found?.media.map((m) => m.maxBytes)).toEqual([25 * 1024 * 1024, 500 * 1024 * 1024]);
   });
 });
 

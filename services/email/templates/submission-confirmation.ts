@@ -119,11 +119,17 @@ function capPreviews(memories: SubmissionMemoryContent[]): MemoryMediaSummary[][
   );
 }
 
+/** `slice` counts UTF-16 units and can halve an emoji; back off one unit when the cut lands after a high surrogate. */
+function cutAtCodePoint(value: string, max: number): string {
+  const code = value.charCodeAt(max - 1);
+  return value.slice(0, code >= 0xd800 && code <= 0xdbff ? max - 1 : max);
+}
+
 function prepare(memories: SubmissionMemoryContent[], noteCap: number): PreparedMemory[] {
   const media = capPreviews(memories);
   return memories.map((memory, i) => {
     const full = memory.note ? cleanNote(memory.note) : "";
-    const note = full.length > noteCap ? `${full.slice(0, noteCap).trimEnd()}${SHORTENED}` : full;
+    const note = full.length > noteCap ? `${cutAtCodePoint(full, noteCap).trimEnd()}${SHORTENED}` : full;
     const { cards, attachments, badges } = buildMediaCards(media[i]!);
     return {
       position: memory.position,

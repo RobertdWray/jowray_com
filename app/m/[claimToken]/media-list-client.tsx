@@ -117,7 +117,7 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
     return run(item.id, async () => {
       try {
         // The reservation pins the file's type and size, so only the same file (or one just like it) fits it.
-        if (normalizeMime(file.type, file.name) !== item.mimeType) {
+        if (normalizeMime(file.type, file.name) !== item.mimeType || file.size > item.maxBytes) {
           return `Please choose the same file again${item.originalFilename ? ` (${item.originalFilename})` : ""}, or cancel this one and add the new file below.`;
         }
         const ticketed = await retryUploadTicket({ claimToken, mediaId: item.id });
