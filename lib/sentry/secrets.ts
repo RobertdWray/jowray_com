@@ -14,5 +14,10 @@ export const SECRET_FIELD_KEYS = ["claimToken", "claimTokens", "claimLink", "tic
 /** Key fragments: any key containing one of these is a secret (covers future `*Token*` fields). */
 export const SECRET_KEY_FRAGMENTS = ["token", "ticket"] as const;
 
-/** Request headers whose values are bearer secrets (cookies, auth, the Vercel bypass and signature). */
-export const SECRET_HEADER_KEYS = ["cookie", "authorization", "x-vercel-protection-bypass", "x-vercel-signature"] as const;
+/**
+ * Request headers whose values are bearer secrets (cookies, auth, the Vercel
+ * bypass and signature) or carry the claim-page route: Next's router-state
+ * header on a Server Function POST encodes the `[claimToken]` segment's value
+ * (URL-encoded, so no text scrubber sees it as a path). Dropped whole.
+ */
+export const SECRET_HEADER_KEYS = ["cookie", "authorization", "x-vercel-protection-bypass", "x-vercel-signature", "next-router-state-tree"] as const;

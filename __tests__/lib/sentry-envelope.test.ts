@@ -86,6 +86,8 @@ describe("server SDK envelopes with the alpha data policy", () => {
       Sentry.captureException(error);
     }
     Sentry.logger.info(`confirming /m/${CLAIM_TOKEN}`, { claimLink: `https://preview.test/m/${CLAIM_TOKEN}` });
+    // console.warn of a serialized object becomes a Sentry Log *message* (consoleLoggingIntegration in the browser).
+    Sentry.logger.warn(`upload refused ${JSON.stringify({ ticket: { sig: TICKET_SIG, pathname: "uploads/x" } })}`);
     await Sentry.flush(5000);
 
     expect(sent.length).toBeGreaterThan(0);
