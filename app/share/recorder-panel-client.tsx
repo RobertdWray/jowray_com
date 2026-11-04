@@ -68,7 +68,21 @@ function buttonLabel(status: UseRecorder["snapshot"]["status"], hasClip: boolean
  * live meter while recording, playback and verdict for the clip, and the
  * help copy for whatever went wrong. All state comes from useRecorder().
  */
-export function RecorderPanel({ rec, canRecord, disabled }: { rec: UseRecorder; canRecord: boolean; disabled: boolean }) {
+export function RecorderPanel({
+  rec,
+  canRecord,
+  disabled,
+  id,
+  heading,
+}: {
+  rec: UseRecorder;
+  canRecord: boolean;
+  disabled: boolean;
+  /** Only one panel on a page may carry `id="record"` (the `/share#record` target, C55). */
+  id?: string;
+  /** The memory this panel records for, read to screen readers after the button text. */
+  heading?: string;
+}) {
   const reducedMotion = usePrefersReducedMotion();
   const pickerId = useId();
   const usingId = useId();
@@ -90,7 +104,7 @@ export function RecorderPanel({ rec, canRecord, disabled }: { rec: UseRecorder; 
   }
 
   return (
-    <div id="record" className="flex flex-col gap-[10px] rounded-2xl border-[3px] border-dashed border-periwinkle bg-paper px-[22px] py-5">
+    <div id={id} className="flex flex-col gap-[10px] rounded-2xl border-[3px] border-dashed border-periwinkle bg-paper px-[22px] py-5">
       <span className="font-display text-lead font-bold">Rather say it than type it?</span>
       {canRecord ? (
         <>
@@ -98,6 +112,7 @@ export function RecorderPanel({ rec, canRecord, disabled }: { rec: UseRecorder; 
             <TertiaryButton onClick={toggle} disabled={disabled || status.kind === "requesting" || status.kind === "finishing"} className="min-w-0 flex-1">
               <MicIcon />
               {buttonLabel(status, rec.clip !== null)}
+              {heading && <span className="sr-only"> for {heading}</span>}
             </TertiaryButton>
             {rec.showPicker && (
               <button
