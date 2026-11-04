@@ -5,6 +5,7 @@ import { scrubBreadcrumb, scrubEvent, scrubLog, scrubSpan } from "@/lib/sentry/s
 
 // Server-side Sentry init runs here, inside register(), for the Node.js
 // runtime only. Nothing runs on the deprecated Edge runtime.
+// Data policy and Rob's authorization: lib/sentry/data-collection.ts.
 export function register(): void {
   if (process.env.NEXT_RUNTIME === "nodejs") {
     Sentry.init({

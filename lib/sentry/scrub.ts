@@ -1,5 +1,7 @@
 import type { Breadcrumb, Event } from "@sentry/nextjs";
 
+import { SECRET_FIELD_KEYS, SECRET_HEADER_KEYS, SECRET_KEY_FRAGMENTS } from "@/lib/sentry/secrets";
+
 /** The parts of a streamed span (`beforeSendSpan`, Sentry v11) that can carry a URL. */
 export interface StreamedSpan {
   name?: string;
@@ -13,6 +15,12 @@ export interface StreamedSpan {
  * transactions, spans and breadcrumbs all carry URLs, so every one of them is
  * passed through here on the server and in the browser before it leaves the
  * process. Pure functions: no Sentry calls, safe in Client Components.
+ *
+ * Scrubber v2 (plan 2026-11-04 §7.3) adds key-based filtering: with the alpha
+ * data policy (lib/sentry/data-collection.ts) request bodies, contexts, stack
+ * locals and Server Function inputs/outputs now leave the process, and the
+ * bearer secrets named in lib/sentry/secrets.ts are removed from all of them
+ * whatever their shape: object, array, or serialized JSON text.
  */
 
 // A claim path is `/m/` followed by a base64url token (16+ chars); the token
@@ -36,23 +44,72 @@ export function scrubUrl(url: string): string {
     .replace(/^&+/, "");
 }
 
-function scrubUnknown(value: unknown): unknown {
-  if (typeof value === "string") {
-    return scrubUrl(value);
-  }
-  if (Array.isArray(value)) {
-    return value.map(scrubUnknown);
-  }
-  if (value && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = scrubUnknown(entry);
-    }
-    return out;
-  }
-  return value;
+const FILTERED = "[Filtered]";
+// Same cap as `redactPii` in lib/logger: deep enough for any payload here, finite for cycles.
+const MAX_DEPTH = 20;
+
+const SECRET_FIELD_SET = new Set<string>(SECRET_FIELD_KEYS.map((key) => key.toLowerCase()));
+
+/** A key is a secret when it is one of the field keys or contains a fragment (case-insensitive). */
+export function isSecretKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  return SECRET_FIELD_SET.has(lower) || SECRET_KEY_FRAGMENTS.some((fragment) => lower.includes(fragment));
 }
 
+// Server Function inputs and results reach Sentry as serialized text too
+// (`request.data`, recorded responses, replay network bodies). This matches a
+// JSON member whose key is a secret and whose value is a string, array,
+// object or scalar, each possibly cut off by truncation, and replaces the value.
+const JSON_SECRET_KEY = `(?:${SECRET_FIELD_KEYS.join("|")}|[^"]*(?:${SECRET_KEY_FRAGMENTS.join("|")})[^"]*)`;
+const JSON_SECRET_MEMBER = new RegExp(`"(${JSON_SECRET_KEY})"\\s*:\\s*(?:"[^"]*"?|\\[[^\\]]*\\]?|\\{[^}]*\\}?|[^,}\\]\\s]*)`, "gi");
+
+function scrubText(text: string): string {
+  return scrubUrl(text.replace(JSON_SECRET_MEMBER, `"$1":"${FILTERED}"`));
+}
+
+function scrubValue(value: unknown, depth: number): unknown {
+  if (typeof value === "string") {
+    return scrubText(value);
+  }
+  if (depth > MAX_DEPTH || value === null || typeof value !== "object") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => scrubValue(entry, depth + 1));
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = isSecretKey(key) ? FILTERED : scrubValue(entry, depth + 1);
+  }
+  return out;
+}
+
+/**
+ * Recursive over objects and arrays: a secret key's value becomes
+ * `"[Filtered]"` whatever its type; every string loses claim URLs and any
+ * serialized JSON member with a secret key.
+ */
+export function scrubSecrets(value: unknown): unknown {
+  return scrubValue(value, 0);
+}
+
+const SECRET_HEADER_SET = new Set<string>(SECRET_HEADER_KEYS);
+
+/** Drops the bearer headers (case-insensitive) and keeps the rest. */
+export function scrubHeaders<H extends Record<string, unknown>>(headers: H): H {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (!SECRET_HEADER_SET.has(key.toLowerCase())) {
+      out[key] = value;
+    }
+  }
+  return out as H;
+}
+
+/**
+ * Error and message events. `event.user` is deliberately untouched: the
+ * contributor's email and name are wanted (plan §3 ruling 1).
+ */
 export function scrubEvent<E extends Event>(event: E): E {
   if (event.transaction) {
     event.transaction = scrubUrl(event.transaction);
@@ -62,11 +119,30 @@ export function scrubEvent<E extends Event>(event: E): E {
       event.request.url = scrubUrl(event.request.url);
     }
     delete event.request.query_string;
+    if (event.request.data !== undefined) {
+      event.request.data = scrubSecrets(event.request.data);
+    }
+    if (event.request.headers) {
+      event.request.headers = scrubHeaders(event.request.headers);
+    }
+  }
+  if (event.contexts) {
+    event.contexts = scrubSecrets(event.contexts) as E["contexts"];
+  }
+  if (event.extra) {
+    event.extra = scrubSecrets(event.extra) as E["extra"];
+  }
+  for (const exception of event.exception?.values ?? []) {
+    for (const frame of exception.stacktrace?.frames ?? []) {
+      if (frame.vars) {
+        frame.vars = scrubSecrets(frame.vars) as typeof frame.vars;
+      }
+    }
   }
   if (event.spans) {
     for (const span of event.spans) {
       if (span.data) {
-        span.data = scrubUnknown(span.data) as typeof span.data;
+        span.data = scrubSecrets(span.data) as typeof span.data;
       }
     }
   }
@@ -81,7 +157,7 @@ export function scrubBreadcrumb(breadcrumb: Breadcrumb): Breadcrumb {
     breadcrumb.message = scrubUrl(breadcrumb.message);
   }
   if (breadcrumb.data) {
-    breadcrumb.data = scrubUnknown(breadcrumb.data) as typeof breadcrumb.data;
+    breadcrumb.data = scrubSecrets(breadcrumb.data) as typeof breadcrumb.data;
   }
   return breadcrumb;
 }
@@ -99,10 +175,10 @@ export function scrubSpan<S extends StreamedSpan>(span: S): S {
     span.name = scrubUrl(span.name);
   }
   if (span.data) {
-    span.data = scrubUnknown(span.data) as S["data"];
+    span.data = scrubSecrets(span.data) as S["data"];
   }
   if (span.attributes) {
-    span.attributes = scrubUnknown(span.attributes) as S["attributes"];
+    span.attributes = scrubSecrets(span.attributes) as S["attributes"];
   }
   return span;
 }
@@ -122,7 +198,41 @@ export function scrubLog<L extends ScrubbableLog>(log: L): L {
     log.message = scrubUrl(log.message);
   }
   if (log.attributes) {
-    log.attributes = scrubUnknown(log.attributes) as L["attributes"];
+    log.attributes = scrubSecrets(log.attributes) as L["attributes"];
   }
   return log;
+}
+
+/** The replay metadata event (`replay_event`) carries the page URLs visited during the segment. */
+interface ReplayEventLike {
+  type?: string;
+  urls?: string[];
+}
+
+/**
+ * Event processor for the browser: `beforeSend` never sees replay events, so
+ * the `/m/<token>` URL would otherwise reach the replay's metadata. Other
+ * events are returned as they are (returning nothing would drop them).
+ */
+export function scrubReplayEvent<E extends ReplayEventLike>(event: E): E {
+  if (event.type === "replay_event" && event.urls) {
+    event.urls = event.urls.map(scrubUrl);
+  }
+  return event;
+}
+
+/** A replay custom event (`beforeAddRecordingEvent`): network bodies, console args, breadcrumbs. */
+export interface RecordingEventLike {
+  type: number;
+  timestamp: number;
+  data: { tag: string; payload: unknown };
+}
+
+/**
+ * `beforeAddRecordingEvent` sees only custom events (network details, console,
+ * breadcrumbs), never DOM snapshots; the payload is scrubbed as a whole.
+ */
+export function scrubRecordingEvent<R extends RecordingEventLike>(event: R): R {
+  event.data.payload = scrubSecrets(event.data.payload);
+  return event;
 }
