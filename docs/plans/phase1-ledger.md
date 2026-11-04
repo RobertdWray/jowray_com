@@ -199,8 +199,8 @@ Final: Ruling: the cron response does not report the day's `recipient_capped` / 
 
 ## Task 13 — Photos and media (issue #17: derived copies, remove/replace, multi-file) (2026-11-03)
 
-- Status: [~] PR B merged (#22, 1db03f6); PR A in review; PR C not started.   Owner: session 95e0ccc1 (this file's orchestrator).   Plan: `docs/plans/2026-11-03-photos-derived-media.md` (repo copy of `~/.claude/plans/can-you-build-a-silly-turing.md`, citations C1–C47).
+- Status: [~] PR B merged (#22, 1db03f6); PR A merged (#25, b6bf228); PR C in review.   Owner: session 95e0ccc1 (this file's orchestrator).   Plan: `docs/plans/2026-11-03-photos-derived-media.md` (repo copy of `~/.claude/plans/can-you-build-a-silly-turing.md`, citations C1–C47).
 - Decisions (Rob, 2026-11-03): derive every photo; multi-file on every device with responsive rows; one Memory holds mixed media; placeholder until a sanitized copy exists, originals downloadable by the claim-link holder; PR A owns the email THUMBNAIL and reserves POSTER; HEIC decodes in a worker thread.
 - Ruling: PR A was assigned to session 25e018cf, which finished without opening it; order became B → A → C and A absorbed B's deferred hooks (derivative purge, staging keys, web placeholder state).
 - Code done (TDD): PR B `feat/claim-remove-replace` (soft delete, replacement relation, memory row lock, remove/cancel/replace, live-only reads, purge), PR A `feat/derived-web-images` (DerivedMedia, derived keys, HEIC worker, image service, deriveMedia claim/publish protocol, triggers, cron (g), sanitized-only serving, claim-page placeholder).
-- Still open: PR C (`files[]`, `issueUploadTicket`, submission lease, `completeSubmission`, per-kind email summary); email Task 4 (attach THUMBNAIL rows in `confirmMemory`); the iPhone device pass (Task 10 / F7); verification V2–V13 on a preview.
+- Still open: email Task 4 (attach THUMBNAIL rows in `confirmMemory`); the iPhone device pass (Task 10 / F7); verification V2–V13 on a preview.
