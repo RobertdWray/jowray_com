@@ -207,18 +207,26 @@ describe("getMemoryForAdmin", () => {
 
 describe("updateMemoryAsAdmin (V7)", () => {
   it("locks memory then contributor, writes only the dirty keys and one ADMIN revision with exactly those keys", async () => {
-    const result = await updateMemoryAsAdmin({ memoryId: MEM, ...versions(), changes: { name: "Joyce G", place: "Baltimore" } });
-    expect(result).toEqual({ ok: true, written: ["name", "place"] });
+    const before = versions();
+    const result = await updateMemoryAsAdmin({ memoryId: MEM, ...before, changes: { name: "Joyce G", place: "Baltimore" } });
+    // The post-write versions come back so the form can keep its typed values and save again without a reload.
+    expect(result).toEqual({ ok: true, written: ["name", "place"], memoryVersion: memories[0]!.updatedAt.toISOString(), contributorVersion: contributors[0]!.updatedAt.toISOString() });
+    if (!result.ok) { return; }
+    expect(result.memoryVersion).not.toBe(before.memoryVersion);
+    expect(result.contributorVersion).not.toBe(before.contributorVersion);
     expect(lockCalls.map((c) => c.split("|")[0]!.includes('"Memory"') ? "memory" : "contributor")).toEqual(["memory", "contributor"]);
     expect(memories[0]).toMatchObject({ place: "Baltimore", contributorNote: "old note", approxDateText: "Summer 1998" });
     expect(contributors[0]).toMatchObject({ name: "Joyce G", relationship: "friend" });
     expect(revisions).toHaveLength(1);
     expect(revisions[0]).toMatchObject({ memoryId: MEM, changedVia: "ADMIN", before: { name: "Joyce", place: null }, after: { name: "Joyce G", place: "Baltimore", consentVersion: "2026-11-v2" } });
     expect(Object.keys(revisions[0]!.before)).toEqual(["name", "place"]);
+    // The returned versions open the next save without a reload.
+    expect(await updateMemoryAsAdmin({ memoryId: MEM, memoryVersion: result.memoryVersion, contributorVersion: result.contributorVersion, changes: { place: "Ocean City" } })).toMatchObject({ ok: true, written: ["place"] });
   });
 
   it("takes only the memory lock when no contributor key is dirty", async () => {
-    await updateMemoryAsAdmin({ memoryId: MEM, ...versions(), changes: { visibility: "PUBLIC" } });
+    const result = await updateMemoryAsAdmin({ memoryId: MEM, ...versions(), changes: { visibility: "PUBLIC" } });
+    expect(result).toMatchObject({ ok: true, written: ["visibility"], contributorVersion: T0.toISOString() });
     expect(lockCalls).toHaveLength(1);
     expect(lockCalls[0]).toContain('"Memory"');
     expect(memories[0]!.visibility).toBe("PUBLIC");
@@ -234,19 +242,19 @@ describe("updateMemoryAsAdmin (V7)", () => {
     expect(revisions).toHaveLength(0);
     if (result.ok || result.code !== "stale") { throw new Error("setup"); }
     const again = await updateMemoryAsAdmin({ memoryId: MEM, memoryVersion: result.current.memoryVersion, contributorVersion: result.current.contributorVersion, changes: { note: "my words" } });
-    expect(again).toEqual({ ok: true, written: ["note"] });
+    expect(again).toMatchObject({ ok: true, written: ["note"] });
     expect(memories[0]!.contributorNote).toBe("my words");
   });
 
   it("checks the contributor version only when a contributor key is dirty", async () => {
     const v = versions();
     contributors[0]!.updatedAt = T1;
-    expect(await updateMemoryAsAdmin({ memoryId: MEM, ...v, changes: { place: "x" } })).toEqual({ ok: true, written: ["place"] });
+    expect(await updateMemoryAsAdmin({ memoryId: MEM, ...v, changes: { place: "x" } })).toMatchObject({ ok: true, written: ["place"] });
     expect(await updateMemoryAsAdmin({ memoryId: MEM, memoryVersion: memories[0]!.updatedAt.toISOString(), contributorVersion: v.contributorVersion, changes: { name: "y" } })).toMatchObject({ ok: false, code: "stale" });
   });
 
   it("drops keys equal to the fresh value; nothing left means ok with no revision", async () => {
-    expect(await updateMemoryAsAdmin({ memoryId: MEM, ...versions(), changes: { place: "", approxDateText: "Summer 1998", name: "Joyce" } })).toEqual({ ok: true, written: [] });
+    expect(await updateMemoryAsAdmin({ memoryId: MEM, ...versions(), changes: { place: "", approxDateText: "Summer 1998", name: "Joyce" } })).toEqual({ ok: true, written: [], ...versions() });
     expect(revisions).toHaveLength(0);
     expect(lockCalls).toHaveLength(2);
   });
@@ -257,7 +265,7 @@ describe("updateMemoryAsAdmin (V7)", () => {
     expect(memories[0]!.contributorNote).toBe("old note");
     media[0]!.status = "READY";
     memories[0]!.type = "TEXT";
-    expect(await updateMemoryAsAdmin({ memoryId: MEM, ...versions(), changes: { note: "" } })).toEqual({ ok: true, written: ["note"] });
+    expect(await updateMemoryAsAdmin({ memoryId: MEM, ...versions(), changes: { note: "" } })).toMatchObject({ ok: true, written: ["note"] });
     expect(memories[0]!.contributorNote).toBeNull();
     expect(memories[0]!.type).toBe("PHOTO");
   });
@@ -273,7 +281,7 @@ describe("updateMemoryAsAdmin (V7)", () => {
 
   it("edits a memory without a contributor (memory keys only; a contributor key is ignored as nothing to write)", async () => {
     memories[0]!.contributorId = null;
-    expect(await updateMemoryAsAdmin({ memoryId: MEM, memoryVersion: T0.toISOString(), contributorVersion: null, changes: { place: "x", name: "nobody" } })).toEqual({ ok: true, written: ["place"] });
+    expect(await updateMemoryAsAdmin({ memoryId: MEM, memoryVersion: T0.toISOString(), contributorVersion: null, changes: { place: "x", name: "nobody" } })).toMatchObject({ ok: true, written: ["place"], contributorVersion: null });
     expect(lockCalls).toHaveLength(1);
   });
 });
@@ -284,7 +292,7 @@ describe("sibling memories sharing one contributor (V8)", () => {
   it("the second admin to change any contributor key after the first committed sees stale", async () => {
     const a = versions();
     const b = { memoryVersion: memories[1]!.updatedAt.toISOString(), contributorVersion: contributors[0]!.updatedAt.toISOString() };
-    expect(await updateMemoryAsAdmin({ memoryId: MEM, ...a, changes: { name: "A" } })).toEqual({ ok: true, written: ["name"] });
+    expect(await updateMemoryAsAdmin({ memoryId: MEM, ...a, changes: { name: "A" } })).toMatchObject({ ok: true, written: ["name"] });
     expect(await updateMemoryAsAdmin({ memoryId: MEM2, ...b, changes: { relationship: "cousin" } })).toMatchObject({ ok: false, code: "stale", current: { name: "A" } });
     expect(contributors[0]!.relationship).toBe("friend");
   });
@@ -293,7 +301,7 @@ describe("sibling memories sharing one contributor (V8)", () => {
     const a = versions();
     const b = { memoryVersion: memories[1]!.updatedAt.toISOString(), contributorVersion: contributors[0]!.updatedAt.toISOString() };
     await updateMemoryAsAdmin({ memoryId: MEM, ...a, changes: { name: "A" } });
-    expect(await updateMemoryAsAdmin({ memoryId: MEM2, ...b, changes: { place: "Ocean City" } })).toEqual({ ok: true, written: ["place"] });
+    expect(await updateMemoryAsAdmin({ memoryId: MEM2, ...b, changes: { place: "Ocean City" } })).toMatchObject({ ok: true, written: ["place"] });
   });
 });
 

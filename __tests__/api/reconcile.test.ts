@@ -450,6 +450,13 @@ describe("purge (f): durable intent under the memory lock (C1, C3, C5, C5b, C5c)
     expect(((await third.json()) as { data: Record<string, number> }).data).toMatchObject({ deletedBlobsRemoved: 0 });
   });
 
+  it("C7: a row already marked purgedAt but still READY is flipped to FAILED by the claim phase, whoever left it that way", async () => {
+    media[0]!.purgedAt = new Date(Date.now() - HOUR);
+    await run(`Bearer ${SECRET}`);
+    expect(dbStub.media.update.mock.calls[0]![0]).toEqual({ where: { id: "med_x" }, data: { status: "FAILED" } });
+    expect(media[0]).toMatchObject({ status: "FAILED", blobUrl: null, derivatives: [] });
+  });
+
   it("C5b: a failure in the pointer phase (deleteMany) after every delete recovers the same way on the next run", async () => {
     dbStub.derivedMedia.deleteMany.mockImplementationOnce(async () => { throw new Error("db hiccup"); });
     const first = await run(`Bearer ${SECRET}`);

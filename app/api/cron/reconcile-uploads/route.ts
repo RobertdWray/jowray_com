@@ -382,6 +382,10 @@ export async function GET(request: NextRequest): Promise<Response> {
           select: { purgedAt: true, status: true, deletedAt: true, createdAt: true, memory: { select: { deletedAt: true } } },
         });
         if (fresh.purgedAt !== null) {
+          // Already claimed. A READY row with the mark must never serve again, whoever left it that way.
+          if (fresh.status === "READY") {
+            await tx.media.update({ where: { id: row.id }, data: { status: "FAILED" } });
+          }
           return true;
         }
         const memoryGone = fresh.memory.deletedAt !== null && fresh.memory.deletedAt < deletedMemoryBefore;

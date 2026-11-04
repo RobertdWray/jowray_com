@@ -38,16 +38,18 @@ function stored(value: string): string | null {
 /**
  * The words-and-fields editor (plan §3.8, §4.3). Uncontrolled inputs; on submit
  * only the keys whose value differs from what the form opened with are sent,
- * with both versions. `stale` keeps every input as typed, adopts the server's
- * versions and names what changed there; Save again sends the same dirty keys;
- * Reload re-reads the page, which remounts the form through its key.
+ * with both versions. A successful save adopts the typed values and the
+ * versions the server returns, so the next save is not stale and nothing the
+ * person typed is ever discarded by a refresh of the rest of the page (the
+ * status buttons refresh it; the form keeps its own state). `stale` keeps every
+ * input as typed, adopts the server's versions and names what changed there;
+ * Save again sends the same dirty keys; Reload is a real reload of the page.
  */
 export function MemoryEditForm({ memory }: { memory: AdminMemoryView }) {
   const [message, setMessage] = useState<string | null>(null);
-  const contributorVersion = memory.contributor?.contributorVersion ?? null;
   return (
     <div className="flex min-w-0 flex-col gap-3">
-      <EditFields key={`${memory.memoryVersion}|${contributorVersion ?? ""}`} memory={memory} onMessage={setMessage} />
+      <EditFields memory={memory} onMessage={setMessage} />
       {message && (
         <p role="status" className="text-body">
           {message}
@@ -59,7 +61,9 @@ export function MemoryEditForm({ memory }: { memory: AdminMemoryView }) {
 
 function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage: (message: string | null) => void }) {
   const router = useRouter();
-  const [initial] = useState<Values>(() => valuesOf(memory));
+  // What the form opened with (or last saved): dirty keys are measured against this, never against props,
+  // so a refresh of the page around the form cannot change what counts as the person's edit.
+  const [initial, setInitial] = useState<Values>(() => valuesOf(memory));
   const [versions, setVersions] = useState<Versions>({ memoryVersion: memory.memoryVersion, contributorVersion: memory.contributor?.contributorVersion ?? null });
   const [serverChanged, setServerChanged] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -89,8 +93,17 @@ function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage:
     setBusy(true);
     onMessage(null);
     try {
-      const result = await saveMemory({ memoryId: memory.id, ...versions, changes });
+      const first = await saveMemory({ memoryId: memory.id, ...versions, changes });
+      // Only non-editable columns moved (a status change, a reissued link, a file that arrived): nothing the
+      // person edits differs from what the form opened with, so saving again is exactly what the banner would ask for.
+      const onlyHiddenColumnsMoved = !first.ok && first.code === "stale" && KEYS.every((key) => first.current[key] === initial[key]);
+      const result =
+        onlyHiddenColumnsMoved && !first.ok && first.code === "stale"
+          ? await saveMemory({ memoryId: memory.id, memoryVersion: first.current.memoryVersion, contributorVersion: first.current.contributorVersion, changes })
+          : first;
       if (result.ok) {
+        setInitial(typed);
+        setVersions({ memoryVersion: result.memoryVersion, contributorVersion: result.contributorVersion });
         setServerChanged(null);
         onMessage(result.written.length === 0 ? "Already saved." : "Saved.");
         router.refresh();
@@ -125,7 +138,7 @@ function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage:
           <p className="text-body">
             Someone changed {serverChanged.length > 0 ? serverChanged.join(" and ") : "this memory"} since you opened this. Your edits are still here; press Save to keep them, or Reload to discard them.
           </p>
-          <SecondaryButton onClick={() => router.refresh()} disabled={busy}>
+          <SecondaryButton onClick={() => window.location.reload()} disabled={busy}>
             Reload
           </SecondaryButton>
         </div>

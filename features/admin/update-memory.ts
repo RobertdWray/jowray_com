@@ -22,7 +22,8 @@ export interface AdminMemoryEditable {
 }
 
 export type AdminUpdateResult =
-  | { ok: true; written: Array<keyof AdminMemoryChanges> }
+  /** `memoryVersion`/`contributorVersion` are the post-write values, so the form can keep what it holds and save again without reloading. */
+  | { ok: true; written: Array<keyof AdminMemoryChanges>; memoryVersion: string; contributorVersion: string | null }
   | { ok: false; code: "invalid" | "not_found" | "last_words" }
   | { ok: false; code: "stale"; current: AdminMemoryEditable };
 
@@ -85,7 +86,7 @@ export async function updateMemoryAsAdmin(raw: unknown): Promise<AdminUpdateResu
     const contributorWrites = wantsContributor ? dirtyContributorKeys.filter((key) => changes[key] !== current[key]) : [];
     const written: Array<MemoryKey | ContributorKey> = [...contributorWrites, ...memoryWrites];
     if (written.length === 0) {
-      return { code: "ok" as const, written };
+      return { code: "ok" as const, written, memoryVersion: current.memoryVersion, contributorVersion: current.contributorVersion };
     }
     const note = memoryWrites.includes("note") ? (changes.note ?? null) : current.note;
     if (hasWords(current.note) && !hasWords(note)) {
@@ -124,14 +125,17 @@ export async function updateMemoryAsAdmin(raw: unknown): Promise<AdminUpdateResu
       await recomputeMemoryType(tx, memoryId, note);
     }
     await appendRevision(tx, { memoryId, changedVia: "ADMIN", before, after, consentVersion: memory.consentVersion });
-    return { code: "ok" as const, written };
+    // The versions after this write (`@updatedAt` moved them), read inside the same transaction.
+    const after_ = await tx.memory.findUniqueOrThrow({ where: { id: memoryId }, select: { updatedAt: true } });
+    const contributorAfter = contributorId === null ? null : await tx.contributor.findUniqueOrThrow({ where: { id: contributorId }, select: { updatedAt: true } });
+    return { code: "ok" as const, written, memoryVersion: after_.updatedAt.toISOString(), contributorVersion: contributorAfter?.updatedAt.toISOString() ?? null };
   }, TX_OPTIONS);
 
   if (result.code === "ok") {
     if (result.written.length > 0) {
       log.info({ action: "admin_memory_updated", memoryId, keys: result.written }, "memory edited from the admin page");
     }
-    return { ok: true, written: result.written };
+    return { ok: true, written: result.written, memoryVersion: result.memoryVersion, contributorVersion: result.contributorVersion };
   }
   if (result.code === "stale") {
     return { ok: false, code: "stale", current: result.current };

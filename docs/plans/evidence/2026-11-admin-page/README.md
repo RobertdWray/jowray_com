@@ -17,6 +17,7 @@ Branch `feat/admin-page`, walk run against commit `a823127` (the three walk fixe
 | B11 Sign out → signed-out page; a memory URL shows the signed-out page afterwards | pass | |
 | B12 390 × 844 (emulated): no horizontal scroll on list, detail with a 9,879-character note and history; chips wrap to three rows; no tap target under 56 px | pass | `b12-list-390.jpg`, `b12-detail-390.jpg` |
 | B13 1440 × 900: two columns, sticky rail scrolls independently; 2560 × 1440: three columns (440 / 1fr / 600) | pass | `b13-list-1440.jpg`, `b13-detail-2560.jpg` |
+| B15 (final review) type new words, press Back to pending without saving, then Save → words intact through the status refresh, "Saved." with no stale banner, one revision with the note; a second save of another field is not stale | pass | |
 | B14 replay of the `setStatus` POST without the cookie → `{"ok":false,"code":"unauthorized"}`; status unchanged; log shows only the POST line | pass | |
 
 Findings fixed during the walk (commit `a823127`): the entry page now also reads a key from a fragment change on an already-open page; the back link and the title link meet the tap target; the two-column rule stops at 100rem so the three-column rule applies (the `wide` custom variant is emitted after the arbitrary `min-[…]` query and would otherwise win).
