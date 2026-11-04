@@ -74,7 +74,7 @@
 | Gmail threading probe done (draft reply to Rob's own message, then deleted) | **yes** (2026-11-04T12:15Z) | Connector account in this session: `rwray@tray-verify.com`. `create_draft` with `replyToMessageId` = message `1a10c465ac6230da` (a message Rob sent to himself and one other person), `to` = `["rwray@tray-verify.com"]`, explicit `Re:` subject → draft `r-4471266293683734600` landed in the **same thread** (`threadId` 1a10c465ac6230da), `to` was **exactly** the list given (the original's other recipient was **not** added), subject as given, the original quoted below the body. Deleted with `delete_draft` right after. So the skill must always set `to` explicitly (it does) and the subject is not inherited. **Note:** the Joyce/Bridget threads named in §0 live in whichever mailbox the planning session's connector was; check `authuser` in a `viewUrl` before the first real run. |
 | Draft PR open, parking lot in notes | **yes** | `gh pr list --head feat/draft-memory-on-behalf` → #30 |
 | `/team-code-review` on the PR, bucketed | **yes** (2026-11-04; George + Oscar, 12 findings; buckets 1 and 2 fixed the same day) | §8.2 |
-| Merged with Rob's go-ahead; production deploy carries both migrations | no | `vercel ls` latest READY; `prisma migrate status` against prod via a Rob-run command |
+| Merged with Rob's go-ahead; production deploy carries both migrations | **merging 2026-11-04** (Rob: "if no serious regressions merge to main"; regression review: none) | `vercel ls` latest READY; `prisma migrate status` against prod via a Rob-run command |
 | First real run (Joyce) | no | `SELECT status FROM "Memory" WHERE "sourceRef" = 'gmail:1a1a2317fba34eec'` returns a row |
 | Second real run (Bridget) | no | same for `gmail:1a1a1ad3b27b64e4` |
 
@@ -338,6 +338,8 @@ Each ruling: what — why — cost if wrong.
 
 *Bucket 4 · Real, out of scope → §11*
 - O3 rotation/revocation runbook for `ADMIN_API_SECRET` (F16; `docs/environment.md` carries the short version).
+
+**Fresh-context Fable 5.1 regression review (2026-11-04, before merge): `SERIOUS REGRESSIONS: no`.** Verified intact: the /share flow, Task 15's `in_submission` / `leased` / `settleNow`, cron steps (a)–(e3), the CHECK constraint cannot fire from app code. Three minors, deferred: (1) admin drafts count against `DAILY_MEMORY_BUDGET` (intended cost ceiling; revisit if Rob drafts in volume); (2) the claim page's heading now streams with the content instead of sitting in the static shell (cosmetic; the heading depends on status, C7); (3) a direct POST to the claim Server Function can change the two preferences on a non-DRAFT memory (the UI does not send them; the link holder owns the memory).
 
 
 ---
