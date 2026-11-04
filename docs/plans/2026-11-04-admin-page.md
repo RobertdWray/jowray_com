@@ -335,6 +335,18 @@ Browser and manual (§5 environment; record evidence in the ledger):
 | 4. §4.3 and V8 contradicted each other on sibling contributor edits | Yes | Conservative behaviour kept and stated; V8 corrected |
 | 5. "Pause the cron in `vercel.json`" is wrong under Instant Rollback | Yes: Vercel docs [C43] | §7: project-level Disable Cron Jobs + verification |
 
+**Round 4, Team Code Review (George on Gemini `gemini-4-argon`, Oscar on Codex CLI 0.166.0; 2026-11-04, PR #31 at 0353e53), each point verified against the source:**
+
+| # | Point | Bucket | Disposition |
+|---|---|---|---|
+| G1 | `admin-shell.tsx` list-page wrapper: `wide:flex` outranks `min-[100rem]:contents` (same ordering as the grid rule) | 1 | `wide:max-[100rem]:flex` |
+| G2 | Admin cookie `sameSite: "lax"` → `"strict"` | 3 | Not done: Lax already withholds the cookie on cross-site POSTs and subresource loads; Strict only adds cross-site top-level GET, which is read-only here, and would land every emailed admin link on the signed-out page. PR comment records it. |
+| G3 | `draft-form.tsx` reissue leaves an old error message | 1 | `setMessage(null)` at the start of `onReissue` |
+| O4 | Fresh versions paired with stale field values after `stale`; a memory-only save adopts a newer contributor version without showing the change | 1 | `updateMemoryAsAdmin` returns the committed editable snapshot; the form adopts it on success and on stale (untouched fields take the server's values, touched fields stay dirty until a committed save); re-walked as B16 |
+| O5 | `serveMedia` and the last-words count ignore `purgedAt` on a READY row | 1 | `purgedAt !== null` → 404 in `serveMedia` (both routes); `purgedAt: null` in the last-words count; tests in `admin-media`, `media`, `admin-memories` |
+| O6 | A failed second draft leaves the previous person's link on screen | 1 | `outcome`/`copied` cleared before every attempt; the result names the recipient; re-walked as B17 |
+| R | (research) Next 16.4.5 security release vs the exact 16.4.4 pin | 4 | Follow-up A10: separate one-line PR |
+
 Bucket 3 items are in §10; bucket 4 in §11.
 
 ## 10. Non-goals (declined; do not re-raise unless the reason is wrong)
@@ -369,6 +381,7 @@ Bucket 3 items are in §10; bucket 4 in §11.
 | A7 | *(now in scope, 3.6)* | | |
 | A8 | Claim form stale overwrite: the sender's old tab sends every field on save and overwrites an admin correction (reverse of 4.3) | M | Add `version` to `ClaimView` and `claimChangesSchema`, dirty-only submission in `claim-form.tsx`, `stale` in `updateMemoryFromClaim` with the same re-read protocol as 4.3. Touches public UI; coordinate with issue #17 work. |
 | A9 | Vercel request-log retention for `POST /admin/enter` and admin paths | L | Method and path only; no secret. Review the project's log drain/retention once and record it in `docs/admin.md`. |
+| A10 | Bump `next` and `eslint-config-next` 16.4.4 → 16.4.5 (2026-11-03 security release; preconditions do not match this Vercel deployment) | M | One-line PR; run `npm run validate`, `npm run test:run`, `npm run build:offline`. |
 
 ## 12. Files
 
