@@ -136,7 +136,8 @@ describe("cardsReducer", () => {
   it("removes a card and renumbers the rest, announcing it; never removes the first card, which is cleared instead", () => {
     let state = cardsReducer(start, { type: "open", id: "c2" });
     state = cardsReducer(state, { type: "field", id: "c2", field: "note", value: "second" });
-    state = cardsReducer(state, { type: "add" });
+    state = cardsReducer(state, { type: "add" }); // opens c3
+    state = cardsReducer(state, { type: "add" }); // appends c4
     state = cardsReducer(state, { type: "remove", id: "c2" });
     expect(state.cards.map((c) => c.id)).toEqual(["c1", "c3", "c4"]);
     expect(state.notice).toBe("Memory 2 removed. You now have 3 memories.");
