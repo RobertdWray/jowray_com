@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createMemoryInputSchema, fileInputSchema, uploadTicketRequestSchema } from "@/lib/validations/memory";
+import { createMemoryInputSchema, draftMemoryInputSchema, fileInputSchema, uploadTicketRequestSchema } from "@/lib/validations/memory";
 
 const textOnly = { note: "She once taught me to quilt.", file: null };
 const file = { name: "clip.webm", type: "audio/webm;codecs=opus", size: 10 };
@@ -60,5 +60,47 @@ describe("memory file validation", () => {
   it("accepts a claim-page upload ticket without a duration", () => {
     const input = { claimToken: "t".repeat(43), file };
     expect(uploadTicketRequestSchema.parse(input)).toEqual(input);
+  });
+});
+
+describe("draftMemoryInputSchema", () => {
+  const valid = {
+    contributor: { name: "Joyce", email: "Joyce@Example.com", relationship: "Friend from church" },
+    note: "Jo always had a kind word.",
+    source: "EMAIL",
+    sourceRef: "gmail:1a1a2317fba34eec",
+  };
+
+  it("accepts a drafted memory, lower-cases the email and defaults visibility to PUBLIC", () => {
+    const parsed = draftMemoryInputSchema.parse(valid);
+    expect(parsed.contributor.email).toBe("joyce@example.com");
+    expect(parsed.visibility).toBe("PUBLIC");
+    expect(parsed.contributor.phone).toBeUndefined();
+  });
+
+  it("requires a valid email: an admin draft is only ever reached through the sender's address", () => {
+    expect(draftMemoryInputSchema.safeParse({ ...valid, contributor: { name: "Joyce" } }).success).toBe(false);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, contributor: { email: "not-an-address" } }).success).toBe(false);
+  });
+
+  it("requires words: an empty or whitespace note is rejected, a 10 001-character one too", () => {
+    expect(draftMemoryInputSchema.safeParse({ ...valid, note: "   " }).success).toBe(false);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, note: "x".repeat(10_001) }).success).toBe(false);
+  });
+
+  it("only accepts the admin sources and a sourceRef that follows the scheme", () => {
+    expect(draftMemoryInputSchema.safeParse({ ...valid, source: "WEB_UPLOAD" }).success).toBe(false);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, source: "SMS", sourceRef: `sms:${"a".repeat(32)}` }).success).toBe(true);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, source: "OTHER", sourceRef: `other:${"b".repeat(32)}` }).success).toBe(true);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, sourceRef: "gmail:thread-f:123" }).success).toBe(false);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, sourceRef: "sms:+14105551234" }).success).toBe(false);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, sourceRef: "" }).success).toBe(false);
+  });
+
+  it("keeps the note exactly as given (never trimmed or rewritten) and turns empty optional fields into null", () => {
+    const parsed = draftMemoryInputSchema.parse({ ...valid, note: "  Two spaces lead.\n\nAnd a blank line.  ", approxDateText: "", place: " Broadmead " });
+    expect(parsed.note).toBe("  Two spaces lead.\n\nAnd a blank line.  ");
+    expect(parsed.approxDateText).toBeNull();
+    expect(parsed.place).toBe("Broadmead");
   });
 });

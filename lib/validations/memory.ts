@@ -54,3 +54,30 @@ export const uploadTicketRequestSchema = z.object({
   claimToken: z.string().min(16).max(128),
   file: fileInputSchema,
 });
+
+/**
+ * `Memory.sourceRef`: an opaque, unique reference to where an admin-drafted
+ * memory's words came from. Never an address or a number in clear:
+ * `gmail:<sender's message id>`, `sms:<32 hex of sha256(E.164|timestamp)>`,
+ * `other:<32 hex of sha256(lower-cased email|full original text)>`.
+ * The builders live in `lib/source-ref.ts`.
+ */
+export const SOURCE_REF_PATTERN = /^(?:gmail:[0-9a-f]{8,32}|sms:[0-9a-f]{32}|other:[0-9a-f]{32})$/;
+
+/** What the family admin sends to draft a memory on a sender's behalf (features/memories/draft-memory.ts). */
+export const draftMemoryInputSchema = z.object({
+  contributor: z.object({
+    name: optionalText(120),
+    email: z.email("Enter a valid email address").trim().toLowerCase().max(254),
+    relationship: optionalText(120),
+    phone: z.string().trim().max(40).optional(),
+  }),
+  // Verbatim: the sender's own paragraphs, never trimmed or rewritten here.
+  note: z.string().max(10_000).refine((value) => value.trim().length > 0, { message: "The note needs some words" }),
+  approxDateText: optionalText(120),
+  place: optionalText(200),
+  source: z.enum(["EMAIL", "SMS", "OTHER"]),
+  sourceRef: z.string().regex(SOURCE_REF_PATTERN, "sourceRef must follow the gmail:/sms:/other: scheme"),
+  visibility: z.enum(["PUBLIC", "FAMILY", "PRIVATE"]).default("PUBLIC"),
+});
+export type DraftMemoryInput = z.infer<typeof draftMemoryInputSchema>;
