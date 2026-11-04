@@ -131,7 +131,7 @@ model Memory {
   language        String         @default("en")
   visibility      Visibility     @default(FAMILY)
   notifyWhenPosted Boolean       @default(true)  // "let me know when my story is posted" checkbox; on by default (Rob, 2026-11-03)
-  consentVersion  String
+  consentVersion  String                     // provisional while status = DRAFT (the version in force when drafted); restamped by Share
   consentedAt     DateTime?      // null only while status = DRAFT (CHECK constraint Memory_consent_when_not_draft); stamped when the person presses Share
   status          MemoryStatus   @default(PENDING)
   analysisStatus  AnalysisStatus @default(NOT_STARTED)

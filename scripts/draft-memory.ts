@@ -3,40 +3,59 @@
 // (docs/skills/jowray-draft-memory/SKILL.md).
 //
 // Usage:
-//   npx tsx --env-file=.env scripts/draft-memory.ts --input <json-file>
-//   npx tsx --env-file=.env scripts/draft-memory.ts --reissue <memoryId>
+//   npx tsx --env-file=.env scripts/draft-memory.ts --prod --input <json-file>
+//   npx tsx --env-file=.env scripts/draft-memory.ts --prod --reissue <memoryId>
+//   ADMIN_API_URL=http://localhost:3000 npx tsx --env-file=.env scripts/draft-memory.ts --input <json-file>
 //
-// Env: ADMIN_API_SECRET (bearer; never printed), ADMIN_API_URL (default
-// https://www.jowray.com; http only to loopback). Redirects are refused: the
-// apex 308s to www, and a cross-origin redirect drops the Authorization
-// header, which would surface as a confusing 401. Pure module: imports
-// nothing guarded by `server-only`; only `main()` touches the environment.
+// Env: ADMIN_API_SECRET (bearer; never printed). There is no default target:
+// production (https://www.jowray.com) needs the explicit --prod flag, anything
+// else needs ADMIN_API_URL (http only to loopback), so a forgotten variable can
+// never create rows in production. Redirects are refused: the apex 308s to
+// www, and a cross-origin redirect drops the Authorization header, which would
+// surface as a confusing 401. Pure module: imports nothing guarded by
+// `server-only`; only `main()` touches the environment.
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 
-const DEFAULT_TARGET = "https://www.jowray.com";
+const PRODUCTION_TARGET = "https://www.jowray.com";
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-export type Args = { mode: "draft"; inputPath: string } | { mode: "reissue"; memoryId: string };
+export type Args = { mode: "draft"; inputPath: string; prod: boolean } | { mode: "reissue"; memoryId: string; prod: boolean };
 
 export function parseArgs(argv: string[]): Args {
-  const usage = "usage: draft-memory.ts --input <json-file> | --reissue <memoryId>";
-  if (argv.length !== 2) {
+  const usage = "usage: draft-memory.ts [--prod] --input <json-file> | [--prod] --reissue <memoryId>";
+  const prod = argv.includes("--prod");
+  const rest = argv.filter((a) => a !== "--prod");
+  if (rest.length !== 2) {
     throw new Error(usage);
   }
-  const [flag, value] = argv;
+  const [flag, value] = rest;
   if (flag === "--input" && value) {
-    return { mode: "draft", inputPath: value };
+    return { mode: "draft", inputPath: value, prod };
   }
   if (flag === "--reissue" && value) {
-    return { mode: "reissue", memoryId: value };
+    return { mode: "reissue", memoryId: value, prod };
   }
   throw new Error(usage);
 }
 
-/** The site to call. Plain http is allowed only to loopback (a local `next dev`). */
-export function resolveTarget(raw: string | undefined): URL {
-  const url = new URL(raw && raw.trim().length > 0 ? raw : DEFAULT_TARGET);
+/**
+ * The site to call. `--prod` means production and forbids ADMIN_API_URL;
+ * without it ADMIN_API_URL is required (plain http only to loopback, for a
+ * local `next dev`). No default, so nothing reaches production by accident.
+ */
+export function resolveTarget(raw: string | undefined, prod: boolean): URL {
+  const given = raw && raw.trim().length > 0 ? raw : undefined;
+  if (prod) {
+    if (given) {
+      throw new Error("--prod and ADMIN_API_URL cannot both be set; drop one");
+    }
+    return new URL(PRODUCTION_TARGET);
+  }
+  if (!given) {
+    throw new Error("No target: pass --prod for production, or set ADMIN_API_URL (for example http://localhost:3000)");
+  }
+  const url = new URL(given);
   if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK.has(url.hostname))) {
     throw new Error(`ADMIN_API_URL must use https (got ${url.protocol}//${url.host}); http is allowed only for localhost`);
   }
@@ -109,7 +128,7 @@ async function main(): Promise<void> {
   if (!secret) {
     throw new Error("ADMIN_API_SECRET is not set (run with --env-file=.env)");
   }
-  const target = resolveTarget(process.env.ADMIN_API_URL);
+  const target = resolveTarget(process.env.ADMIN_API_URL, args.prod);
   console.log(`target: ${describeTarget(target)}`);
   const call =
     args.mode === "draft"

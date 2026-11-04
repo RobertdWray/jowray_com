@@ -3,14 +3,16 @@ import { describe, expect, it, vi } from "vitest";
 import { callAdmin, describeTarget, parseArgs, resolveTarget, summarize } from "../../scripts/draft-memory";
 
 describe("resolveTarget", () => {
-  it("defaults to the www production host (the apex 308s to it, and a redirect would drop the bearer)", () => {
-    expect(resolveTarget(undefined).href).toBe("https://www.jowray.com/");
+  it("has no default: production needs the explicit --prod flag, anything else needs ADMIN_API_URL", () => {
+    expect(() => resolveTarget(undefined, false)).toThrow(/--prod|ADMIN_API_URL/);
+    expect(resolveTarget(undefined, true).href).toBe("https://www.jowray.com/");
+    expect(() => resolveTarget("http://localhost:3000", true)).toThrow(/--prod/);
   });
 
   it("refuses plain http except to loopback", () => {
-    expect(() => resolveTarget("http://www.jowray.com")).toThrow(/https/);
-    expect(resolveTarget("http://localhost:3000").host).toBe("localhost:3000");
-    expect(resolveTarget("http://127.0.0.1:3000").host).toBe("127.0.0.1:3000");
+    expect(() => resolveTarget("http://www.jowray.com", false)).toThrow(/https/);
+    expect(resolveTarget("http://localhost:3000", false).host).toBe("localhost:3000");
+    expect(resolveTarget("http://127.0.0.1:3000", false).host).toBe("127.0.0.1:3000");
   });
 
   it("names the host only, never a path or query", () => {
@@ -19,11 +21,13 @@ describe("resolveTarget", () => {
 });
 
 describe("parseArgs", () => {
-  it("accepts --input <file> or --reissue <memoryId>, nothing else", () => {
-    expect(parseArgs(["--input", "/tmp/draft.json"])).toEqual({ mode: "draft", inputPath: "/tmp/draft.json" });
-    expect(parseArgs(["--reissue", "00000000-0000-4000-8000-000000000001"])).toEqual({ mode: "reissue", memoryId: "00000000-0000-4000-8000-000000000001" });
+  it("accepts --input <file> or --reissue <memoryId>, with an optional --prod, nothing else", () => {
+    expect(parseArgs(["--input", "/tmp/draft.json"])).toEqual({ mode: "draft", inputPath: "/tmp/draft.json", prod: false });
+    expect(parseArgs(["--prod", "--input", "/tmp/draft.json"])).toEqual({ mode: "draft", inputPath: "/tmp/draft.json", prod: true });
+    expect(parseArgs(["--reissue", "00000000-0000-4000-8000-000000000001", "--prod"])).toEqual({ mode: "reissue", memoryId: "00000000-0000-4000-8000-000000000001", prod: true });
     expect(() => parseArgs([])).toThrow(/usage/);
     expect(() => parseArgs(["--input"])).toThrow(/usage/);
+    expect(() => parseArgs(["--prod"])).toThrow(/usage/);
     expect(() => parseArgs(["--input", "a", "--reissue", "b"])).toThrow(/usage/);
   });
 });

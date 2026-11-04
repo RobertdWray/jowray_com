@@ -128,7 +128,8 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
               <span>{NOTIFY_WHEN_POSTED_LABEL}</span>
             </label>
             <label className="flex items-start gap-3 text-small">
-              <input name="contactOptIn" type="checkbox" defaultChecked={memory.contributor?.contactOptIn ?? true} className="mt-1 size-6 accent-jo-red" />
+              {/* A draft stores no opt-in until Share; the box starts on, as on /share, and the press records the person's choice. */}
+              <input name="contactOptIn" type="checkbox" defaultChecked className="mt-1 size-6 accent-jo-red" />
               <span>{CONTACT_OPT_IN_LABEL}</span>
             </label>
             <PrimaryButton type="submit" disabled={busy}>Share this memory</PrimaryButton>

@@ -56,7 +56,8 @@ export async function notifyAdminsOfMemory({ memoryId }: { memoryId: string }): 
 
   return sendAdminNewMemory({
     memoryId,
-    submittedAt: memory.createdAt,
+    // A drafted memory becomes the person's when they press Share; that is the moment the admins should see.
+    submittedAt: memory.consentedAt ?? memory.createdAt,
     name: memory.contributor?.name ?? null,
     relationship: memory.contributor?.relationship ?? null,
     email: memory.contributor?.email ?? null,

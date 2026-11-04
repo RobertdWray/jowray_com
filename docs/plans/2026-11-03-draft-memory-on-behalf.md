@@ -14,7 +14,7 @@
 | Branch | `feat/draft-memory-on-behalf`, created from 1caf117 on 2026-11-04 |
 | Worktree | `/Users/rob/Documents/active_work/jowray_wt_draft_memory` |
 | PR | **#30** https://github.com/RobertdWray/jowray_com/pull/30 (draft; nothing merges without Rob's go-ahead). |
-| Overlapping PR | **#22** merged 2026-11-03T21:42Z (1db03f6), so the "edit after #22" rule is satisfied. Open PRs #27, #28, #29 (multi-file memories, share cards) touch `create-memory.ts`, `claim.ts`, `confirm.ts`, `ingest-upload.ts` and the claim page too: whichever merges second rebases. |
+| Overlapping PRs | **#22** merged 2026-11-03T21:42Z (1db03f6), so the "edit after #22" rule is satisfied. **#28** `feat/share-memory-cards` (with #29 stacked) is the live overlap: it edits `confirm.ts`, the cron route, `claim.ts`, `claim-form.tsx`, `actions.ts`, `create-memory.ts`, `ingest-upload.ts` and the schema, changes `withinBudget` to `(tx, addBytes, addMemories: number)`, adds a cron step (e3) and migration `20261104000000_submissions` (sorts before this branch's `20261104070000`). **Merge order: whichever lands second rebases, and the rebase must keep the DRAFT exclusions** (`SITE_EMAIL_WHERE` / `ADMIN_ALERT_WHERE` in the cron, `siteEmailsConfirmation` in `confirm.ts`, `siteAlertsAdmins` in `notify-admins.ts`): the DRAFT fixtures in `reconcile`, `confirm` and `notify-admins` tests fail if they are dropped, so run `npm run test:run` after the rebase and trust a red suite. Preferred order: #28 first, then rebase this branch (its migration timestamps already sort after; `draftMemory` would call `withinBudget(tx, 0, 1)`). |
 | House rules | `AGENTS.md` (branch + PR for everything, no eslint-disable without "YES", no band-aids, no secrets in git, TDD on critical paths, Cache Components rules, layer import direction `app → features → services → integrations`). `docs/code-layout.md` has the long form. |
 | Checks | `npm run validate`, `npm run test:run`, `npm run build:offline`; all three must pass with no `.env*` present. |
 | Env on this machine | `.env` holds every project key (production Neon values from Vercel; `CONSENT_VERSION=2026-11-v1` there, see Ledger). `.env.local` overrides `DATABASE_URL` to the Neon **dev** branch `br-holy-rice-bbz4t50l` (host `ep-solitary-tree-bbnwysvl`). Next.js and `prisma.config.ts` read `.env.local`; `npx tsx --env-file=.env` does **not**, so a script run that way hits production. Never print values from either file. |
@@ -113,7 +113,7 @@ Schema comments: `consentedAt` "null only while status = DRAFT (CHECK constraint
 - Transaction (reuse `TX_OPTIONS` and `withinBudget` from `create-memory.ts`; export them or lift into `features/memories/budget.ts`):
   1. `tx.memory.findUnique({ where: { sourceRef } })` → if found, return `{ ok: false, code: "duplicate", memoryId, status }` **before** writing anything (no orphan Contributor).
   2. `withinBudget(tx, 0, true)` → `budget_exceeded`.
-  3. Memorial by `MEMORIAL_SLUG`; create `Contributor` (`contactOptIn: true` to match `/share`); create `Memory { type: TEXT, status: DRAFT, source, sourceRef, consentVersion: CONSENT_VERSION, consentedAt: null, claimTokenHash, visibility, contributorNote: note, notifyWhenPosted: true }`; append `MemoryRevision { changedVia: ADMIN, before: {}, after: { note, name, relationship, source, sourceRef } }`.
+  3. Memorial by `MEMORIAL_SLUG`; create `Contributor` (`contactOptIn: false` until the person presses Share, premortem P7; the claim page prefills the box on); create `Memory { type: TEXT, status: DRAFT, source, sourceRef, consentVersion: CONSENT_VERSION, consentedAt: null, claimTokenHash, visibility, contributorNote: note, notifyWhenPosted: true }`; append `MemoryRevision { changedVia: ADMIN, before: {}, after: { note, name, relationship, source, sourceRef } }`.
 - **Race fallback outside the transaction:** catch Prisma `P2002` (check `error.code === "P2002"` only; with the Neon driver adapter `meta.target` is not reliable [C4 ASSUMED → verify]), then `getDb().memory.findUnique({ where: { sourceRef } })` and return `duplicate`; rethrow if no row matches. Never catch inside the callback: Postgres aborts the transaction after a failed insert, so a lookup through `tx` fails with `25P02` [C5].
 - Returns `{ ok: true, memoryId, claimToken, claimLink }` (link from `getSiteUrl()`), or `{ ok: false, code: "invalid" | "duplicate" | "budget_exceeded", memoryId?, status? }`.
 
@@ -141,13 +141,16 @@ Schema comments: `consentedAt` "null only while status = DRAFT (CHECK constraint
 
 ### 3.5 Drafts stay silent [C8]
 
-- `features/memories/confirm.ts`: export `siteEmailsConfirmation(memory)` = `status !== "DRAFT" && source === "WEB_UPLOAD"`, plus its Prisma `where` fragment `SITE_EMAIL_WHERE = { status: { not: "DRAFT" }, source: "WEB_UPLOAD" }`. `confirmMemory` returns `{ sent: false, skipped: "no_site_email" }` when the predicate is false, before any send. Covers `finalizeUpload → confirmQuietly` whenever a file is added.
-- Cron step (e) in `app/api/cron/reconcile-uploads/route.ts`: spread `SITE_EMAIL_WHERE` into the `unconfirmed` query, so the cron never emails these memories nor rotates their token.
+As built (R1, R2 in §8.2): the predicates live in `features/memories/site-email.ts`.
+
+- `siteEmailsConfirmation(memory)` = `status !== "DRAFT" && source === "WEB_UPLOAD"`, plus its Prisma `where` fragment `SITE_EMAIL_WHERE = { status: { not: "DRAFT" }, source: "WEB_UPLOAD" }`. `confirmMemory` returns `{ sent: false, skipped: "no_site_email" }` (and logs `confirmation_skipped`) when the predicate is false, before any send. Covers `finalizeUpload → confirmQuietly` whenever a file is added, and cron steps (d) and (e), which both go through `confirmMemory`.
+- `siteAlertsAdmins(memory)` = `status !== "DRAFT"`, plus `ADMIN_ALERT_WHERE`. `notifyAdminsOfMemory` returns `{ sent: false, skipped: "draft" }` for a DRAFT (covers `finalizeUpload → notifyAdminsQuietly` and cron step (d)); cron step (e2) spreads `ADMIN_ALERT_WHERE`, so the family never hears of an excerpt the person has not shared. Once shared (PENDING), the memory is alerted like any other, within one cron run (≤ 10 min), dated by `consentedAt` (the Share moment).
+- Cron step (e): spread `SITE_EMAIL_WHERE` into the `unconfirmed` query, so the cron never emails these memories nor rotates their token.
 
 ### 3.6 Repo script `scripts/draft-memory.ts` (new) [C9]
 
-- `npx tsx --env-file=/Users/rob/Documents/active_work/jowray_com/.env /Users/rob/Documents/active_work/jowray_com/scripts/draft-memory.ts --input <json-file> | --reissue <memoryId>`.
-- Reads `ADMIN_API_SECRET` and `ADMIN_API_URL` from env. `ADMIN_API_URL` defaults to `https://www.jowray.com`; the script prints the **host only** before every call, refuses `http:` except loopback, and uses `fetch(..., { redirect: "error" })` (the apex 308s to `www`, and a cross-origin redirect drops `Authorization`, which would surface as a confusing 401 [C10 ASSUMED → verify]).
+- `npx tsx --env-file=/Users/rob/Documents/active_work/jowray_com/.env /Users/rob/Documents/active_work/jowray_com/scripts/draft-memory.ts [--prod] --input <json-file> | [--prod] --reissue <memoryId>`.
+- Reads `ADMIN_API_SECRET` from env. **No default target** (premortem P11): `--prod` means `https://www.jowray.com` and forbids `ADMIN_API_URL`; otherwise `ADMIN_API_URL` is required. The script prints the **host only** before every call, refuses `http:` except loopback, and uses `fetch(..., { redirect: "error" })` (the apex 308s to `www`, and a cross-origin redirect drops `Authorization`, which would surface as a confusing 401 [C10 ASSUMED → verify]).
 - Prints `memoryId` + `claimLink` on 200, `memoryId` + `status` on 409, a clear message otherwise. The secret never appears in argv or output. No `server-only` imports (pure module, like `scripts/send-test-email.ts`).
 
 ### 3.7 The skill `docs/skills/jowray-draft-memory/SKILL.md` (new) [C11]
@@ -223,7 +226,7 @@ Astra workers: two at a time, one owner per file, no network. Orchestrator model
 
 ## 7. Verification summary
 
-Unit tests in §3.8; the manual walk in §6 step 5; the Gmail probe in step 6; security: wrong bearer → 401, a DRAFT claim link shows the editor and nothing else on the site reads DRAFT rows (nothing lists memories yet).
+Unit tests in §3.8; the manual walk in §6 step 5; the Gmail probe in step 6; security: wrong bearer → 401, a DRAFT claim link shows the editor. **Every reader that must exclude DRAFT rows:** `confirmMemory` (request path and cron steps (d), (e)), `notifyAdminsOfMemory` (request path and cron step (d)), cron steps (e) and (e2) by `where`. Nothing lists memories yet; when something does (F2), it decides explicitly what to do with DRAFT. Local-walk email check, as built: no `MEMORY_CONFIRMATION` row ever for an admin-drafted memory; no `ADMIN_NEW_MEMORY` row while DRAFT; exactly one after Share (the walk on 2026-11-04 ran with `ADMIN_ALERT_EMAILS=` so the alert itself was off; the unit tests cover the after-Share alert).
 
 ---
 
@@ -273,7 +276,27 @@ Each ruling: what — why — cost if wrong.
 - **R8 · The premortem ran as a fresh-context Opus agent on this plan file,** not `/team-code-review` with `premortum.md` — why: no `premortum.md` exists on this machine (searched `~/.claude` and `~/.claude-shared-skills`); the plan already carried a 27-finding George/Oscar/Claude review; the PR-level `/team-code-review` (rollout step 7) is the external pass. Cost if wrong: one fewer external voice on the plan before code existed.
 - **R9 · Test fixtures for `Memory` rows now carry `status` and `source`** (`confirm`, `notify-admins`, `reconcile` tests) because the predicates read them; the reconcile stub defaults every fixture to a /share memory. Cost if wrong: none.
 
-**Premortem findings (fresh-context agent, 2026-11-04)** are listed below once received, sorted into the four buckets.
+**Premortem findings (fresh-context Opus agent, 2026-11-04, 11 findings), verified against the branch and sorted:**
+
+*Bucket 1 · Must do (done on the branch the same day)*
+- P1 admin alert for drafts: already built (R1); plan §3.5/§7 now record it; alert `submittedAt` = `consentedAt ?? createdAt` so a shared draft is dated by the Share (test in `notify-admins.test.ts`).
+- P2 the live overlap is #28, not #22: §0 names it with the merge-order rule; the DRAFT test fixtures are the guard against a rebase dropping the exclusions.
+- P3 skill 409/resume path: SKILL.md step 3 now checks Gmail drafts and sent mail for a `/m/` link before offering a reissue, and updates the existing draft after one.
+- P5 Gmail recipients: the probe showed the connector does not inherit `to` (the original's second recipient was not added); SKILL.md strips an existing `Re:` and reads the draft back, stopping if `cc`/`bcc` is non-empty or `to` is not the sender.
+- P6 Rob one click from consenting: SKILL.md hard rule: Rob never presses Share and never edits on a draft's page; file control only; flag a `consentedAt` earlier than the reply's sent time.
+- P9 PLAIN_TEXT artefacts: SKILL.md step 2 names the one normalisation (join hard-wrapped lines inside a paragraph) and shows the exact stored string.
+- P11 script defaulted to production: no default now; `--prod` or `ADMIN_API_URL`, never both (tests in `__tests__/scripts/draft-memory.test.ts`).
+
+*Bucket 2 · Nice to do (done)*
+- P7 draft rows recorded `contactOptIn: true`: now `false` at draft time; the claim page prefills the box on and Share records the person's choice; schema comment marks a draft's `consentVersion` provisional.
+- P8 `sms:`/`other:` keyed on raw strings: builders canonicalise (UTC minute; NFC, LF, trimmed line ends, no leading/trailing blank lines), with tests.
+- P4 skill in a stale checkout: SKILL.md preflight compares the checkout's script and skill to `origin/main` and stops on a difference.
+
+*Bucket 3 · Don't do*
+- P1(c) request-path admin alert on Share: R1 stands (cron within ten minutes; keeps the email graph out of `claim.ts`).
+
+*Bucket 4 · Real, out of scope → §11*
+- P4 dedicated tools worktree for the skill (F11); P10 withdraw/correct a draft (F12); P6 `--attach` through an admin ticket route (F13); P8 "live memories with the same contributor email" hint on POST (F14).
 
 
 ---
@@ -317,6 +340,10 @@ Severity: **H** = affects correctness or privacy today; **M** = affects the prod
 | F7 | A wrong claim token answers 200 with a not-found body (Phase 1 ledger) | L | `app/m/[claimToken]/page.tsx` calls `notFound()` inside `<Suspense>`, which streams a 200. Either move the lookup before the shell or accept it (bearer tokens; enumeration is infeasible at 256 bits). Decide, then record. |
 | F8 | One shared `.env.local` across worktrees: every checkout migrates the same dev Neon branch (friend #2) | M | Repo workflow fix: per-worktree `.env.local` from a template, or a `DATABASE_URL` guard in `prisma.config.ts` that refuses to run against a branch not named in an allowlist. Document in `docs/environment.md`. |
 | F9 | SMS inbound: `draftMemory()` with `source: SMS` from a webhook | L | Deferred until a vendor is chosen (VoIP.ms account kept, not selected). Requirements already written in the Phase 1 plan §9: idempotent on message id, STOP/HELP handling before any model, outbox with atomic claim, 10DLC. |
+| F11 | The skill runs from the shared main checkout, which other agents move and leave stale (premortem P4) | M | A detached tools worktree at `origin/main` (for example `../jowray_tools`) that the skill fetches and resets before each run; move the `~/.claude/skills/jowray-draft-memory` symlink there. Until then the SKILL.md preflight refuses to run on a checkout that differs from `origin/main`. |
+| F12 | Withdraw or correct a draft (premortem P10) | M | A DRAFT with the wrong excerpt or sender has no admin edit; `deletedAt` works but the unique `sourceRef` still blocks a redraft (409) and reissue answers `not_found`. Add `POST /api/admin/memories/[id]/withdraw` (conditional on `status = DRAFT`: set `deletedAt`, rewrite `sourceRef` to `withdrawn:<id>`), `--withdraw` in the script, and have the 409 report a deleted row. |
+| F13 | Attach a file to a draft from the script (premortem P6; half of F5) | M | `--attach <memoryId> <file>` backed by an admin ticket route limited to DRAFT, so Rob never opens a draft's page (where the only button is the sender's consent). Reuse `createPendingMedia` + the ticket flow + `finalizeUpload`. |
+| F14 | Hint on POST: other live memories with the same contributor email (premortem P8) | L | A follow-up Gmail message ("here's the photo") has a new id and makes a second draft. Return `sameEmail: [{ memoryId, status }]` from `POST /api/admin/memories` and have the skill show them to Rob before drafting. |
 | F10 | Draft expiry or cleanup for memories nobody ever shares | L | Decide a policy (keep forever vs soft-delete after N months with Rob's say-so). A cron step (g) over `status = DRAFT AND createdAt < now - N`. Not urgent: drafts are invisible and cost nothing. |
 
 ---

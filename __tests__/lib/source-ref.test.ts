@@ -21,13 +21,21 @@ describe("gmailSourceRef", () => {
 describe("smsSourceRef", () => {
   it("hashes the E.164 number with the text's timestamp; the number never appears in clear", () => {
     const ref = smsSourceRef("+14105551234", "2026-11-03T14:05:00Z");
-    expect(ref).toBe(`sms:${sha("+14105551234|2026-11-03T14:05:00Z").slice(0, 32)}`);
+    expect(ref).toBe(`sms:${sha("+14105551234|2026-11-03T14:05Z").slice(0, 32)}`);
     expect(ref).not.toContain("4105551234");
     expect(ref).toMatch(SOURCE_REF_PATTERN);
   });
 
   it("gives two texts from the same number different refs", () => {
     expect(smsSourceRef("+14105551234", "2026-11-03T14:05:00Z")).not.toBe(smsSourceRef("+14105551234", "2026-11-03T15:05:00Z"));
+  });
+
+  it("canonicalises the timestamp to UTC at minute precision, so a retyped zone or seconds cannot make a second draft", () => {
+    const a = smsSourceRef("+14105551234", "2026-11-03T10:05:00-04:00");
+    expect(a).toBe(smsSourceRef("+14105551234", "2026-11-03T14:05Z"));
+    expect(a).toBe(smsSourceRef("+14105551234", "2026-11-03T14:05:37.250Z"));
+    expect(a).toBe(`sms:${sha("+14105551234|2026-11-03T14:05Z").slice(0, 32)}`);
+    expect(() => smsSourceRef("+14105551234", "yesterday")).toThrow(/timestamp/);
   });
 
   it("rejects a number that is not E.164", () => {
@@ -40,8 +48,15 @@ describe("otherSourceRef", () => {
     const original = "Dear Rob,\n\nJo taught me to quilt.\n\nLove, Pat";
     const ref = otherSourceRef("Pat@Example.com", original);
     expect(ref).toBe(`other:${sha(`pat@example.com|${original}`).slice(0, 32)}`);
+    expect(otherSourceRef("a@example.com", "same words")).not.toBe(otherSourceRef("a@example.com", "other words"));
     expect(ref).not.toContain("example.com");
     expect(ref).toMatch(SOURCE_REF_PATTERN);
+  });
+
+  it("canonicalises the text (NFC, LF line ends, trailing whitespace and blank lines dropped) so a re-paste matches", () => {
+    const a = otherSourceRef("pat@example.com", "Dear Rob,\r\n\r\nJo taught me to quilt.  \r\n\r\nLove, Pat\r\n\r\n");
+    expect(a).toBe(otherSourceRef("pat@example.com", "Dear Rob,\n\nJo taught me to quilt.\n\nLove, Pat"));
+    expect(otherSourceRef("pat@example.com", "caf\u00e9")).toBe(otherSourceRef("pat@example.com", "cafe\u0301"));
   });
 
   it("gives two people with identical words different refs", () => {

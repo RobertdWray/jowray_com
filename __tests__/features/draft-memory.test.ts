@@ -69,7 +69,8 @@ describe("draftMemory", () => {
     expect(result.memoryId).toBe(memory.id);
     expect(memory).toMatchObject({ type: "TEXT", status: "DRAFT", source: "EMAIL", sourceRef: "gmail:1a1a2317fba34eec", consentedAt: null, consentVersion: "2026-11-v2", visibility: "PUBLIC", notifyWhenPosted: true, contributorNote: valid.note });
     expect(memory.claimTokenHash).toBe(hashClaimToken(result.claimToken));
-    expect(contributors[0]).toMatchObject({ memorialId: "memorial_1", name: "Joyce Gilley", email: "joyce@example.com", relationship: "Friend from church", contactOptIn: true });
+    // Preferences are the person's to give: nothing is opted in until they press Share (the page prefills both on).
+    expect(contributors[0]).toMatchObject({ memorialId: "memorial_1", name: "Joyce Gilley", email: "joyce@example.com", relationship: "Friend from church", contactOptIn: false });
     expect(revisions).toHaveLength(1);
     expect(revisions[0]).toMatchObject({ memoryId: memory.id, changedVia: "ADMIN", before: {} });
     expect(revisions[0]!.after).toMatchObject({ note: valid.note, name: "Joyce Gilley", relationship: "Friend from church", source: "EMAIL", sourceRef: "gmail:1a1a2317fba34eec" });

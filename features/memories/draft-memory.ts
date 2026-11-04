@@ -72,8 +72,9 @@ export async function draftMemory(raw: unknown): Promise<DraftMemoryResult> {
           email: input.contributor.email,
           phone: input.contributor.phone ?? null,
           relationship: input.contributor.relationship ?? null,
-          // Same default as the /share form's checkbox; the person can turn it off on the claim page.
-          contactOptIn: true,
+          // Preferences are the person's to give: nothing is opted in until they press Share
+          // (the claim page prefills both checkboxes on, like the /share form).
+          contactOptIn: false,
         },
       });
       const memory = await tx.memory.create({
