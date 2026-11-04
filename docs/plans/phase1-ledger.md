@@ -38,8 +38,8 @@ Authoritative record of what has already happened. Read every copy (main, open P
 
 - [ ] `preview/docs/bootstrap-report` Neon branch deleted by hand (Task 1): date
 - [x] `main` ruleset created (Task 1 step 5): id **26431160**, 2026-11-03, requires a pull request and the `ci` status check, blocks deletion and force-push; recorded on `docs/phase1-close`
-- [ ] WAF rate-limit rule created (Task 10): rule id, date
-- [ ] Spend Management hard pause set (Task 10): amount, date
+- [x] WAF rate-limit rule created (Task 10): **`rule_public_paths_rate_limit_CLONBI`** ("Public paths rate limit"), 2026-11-04, created and published with `vercel firewall rules add` / `vercel firewall publish` (CLI 65.9.0). Path prefix `/share` OR `/api/upload` OR `/api/media/` OR `/m/`; **1200 requests per IP per 600 s** (fixed window, the Pro maximum), action `rate_limit` (429). Raised from the plan's example of 20 per 10 min (Rob, 2026-11-04): each file costs about 3 requests from the visitor's IP (ticket, upload token, finalize), so a 30-photo upload is about 100, and relatives may share one Wi-Fi. Upload bytes go to Blob directly and are not counted. Check: `vercel firewall rules inspect rule_public_paths_rate_limit_CLONBI`; `https://www.jowray.com/share` 200 after publish.
+- [ ] Spend Management hard pause set (Task 10): amount, date. **Not set as a team pause** (Rob, 2026-11-04): Spend Management only pauses every project on `rob-wrays-projects` (about 20 production sites, TrayVerify included), the existing team budget is $200 with pause off and was at $117.53 (59%) that day. Decision: keep the notify-only team budget and pause **jowray.com only**; design pending (the budget webhook fires on team spend, not this project's).
 - [ ] SendGrid interim single-sender verification added / removed (Task 6): dates
 
 ## Task 0 — Inventory, decisions
