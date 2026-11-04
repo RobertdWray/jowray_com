@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { claimMediaRefSchema, replaceRequestSchema } from "@/lib/validations/media";
+import { claimMediaRefSchema, mediaChangesSchema, replaceRequestSchema } from "@/lib/validations/media";
 
 const TOKEN = "t".repeat(43);
 
@@ -25,5 +25,13 @@ describe("replaceRequestSchema", () => {
     const base = { claimToken: TOKEN, mediaId: randomUUID() };
     expect(replaceRequestSchema.safeParse(base).success).toBe(false);
     expect(replaceRequestSchema.parse({ ...base, file: { name: "b.jpg", type: "image/jpeg", size: 10 } }).file).toEqual({ name: "b.jpg", type: "image/jpeg", size: 10 });
+  });
+});
+
+describe("mediaChangesSchema", () => {
+  it("accepts any subset of caption, date and place, trimming and nulling empties", () => {
+    expect(mediaChangesSchema.parse({ caption: "  her desk ", place: "" })).toEqual({ caption: "her desk", place: null });
+    expect(mediaChangesSchema.parse({})).toEqual({});
+    expect(mediaChangesSchema.safeParse({ caption: "x".repeat(2001) }).success).toBe(false);
   });
 });

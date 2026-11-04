@@ -1,8 +1,10 @@
 "use server";
 
+import { completeSubmission as completeSubmissionFeature, type ConfirmResult } from "@/features/memories/confirm";
 import {
   createMemory as createMemoryFeature,
   createUploadTicket as createUploadTicketFeature,
+  issueUploadTicket as issueUploadTicketFeature,
   type CreateMemoryResult,
   type UploadTicketResult,
 } from "@/features/memories/create-memory";
@@ -22,4 +24,12 @@ export async function createUploadTicket(input: unknown): Promise<UploadTicketRe
 
 export async function finalizeUpload(input: { ticket: UploadTicket; claimToken: string }): Promise<FinalizeResult> {
   return finalizeUploadFeature(input);
+}
+
+export async function issueUploadTicket(input: unknown): Promise<UploadTicketResult> {
+  return issueUploadTicketFeature(input);
+}
+
+export async function completeSubmission(input: { claimToken: string }): Promise<ConfirmResult> {
+  return completeSubmissionFeature(input);
 }

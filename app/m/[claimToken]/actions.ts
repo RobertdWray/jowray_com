@@ -5,6 +5,7 @@ import {
   type ClaimMediaResult,
   removeMediaFromClaim,
   type ClaimUpdateResult,
+  updateMediaFromClaim as updateMediaFromClaimFeature,
   updateMemoryFromClaim,
 } from "@/features/memories/claim";
 import {
@@ -40,4 +41,8 @@ export async function removeFile(input: unknown): Promise<ClaimMediaResult> {
 
 export async function cancelReservation(input: unknown): Promise<ClaimMediaResult> {
   return cancelReservationFeature(input);
+}
+
+export async function updateMediaWords(input: { claimToken: string; mediaId: string; changes: unknown }): Promise<ClaimMediaResult> {
+  return updateMediaFromClaimFeature(input);
 }

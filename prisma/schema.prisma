@@ -131,6 +131,7 @@ model Memory {
   status          MemoryStatus   @default(PENDING)
   analysisStatus  AnalysisStatus @default(NOT_STARTED)
   claimTokenHash  String         @unique     // sha256 of the 32-byte base64url token; the raw token is never stored [C1]
+  uploadLeaseUntil DateTime?             // submission lease: set/renewed while the contributor is still sending files; cron (d)/(e) wait for it to pass
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
   deletedAt       DateTime?
@@ -160,6 +161,9 @@ model Media {
   height           Int?
   capturedAt       DateTime?                // from EXIF when present
   exif             Json?
+  caption          String?                  // per-file words from the contributor (max 2000); the memory's contributorNote stays the shared story
+  approxDateText   String?                  // per-file "roughly when" (max 120), independent of the memory's
+  place            String?                  // per-file "where" (max 200), independent of the memory's
   deletedAt        DateTime?                // soft delete: removed file, cancelled reservation or cancelled replacement; blobs purged by cron step (f)
   replacesMediaId  String?                  // set on a PENDING replacement; the target is retired when this row reaches READY (one-to-many so a FAILED attempt can be retried)
   sortOrder        Int         @default(0)  // display order chosen by the contributor; a replacement copies its target's

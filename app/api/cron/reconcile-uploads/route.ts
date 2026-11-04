@@ -128,9 +128,12 @@ export async function GET(request: NextRequest): Promise<Response> {
   }
 
   // (d) Emails that failed (with retries left and due) or stalled in PENDING.
+  // A memory whose submission lease is open is still receiving files; its one
+  // email waits (confirmMemory would answer `leased` anyway).
+  const leaseClosed = { OR: [{ uploadLeaseUntil: null }, { uploadLeaseUntil: { lt: new Date(now) } }] };
   const retryable = await db.emailLog.findMany({
     where: {
-      memory: { deletedAt: null },
+      memory: { deletedAt: null, ...leaseClosed },
       OR: [
         { status: "FAILED", attempts: { lt: EMAIL_MAX_ATTEMPTS }, nextAttemptAt: { lte: new Date(now) } },
         { status: "PENDING", createdAt: { lt: new Date(now - 15 * MINUTE_MS) } },
@@ -164,7 +167,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       createdAt: { lt: new Date(now - CONFIRM_MIN_AGE_MS) },
       contributor: { email: { not: null } },
       emails: { none: {} },
-      OR: [{ type: "TEXT" }, { contributorNote: { not: null } }, { media: { some: { status: "READY", deletedAt: null } } }],
+      AND: [leaseClosed, { OR: [{ type: "TEXT" }, { contributorNote: { not: null } }, { media: { some: { status: "READY", deletedAt: null } } }] }],
     },
     orderBy: { createdAt: "asc" },
     take: 50,
