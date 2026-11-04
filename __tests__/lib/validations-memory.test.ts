@@ -78,6 +78,10 @@ describe("draftMemoryInputSchema", () => {
     expect(parsed.contributor.phone).toBeUndefined();
   });
 
+  it("trims and lower-cases a padded address before checking it (zod 4 checks the format first unless piped)", () => {
+    expect(draftMemoryInputSchema.parse({ ...valid, contributor: { email: "  Joyce@Example.com " } }).contributor.email).toBe("joyce@example.com");
+  });
+
   it("requires a valid email: an admin draft is only ever reached through the sender's address", () => {
     expect(draftMemoryInputSchema.safeParse({ ...valid, contributor: { name: "Joyce" } }).success).toBe(false);
     expect(draftMemoryInputSchema.safeParse({ ...valid, contributor: { email: "not-an-address" } }).success).toBe(false);

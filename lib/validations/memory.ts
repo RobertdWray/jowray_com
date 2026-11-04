@@ -68,7 +68,8 @@ export const SOURCE_REF_PATTERN = /^(?:gmail:[0-9a-f]{8,32}|sms:[0-9a-f]{32}|oth
 export const draftMemoryInputSchema = z.object({
   contributor: z.object({
     name: optionalText(120),
-    email: z.email("Enter a valid email address").trim().toLowerCase().max(254),
+    // Trim and lower-case first, then check the format: zod 4's `z.email().trim()` would check the padded string.
+    email: z.string().trim().toLowerCase().max(254).pipe(z.email("Enter a valid email address")),
     relationship: optionalText(120),
     phone: z.string().trim().max(40).optional(),
   }),
