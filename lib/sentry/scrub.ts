@@ -11,7 +11,8 @@ export interface StreamedSpan {
 }
 
 /**
- * Claim tokens travel in the URL (`/m/<token>`, `?t=<token>`). Sentry events,
+ * Claim tokens travel in the URL (`/m/<token>`, `?t=<token>`), and the admin
+ * entry key in a fragment (`/admin/enter#key=<secret>`). Sentry events,
  * transactions, spans and breadcrumbs all carry URLs, so every one of them is
  * passed through here on the server and in the browser before it leaves the
  * process. Pure functions: no Sentry calls, safe in Client Components.
@@ -26,10 +27,12 @@ export interface StreamedSpan {
 // A claim path is `/m/` followed by a base64url token (16+ chars); the token
 // may be followed by anything (slash, query, whitespace in a log message).
 const CLAIM_PATH = /\/m\/[A-Za-z0-9_-]{16,}/g;
-// Every `t=` parameter in a full URL (`?t=…`, `&t=…`) or a bare query string
-// (`t=…`), stopping at `&`, `#` or whitespace; the delimiter is not consumed
-// so consecutive `t=` parameters are all matched.
-const TOKEN_QUERY = /(^|[?&])t=[^&#\s]*(?=[&#\s]|$)/g;
+// Every `t=` (claim token) or `key=` (admin entry key) parameter in a full URL
+// (`?t=…`, `&t=…`, `#key=…`) or a bare query string (`t=…`), stopping at `&`,
+// `#` or whitespace; the delimiter is not consumed so consecutive parameters
+// are all matched. `#` is a delimiter because the admin entry link carries its
+// key in the fragment and the browser SDK records `location.href` with it.
+const TOKEN_QUERY = /(^|[?&#])(t|key)=[^&#\s]*(?=[&#\s]|$)/g;
 
 export function scrubUrl(url: string): string {
   const withoutPath = url.replace(CLAIM_PATH, "/m/[claimToken]");
@@ -39,8 +42,10 @@ export function scrubUrl(url: string): string {
   }
   return withoutToken
     .replace(/\?&+/g, "?")
+    .replace(/#&+/g, "#")
     .replace(/&&+/g, "&")
     .replace(/[?&](?=[#\s]|$)/g, "")
+    .replace(/#(?=\s|$)/g, "")
     .replace(/^&+/, "");
 }
 

@@ -3,7 +3,9 @@ import { type NextRequest, NextResponse } from "next/server";
 import { confirmSubmission } from "@/features/memories/complete-submission";
 import { confirmMemory } from "@/features/memories/confirm";
 import { DERIVED_KINDS, deriveMedia, MAX_DECODE_ATTEMPTS, MAX_PIXELS, STALE_CLAIM_MS } from "@/features/memories/derive-media";
+import { TX_OPTIONS } from "@/features/memories/create-memory";
 import { computeChecksum, recordMedia } from "@/features/memories/ingest-upload";
+import { lockMemory } from "@/features/memories/lock";
 import { ADMIN_ALERT_SINCE, notifyAdminsOfMemory } from "@/features/memories/notify-admins";
 import { ADMIN_ALERT_WHERE, SITE_EMAIL_WHERE } from "@/features/memories/site-email";
 import { safeEqualHex } from "@/lib/claim-token";
@@ -34,6 +36,8 @@ const EMAIL_MAX_ATTEMPTS = 5;
 const EVENT_MAX_ATTEMPTS = 3;
 /** A cancelled reservation may still receive bytes until its ticket (15 min) and Blob client token (1 h) have both expired. */
 const CANCELLED_RESERVATION_GRACE_MS = UPLOAD_WINDOW_MS;
+/** Step (f): a memory deleted from the admin page keeps its files this long, so a Restore within 30 days brings everything back. */
+const DELETED_MEMORY_GRACE_MS = 30 * 24 * HOUR_MS;
 /** Step (g): a few photos per run, each decode bounded; the shared run deadline still applies. */
 const DERIVE_BATCH = 3;
 const DERIVE_DEADLINE_MS = 30_000;
@@ -322,20 +326,32 @@ export async function GET(request: NextRequest): Promise<Response> {
     }
   }
 
-  // (f) Purge: blobs of soft-deleted memories and of files removed through the
-  // claim page, only those this environment uploaded (preview/dev Neon branches
-  // hold copies of production rows and share the store). Only rows with a blob
-  // still recorded are selected, so a purged row is never re-selected.
-  // Only rows with outstanding work are selected (a recorded blob, or derived
-  // copies that are not a fresh in-flight claim), so a purged row is never
-  // re-selected and a worker is never raced for a key it is still writing.
+  // (f) Purge: blobs of soft-deleted memories (after a 30-day grace, so a
+  // Restore keeps the files) and of files removed through the claim page, only
+  // those this environment uploaded (preview/dev Neon branches hold copies of
+  // production rows and share the store). Only rows with outstanding work are
+  // selected (a recorded blob, or derived copies that are not a fresh in-flight
+  // claim), so a finished row is never re-selected and a worker is never raced
+  // for a key it is still writing. Three phases per row (admin-page plan §3.6):
+  //   1. claim, in a transaction under lockMemory: re-check eligibility, set
+  //      `purgedAt` and flip READY → FAILED, commit. No storage call inside the
+  //      lock, so TX_OPTIONS is never at the mercy of the network.
+  //   2. bytes, no lock: delete the original, the copies and the poster staging
+  //      key; every delete is idempotent.
+  //   3. pointer: drop the derived rows and null `blobUrl`.
+  // A row whose phase 2 or 3 failed (or whose process died) is re-selected by
+  // `purgedAt` until nothing is left; a Restore after the claim cannot undo it,
+  // which is why the mark is written before the first byte goes.
   const staleClaimBefore = new Date(now - STALE_CLAIM_MS);
+  const deletedMemoryBefore = new Date(now - DELETED_MEMORY_GRACE_MS);
+  const cancelledBefore = new Date(now - CANCELLED_RESERVATION_GRACE_MS);
   const orphanedBlobs = await db.media.findMany({
     where: {
-      // A cancelled file's Blob token may still be valid; wait for it to expire so the freed pathname cannot be refilled.
       OR: [
-        { memory: { deletedAt: { not: null } } },
-        { deletedAt: { not: null }, createdAt: { lt: new Date(now - CANCELLED_RESERVATION_GRACE_MS) } },
+        { purgedAt: { not: null } },
+        { memory: { deletedAt: { lt: deletedMemoryBefore } } },
+        // A cancelled file's Blob token may still be valid; wait for it to expire so the freed pathname cannot be refilled.
+        { deletedAt: { not: null }, createdAt: { lt: cancelledBefore } },
       ],
       AND: [
         {
@@ -358,6 +374,32 @@ export async function GET(request: NextRequest): Promise<Response> {
       break;
     }
     try {
+      // Phase 1: claim. The locked re-read decides; a Restore that committed first makes the row ineligible.
+      const claimed = await db.$transaction(async (tx) => {
+        await lockMemory(tx, row.memoryId);
+        const fresh = await tx.media.findUniqueOrThrow({
+          where: { id: row.id },
+          select: { purgedAt: true, status: true, deletedAt: true, createdAt: true, memory: { select: { deletedAt: true } } },
+        });
+        if (fresh.purgedAt !== null) {
+          // Already claimed. A READY row with the mark must never serve again, whoever left it that way.
+          if (fresh.status === "READY") {
+            await tx.media.update({ where: { id: row.id }, data: { status: "FAILED" } });
+          }
+          return true;
+        }
+        const memoryGone = fresh.memory.deletedAt !== null && fresh.memory.deletedAt < deletedMemoryBefore;
+        const fileRemoved = fresh.deletedAt !== null && fresh.createdAt < cancelledBefore;
+        if (!memoryGone && !fileRemoved) {
+          return false;
+        }
+        await tx.media.update({ where: { id: row.id }, data: { purgedAt: new Date(now), ...(fresh.status === "READY" && { status: "FAILED" as const }) } });
+        return true;
+      }, TX_OPTIONS);
+      if (!claimed) {
+        continue;
+      }
+      // Phase 2: bytes. Idempotent deletes, outside any lock.
       if (row.blobUrl !== null) {
         await storage.del(row.storageKey);
       }
@@ -369,10 +411,13 @@ export async function GET(request: NextRequest): Promise<Response> {
       if (row.mimeType.startsWith("video/")) {
         await storage.del(posterStagingKeyFor(row.storageKey));
       }
+      // Phase 3: pointer.
       if (copies.length > 0) {
         await db.derivedMedia.deleteMany({ where: { mediaId: row.id, storageKey: { in: copies.map((c) => c.storageKey) } } });
       }
-      await db.media.update({ where: { id: row.id }, data: { blobUrl: null } });
+      if (row.blobUrl !== null) {
+        await db.media.update({ where: { id: row.id }, data: { blobUrl: null } });
+      }
       counts.deletedBlobsRemoved += 1;
     } catch (error) {
       counts.errors += 1;
