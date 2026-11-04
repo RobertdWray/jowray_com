@@ -120,3 +120,268 @@ describe("scrubUrl leaves ordinary text alone", () => {
     expect(scrubUrl("/share?utm=1&st=2")).toBe("/share?utm=1&st=2");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Scrubber v2 (plan 2026-11-04 §7.3): bearer secrets by key, not only by URL.
+// ---------------------------------------------------------------------------
+import { scrubHeaders, scrubRecordingEvent, scrubReplayEvent, scrubSecrets } from "@/lib/sentry/scrub";
+import { SECRET_FIELD_KEYS, SECRET_HEADER_KEYS, SECRET_KEY_FRAGMENTS } from "@/lib/sentry/secrets";
+
+const TEST_TOKEN = "SENTRYTEST_" + "a".repeat(32);
+const TEST_TOKEN_2 = "SENTRYTEST_" + "b".repeat(32);
+const FILTERED = "[Filtered]";
+
+describe("secrets constants", () => {
+  it("name the bearer fields, key fragments and headers", () => {
+    expect(SECRET_FIELD_KEYS).toEqual(["claimToken", "claimTokens", "claimLink", "ticket", "clientPayload", "sig"]);
+    expect(SECRET_KEY_FRAGMENTS).toEqual(["token", "ticket"]);
+    expect(SECRET_HEADER_KEYS).toEqual(["cookie", "authorization", "x-vercel-protection-bypass", "x-vercel-signature", "next-router-state-tree"]);
+  });
+});
+
+describe("scrubSecrets", () => {
+  it("filters the completeSubmission input (claimTokens array) whatever the value type", () => {
+    expect(scrubSecrets({ claimTokens: [TEST_TOKEN, TEST_TOKEN_2], anchorId: "mem_1" })).toEqual({ claimTokens: FILTERED, anchorId: "mem_1" });
+  });
+
+  it("filters a createSubmission response as an object and as JSON text", () => {
+    const object = scrubSecrets({ memories: [{ id: "mem_1", claimToken: TEST_TOKEN }] });
+    expect(JSON.stringify(object)).not.toContain(TEST_TOKEN);
+    expect(object).toEqual({ memories: [{ id: "mem_1", claimToken: FILTERED }] });
+    const text = scrubSecrets(JSON.stringify({ memories: [{ id: "mem_1", claimToken: TEST_TOKEN }] })) as string;
+    expect(text).not.toContain(TEST_TOKEN);
+    expect(text).toContain('"id":"mem_1"');
+    expect(text).toContain(`"claimToken":"${FILTERED}"`);
+  });
+
+  it("filters an upload ticket object and the keys inside it, in objects and in JSON text", () => {
+    expect(scrubSecrets({ ticket: { sig: TEST_TOKEN, pathname: "uploads/x" }, memoryId: "mem_1" })).toEqual({ ticket: FILTERED, memoryId: "mem_1" });
+    const text = scrubSecrets(`{"ticket":{"sig":"${TEST_TOKEN}","pathname":"uploads/x"},"memoryId":"mem_1"}`) as string;
+    expect(text).not.toContain(TEST_TOKEN);
+    expect(text).toContain('"memoryId":"mem_1"');
+  });
+
+  it("matches keys case-insensitively and by fragment (future *Token* and *Ticket* fields)", () => {
+    expect(scrubSecrets({ ClaimToken: TEST_TOKEN, uploadTicketId: "t_1", accessTOKEN: TEST_TOKEN_2, okay: 1 })).toEqual({ ClaimToken: FILTERED, uploadTicketId: FILTERED, accessTOKEN: FILTERED, okay: 1 });
+    expect(scrubSecrets(`{"accessToken":"${TEST_TOKEN}","ok":true}`)).toBe(`{"accessToken":"${FILTERED}","ok":true}`);
+  });
+
+  it("walks nested arrays", () => {
+    const out = scrubSecrets([[{ claimLink: `https://x.test/m/${TEST_TOKEN}` }], [`/m/${TEST_TOKEN}`]]);
+    expect(JSON.stringify(out)).not.toContain(TEST_TOKEN);
+    expect(out).toEqual([[{ claimLink: FILTERED }], ["/m/[claimToken]"]]);
+  });
+
+  it("still removes the token from truncated JSON text", () => {
+    const truncated = `{"memories":[{"id":"mem_1","claimToken":"${TEST_TOKEN.slice(0, 20)}`;
+    expect(scrubSecrets(truncated)).not.toContain(TEST_TOKEN.slice(0, 20));
+    const truncatedArray = `{"claimTokens":["${TEST_TOKEN}","${TEST_TOKEN_2.slice(0, 12)}`;
+    expect(scrubSecrets(truncatedArray)).not.toContain("SENTRYTEST_");
+  });
+
+  it("scrubs URLs inside ordinary strings and leaves other values alone", () => {
+    expect(scrubSecrets({ url: `/api/media/1?t=${TEST_TOKEN}`, count: 2, flag: true, nothing: null })).toEqual({ url: "/api/media/1", count: 2, flag: true, nothing: null });
+  });
+
+  it("stops at the depth cap instead of recursing forever", () => {
+    const root: Record<string, unknown> = {};
+    let cursor = root;
+    for (let depth = 0; depth < 30; depth += 1) {
+      const next: Record<string, unknown> = {};
+      cursor.child = next;
+      cursor = next;
+    }
+    cursor.claimToken = TEST_TOKEN;
+    expect(() => scrubSecrets(root)).not.toThrow();
+  });
+});
+
+describe("scrubHeaders", () => {
+  it("drops the bearer headers (any case) and keeps the rest", () => {
+    expect(scrubHeaders({ "X-Vercel-Protection-Bypass": TEST_TOKEN, cookie: "a=b", Authorization: "Bearer x", "content-type": "application/json" })).toEqual({ "content-type": "application/json" });
+  });
+});
+
+describe("scrubEvent with the alpha data policy", () => {
+  it("scrubs contexts, extra, request data, request headers and frame locals, and keeps the user", () => {
+    const event = scrubEvent({
+      user: { email: "sentry-test@jowray.com", username: "Sentry Test" },
+      contexts: { server_action_input: { claimTokens: [TEST_TOKEN], note: "keep" } },
+      extra: { ticket: { sig: TEST_TOKEN }, memoryId: "mem_1" },
+      request: {
+        url: `https://x.test/m/${TEST_TOKEN}`,
+        data: JSON.stringify({ claimToken: TEST_TOKEN }),
+        headers: { "x-vercel-protection-bypass": TEST_TOKEN, "content-type": "application/json" },
+      },
+      exception: { values: [{ type: "Error", value: "boom", stacktrace: { frames: [{ filename: "a.ts", vars: { claimToken: TEST_TOKEN, ticket: { sig: TEST_TOKEN }, memoryId: "mem_1" } }] } }] },
+    });
+    const text = JSON.stringify(event);
+    expect(text).not.toContain(TEST_TOKEN);
+    expect(event.user).toEqual({ email: "sentry-test@jowray.com", username: "Sentry Test" });
+    expect(event.contexts?.server_action_input).toEqual({ claimTokens: FILTERED, note: "keep" });
+    expect(event.extra).toEqual({ ticket: FILTERED, memoryId: "mem_1" });
+    expect(event.request?.headers).toEqual({ "content-type": "application/json" });
+    expect(event.exception?.values?.[0]?.stacktrace?.frames?.[0]?.vars).toEqual({ claimToken: FILTERED, ticket: FILTERED, memoryId: "mem_1" });
+  });
+});
+
+describe("scrubSpan / scrubLog / scrubBreadcrumb also filter secret keys", () => {
+  it("filters secret keys in span attributes, log attributes and breadcrumb data", () => {
+    expect(JSON.stringify(scrubSpan({ name: "x", attributes: { "http.request.body": `{"claimToken":"${TEST_TOKEN}"}`, claimToken: { value: TEST_TOKEN, type: "string" } } }))).not.toContain(TEST_TOKEN);
+    expect(JSON.stringify(scrubLog({ message: "m", attributes: { claimLink: `https://x.test/m/${TEST_TOKEN}` } }))).not.toContain(TEST_TOKEN);
+    expect(JSON.stringify(scrubBreadcrumb({ category: "xhr", data: { ticket: { sig: TEST_TOKEN } } }))).not.toContain(TEST_TOKEN);
+  });
+});
+
+describe("scrubReplayEvent", () => {
+  it("scrubs the urls of a replay_event and returns other events unchanged", () => {
+    const replay = scrubReplayEvent({ type: "replay_event", urls: [`https://x.test/m/${TEST_TOKEN}`, "/share"] } as never);
+    expect(replay).toEqual({ type: "replay_event", urls: ["https://x.test/m/[claimToken]", "/share"] });
+    const error = { message: `not a replay /m/${TEST_TOKEN}` };
+    expect(scrubReplayEvent(error as never)).toBe(error);
+  });
+});
+
+describe("scrubRecordingEvent", () => {
+  it("filters tokens out of replay network bodies, urls and console args", () => {
+    const out = scrubRecordingEvent({
+      type: 5,
+      timestamp: 1,
+      data: {
+        tag: "performanceSpan",
+        payload: {
+          op: "resource.fetch",
+          description: `/api/media/1?t=${TEST_TOKEN}`,
+          data: { request: { body: JSON.stringify({ claimTokens: [TEST_TOKEN] }) }, response: { body: `{"memories":[{"claimToken":"${TEST_TOKEN}"}]}` } },
+        },
+      },
+    });
+    expect(JSON.stringify(out)).not.toContain(TEST_TOKEN);
+    expect(out.type).toBe(5);
+    expect((out.data as { payload: { description: string } }).payload.description).toBe("/api/media/1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Whole-stack review (2026-11-04): the app's real wire shapes, as text.
+// ---------------------------------------------------------------------------
+describe("scrubSecrets on the app's real wire shapes", () => {
+  const ticket = { mediaId: "med_1", memoryId: "mem_1", pathname: "originals/mem_1/a.jpg", mimeType: "image/jpeg", maxBytes: 100, expiresAt: 1, sig: TEST_TOKEN };
+
+  it("filters the ticket signature inside the double-encoded clientPayload the Blob client sends to /api/upload", () => {
+    const body = JSON.stringify({ type: "blob.generate-client-token", payload: { pathname: ticket.pathname, callbackUrl: "https://www.jowray.com/api/upload", clientPayload: JSON.stringify(ticket), multipart: true } });
+    const out = scrubSecrets(body) as string;
+    expect(out).not.toContain(TEST_TOKEN);
+    expect(out).toContain('"pathname":"originals/mem_1/a.jpg"');
+    expect(out).toContain('"multipart":true');
+  });
+
+  it("filters a double-encoded ticket and a double-encoded claim token at any depth", () => {
+    const flight = JSON.stringify([JSON.stringify({ ticket: { sig: TEST_TOKEN } }), { nested: JSON.stringify({ changes: { note: "x" }, claimToken: TEST_TOKEN_2 }) }]);
+    const out = scrubSecrets(flight) as string;
+    expect(out).not.toContain("SENTRYTEST_");
+    expect(out).toContain("note");
+  });
+
+  it("filters nested arrays and arrays of objects under a secret key, and values with escaped quotes", () => {
+    expect(scrubSecrets(`{"claimTokens":[["${TEST_TOKEN}"],["${TEST_TOKEN_2}"]],"ok":1}`)).not.toContain("SENTRYTEST_");
+    expect(scrubSecrets(`{"ticket":[{"sig":"${TEST_TOKEN}","a":[1]},{"sig":"${TEST_TOKEN_2}"}],"ok":1}`)).not.toContain("SENTRYTEST_");
+    expect(scrubSecrets(`{"note":"she said \\"hi\\"","claimToken":"${TEST_TOKEN}"}`)).not.toContain(TEST_TOKEN);
+    expect(scrubSecrets(`{"outer":{"inner":{"x":1}},"claimToken":"${TEST_TOKEN}"}`)).not.toContain(TEST_TOKEN);
+  });
+
+  it("still filters truncated double-encoded text", () => {
+    const body = JSON.stringify({ payload: { clientPayload: JSON.stringify(ticket) } });
+    expect(scrubSecrets(body.slice(0, body.indexOf("sig") + 30))).not.toContain(TEST_TOKEN.slice(0, 12));
+  });
+});
+
+describe("scrubReplayEvent covers every event type beforeSend never sees", () => {
+  it("scrubs request.url and the feedback context of a feedback event, and request.url of a replay event", () => {
+    const feedback = scrubReplayEvent({ type: "feedback", request: { url: `https://www.jowray.com/m/${TEST_TOKEN}` }, contexts: { feedback: { url: `https://www.jowray.com/m/${TEST_TOKEN}`, message: "it broke" } } } as never);
+    expect(JSON.stringify(feedback)).not.toContain(TEST_TOKEN);
+    expect(JSON.stringify(feedback)).toContain("it broke");
+    const replay = scrubReplayEvent({ type: "replay_event", request: { url: `https://www.jowray.com/m/${TEST_TOKEN}?t=${TEST_TOKEN}` }, urls: [`/m/${TEST_TOKEN}`] } as never);
+    expect(JSON.stringify(replay)).not.toContain(TEST_TOKEN);
+    expect((replay as { urls: string[] }).urls).toEqual(["/m/[claimToken]"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Team Code Review (Oscar, 2026-11-04): headers, messages, Flight text, depth.
+// ---------------------------------------------------------------------------
+describe("scrubHeaders drops Next's routing headers and scrubs URL-bearing values", () => {
+  it("removes next-router-state-tree (the encoded router state carries the claim-token segment) and scrubs next-url and referer", () => {
+    const tree = encodeURIComponent(JSON.stringify(["", { children: ["m", { children: [["claimToken", TEST_TOKEN, "d"], { children: ["__PAGE__", {}] }] }] }]));
+    const out = scrubHeaders({ "Next-Router-State-Tree": tree, "next-url": `/m/${TEST_TOKEN}`, referer: `https://www.jowray.com/m/${TEST_TOKEN}`, "content-type": "text/plain" });
+    expect(JSON.stringify(out)).not.toContain(TEST_TOKEN);
+    expect(out["Next-Router-State-Tree"]).toBeUndefined();
+    expect(out["next-url"]).toBe("/m/[claimToken]");
+    expect(out["content-type"]).toBe("text/plain");
+    expect(SECRET_HEADER_KEYS).toContain("next-router-state-tree");
+  });
+});
+
+describe("messages get the same key-aware scrubbing as attributes", () => {
+  it("scrubs a serialized ticket in a log message, a breadcrumb message and a span description", () => {
+    const text = JSON.stringify({ ticket: { sig: TEST_TOKEN }, note: "keep" });
+    expect(scrubLog({ message: `upload refused ${text}` }).message).not.toContain(TEST_TOKEN);
+    expect(scrubLog({ message: text }).message).toContain("keep");
+    expect(scrubBreadcrumb({ message: `console: {"sig":"${TEST_TOKEN}"}` }).message).not.toContain(TEST_TOKEN);
+    expect(scrubSpan({ description: `POST /share {"claimTokens":["${TEST_TOKEN}"]}` }).description).not.toContain(TEST_TOKEN);
+  });
+});
+
+describe("the non-JSON fallback fails closed on React Flight text", () => {
+  it("filters nested arrays and objects under a secret key inside a record-prefixed line", () => {
+    const flight = `1:{"claimTokens":[["${TEST_TOKEN}"],["${TEST_TOKEN_2}"]],"anchorId":"mem_1"}\n2:{"ticket":{"sig":"${TEST_TOKEN}","inner":{"deep":[1,2]}},"ok":true}\n`;
+    const out = scrubSecrets(flight) as string;
+    expect(out).not.toContain("SENTRYTEST_");
+    expect(out).toContain('"anchorId":"mem_1"');
+    expect(out).toContain('"ok":true');
+  });
+
+  it("filters escaped keys and values in Flight text, and a truncated nested value to the end of the text", () => {
+    const escaped = `0:["$@1",{\\"claimToken\\":\\"${TEST_TOKEN}\\",\\"note\\":\\"n\\"}]`;
+    expect(scrubSecrets(escaped)).not.toContain(TEST_TOKEN);
+    const truncated = `1:{"ticket":{"sig":"${TEST_TOKEN}","inner":{"deep":[1,`;
+    expect(scrubSecrets(truncated)).not.toContain(TEST_TOKEN);
+  });
+});
+
+describe("the depth cap fails closed", () => {
+  it("replaces anything deeper than the cap with the filtered marker, in objects and in serialized bodies", () => {
+    const root: Record<string, unknown> = {};
+    let cursor = root;
+    for (let depth = 0; depth < 25; depth += 1) {
+      const next: Record<string, unknown> = {};
+      cursor.child = next;
+      cursor = next;
+    }
+    cursor.claimToken = TEST_TOKEN;
+    cursor.note = "deep";
+    expect(JSON.stringify(scrubSecrets(root))).not.toContain(TEST_TOKEN);
+    expect(scrubSecrets(JSON.stringify(root))).not.toContain(TEST_TOKEN);
+    const shallow = { a: { b: { claimToken: TEST_TOKEN, note: "keep" } } };
+    expect(scrubSecrets(shallow)).toEqual({ a: { b: { claimToken: FILTERED, note: "keep" } } });
+  });
+});
+
+describe("the escaped-context scanner is idempotent (regression check M2)", () => {
+  it("keeps the inner JSON string well formed and leaves neighbouring keys alone on repeated passes", () => {
+    const flight = `1:{"p":"{\\"ticket\\":\\"${TEST_TOKEN}\\",\\"b\\":\\"keep\\"}"}`;
+    const once = scrubSecrets(flight) as string;
+    expect(once).not.toContain(TEST_TOKEN);
+    expect(once).toContain('\\"b\\":\\"keep\\"');
+    expect(once).toContain('\\"ticket\\":\\"[Filtered]\\"');
+    expect(scrubSecrets(once)).toBe(once);
+    expect(scrubSecrets(scrubSecrets(once))).toBe(once);
+  });
+
+  it("steps over three-character inner escapes (\\\\n) without overshooting the closing quote", () => {
+    const flight = `1:{"p":"{\\"claimToken\\":\\"${TEST_TOKEN}\\\\n\\",\\"b\\":\\"keep\\"}"}`;
+    const once = scrubSecrets(flight) as string;
+    expect(once).not.toContain(TEST_TOKEN);
+    expect(once).toContain('\\"b\\":\\"keep\\"');
+  });
+});

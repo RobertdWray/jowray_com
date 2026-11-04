@@ -50,7 +50,10 @@ export default withSentryConfig(nextConfig, {
   org: "med3ai",
   project: "jowray_com",
   // Route browser events through this app so ad blockers do not drop them.
-  tunnelRoute: "/monitoring",
+  // Handler mode: app/sentry-tunnel/route.ts forwards only the envelope body
+  // and works behind Vercel Deployment Protection (rewrite mode does not on
+  // SDK 11.9+). The build prints the "tunnel route sends events through" line.
+  tunnelRoute: "/sentry-tunnel",
   telemetry: false,
   // Only CI and Vercel builds print upload logs.
   silent: !process.env.CI,
