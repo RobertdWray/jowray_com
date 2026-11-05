@@ -203,6 +203,10 @@ the h1 'Velma Josephine "Jo" Wray', then the family's text verbatim at body size
 of the story band and the footer line "Jo's obituary"; no nav entry, no red
 button. Links keep their resting color on hover (hover thickens the underline);
 #E7F0E3 on lake green is 4.22:1 and fails AA for 20px regular text (see E17).
+2026-11-04: the family's longer text (childhood, Girls in Action, Towson and the
+blind date, the 1971 wedding) replaced the first draft; the story band now opens
+with two short paragraphs drawn from it, and its pull-quote starts at "Jo loved
+Christmas" so the wedding is told once.
 
 ## 6. Layout
 - Content max-width 1200px, 5% side padding (≥16px on phones).

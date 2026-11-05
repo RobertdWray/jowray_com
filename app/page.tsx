@@ -158,7 +158,21 @@ export default function HomePage() {
           </div>
           <div className="flex min-w-0 flex-[2_1_480px] flex-col gap-5 text-body leading-[1.6]">
             <p>
-              During her career as a lower elementary school teacher, Jo loved nourishing and educating
+              Jo grew up in a family of teachers and church people. Her father Ivan was an Army
+              chaplain, pastor, and special education teacher; her mother Velma taught elementary
+              school and ran a preschool. Jo earned the Girls in Action Queen Regent award, crown,
+              scepter, and cape included, and loved being a queen. When she was very little she tried,
+              and failed, to baptize the family cat.
+            </p>
+            <p>
+              Jo majored in early childhood education at Towson University, where a professor and
+              friend, Barbara Pour, set her up on a blind date with a tall guy named Richard Wray. Jo
+              and her sister peeked through the curtains to check him out. They were married on
+              Christmas Eve in 1971, after her first semester of teaching.
+            </p>
+            <p>
+              With Richard&apos;s support, Jo kept teaching and earned her master&apos;s degree. During
+              her career as a lower elementary school teacher, Jo loved nourishing and educating
               children. Some of her students reached out decades later to let her family know how much
               she meant to them. Being a grandmother to Ava revived Jo&apos;s love of stories, games,
               crafts, and of course, many stuffed animals.
@@ -168,10 +182,9 @@ export default function HomePage() {
               craft involved a heart, Jo loved it even more because of her maiden name, Hart.
             </p>
             <p className="rounded-[14px] bg-[rgb(255_253_248/0.12)] px-[22px] py-[18px] font-display text-[24px] leading-[1.4]">
-              Jo and Richard were married on Christmas Eve. She loved Christmas and supported
-              Richard&apos;s retirement job as a mall Santa. But you&apos;d better not call her Mrs. Claus
-              unless you wanted to get put on the naughty list. Jo Wray stuck to her own name and her
-              own story.
+              Jo loved Christmas and supported Richard&apos;s retirement job as a mall Santa. But
+              you&apos;d better not call her Mrs. Claus unless you wanted to get put on the naughty
+              list. Jo Wray stuck to her own name and her own story.
             </p>
             <p className="text-body">
               <Link
