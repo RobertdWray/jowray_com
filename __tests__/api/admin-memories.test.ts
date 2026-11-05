@@ -49,6 +49,13 @@ describe("POST /api/admin/memories", () => {
     expect(draftMock).toHaveBeenCalledWith(body);
   });
 
+  it("passes originalNoteRecorded: true through unchanged when the feature kept a rewrite's verbatim excerpt", async () => {
+    draftMock.mockResolvedValueOnce({ ok: true, memoryId: "mem_2", claimToken: "t".repeat(43), claimLink: `https://www.jowray.com/m/${"t".repeat(43)}`, originalNoteRecorded: true });
+    const res = await postDraft({ ...body, originalNote: "Dear Rob,\n\nYour mom was a light." }, `Bearer ${SECRET}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, data: { memoryId: "mem_2", claimLink: `https://www.jowray.com/m/${"t".repeat(43)}`, originalNoteRecorded: true } });
+  });
+
   it("400s invalid input and a body that is not JSON", async () => {
     draftMock.mockResolvedValueOnce({ ok: false, code: "invalid", message: "Enter a valid email address" });
     const res = await postDraft({ ...body, contributor: {} }, `Bearer ${SECRET}`);

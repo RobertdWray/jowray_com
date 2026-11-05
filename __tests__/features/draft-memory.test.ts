@@ -72,8 +72,11 @@ describe("draftMemory", () => {
     // Preferences are the person's to give: nothing is opted in until they press Share (the page prefills both on).
     expect(contributors[0]).toMatchObject({ memorialId: "memorial_1", name: "Joyce Gilley", email: "joyce@example.com", relationship: "Friend from church", contactOptIn: false });
     expect(revisions).toHaveLength(1);
-    expect(revisions[0]).toMatchObject({ memoryId: memory.id, changedVia: "ADMIN", before: {} });
+    expect(revisions[0]).toMatchObject({ memoryId: memory.id, changedVia: "ADMIN" });
+    // toMatchObject treats `{}` as "any object", so `before` is pinned with toEqual: a verbatim save must start from nothing.
+    expect(revisions[0]!.before).toEqual({});
     expect(revisions[0]!.after).toMatchObject({ note: valid.note, name: "Joyce Gilley", relationship: "Friend from church", source: "EMAIL", sourceRef: "gmail:1a1a2317fba34eec", approxDateText: null, place: null, visibility: "PUBLIC", status: "DRAFT" });
+    expect(revisions[0]!.after).not.toHaveProperty("originalNote");
     // A verbatim save: nothing to keep apart from the stored words, and the caller is told so.
     expect(result.originalNoteRecorded).toBe(false);
   });
@@ -88,8 +91,12 @@ describe("draftMemory", () => {
     // The row carries the words the sender will see and edit; the sender's exact words live only in the revision.
     expect(memories[0]).toMatchObject({ contributorNote: rewrite, visibility: "FAMILY" });
     expect(revisions).toHaveLength(1);
-    expect(revisions[0]).toMatchObject({ changedVia: "ADMIN", before: { note: original } });
+    expect(revisions[0]).toMatchObject({ changedVia: "ADMIN" });
+    expect(revisions[0]!.before).toEqual({ note: original });
     expect(revisions[0]!.after).toMatchObject({ note: rewrite, visibility: "FAMILY" });
+    // The verbatim excerpt lives only in `before`; the row and `after` carry the words the sender will see.
+    expect(revisions[0]!.after).not.toHaveProperty("originalNote");
+    expect(memories[0]).not.toHaveProperty("originalNote");
   });
 
   it("rejects a missing email, an empty note and a bad sourceRef without writing", async () => {

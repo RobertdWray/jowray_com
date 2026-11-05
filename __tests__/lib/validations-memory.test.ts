@@ -254,6 +254,8 @@ describe("draftMemoryInputSchema", () => {
     expect(draftMemoryInputSchema.parse({ ...valid, originalNote: original }).originalNote).toBe(original);
     expect(draftMemoryInputSchema.safeParse({ ...valid, originalNote: "   " }).success).toBe(false);
     expect(draftMemoryInputSchema.safeParse({ ...valid, originalNote: "x".repeat(10_001) }).success).toBe(false);
+    // Optional means absent, not null: a null would otherwise read as "no original" while looking like a value.
+    expect(draftMemoryInputSchema.safeParse({ ...valid, originalNote: null }).success).toBe(false);
   });
 
   it("only accepts the admin sources and a sourceRef that follows the scheme", () => {
