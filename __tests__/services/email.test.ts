@@ -198,7 +198,15 @@ describe("sendMemoryConfirmation", () => {
   });
 
   it("answers `busy` without a row when the lock wait runs out, so the cron's catch-up finds the send and nothing is lost (#3, #7)", async () => {
-    dbStub.$executeRaw.mockRejectedValueOnce(Object.assign(new Error("canceling statement due to lock timeout"), { code: "P2010", meta: { code: "55P03", message: "canceling statement due to lock timeout" } }));
+    // The shape Prisma 7 + @prisma/adapter-neon produce: P2010 wrapping the adapter's DriverAdapterError, whose `cause` carries the SQLSTATE.
+    const driverAdapterError = Object.assign(new Error("canceling statement due to lock timeout"), {
+      name: "DriverAdapterError",
+      cause: { kind: "postgres", code: "55P03", severity: "ERROR", message: "canceling statement due to lock timeout", originalCode: "55P03", originalMessage: "canceling statement due to lock timeout" },
+    });
+    dbStub.$executeRaw.mockRejectedValueOnce(Object.assign(new Error("Raw query failed. Code: `55P03`. Message: `canceling statement due to lock timeout`"), { name: "PrismaClientKnownRequestError", code: "P2010", meta: { driverAdapterError } }));
+    expect(await sendMemoryConfirmation(base)).toEqual({ sent: false, skipped: "busy" });
+    // The older shape (SQLSTATE in meta.code) is still recognised.
+    dbStub.$executeRaw.mockRejectedValueOnce(Object.assign(new Error("lock timeout"), { code: "P2010", meta: { code: "55P03" } }));
     expect(await sendMemoryConfirmation(base)).toEqual({ sent: false, skipped: "busy" });
     expect(rows).toHaveLength(0);
     expect(sendMock).not.toHaveBeenCalled();
@@ -385,11 +393,18 @@ describe("global outbound ceilings for contributor email (issue #46, D2)", () =>
     expect(sendMock).toHaveBeenCalledTimes(1);
   });
 
-  it("uses the defaults (20 an hour, 100 a day) when the keys are unset", async () => {
-    for (let i = 1; i <= 20; i += 1) {
+  it("uses the defaults (60 an hour, 300 a day) when the keys are unset: a memorial afternoon of 30 relatives never holds a receipt", async () => {
+    for (let i = 1; i <= 60; i += 1) {
       expect((await sendMemoryConfirmation({ ...base, memoryId: `mem_${i}`, to: `p${i}@example.net` })).sent).toBe(true);
     }
-    expect(await sendMemoryConfirmation({ ...base, memoryId: "mem_21", to: "p21@example.net" })).toEqual({ sent: false, skipped: "global_capped" });
+    expect(await sendMemoryConfirmation({ ...base, memoryId: "mem_61", to: "p61@example.net" })).toEqual({ sent: false, skipped: "global_capped" });
+  });
+
+  it("a malformed cap value in the environment falls back to the default instead of stopping every receipt", async () => {
+    process.env.OUTBOUND_HOURLY_CAP = "abc";
+    process.env.OUTBOUND_DAILY_CAP = "0";
+    resetEnvCache();
+    expect((await sendMemoryConfirmation({ ...base, memoryId: "mem_ok", to: "ok@example.net" })).sent).toBe(true);
   });
 });
 

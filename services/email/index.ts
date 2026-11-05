@@ -198,17 +198,29 @@ async function loadOrCreate(tx: Tx, memoryId: string, emailType: EmailType, reci
   return (await tx.emailLog.findUnique({ where: key })) ?? (await tx.emailLog.create({ data: { memoryId, emailType, recipientEmail, recipientKey: recipientKeyField, status: "PENDING" } }));
 }
 
-/** Was this error PostgreSQL giving up on the lock wait (`lock_timeout`)? Prisma wraps it as a raw-query failure with the server code in `meta`. */
+/**
+ * Was this error PostgreSQL giving up on the lock wait (`lock_timeout`)?
+ * With Prisma 7 and `@prisma/adapter-neon` a raw-query failure arrives as a
+ * `P2010` whose `meta.driverAdapterError.cause` is the adapter's
+ * `{ kind: "postgres", code, originalCode, … }` (see `convertDriverError` in
+ * the adapter and the `P2010` wrapper in `@prisma/client/runtime/client.js`).
+ * Older shapes (`meta.code`, a `.code` on the error or on a `.cause` chain)
+ * are accepted too; they cost nothing and keep this robust to an upgrade.
+ */
 function isLockTimeout(error: unknown): boolean {
   const seen = new Set<unknown>();
-  let current: unknown = error;
-  while (typeof current === "object" && current !== null && !seen.has(current)) {
+  const queue: unknown[] = [error];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (typeof current !== "object" || current === null || seen.has(current)) {
+      continue;
+    }
     seen.add(current);
-    const record = current as { code?: unknown; meta?: { code?: unknown }; cause?: unknown };
-    if (record.code === PG_LOCK_NOT_AVAILABLE || record.meta?.code === PG_LOCK_NOT_AVAILABLE) {
+    const record = current as { code?: unknown; originalCode?: unknown; meta?: { code?: unknown; driverAdapterError?: unknown }; cause?: unknown };
+    if (record.code === PG_LOCK_NOT_AVAILABLE || record.originalCode === PG_LOCK_NOT_AVAILABLE || record.meta?.code === PG_LOCK_NOT_AVAILABLE) {
       return true;
     }
-    current = record.cause;
+    queue.push(record.meta?.driverAdapterError, record.cause);
   }
   return false;
 }
