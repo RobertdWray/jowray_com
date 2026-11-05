@@ -1,6 +1,6 @@
 # Family admin page
 
-`https://www.jowray.com/admin`: the family's view of every memory. Plan and decisions: [plans/2026-11-04-admin-page.md](plans/2026-11-04-admin-page.md).
+`https://www.jowray.com/admin`: the family's view of every memory. Plan and decisions: [plans/2026-11-04-admin-page.md](plans/2026-11-04-admin-page.md). What was built and why, in two pages: [features/admin-panel.md](features/admin-panel.md).
 
 ## What it does
 

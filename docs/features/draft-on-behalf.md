@@ -1,0 +1,109 @@
+# Draft on behalf
+
+When a condolence email, text or card holds a memory of Jo, the family can save the sender's own words as a DRAFT memory and send them a private link; the memory becomes real only when that person presses **Share this memory**.
+
+**Status:** [PR #30](https://github.com/RobertdWray/jowray_com/pull/30) (DRAFT status, admin API, script, skill; merged 2026-11-04), [PR #31](https://github.com/RobertdWray/jowray_com/pull/31) (admin-page draft form and New link; merged 2026-11-04), [PR #40](https://github.com/RobertdWray/jowray_com/pull/40) (ledger: `ADMIN_API_SECRET` set; merged 2026-11-04). Deployed: the ledger records `ADMIN_API_SECRET` set in Production on 2026-11-04 and the admin API probed on the live site (401 / 401 / 400). `CONSENT_VERSION=2026-11-v2` is not set yet, and the first two real drafts have not been run.
+
+## What we built
+
+1. A condolence note sits in Rob's Gmail. Rob runs the `jowray-draft-memory` skill (in the repo, symlinked into `~/.claude/skills`, `disable-model-invocation: true` so a chat that mentions Jo can never write to production by accident).
+2. The skill's preflight stops unless the checkout's script and skill match `origin/main`. It finds the sender's message, proposes a **verbatim** excerpt of the paragraphs about Jo, and waits for Rob's yes. The one change allowed is joining lines a mail client hard-wrapped.
+3. The skill writes a JSON input with a `sourceInput` (gmail, sms or other) to the scratchpad and runs `scripts/draft-memory.ts --prod`. The script derives `source` and `sourceRef` through `lib/source-ref.ts` and posts to `POST /api/admin/memories` with the `ADMIN_API_SECRET` bearer. No default target (`--prod` or `ADMIN_API_URL`, never both), http only to loopback, redirects refused, the secret redacted from every output line.
+4. `draftMemory` runs one transaction: duplicate check on the unique `sourceRef`, then the daily budget, then a Contributor (`contactOptIn: false`), a Memory with `status: DRAFT`, `consentedAt: null` and a hashed claim token, and an ADMIN revision. Answers: 200 with the link, 409 `duplicate` with the existing id and status, 400, 429.
+5. The skill drafts Rob's Gmail reply to the sender only (no cc or bcc; it reads the draft back to check) with the claim link. Rob sends it himself. The site never emails the link.
+6. The person opens `/m/<token>`. A DRAFT shows "A memory of Jo, in your words", the file control above the form, both preference boxes ticked, and one button: **Share this memory**.
+7. Share, under the memory lock, moves DRAFT to PENDING, stamps `consentedAt` and `consentVersion`, and records the two preferences. A second press never re-stamps. An edit without Share leaves a DRAFT and cannot set preferences.
+8. The admin page can also draft (`/admin/new`): browser drafts are always `source: OTHER` with `otherSourceRef(email, note)`, since a form has no Gmail message id. **New link** on a DRAFT, or `--reissue`, rotates the token; any link already sent stops working. Admins may edit a DRAFT's words but not approve it.
+9. Drafts stay silent: no confirmation email before or after Share, no admin alert while DRAFT. Once shared, cron step (e2) alerts the family within one ten-minute run, dated by `consentedAt`.
+
+## Why we built it
+
+The plan's context: "Condolence notes are arriving in Rob's Gmail with real memories of Jo inside them. jowray.com already has a `Memory` row with a hashed claim token, a `/m/[claimToken]` page where a person edits their words and adds files, and an upload pipeline. Missing: a way for the family admin to create a memory **on a sender's behalf**, and a skill that drives it end to end" ([plan §3](../plans/2026-11-03-draft-memory-on-behalf.md)).
+
+Share is the consent because "the person never performed an act of sharing before that". Drafts get no site email because the confirmation's "stored exactly as you sent it" is false for an excerpt, and the cron's token rotation "would kill the link Rob sent" (plan §1, §3.5).
+
+## Key decisions (Rob)
+
+| Decision | Source |
+|---|---|
+| "Rob sends the link himself from Gmail... The site never emails the link." (Rob, 2026-11-03) | [plan §1](../plans/2026-11-03-draft-memory-on-behalf.md) |
+| "The memory text is a verbatim excerpt... Claude proposes the cut, Rob approves before anything is saved." (Rob, 2026-11-03) | [plan §1](../plans/2026-11-03-draft-memory-on-behalf.md) |
+| "An admin API on the site (bearer secret)... No production DB credentials in the skill." "An email address is required to draft." Quality over speed. (Rob, 2026-11-03) | [plan §1](../plans/2026-11-03-draft-memory-on-behalf.md) |
+| Agent's calls, accepted at approval ("go build this plan", 2026-11-04): the DRAFT status; Share = consent; drafts never get site email; reissue is deliberate revocation; one button on the page; roll forward only once a DRAFT exists | [plan §1, §2](../plans/2026-11-03-draft-memory-on-behalf.md) |
+| Review buckets 1 and 2 in scope, including the CHECK constraint (Rob, 2026-11-04); merge "if no serious regressions" | [plan §8.1, §2](../plans/2026-11-03-draft-memory-on-behalf.md) |
+| Build rulings (agent): R1 no request-path alert on Share, the cron covers it; R2 predicates in `site-email.ts`; R3 builders in `lib/source-ref.ts`; R5 one shared `_auth.ts`; R6 Share stores both preferences | [plan §8.2](../plans/2026-11-03-draft-memory-on-behalf.md) |
+| Admin status changes "never from DRAFT"; the page's draft form reuses `draftMemory` (Rob, D3, 2026-11-04). Browser drafts are `OTHER` with no source select (agent's call) | [admin plan §1, §3.5](../plans/2026-11-04-admin-page.md) |
+
+## How it works
+
+```mermaid
+flowchart TD
+  A[Condolence note arrives<br/>in Rob's Gmail] --> B[Skill proposes a<br/>verbatim excerpt]
+  B --> C{Rob approves?}
+  C -- yes --> D[scripts/draft-memory.ts<br/>POST /api/admin/memories<br/>bearer ADMIN_API_SECRET]
+  D --> E[DRAFT row: hashed token,<br/>consentedAt null, no site email]
+  E --> F[Skill drafts Gmail reply<br/>to the sender only]
+  F --> G[Rob reads and sends it]
+  G --> H[Person opens /m/token,<br/>may edit and add files]
+  H --> I[Presses Share this memory<br/>= consent]
+  I --> J[PENDING, consentedAt and<br/>consentVersion stamped]
+  J --> K[Cron step e2 alerts the<br/>family within 10 min]
+  E -. reissue while DRAFT .-> L[New token, old link dies]
+  E -. admin page .-> M[Edit words or New link,<br/>never Approve]
+```
+
+The raw token lives only in the link; the row holds its hash, so the site cannot tell whether a link Rob sent is still live (F15). Reissue is a conditional write on `status = DRAFT`, so a Share that wins the race cannot be undone, and the claim transactions re-read the token hash under the lock so a revoked link cannot share. The CHECK constraint `status = 'DRAFT' OR consentedAt IS NOT NULL` makes a non-DRAFT row without consent impossible, which is why `set-status.ts` refuses a DRAFT with code `draft`.
+
+## Key files
+
+| Path | Role |
+|---|---|
+| **app** | |
+| `app/api/admin/_auth.ts` | Bearer check, fail-closed, constant time |
+| `app/api/admin/memories/route.ts`, `app/api/admin/memories/[id]/claim-link/route.ts` | Draft; reissue a DRAFT's link |
+| `app/m/[claimToken]/page.tsx`, `app/m/[claimToken]/claim-form.tsx` | DRAFT heading, prefilled boxes, the single Share button |
+| `app/admin/new/page.tsx`, `app/admin/draft-form.tsx`, `app/admin/actions.ts` | Admin draft form, New link, cookie-checked Server Functions |
+| **features** | |
+| `features/memories/draft-memory.ts` | `draftMemory`, `reissueDraftClaimLink` |
+| `features/memories/claim.ts` | The Share transition and the preference rule |
+| `features/memories/site-email.ts` | Email and alert predicates with their Prisma `where` fragments |
+| `features/admin/create-draft.ts`, `features/admin/set-status.ts` | Browser drafts as `OTHER`; refuses status changes from DRAFT |
+| `app/api/cron/reconcile-uploads/route.ts` | Step (e2) alerts shared drafts without the 30-minute wait |
+| **lib + scripts** | |
+| `lib/source-ref.ts`, `lib/validations/memory.ts` | `sourceRef` builders; draft schema and the source to prefix refine |
+| `scripts/draft-memory.ts`, `docs/skills/jowray-draft-memory/SKILL.md` | The script and the skill |
+| **tests** | |
+| `__tests__/features/draft-memory.test.ts`, `__tests__/api/admin-memories.test.ts` | Draft, duplicate, P2002 race, budget, reissue; route codes |
+| `__tests__/lib/source-ref.test.ts`, `__tests__/scripts/draft-memory.test.ts` | Builders and canonicalisation; target, redirects, redaction |
+| `__tests__/features/claim.test.ts`, `__tests__/features/confirm.test.ts`, `__tests__/features/site-email.test.ts`, `__tests__/features/notify-admins.test.ts`, `__tests__/features/admin-memories.test.ts` | Share stamps consent once; drafts skipped by email and alert; admin refuses DRAFT |
+| **Prisma** | |
+| `prisma/schema.prisma` | `MemoryStatus.DRAFT`, `MemorySource.EMAIL` / `OTHER`, nullable `consentedAt`, unique `sourceRef` |
+| `prisma/migrations/20261104070000_draft_memories/migration.sql`, `prisma/migrations/20261104070100_consent_check/migration.sql` | Enum values, nullable consent, unique index; the CHECK constraint |
+
+## Tests and evidence
+
+- PR #30 records `npm run validate`, `npm run test:run` (898 tests) and `npm run build:offline` green with no `.env*` present.
+- Plan §2 records the migrations applied to a Neon verification branch and a local walk: 401, 200, 409, DRAFT page rendered, photo added with no `EmailLog` row, Share to PENDING, reissue refused on a shared row, old link dead after reissue, cron leaving both tokens unchanged.
+- Admin-page evidence ([README](../plans/evidence/2026-11-admin-page/README.md)): B7, B10 and B17 pass (no Approve on a DRAFT, New link kills the old link, Share moves it to PENDING, "Already drafted"), with `b7-new-link-1440.jpg`. PR #30 has no evidence directory of its own.
+- NOT RUN: the first two real drafts (ledger unticked); `CONSENT_VERSION=2026-11-v2` in Production and `.env` (unticked); a real Gmail reply carrying a production link; `ADMIN_API_SECRET` rotation.
+
+## Known gaps and follow-ups
+
+- M-E-06 (F12): no withdraw route; a deleted DRAFT's `sourceRef` blocks a redraft with 409. Mitigation: edit the words on `/admin`.
+- M-E-07 (F14): no `sameEmail` hint when a follow-up message makes a second draft.
+- M-E-08 (F15): no way to verify a claim link without using it.
+- M-E-09 (F16): `ADMIN_API_SECRET` rotation runbook; short version in `docs/environment.md`.
+- M-E-10 (F11): the skill runs from a shared, often-stale checkout; the preflight guard is the interim.
+- M-E-11 (F5): attachments are not ingested; the reply asks the sender to add the photo. Related: F13 `--attach`, F4 in-browser recorder on the claim page.
+- M-E-12 (F10): expiry policy for drafts nobody shares; needs Rob.
+- M-E-13: the first two real drafts and the connector-mailbox check; needs Rob's "run it for real".
+- M-E-14: every future lister of memories must decide explicitly what to do with DRAFT.
+- M-D-07 (F2 second half): no nudge email for unshared drafts.
+- Accepted minors (plan §8.2): drafts count against the daily memory budget; no request-path alert on Share (R1).
+- Launch tracking: [issue #38](https://github.com/RobertdWray/jowray_com/issues/38).
+
+## Related
+
+- [Admin panel](./admin-panel.md), [Email and cron](./email-and-cron.md), [Share form](./share-form.md), [Media uploads](./media-uploads.md), [Audio recording](./audio-recording.md), [Sentry telemetry](./sentry-telemetry.md)
+- [Plan: draft a memory on someone's behalf](../plans/2026-11-03-draft-memory-on-behalf.md), [Plan: family admin page](../plans/2026-11-04-admin-page.md), [the skill](../skills/jowray-draft-memory/SKILL.md), [debt catalog](../2026-11-04-debt-catalog.md)
+- [Code layout](../code-layout.md), [Environment](../environment.md) (`ADMIN_API_SECRET`, `ADMIN_API_URL`, `CONSENT_VERSION`), [Admin runbook](../admin.md) ("Drafts")
