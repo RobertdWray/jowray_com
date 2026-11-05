@@ -15,9 +15,9 @@ This file lists key **names** and what they're for. It never contains values. Th
 | Key | Purpose |
 |---|---|
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID for DNS. *(Renamed on 2026-11-02 from the misspelled `CLOUDFLARE_ACCOUNTT_ID`.)* |
-| `CLOUDFLARE_DNS_ONLY_API_TOKEN` | Account-owned Cloudflare API token for DNS edits in every zone in the account. Verify it with `/accounts/{id}/tokens/verify`, not `/user/tokens/verify`. It manages the `jowray.com` records; see [domain.md](domain.md). |
+| `CLOUDFLARE_DNS_ONLY_API_TOKEN` | Account-owned Cloudflare API token for DNS edits in every zone in the account. Verify it with `/accounts/{id}/tokens/verify`, not `/user/tokens/verify`. It manages the `jowray.com` records; see [domain.md](domain.md). The account-wide scope is accepted as-is (Rob, 2026-11-05, public-repo audit #43: no rotation or re-scoping of existing keys). |
 | `SENDGRID_API_KEY` | Outbound email (notifications, and later magic links). |
-| `DID_JOWRAY` | The memorial phone number (a VoIP.ms DID) that people call or text to leave memories. Sub-account settings are in [voip_ms_262980_jowray-subaccount-settings.md](voip_ms_262980_jowray-subaccount-settings.md). |
+| `DID_JOWRAY` | The memorial phone number (a VoIP.ms DID) that people call or text to leave memories. The sub-account's status and what is still Rob's are in [voip_ms_262980_jowray-subaccount-settings.md](voip_ms_262980_jowray-subaccount-settings.md); the full settings table was removed from that file before the repo went public (#43). |
 | `voipms_username`, `voipms_password`, `voipms_Bearer_Token`, `voipms_whitelisted_ip` | VoIP.ms API access: the phone and SMS provider. **Deferred: unused in Phase 1** (SMS/MMS and the phone line are a later phase; the sub-account and keys are kept). |
 | `VOIPMS_SUB_ACCOUNT`, `VOIPMS_SUB_PASSWORD`, `VOIPMS_POP` | The VoIP.ms SIP sub-account and point of presence for the DID. |
 | `VOIPMS_PHONEBOOK_GROUP`, `VOIPMS_TIME_CONDITION`, `VOIPMS_CALLERID_FILTER`, `VOIPMS_FRIENDS_GROUP`, `VOIPMS_FRIENDS_FILTER` | VoIP.ms call-routing objects: a phonebook group, a time condition, and caller-ID filters. |
@@ -52,7 +52,7 @@ These are used by the agent running the Phase 1 plan and by GitHub Actions, neve
 
 | Key | Purpose |
 |---|---|
-| `NEON_API_KEY` | Neon API key for the Vercel-managed org, used by the `neon` CLI (`--api-key`) when `neonctl auth` is not available and by `.github/workflows/neon-cleanup.yml` as the GitHub secret `NEON_API_KEY`. Create it from the Neon console (Vercel → Storage → `jowray_com` → Open in Neon → Account settings → API keys). ([Neon docs](https://neon.com/docs/manage/api-keys)) |
+| `NEON_API_KEY` | Neon API key for the Vercel-managed org, used by the `neon` CLI (`--api-key`) when `neonctl auth` is not available and by `.github/workflows/neon-cleanup.yml` as the GitHub secret `NEON_API_KEY`. Create it from the Neon console (Vercel → Storage → `jowray_com` → Open in Neon → Account settings → API keys). ([Neon docs](https://neon.com/docs/manage/api-keys)) The key in use is an **organization** key (ledger, Task 1); that scope is accepted as-is (Rob, 2026-11-05, public-repo audit #43: no rotation or re-scoping of existing keys). |
 | `VERCEL_AUTOMATION_BYPASS_SECRET` | Protection Bypass for Automation secret from the Vercel project's Deployment Protection settings. Sent as the `x-vercel-protection-bypass` header so scripted checks can reach preview deployments. `.env` only; never in Vercel env. ([Vercel docs](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation)) |
 
 ## Phase 1: application keys
