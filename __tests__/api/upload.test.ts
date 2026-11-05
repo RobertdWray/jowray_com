@@ -4,6 +4,7 @@ import { getPayloadFromClientToken } from "@vercel/blob/client";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type * as LoggerModule from "@/lib/logger";
 import { mintUploadTicket } from "@/lib/upload-ticket";
 import { resetEnvCache } from "@/server/config/env";
 
@@ -26,6 +27,20 @@ vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (_name: string, cb:
 const identifyMock = vi.fn();
 const tagIdsMock = vi.fn();
 vi.mock("@/lib/sentry/user", () => ({ identifyContributor: (...a: unknown[]) => identifyMock(...a), tagIds: (...a: unknown[]) => tagIdsMock(...a) }));
+// Captures the route's warn lines (the real logger is silent under test), so a test can prove what never reaches the logs.
+const warnLines: unknown[][] = [];
+vi.mock("@/lib/logger", async (importOriginal) => {
+  const mod = await importOriginal<typeof LoggerModule>();
+  const createLogger: typeof mod.createLogger = (...args) => {
+    const real = mod.createLogger(...args);
+    const capturing: typeof real = Object.create(real) as typeof real;
+    capturing.warn = ((...line: unknown[]) => {
+      warnLines.push(line);
+    }) as typeof real.warn;
+    return capturing;
+  };
+  return { ...mod, createLogger };
+});
 
 import { POST } from "@/app/api/upload/route";
 
@@ -91,8 +106,19 @@ describe("POST /api/upload (token exchange)", () => {
       const req = new NextRequest("http://localhost:3000/api/upload", { method: "POST", body: raw, headers: { "content-type": "application/json" } });
       const res = await POST(req);
       expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({ error: { code: "upload_error", message: "Upload request could not be processed" } });
+      expect(await res.json()).toEqual({ error: { code: "invalid_json", message: "The body must be JSON" } });
     }
+  });
+
+  it("logs a fixed reason for a malformed body, never the body text (PR #47 review: V8 quotes the raw body in SyntaxError.message)", async () => {
+    warnLines.length = 0;
+    const fragment = `"sig":"SENTRYTEST_${"a".repeat(32)}"`;
+    const req = new NextRequest("http://localhost:3000/api/upload", { method: "POST", body: `{${fragment}`, headers: { "content-type": "application/json" } });
+    expect((await POST(req)).status).toBe(400);
+    expect(warnLines).toHaveLength(1);
+    expect(warnLines[0]?.[0]).toEqual({ action: "invalid_json", reason: "SyntaxError" });
+    expect(JSON.stringify(warnLines)).not.toContain("SENTRYTEST_");
+    expect(JSON.stringify(warnLines)).not.toContain("sig");
   });
 });
 

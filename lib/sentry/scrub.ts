@@ -184,10 +184,15 @@ function scrubMembers(text: string): string {
       i = text.indexOf('"', keyEnd);
       continue;
     }
-    const end = valueEnd(text, keyEnd + closeLength + separator.length, escaped);
-    // The marker is written in the member's own quoting, so a double-encoded string stays well formed (and a second pass is a no-op).
-    const quote = escaped ? '\\"' : '"';
-    out += `${text.slice(last, openStart)}${quote}${key}${text.slice(keyEnd, keyEnd + closeLength)}:${quote}${FILTERED}${quote}`;
+    const valueStart = keyEnd + closeLength + separator.length;
+    // In malformed text the key's quoting and the value's can disagree (`\"token":"x"`, `"token\":\"x\"`). A quoted
+    // value says itself how it is quoted; anything else takes the more cautious reading, which runs further, never shorter.
+    const valueEscaped = text[valueStart] === '"' ? false : text[valueStart] === "\\" && text[valueStart + 1] === '"' ? true : escaped || closeLength === 2;
+    const end = valueEnd(text, valueStart, valueEscaped);
+    // The marker is written in the value's own quoting, so a double-encoded string stays well formed (and a second pass is a no-op).
+    const quote = valueEscaped ? '\\"' : '"';
+    const openQuote = escaped ? '\\"' : '"';
+    out += `${text.slice(last, openStart)}${openQuote}${key}${text.slice(keyEnd, keyEnd + closeLength)}:${quote}${FILTERED}${quote}`;
     last = end;
     i = text.indexOf('"', end);
   }

@@ -377,6 +377,42 @@ describe("the depth cap fails closed", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Team Code Review of PR #47 (George #1): the key's quoting and the value's
+// quoting can disagree in malformed text. The value's own opening quote decides
+// how far the value runs; when the value is not a string, the more cautious
+// (escaped) reading wins. Either way the whole value goes, never a tail of it.
+// ---------------------------------------------------------------------------
+describe("mixed quoting between a secret key and its value (PR #47 review, George #1)", () => {
+  it("consumes exactly the plain string value after an escaped-looking key (a backslash before the key in broken JSON or log text)", () => {
+    expect(scrubSecrets(`{"a":"\\"token":"${TEST_TOKEN}"}`)).toBe(`{"a":"\\"token":"${FILTERED}"}`);
+    expect(scrubSecrets(`C:\\dir\\"token":"${TEST_TOKEN}" tail`)).toBe(`C:\\dir\\"token":"${FILTERED}" tail`);
+  });
+
+  it("consumes the whole escaped string value after a plain key, including spaces and commas inside it", () => {
+    expect(scrubSecrets(`"token\\":\\"${TEST_TOKEN}\\"`)).toBe(`"token\\":\\"${FILTERED}\\"`);
+    expect(scrubSecrets(`"token\\":\\"${TEST_TOKEN} tail\\" rest`)).toBe(`"token\\":\\"${FILTERED}\\" rest`);
+    expect(scrubSecrets(`"claimToken":\\"${TEST_TOKEN},x\\" rest`)).toBe(`"claimToken":\\"${FILTERED}\\" rest`);
+  });
+
+  it("never leaves a tail of a secret value behind whatever the quoting, and stays idempotent", () => {
+    const texts = [
+      `{"a":"\\"token":"${TEST_TOKEN}"}`,
+      `"token\\":\\"${TEST_TOKEN} tail\\" rest`,
+      `"claimToken":\\"${TEST_TOKEN},x\\" rest`,
+      `\\"ticket":{"sig":"${TEST_TOKEN}"} tail`,
+      `"ticket\\":{\\"sig\\":\\"${TEST_TOKEN}\\"} tail`,
+      `\\"claimToken":"${TEST_TOKEN} with space" tail`,
+    ];
+    for (const text of texts) {
+      const once = scrubSecrets(text) as string;
+      expect(once).not.toContain(TEST_TOKEN);
+      expect(once).not.toContain("SENTRYTEST_");
+      expect(scrubSecrets(once)).toBe(once);
+    }
+  });
+});
+
 describe("the escaped-context scanner is idempotent (regression check M2)", () => {
   it("keeps the inner JSON string well formed and leaves neighbouring keys alone on repeated passes", () => {
     const flight = `1:{"p":"{\\"ticket\\":\\"${TEST_TOKEN}\\",\\"b\\":\\"keep\\"}"}`;
