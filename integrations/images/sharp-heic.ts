@@ -53,6 +53,9 @@ export class SharpHeicImageService implements ImageService {
   }
 
   acquire(deadlineMs: number): Promise<DeriveSlot> {
+    if (deadlineMs <= 0) {
+      return Promise.reject(new ImageDeriveError("timeout"));
+    }
     if (this.running === 0 && this.waiters.length === 0) {
       this.running = 1;
       return Promise.resolve(this.slot());
@@ -152,17 +155,18 @@ export class SharpHeicImageService implements ImageService {
           throw new ImageDeriveError("unsupported_type");
         }
         if (family === "gif") {
-          // Header-only checks before any frame is decoded (issue #45): the frame count, and the
-          // pixel ceiling applied to the whole strip libvips will build for `animated: true`.
+          // Decided from the header, before any frame is decoded (issue #45): an animation whose
+          // frame count or whole strip (width × frame height × frames, what libvips builds for
+          // `animated: true`) is over the ceiling is served as a still of its first frame. The
+          // contributor still gets an inline picture and an email thumbnail; the download keeps
+          // the animation. One frame over the pixel ceiling is a refusal, as for any photo.
           const frames = meta.pages ?? 1;
           const frameHeight = meta.pageHeight ?? meta.height;
-          if (frames > options.maxFrames) {
-            throw new ImageDeriveError("too_many_frames", { limit: options.maxFrames });
-          }
-          if (meta.width * frameHeight * frames > options.maxPixels) {
+          if (meta.width * frameHeight > options.maxPixels) {
             throw new ImageDeriveError("too_many_pixels", { limit: options.maxPixels });
           }
-          base = sharp(input, { animated: true, limitInputPixels: options.maxPixels }).timeout(timeout);
+          const animate = frames <= options.maxFrames && meta.width * frameHeight * frames <= options.maxPixels;
+          base = sharp(input, { animated: animate, limitInputPixels: options.maxPixels }).timeout(timeout);
           thumbSource = sharp(input, { page: 0, limitInputPixels: options.maxPixels }).timeout(timeout);
           sourceWidth = meta.width;
           sourceHeight = frameHeight;

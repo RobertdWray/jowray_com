@@ -57,9 +57,9 @@ beforeEach(() => {
 });
 
 describe("VercelBlobStorageService.readPrefix (issue #45)", () => {
-  it("asks for a byte range and returns the 206 body as the prefix", async () => {
+  it("asks for a byte range and returns the partial body as the prefix (the SDK reports any 2xx, 206 included, as statusCode 200)", async () => {
     const { stream } = countingStream(64, 16);
-    getMock.mockResolvedValueOnce(result(206, stream, 64));
+    getMock.mockResolvedValueOnce(result(200, stream, 64));
     const prefix = await service.readPrefix("originals/m/a.mp4", 128);
     expect(prefix).toHaveLength(64);
     const [pathname, options] = getMock.mock.calls[0]!;
@@ -79,7 +79,7 @@ describe("VercelBlobStorageService.readPrefix (issue #45)", () => {
 
   it("returns a shorter array for a blob shorter than the prefix, and null when the blob is missing", async () => {
     const { stream } = countingStream(5, 5);
-    getMock.mockResolvedValueOnce(result(206, stream, 5));
+    getMock.mockResolvedValueOnce(result(200, stream, 5));
     expect(await service.readPrefix("k", 128)).toHaveLength(5);
     getMock.mockResolvedValueOnce(null);
     expect(await service.readPrefix("k", 128)).toBeNull();

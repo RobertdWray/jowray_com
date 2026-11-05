@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ACCEPT_ATTRIBUTE,
   ALLOWED_MIME_TYPES,
+  detectMediaType,
   extensionFor,
   isAllowedMime,
   isRenderableIn,
@@ -15,7 +16,7 @@ import {
   summarizeMemoryType,
 } from "@/lib/media-types";
 
-import { ftyp, MP3_FRAME_SYNC, NOT_MEDIA, SIGNATURE_SAMPLES } from "../fixtures/signatures";
+import { atom, ftyp, ftypLarge, MP3_FRAME_SYNC, NOT_MEDIA, SIGNATURE_SAMPLES } from "../fixtures/signatures";
 
 describe("normalizeMime", () => {
   it("strips parameters and lower-cases", () => {
@@ -166,5 +167,55 @@ describe("matchesSignature (issue #45: bytes, not labels, decide what becomes RE
       expect(matchesSignature(mime, SIGNATURE_SAMPLES[mime]!.slice(0, SIGNATURE_PREFIX_BYTES))).toBe(true);
     }
     expect(matchesSignature("application/pdf", NOT_MEDIA.pdf!)).toBe(false);
+  });
+
+  it("accepts QuickTime and MP4 files that do not start with ftyp (moov, mdat, wide, free, skip, pnot), and 0 / 64-bit atom sizes", () => {
+    // QTFF makes ftyp optional; camcorder imports and old QuickTime exports start with moov or wide+mdat.
+    for (const mime of ["video/quicktime", "video/mp4", "audio/mp4", "audio/x-m4a"]) {
+      for (const type of ["moov", "mdat", "wide", "free", "skip", "pnot"]) {
+        expect(matchesSignature(mime, atom(type)), `${type} as ${mime}`).toBe(true);
+      }
+      expect(matchesSignature(mime, atom("mdat", 0)), `to-EOF mdat as ${mime}`).toBe(true);
+      expect(matchesSignature(mime, atom("mdat", 1)), `64-bit mdat as ${mime}`).toBe(true);
+      expect(matchesSignature(mime, ftypLarge("qt  ", ["qt  "])), `largesize ftyp as ${mime}`).toBe(true);
+      // Not an atom: a plausible size with an unknown type, or a size under the 8-byte header.
+      expect(matchesSignature(mime, atom("abcd")), `unknown atom as ${mime}`).toBe(false);
+      expect(matchesSignature(mime, atom("moov", 4)), `short atom as ${mime}`).toBe(false);
+    }
+    // HEIF still needs its brand, read correctly after a 64-bit size too.
+    expect(matchesSignature("image/heic", ftypLarge("heic", ["mif1"]))).toBe(true);
+    expect(matchesSignature("image/heic", atom("moov"))).toBe(false);
+  });
+});
+
+describe("detectMediaType (issue #45: a mislabelled file of an allowed type is relabelled, never destroyed)", () => {
+  it("keeps the declared type when the bytes agree", () => {
+    for (const mime of ALLOWED_MIME_TYPES) {
+      expect(detectMediaType(mime, SIGNATURE_SAMPLES[mime]!), mime).toBe(mime);
+    }
+    // An ISO BMFF label stays as declared even though the container alone cannot tell mp4 from mov from m4a.
+    expect(detectMediaType("video/quicktime", ftyp("isom", ["mp42"]))).toBe("video/quicktime");
+  });
+
+  it("relabels to the type the bytes are, when that type is allowed and of the same kind", () => {
+    expect(detectMediaType("image/heic", SIGNATURE_SAMPLES["image/jpeg"]!)).toBe("image/jpeg"); // JPEG saved as .heic
+    expect(detectMediaType("image/jpeg", SIGNATURE_SAMPLES["image/heic"]!)).toBe("image/heic"); // HEIC named .jpg
+    expect(detectMediaType("image/jpeg", SIGNATURE_SAMPLES["image/webp"]!)).toBe("image/webp"); // WebP saved as .jpg
+    expect(detectMediaType("image/png", SIGNATURE_SAMPLES["image/gif"]!)).toBe("image/gif");
+    expect(detectMediaType("audio/mpeg", SIGNATURE_SAMPLES["audio/x-m4a"]!)).toBe("audio/mp4"); // Voice Memo named .mp3
+    expect(detectMediaType("audio/wav", SIGNATURE_SAMPLES["audio/ogg"]!)).toBe("audio/ogg");
+    expect(detectMediaType("video/mp4", SIGNATURE_SAMPLES["video/webm"]!)).toBe("video/webm");
+    expect(detectMediaType("video/webm", SIGNATURE_SAMPLES["video/quicktime"]!)).toBe("video/mp4");
+  });
+
+  it("answers null across kinds, for non-media and for an unknown declared type", () => {
+    expect(detectMediaType("image/jpeg", SIGNATURE_SAMPLES["video/mp4"]!)).toBeNull();
+    expect(detectMediaType("video/mp4", SIGNATURE_SAMPLES["image/jpeg"]!)).toBeNull();
+    expect(detectMediaType("audio/mpeg", SIGNATURE_SAMPLES["image/png"]!)).toBeNull();
+    for (const sample of Object.values(NOT_MEDIA)) {
+      expect(detectMediaType("image/jpeg", sample)).toBeNull();
+      expect(detectMediaType("video/quicktime", sample)).toBeNull();
+    }
+    expect(detectMediaType("image/svg+xml", SIGNATURE_SAMPLES["image/jpeg"]!)).toBeNull();
   });
 });

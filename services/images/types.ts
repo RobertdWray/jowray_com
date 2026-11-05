@@ -6,7 +6,7 @@ export interface DeriveOptions {
   deadlineMs: number;
   /** Refuse originals with more pixels than this before decoding them; for an animation the whole frame strip counts. */
   maxPixels: number;
-  /** Refuse animations with more frames than this before decoding them (issue #45). */
+  /** Animations with more frames than this are derived as a still of their first frame (issue #45). */
   maxFrames: number;
   web: { maxEdge: number; quality: number };
   thumb: { maxEdge: number; quality: number; fallbackQuality: number; maxBytes: number; background: string };

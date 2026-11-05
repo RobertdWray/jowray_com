@@ -9,7 +9,7 @@ import { notifyAdminsOfMemory } from "@/features/memories/notify-admins";
 import { appendClaimRevision, recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger, logError, logErrorAndFlush } from "@/lib/logger";
-import { isAllowedMime, matchesSignature, SIGNATURE_PREFIX_BYTES } from "@/lib/media-types";
+import { detectMediaType, isAllowedMime, SIGNATURE_PREFIX_BYTES } from "@/lib/media-types";
 import { afterWithFlush } from "@/lib/sentry/after-flush";
 import { uploadFinalized } from "@/lib/sentry/metrics";
 import { tagIds } from "@/lib/sentry/user";
@@ -80,17 +80,27 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
   if (tooLarge || wrongType) {
     return reject(tooLarge ? "too_large" : "wrong_type", tooLarge ? "size" : "label");
   }
+  if (head.size === 0) {
+    // Nothing to look at, and a byte range on an empty object is a 416, not a prefix.
+    return reject("wrong_type", "bytes");
+  }
   // The declared type is a claim made by the uploading client (the Blob token only pins it to the
-  // ticket); the first bytes are the evidence (issue #45). Bounded read, never the file.
+  // ticket); the first bytes are the evidence (issue #45). Bounded read, never the file. Bytes of
+  // another allowed type of the same kind relabel the row (a JPEG saved as .heic is still a photo);
+  // only bytes of another kind, or of no allowed type, are refused.
   const prefix = await storage.readPrefix(row.storageKey, SIGNATURE_PREFIX_BYTES);
   if (!prefix) {
     return { status: "PENDING", mediaId, memoryId: row.memoryId };
   }
-  if (!matchesSignature(row.mimeType, prefix)) {
+  const actualType = detectMediaType(row.mimeType, prefix);
+  if (actualType === null) {
     return reject("wrong_type", "bytes");
   }
+  if (actualType !== row.mimeType) {
+    log.info({ action: "relabel", mediaId, memoryId: row.memoryId, declared: row.mimeType, actual: actualType }, "upload relabelled from its bytes");
+  }
 
-  const updated = await transition(row, { status: "READY", sizeBytes: head.size, blobUrl: head.url });
+  const updated = await transition(row, { status: "READY", sizeBytes: head.size, blobUrl: head.url, mimeType: actualType });
   if (updated === "retired") {
     // The bytes are recorded (purge deletes them) but the file was cancelled or its target removed: not a live file.
     log.info({ action: "retired", mediaId, memoryId: row.memoryId }, "upload recorded for a retired replacement");
@@ -118,7 +128,7 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
  */
 async function transition(
   row: { id: string; memoryId: string; replacesMediaId: string | null },
-  data: { status: "READY"; sizeBytes: number; blobUrl: string } | { status: "FAILED" }
+  data: { status: "READY"; sizeBytes: number; blobUrl: string; mimeType: string } | { status: "FAILED" }
 ): Promise<"done" | "lost_race" | "retired"> {
   try {
     return await getDb().$transaction(async (tx) => {

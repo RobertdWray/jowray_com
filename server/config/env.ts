@@ -138,15 +138,17 @@ const adminPageSchema = z.object({
  * value has a default, so a deployment works with none of them set. Sizes are
  * bytes; the multiples are "times the original's size per UTC day".
  */
+/** `KEY=` (blank) means unset, like `ADMIN_PAGE_SECRET`: the default applies. `z.coerce` alone would turn "" into 0. */
+const blankIsUnset = <T extends z.ZodTypeAny>(schema: T) => z.preprocess((value) => (value === "" ? undefined : value), schema);
 const mediaServingSchema = z.object({
   /** A file whose memory is APPROVED may be served this many times its own size per day. */
-  MEDIA_FILE_DAILY_MULTIPLE: z.coerce.number().int().positive().default(20),
+  MEDIA_FILE_DAILY_MULTIPLE: blankIsUnset(z.coerce.number().int().positive().default(20)),
   /** Before approval (the contributor reviewing their own upload): a smaller multiple. */
-  MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED: z.coerce.number().int().positive().default(10),
+  MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED: blankIsUnset(z.coerce.number().int().positive().default(10)),
   /** Bytes the whole site may serve to claim-link holders per day (default 50 GiB). */
-  MEDIA_DAILY_EGRESS_BYTES: z.coerce.number().int().positive().default(50 * 1024 ** 3),
+  MEDIA_DAILY_EGRESS_BYTES: blankIsUnset(z.coerce.number().int().positive().default(50 * 1024 ** 3)),
   /** Downloads up to this size stream through the function (sanitized filename); larger ones redirect (default 2 MiB). */
-  MEDIA_PROXY_DOWNLOAD_MAX_BYTES: z.coerce.number().int().nonnegative().default(2 * 1024 ** 2),
+  MEDIA_PROXY_DOWNLOAD_MAX_BYTES: blankIsUnset(z.coerce.number().int().nonnegative().default(2 * 1024 ** 2)),
 });
 
 export type DbEnv = z.infer<typeof dbSchema>;

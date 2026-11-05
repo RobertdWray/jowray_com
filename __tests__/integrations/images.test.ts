@@ -131,17 +131,27 @@ describe("ImageService.derive", () => {
     expect(service.inFlight()).toBe(0);
   });
 
-  it("refuses an animation with more frames than the cap before decoding any frame (terminal error)", async () => {
-    const long = await fixture("anim-400.gif");
-    await expect(service.derive(long, opts("image/gif", { maxFrames: 300 }))).rejects.toMatchObject({ code: "too_many_frames", limit: 300 });
-    // Under the cap the same file is fine (the encoder may merge identical frames; the point is that it is accepted).
-    expect((await service.derive(long, opts("image/gif", { maxFrames: 400 }))).web.mimeType).toBe("image/gif");
+  it("falls back to a still of the first frame when an animation has more frames than the cap (nothing fails, nothing 404s)", async () => {
+    // anim.gif is 2 frames; with the cap at 1 the web copy is a single-frame GIF, with the cap at 2 it stays animated.
+    const still = await service.derive(await fixture("anim.gif"), opts("image/gif", { maxFrames: 1 }));
+    expect(still.web.mimeType).toBe("image/gif");
+    expect((await meta(still.web.data)).pages ?? 1).toBe(1);
+    expect([still.web.width, still.web.height]).toEqual([32, 32]);
+    expect("failed" in still.thumb).toBe(false);
+    const animated = await service.derive(await fixture("anim.gif"), opts("image/gif", { maxFrames: 2 }));
+    expect((await meta(animated.web.data)).pages).toBe(2);
+    // A 400-frame file is well over the default cap and still yields copies.
+    expect((await service.derive(await fixture("anim-400.gif"), opts("image/gif"))).web.mimeType).toBe("image/gif");
   });
 
-  it("applies the pixel ceiling to the whole frame strip of an animation, not to one frame", async () => {
-    // 10×10 frames × 400 = 40,000 pixels of strip; each frame alone is far under the ceiling.
+  it("applies the pixel ceiling to the whole frame strip: over it, a still of one frame; one frame over it, a refusal", async () => {
+    // anim.gif: 32×32 × 2 = 2048 strip pixels, 1024 per frame.
+    const still = await service.derive(await fixture("anim.gif"), opts("image/gif", { maxPixels: 1500 }));
+    expect((await meta(still.web.data)).pages ?? 1).toBe(1);
+    await expect(service.derive(await fixture("anim.gif"), opts("image/gif", { maxPixels: 500 }))).rejects.toMatchObject({ code: "too_many_pixels", limit: 500 });
+    // 10×10 × 400 = 40,000 strip pixels: a still under a 30,000 ceiling, animated under 50,000.
     const strip = await fixture("anim-400x10.gif");
-    await expect(service.derive(strip, opts("image/gif", { maxPixels: 30_000, maxFrames: 1000 }))).rejects.toMatchObject({ code: "too_many_pixels", limit: 30_000 });
+    expect((await meta((await service.derive(strip, opts("image/gif", { maxPixels: 30_000, maxFrames: 1000 }))).web.data)).pages ?? 1).toBe(1);
     expect((await service.derive(strip, opts("image/gif", { maxPixels: 50_000, maxFrames: 1000 }))).web.mimeType).toBe("image/gif");
   });
 });
@@ -165,6 +175,14 @@ describe("ImageService.acquire (issue #45: the slot is taken before anything is 
     s2.release();
     const s3 = await third;
     s3.release();
+    expect(own.inFlight()).toBe(0);
+    expect(own.waiting()).toBe(0);
+  });
+
+  it("rejects at once with timeout when no time is left, even if the slot is idle", async () => {
+    const own = new SharpHeicImageService(2);
+    await expect(own.acquire(0)).rejects.toMatchObject({ code: "timeout" });
+    await expect(own.acquire(-5)).rejects.toMatchObject({ code: "timeout" });
     expect(own.inFlight()).toBe(0);
     expect(own.waiting()).toBe(0);
   });

@@ -281,8 +281,8 @@ describe("recordMedia byte check (issue #45): the declared type is a claim, the 
     expect(delMock).not.toHaveBeenCalled();
   });
 
-  it("rejects bytes that are not the declared type as wrong_type: FAILED, blob deleted, reason unchanged for callers", async () => {
-    readPrefixMock.mockResolvedValueOnce(SIGNATURE_SAMPLES["image/png"]!);
+  it("rejects bytes of another kind as wrong_type: FAILED, blob deleted, reason unchanged for callers", async () => {
+    readPrefixMock.mockResolvedValueOnce(SIGNATURE_SAMPLES["audio/wav"]!);
     const outcome = await recordMedia({ mediaId: "med_1" });
     expect(outcome).toMatchObject({ status: "FAILED", reason: "wrong_type" });
     expect(delMock).toHaveBeenCalledWith("originals/mem_1/abc.jpg");
@@ -317,10 +317,37 @@ describe("recordMedia byte check (issue #45): the declared type is a claim, the 
     expect(headMock).not.toHaveBeenCalled();
   });
 
-  it("treats an empty file as not matching any type", async () => {
+  it("rejects an empty file before asking for a byte range (a range on nothing is a 416, not a prefix)", async () => {
     headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 0, contentType: "image/jpeg", uploadedAt: new Date() });
-    readPrefixMock.mockResolvedValueOnce(new Uint8Array(0));
     expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "wrong_type" });
+    expect(readPrefixMock).not.toHaveBeenCalled();
+    expect(delMock).toHaveBeenCalledWith("originals/mem_1/abc.jpg");
+  });
+
+  it("relabels a file whose bytes are another allowed type of the same kind instead of destroying it (JPEG saved as .heic)", async () => {
+    media = [row({ mimeType: "image/heic", storageKey: "originals/mem_1/abc.heic" })];
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.heic", url: "u", size: 1234, contentType: "image/heic", uploadedAt: new Date() });
+    readPrefixMock.mockResolvedValueOnce(SIGNATURE_SAMPLES["image/jpeg"]!);
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("READY");
+    expect(media[0]).toMatchObject({ status: "READY", mimeType: "image/jpeg", sizeBytes: 1234 });
+    expect(delMock).not.toHaveBeenCalled();
+  });
+
+  it("relabels a HEIC that arrived as image/jpeg and a Voice Memo that arrived as audio/mpeg", async () => {
+    readPrefixMock.mockResolvedValueOnce(SIGNATURE_SAMPLES["image/heic"]!);
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("READY");
+    expect(media[0]!.mimeType).toBe("image/heic");
+    media = [row({ mimeType: "audio/mpeg", maxBytes: 100 * 1024 * 1024 })];
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 10, contentType: "audio/mpeg", uploadedAt: new Date() });
+    readPrefixMock.mockResolvedValueOnce(SIGNATURE_SAMPLES["audio/x-m4a"]!);
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("READY");
+    expect(media[0]!.mimeType).toBe("audio/mp4");
+  });
+
+  it("still rejects bytes of a different kind (a video labelled as a photo)", async () => {
+    readPrefixMock.mockResolvedValueOnce(SIGNATURE_SAMPLES["video/mp4"]!);
+    expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "wrong_type" });
+    expect(delMock).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -1,10 +1,10 @@
 import "server-only";
 
 import { lockMemory, type Tx } from "@/features/memories/lock";
-import { recomputeMemoryType } from "@/features/memories/media-state";
 import { derivedKeyFor } from "@/lib/derived-keys";
 import { ImageDeriveError, isImageDeriveError } from "@/lib/image-derive-error";
 import { createLogger, logError } from "@/lib/logger";
+import { detectMediaType, SIGNATURE_PREFIX_BYTES } from "@/lib/media-types";
 import { storagePrefix } from "@/lib/site-url";
 import { getDb } from "@/server/db/client";
 import { createImageService, DERIVE_DEFAULTS, type DeriveSlot, type Encoded, webExtensionFor } from "@/services/images";
@@ -92,34 +92,6 @@ async function quietDel(storageKey: string, mediaId: string): Promise<void> {
 }
 
 /**
- * An original whose bytes turned out not to be the declared image type must
- * not stay servable (issue #45): under the memory lock it is marked for purge
- * and flipped to FAILED, exactly as cron step (f) does for removals, and the
- * memory's type is recomputed; the bytes go afterwards, outside the lock. If
- * that delete fails, the cron finishes it because `purgedAt` is set.
- */
-async function retireMismatchedOriginal(db: ReturnType<typeof getDb>, media: { id: string; memoryId: string; storageKey: string }): Promise<void> {
-  try {
-    const retired = await db.$transaction(async (tx: Tx) => {
-      await lockMemory(tx, media.memoryId);
-      const marked = await tx.media.updateMany({ where: { id: media.id, status: "READY", purgedAt: null }, data: { status: "FAILED", purgedAt: new Date() } });
-      if (marked.count !== 1) {
-        return false;
-      }
-      const memory = await tx.memory.findUniqueOrThrow({ where: { id: media.memoryId }, select: { contributorNote: true } });
-      await recomputeMemoryType(tx, media.memoryId, memory.contributorNote);
-      return true;
-    }, TX_OPTIONS);
-    if (retired) {
-      await quietDel(media.storageKey, media.id);
-      log.warn({ action: "original_retired", mediaId: media.id, memoryId: media.memoryId }, "original is not the declared image type; retired");
-    }
-  } catch (error) {
-    logError("mismatched original could not be retired", error, { category: "upload", mediaId: media.id });
-  }
-}
-
-/**
  * Make the web copy and the email thumbnail of one READY image original.
  *
  * Protocol (plan P4/P18): the decode slot is taken first (issue #45: a full
@@ -131,7 +103,10 @@ async function retireMismatchedOriginal(db: ReturnType<typeof getDb>, media: { i
  * key, and each row is PUBLISHED under the memory lock with a conditional
  * update that only the holder of this claim can satisfy. Blob deletes never
  * run while the lock is held. Every failure is recorded on the rows it owns;
- * this function never throws.
+ * this function never throws. An original is never deleted here: a decoder
+ * verdict is about the copies, not the file (rows from before the byte
+ * check may be mislabelled real photos, which are relabelled from their
+ * bytes and decoded as what they are).
  */
 export async function deriveMedia({ mediaId, deadlineMs, now = new Date() }: { mediaId: string; deadlineMs: number; now?: Date }): Promise<DeriveResult> {
   const deadlineAt = Date.now() + deadlineMs;
@@ -141,7 +116,6 @@ export async function deriveMedia({ mediaId, deadlineMs, now = new Date() }: { m
   const result: DeriveResult = { WEB_IMAGE: "not_eligible", THUMBNAIL: "not_eligible" };
   const claims: Claim[] = [];
   let slot: DeriveSlot | null = null;
-  let media: { id: string; memoryId: string; storageKey: string } | null = null;
 
   /** Mark every claim this run holds FAILED (conditionally) and delete only the candidates it still owns. */
   const failClaims = async (error: string): Promise<void> => {
@@ -176,7 +150,6 @@ export async function deriveMedia({ mediaId, deadlineMs, now = new Date() }: { m
     ) {
       return result;
     }
-    media = { id: row.id, memoryId: row.memoryId, storageKey: row.storageKey };
 
     // 1. The slot, before a single byte is downloaded. A full line (or a wait that runs out the
     //    deadline) defers the photo to cron step (g) without claiming anything: no attempt is spent.
@@ -188,6 +161,11 @@ export async function deriveMedia({ mediaId, deadlineMs, now = new Date() }: { m
         return { WEB_IMAGE: "deferred", THUMBNAIL: "deferred" };
       }
       throw error;
+    }
+    if (remainingMs() <= 0) {
+      // The slot came too late to do anything with: claim nothing, spend no attempt.
+      log.info({ action: "derive_deferred", mediaId, code: "timeout" }, "decode slot arrived after the deadline; left to the cron");
+      return { WEB_IMAGE: "deferred", THUMBNAIL: "deferred" };
     }
 
     // 2. Claim.
@@ -273,12 +251,24 @@ export async function deriveMedia({ mediaId, deadlineMs, now = new Date() }: { m
       throw new ImageDeriveError("timeout");
     }
 
-    // 4. Decode once, then free the slot: publishing is database work only.
-    const derived = await slot.derive(input, { ...DERIVE_DEFAULTS, sourceMime: row.mimeType, deadlineMs: remainingMs() });
+    // 4. What the bytes are. A row from before the byte check may carry the label the browser gave
+    //    it; the file is decoded as what it is and the row relabelled. Bytes of no allowed photo
+    //    type are a terminal refusal of the copies, never a deletion of the original.
+    const sourceMime = detectMediaType(row.mimeType, input.subarray(0, SIGNATURE_PREFIX_BYTES));
+    if (sourceMime === null) {
+      throw new ImageDeriveError("unsupported_type");
+    }
+    if (sourceMime !== row.mimeType) {
+      await db.media.update({ where: { id: mediaId }, data: { mimeType: sourceMime } });
+      log.info({ action: "relabel", mediaId, memoryId: row.memoryId, declared: row.mimeType, actual: sourceMime }, "original relabelled from its bytes");
+    }
+
+    // 5. Decode once, then free the slot: publishing is database work only.
+    const derived = await slot.derive(input, { ...DERIVE_DEFAULTS, sourceMime, deadlineMs: remainingMs() });
     slot.release();
     slot = null;
 
-    // 5. Write each copy to its claimed key.
+    // 6. Write each copy to its claimed key.
     const encodedByKind = new Map<DerivedKind, Encoded | { failed: "too_large" }>([
       ["WEB_IMAGE", derived.web],
       ["THUMBNAIL", derived.thumb],
@@ -290,7 +280,7 @@ export async function deriveMedia({ mediaId, deadlineMs, now = new Date() }: { m
       }
     }
 
-    // 6. Publish under the memory lock; only the holder of this exact claim can. No network inside the lock.
+    // 7. Publish under the memory lock; only the holder of this exact claim can. No network inside the lock.
     const keysToDelete: string[] = [];
     await db.$transaction(async (tx: Tx) => {
       await lockMemory(tx, row.memoryId);
@@ -337,9 +327,6 @@ export async function deriveMedia({ mediaId, deadlineMs, now = new Date() }: { m
       const code = error.code === "too_many_pixels" ? `too_many_pixels:${error.limit ?? MAX_PIXELS}` : error.code;
       await failClaims(code);
       log.warn({ action: "derive_refused", mediaId, code }, "original could not be converted");
-      if (error.code === "unsupported_type" && media !== null) {
-        await retireMismatchedOriginal(db, media);
-      }
       return result;
     }
     await failClaims("decode_failed");

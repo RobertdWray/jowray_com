@@ -103,7 +103,7 @@ describe("GET /api/media/[id]", () => {
     const res = await request("med_ready", `?t=${TOKEN}`);
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("https://blob.test/derived/mem_1/web.jpg?signed=1");
-    expect(res.headers.get("cache-control")).toBe("private, no-store");
+    expect(res.headers.get("cache-control")).toBe("private, max-age=55");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
     expect(res.headers.get("referrer-policy")).toBe("no-referrer");
@@ -276,5 +276,15 @@ describe("proxy download cap (issue #45: the double-billed path is small and env
     resetEnvCache();
     expect((await request("med_ready", `?t=${TOKEN}&download=1`)).status).toBe(302);
     expect(getMock).not.toHaveBeenCalled();
+  });
+
+  it("lets the browser reuse a redirect for the presign window, so a media element's range requests cost one charge, not one each", async () => {
+    const res = await request("med_ready", `?t=${TOKEN}&v=original`);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("cache-control")).toBe("private, max-age=55");
+    // Streams and refusals stay uncacheable.
+    expect((await request("med_ready", `?t=${TOKEN}&download=1`)).headers.get("cache-control")).toBe("private, no-store");
+    executeRawMock.mockImplementationOnce(counter(0));
+    expect((await request("med_ready", `?t=${TOKEN}`)).headers.get("cache-control")).toBe("private, no-store");
   });
 });

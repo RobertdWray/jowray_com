@@ -12,6 +12,14 @@ const log = createLogger({ category: "media" });
 
 /** Inline views are redirected to a presigned URL served by the blob host (which supports Range). */
 const PRESIGN_TTL_MS = 60_000;
+/**
+ * A media element issues several requests for one playback (a probe, the
+ * metadata, chunks, seeks) and each is a new request to this route. Letting
+ * the browser alone reuse the redirect for a little less than the URL's life
+ * makes one playback one charge, not one per range request. Nothing shared
+ * may cache it, and streams and refusals stay `no-store`.
+ */
+const REDIRECT_CACHE_CONTROL = `private, max-age=${PRESIGN_TTL_MS / 1000 - 5}`;
 
 export const PROTECTIVE_HEADERS = {
   "Cache-Control": "private, no-store",
@@ -109,10 +117,12 @@ export async function serveMedia({ id, variant, download, caller, allowDeletedMe
     cost = chosen.sizeBytes ?? originalBytes;
   }
 
-  const allowed = await withinAllowance(db, { caller, mediaId: media.id, approved: media.memory.status === "APPROVED", originalBytes, cost, env, day: utcDay(now()) });
+  // One reading of the clock for the counter's day and the Retry-After it may produce.
+  const at = now();
+  const allowed = await withinAllowance(db, { caller, mediaId: media.id, approved: media.memory.status === "APPROVED", originalBytes, cost, env, day: utcDay(at) });
   if (!allowed) {
     log.info({ action: "over_allowance", mediaId: media.id, cost }, "media refused: daily allowance reached");
-    return mediaOverAllowance(now());
+    return mediaOverAllowance(at);
   }
 
   const storage = createStorageService();
@@ -140,7 +150,7 @@ export async function serveMedia({ id, variant, download, caller, allowDeletedMe
   }
 
   const { url } = await storage.presignGet({ pathname, validUntil: Date.now() + PRESIGN_TTL_MS });
-  return new Response(null, { status: 302, headers: { ...PROTECTIVE_HEADERS, Location: url } });
+  return new Response(null, { status: 302, headers: { ...PROTECTIVE_HEADERS, "Cache-Control": REDIRECT_CACHE_CONTROL, Location: url } });
 }
 
 /**

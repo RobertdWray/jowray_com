@@ -123,24 +123,58 @@ function asciiAt(bytes: Uint8Array, at: number, text: string): boolean {
 }
 
 /**
- * The brands of an ISO BMFF file (size + `ftyp` + major brand + minor version
- * + compatible brands), or null when the prefix is not an `ftyp` box at all.
- * Only the brands inside the prefix are read; a truncated list is fine.
+ * Atom types a QuickTime or ISO BMFF file may start with. `ftyp` is optional
+ * in QTFF: camcorder imports and old QuickTime exports begin with `moov`,
+ * `wide` + `mdat`, or padding atoms.
  */
+const TOP_LEVEL_ATOMS = new Set(["ftyp", "moov", "mdat", "wide", "free", "skip", "pnot"]);
+
+function fourcc(bytes: Uint8Array, at: number): string {
+  return String.fromCharCode(bytes[at]!, bytes[at + 1]!, bytes[at + 2]!, bytes[at + 3]!);
+}
+
+/**
+ * The first atom of a QuickTime / ISO BMFF file: its type, where its payload
+ * starts and ends within the prefix, or null when the prefix is not an atom
+ * at all. A size field of 0 means "to the end of the file", 1 means a 64-bit
+ * `largesize` follows the type; anything else must cover at least the header.
+ */
+function firstAtom(bytes: Uint8Array): { type: string; payloadAt: number; end: number } | null {
+  if (bytes.length < 8) {
+    return null;
+  }
+  const size = ((bytes[0]! << 24) | (bytes[1]! << 16) | (bytes[2]! << 8) | bytes[3]!) >>> 0;
+  const type = fourcc(bytes, 4);
+  if (!TOP_LEVEL_ATOMS.has(type)) {
+    return null;
+  }
+  if (size === 0) {
+    return { type, payloadAt: 8, end: bytes.length };
+  }
+  if (size === 1) {
+    // 64-bit size: only the low 32 bits can matter inside a 128-byte prefix.
+    if (bytes.length < 16) {
+      return null;
+    }
+    const low = ((bytes[12]! << 24) | (bytes[13]! << 16) | (bytes[14]! << 8) | bytes[15]!) >>> 0;
+    const high = ((bytes[8]! << 24) | (bytes[9]! << 16) | (bytes[10]! << 8) | bytes[11]!) >>> 0;
+    return { type, payloadAt: 16, end: high > 0 ? bytes.length : Math.min(low, bytes.length) };
+  }
+  if (size < 8) {
+    return null;
+  }
+  return { type, payloadAt: 8, end: Math.min(size, bytes.length) };
+}
+
+/** The brands of a leading `ftyp` atom (major, then compatible), or null when the file does not start with one. */
 function isoBmffBrands(bytes: Uint8Array): Set<string> | null {
-  if (bytes.length < 12 || !asciiAt(bytes, 4, "ftyp")) {
+  const atom = firstAtom(bytes);
+  if (atom === null || atom.type !== "ftyp" || atom.payloadAt + 4 > bytes.length) {
     return null;
   }
-  const boxSize = ((bytes[0]! << 24) | (bytes[1]! << 16) | (bytes[2]! << 8) | bytes[3]!) >>> 0;
-  if (boxSize < 12) {
-    return null;
-  }
-  const end = Math.min(boxSize, bytes.length);
-  const brands = new Set<string>();
-  const brandAt = (at: number) => String.fromCharCode(bytes[at]!, bytes[at + 1]!, bytes[at + 2]!, bytes[at + 3]!);
-  brands.add(brandAt(8));
-  for (let at = 16; at + 4 <= end; at += 4) {
-    brands.add(brandAt(at));
+  const brands = new Set<string>([fourcc(bytes, atom.payloadAt)]);
+  for (let at = atom.payloadAt + 8; at + 4 <= atom.end; at += 4) {
+    brands.add(fourcc(bytes, at));
   }
   return brands;
 }
@@ -149,10 +183,11 @@ function isoBmffBrands(bytes: Uint8Array): Set<string> | null {
  * Whether the first bytes of a file are consistent with `mime`. This is the
  * byte check behind READY: the Blob token and `head()` only ever see the type
  * the uploading client declared. Checks are per container, not per codec,
- * and the ISO BMFF families (mp4, mov, m4a) accept any `ftyp` brand on
- * purpose: real device files carry brands no list could enumerate, and a
- * false rejection costs the family a memory. The egress allowance, not this
- * check, is what bounds abuse by someone who forges a header.
+ * and the ISO BMFF families (mp4, mov, m4a) accept any leading top-level
+ * atom and any `ftyp` brand on purpose: real device files carry brands and
+ * layouts no list could enumerate, and a false rejection costs the family a
+ * memory. The egress allowance, not this check, is what bounds abuse by
+ * someone who forges a header.
  */
 export function matchesSignature(mime: string, bytes: Uint8Array): boolean {
   switch (mime) {
@@ -173,7 +208,7 @@ export function matchesSignature(mime: string, bytes: Uint8Array): boolean {
     case "video/quicktime":
     case "audio/mp4":
     case "audio/x-m4a":
-      return isoBmffBrands(bytes) !== null;
+      return firstAtom(bytes) !== null;
     case "audio/mpeg":
       // An ID3v2 tag, or straight into the first frame (sync word: 11 set bits).
       return asciiAt(bytes, 0, "ID3") || (bytes.length >= 2 && bytes[0] === 0xff && (bytes[1]! & 0xe0) === 0xe0);
@@ -187,6 +222,35 @@ export function matchesSignature(mime: string, bytes: Uint8Array): boolean {
     default:
       return false;
   }
+}
+
+/**
+ * Order in which a kind's types are tried when the declared type does not
+ * match: specific signatures first, the container-only ISO BMFF types last,
+ * so a HEIC named `.jpg` is recognised as HEIC and never mistaken for an mp4.
+ */
+const DETECTION_ORDER: Record<MediaKind, readonly string[]> = {
+  PHOTO: ["image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"],
+  VOICE: ["audio/mpeg", "audio/webm", "audio/ogg", "audio/wav", "audio/mp4", "audio/x-m4a"],
+  VIDEO: ["video/webm", "video/mp4", "video/quicktime"],
+};
+
+/**
+ * What a file is, given what the client said it was and its first bytes:
+ * the declared type when the bytes agree; otherwise the allowed type of the
+ * same kind the bytes do match (a JPEG saved as `.heic`, a WebP named `.jpg`,
+ * a Voice Memo named `.mp3`), so the file is relabelled rather than lost; or
+ * null when the bytes are another kind or no allowed type at all. Browsers
+ * report `File.type` from the extension, so mislabels are ordinary.
+ */
+export function detectMediaType(declared: string, bytes: Uint8Array): string | null {
+  if (!isAllowedMime(declared)) {
+    return null;
+  }
+  if (matchesSignature(declared, bytes)) {
+    return declared;
+  }
+  return DETECTION_ORDER[spec(declared).kind].find((candidate) => matchesSignature(candidate, bytes)) ?? null;
 }
 
 function spec(mime: string): MediaTypeSpec {

@@ -102,9 +102,11 @@ export class VercelBlobStorageService implements StorageService {
 
   /**
    * A `Range` request for the first bytes. The blob host answers 206 with just
-   * the prefix; should it ever answer 200 (the whole body), only `maxBytes`
-   * are read before the stream is cancelled, so the transfer stays bounded
-   * either way. Nothing after the prefix is ever buffered.
+   * the prefix (the SDK reports every 2xx as `statusCode: 200`, so the stream
+   * is what tells us there is a body); should the host ever send the whole
+   * file, only `maxBytes` are read before the stream is cancelled, so the
+   * transfer stays bounded either way. Nothing after the prefix is buffered.
+   * Callers never ask for a range of an empty blob (that would be a 416).
    */
   async readPrefix(pathname: string, maxBytes: number): Promise<Uint8Array | null> {
     const result = await get(pathname, {

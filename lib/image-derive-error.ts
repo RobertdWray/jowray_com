@@ -1,6 +1,5 @@
 export type ImageDeriveErrorCode =
   | "too_many_pixels"
-  | "too_many_frames"
   | "decode_failed"
   | "timeout"
   | "busy"

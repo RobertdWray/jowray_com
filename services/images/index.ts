@@ -8,7 +8,8 @@ export type { DeriveOptions, DerivedSet, DeriveSlot, Encoded, ImageService } fro
 /**
  * Plan P2/P3 and the email plan's thumbnail spec (≤ 1000 px, JPEG q72 mozjpeg, ≤ 350 KB, #fffdf8).
  * `maxFrames` (issue #45): a 30 MP ceiling bounds an animation's pixels, but GIF
- * re-encoding costs far more CPU per pixel than a photo, so frames are capped too.
+ * re-encoding costs far more CPU per pixel than a photo, so frames are capped too;
+ * over either, the copies are a still of the first frame, never a failure.
  */
 export const DERIVE_DEFAULTS: Omit<DeriveOptions, "sourceMime" | "deadlineMs"> = {
   maxPixels: 30_000_000,

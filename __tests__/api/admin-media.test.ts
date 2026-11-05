@@ -79,7 +79,7 @@ describe("GET /admin/media/[id] (V13)", () => {
     const res = await request("med_ready", "", cookie);
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("https://blob.test/derived/mem_1/web.jpg?signed=1");
-    expect(res.headers.get("cache-control")).toBe("private, no-store");
+    expect(res.headers.get("cache-control")).toBe("private, max-age=55");
     expect(res.headers.get("referrer-policy")).toBe("no-referrer");
     expect((await request("med_ready", "?v=thumb", cookie)).headers.get("location")).toBe("https://blob.test/derived/mem_1/thumb.jpg?signed=1");
   });

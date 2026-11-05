@@ -5,15 +5,27 @@
  */
 
 const ascii = (text: string): number[] => Array.from(text, (c) => c.charCodeAt(0));
-const bytes = (...parts: Array<number[] | string>): Uint8Array => Uint8Array.from(parts.flatMap((p) => (typeof p === "string" ? ascii(p) : p)));
+type Bytes = Uint8Array<ArrayBuffer>;
+const bytes = (...parts: Array<number[] | string>): Bytes => Uint8Array.from(parts.flatMap((p) => (typeof p === "string" ? ascii(p) : p)));
 
 /** An ISO BMFF `ftyp` box: size, type, major brand, minor version, compatible brands. */
-export function ftyp(major: string, compatible: string[] = []): Uint8Array {
+export function ftyp(major: string, compatible: string[] = []): Bytes {
   const size = 16 + compatible.length * 4;
   return bytes([0, 0, 0, size], "ftyp", major, [0, 0, 0, 0], ...compatible);
 }
 
-export const SIGNATURE_SAMPLES: Record<string, Uint8Array> = {
+/** A `ftyp` box with a 64-bit `largesize` (size field 1): brands start at offset 24. */
+export function ftypLarge(major: string, compatible: string[] = []): Bytes {
+  const size = 24 + compatible.length * 4;
+  return bytes([0, 0, 0, 1], "ftyp", [0, 0, 0, 0, 0, 0, 0, size], major, [0, 0, 0, 0], ...compatible);
+}
+
+/** Any top-level QuickTime / ISO BMFF atom as the first thing in the file; `size` 0 means "to end of file", 1 means 64-bit. */
+export function atom(type: string, size = 8, payload: number[] = [0, 0, 0, 0, 0, 0, 0, 0]): Bytes {
+  return bytes([(size >>> 24) & 0xff, (size >>> 16) & 0xff, (size >>> 8) & 0xff, size & 0xff], type, payload);
+}
+
+export const SIGNATURE_SAMPLES: Record<string, Bytes> = {
   "image/jpeg": bytes([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10], "JFIF", [0x00]),
   "image/png": bytes([0x89], "PNG", [0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d], "IHDR"),
   "image/gif": bytes("GIF89a", [0x20, 0x00, 0x20, 0x00, 0xf7]),
@@ -32,9 +44,9 @@ export const SIGNATURE_SAMPLES: Record<string, Uint8Array> = {
 };
 
 /** An MP3 without an ID3 tag: the first frame's sync word. */
-export const MP3_FRAME_SYNC = Uint8Array.from([0xff, 0xfb, 0x90, 0x64, 0x00]);
+export const MP3_FRAME_SYNC: Bytes = Uint8Array.from([0xff, 0xfb, 0x90, 0x64, 0x00]);
 
-export const NOT_MEDIA: Record<string, Uint8Array> = {
+export const NOT_MEDIA: Record<string, Bytes> = {
   empty: new Uint8Array(0),
   zeros: new Uint8Array(64),
   text: bytes("hello, this is not a media file at all"),
