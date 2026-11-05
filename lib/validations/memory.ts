@@ -163,8 +163,11 @@ export const draftMemoryInputSchema = z
     relationship: optionalText(120),
     phone: optionalText(40),
   }),
-  // Verbatim: the sender's own paragraphs, never trimmed or rewritten here.
+  // The words to store: the sender's verbatim paragraphs, or the light rewrite Rob approved on their behalf. Never trimmed here.
   note: z.string().max(10_000).refine((value) => value.trim().length > 0, { message: "The note needs some words" }),
+  // The sender's verbatim excerpt when `note` is a light rewrite of it. Recorded in the ADMIN revision's `before`,
+  // never on the row, so the admin History shows exactly what they wrote and what changed. Same limits as `note`, untrimmed.
+  originalNote: z.string().max(10_000).refine((value) => value.trim().length > 0, { message: "The original needs some words" }).optional(),
   approxDateText: optionalText(120),
   place: optionalText(200),
   source: z.enum(["EMAIL", "SMS", "OTHER"]),

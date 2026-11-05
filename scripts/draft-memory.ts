@@ -179,9 +179,18 @@ export function prepareInput(raw: unknown): Record<string, unknown> {
 /** Lines for the terminal. The secret is never part of a response, so nothing here can echo it. */
 export function summarize(status: number, body: unknown): string[] {
   if (typeof body === "object" && body !== null) {
-    const { data, error } = body as { data?: { memoryId?: string; claimLink?: string }; error?: { code?: string; message?: string; memoryId?: string; status?: string } };
+    const { data, error } = body as {
+      data?: { memoryId?: string; claimLink?: string; originalNoteRecorded?: boolean };
+      error?: { code?: string; message?: string; memoryId?: string; status?: string };
+    };
     if (status === 200 && data) {
-      return [`memoryId: ${data.memoryId ?? "?"}`, `claimLink: ${data.claimLink ?? "?"}`];
+      const lines = [`memoryId: ${data.memoryId ?? "?"}`, `claimLink: ${data.claimLink ?? "?"}`];
+      // The skill checks this line against what it sent. No line at all means the server predates the field and
+      // would have dropped a rewrite's verbatim excerpt, which the skill treats as a failed rewrite.
+      if (typeof data.originalNoteRecorded === "boolean") {
+        lines.push(`originalNote: ${data.originalNoteRecorded ? "recorded" : "NOT recorded"}`);
+      }
+      return lines;
     }
     if (error) {
       const lines = [`${status} ${error.code ?? "error"}: ${(error.message ?? "").replace(/\S{32,}/g, "[redacted]")}`];

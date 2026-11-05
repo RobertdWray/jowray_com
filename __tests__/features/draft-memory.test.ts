@@ -74,6 +74,22 @@ describe("draftMemory", () => {
     expect(revisions).toHaveLength(1);
     expect(revisions[0]).toMatchObject({ memoryId: memory.id, changedVia: "ADMIN", before: {} });
     expect(revisions[0]!.after).toMatchObject({ note: valid.note, name: "Joyce Gilley", relationship: "Friend from church", source: "EMAIL", sourceRef: "gmail:1a1a2317fba34eec", approxDateText: null, place: null, visibility: "PUBLIC", status: "DRAFT" });
+    // A verbatim save: nothing to keep apart from the stored words, and the caller is told so.
+    expect(result.originalNoteRecorded).toBe(false);
+  });
+
+  it("records the verbatim excerpt as the revision's before and reports originalNoteRecorded when the stored note is a light rewrite", async () => {
+    const original = "Dear Rob,\n\nYour mom always had a kind word for everyone.\n\nThinking of you all.";
+    const rewrite = "Jo always had a kind word for everyone.";
+    const result = await draftMemory({ ...valid, note: rewrite, originalNote: original, visibility: "FAMILY" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) { return; }
+    expect(result.originalNoteRecorded).toBe(true);
+    // The row carries the words the sender will see and edit; the sender's exact words live only in the revision.
+    expect(memories[0]).toMatchObject({ contributorNote: rewrite, visibility: "FAMILY" });
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]).toMatchObject({ changedVia: "ADMIN", before: { note: original } });
+    expect(revisions[0]!.after).toMatchObject({ note: rewrite, visibility: "FAMILY" });
   });
 
   it("rejects a missing email, an empty note and a bad sourceRef without writing", async () => {

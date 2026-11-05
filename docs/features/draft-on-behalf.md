@@ -2,14 +2,14 @@
 
 When a condolence email, text or card holds a memory of Jo, the family can save the sender's own words as a DRAFT memory and send them a private link; the memory becomes real only when that person presses **Share this memory**.
 
-**Status:** [PR #30](https://github.com/RobertdWray/jowray_com/pull/30) (DRAFT status, admin API, script, skill; merged 2026-11-04), [PR #31](https://github.com/RobertdWray/jowray_com/pull/31) (admin-page draft form and New link; merged 2026-11-04), [PR #40](https://github.com/RobertdWray/jowray_com/pull/40) (ledger: `ADMIN_API_SECRET` set; merged 2026-11-04). Deployed: the ledger records `ADMIN_API_SECRET` set in Production on 2026-11-04 and the admin API probed on the live site (401 / 401 / 400). `CONSENT_VERSION=2026-11-v2` is not set yet, and the first two real drafts have not been run.
+**Status:** [PR #30](https://github.com/RobertdWray/jowray_com/pull/30) (DRAFT status, admin API, script, skill; merged 2026-11-04), [PR #31](https://github.com/RobertdWray/jowray_com/pull/31) (admin-page draft form and New link; merged 2026-11-04), [PR #40](https://github.com/RobertdWray/jowray_com/pull/40) (ledger: `ADMIN_API_SECRET` set; merged 2026-11-04), PR `feat/draft-skill-rewrite-prompts` (verbatim-or-light-rewrite choice, prompts for when/where/relationship/visibility, `originalNote` in the revision; 2026-11-05). Deployed: the ledger records `ADMIN_API_SECRET` set in Production on 2026-11-04 and the admin API probed on the live site (401 / 401 / 400). `CONSENT_VERSION=2026-11-v2` is not set yet, and the first two real drafts have not been run.
 
 ## What we built
 
 1. A condolence note sits in Rob's Gmail. Rob runs the `jowray-draft-memory` skill (in the repo, symlinked into `~/.claude/skills`, `disable-model-invocation: true` so a chat that mentions Jo can never write to production by accident).
-2. The skill's preflight stops unless the checkout's script and skill match `origin/main`. It finds the sender's message, proposes a **verbatim** excerpt of the paragraphs about Jo, and waits for Rob's yes. The one change allowed is joining lines a mail client hard-wrapped.
+2. The skill's preflight stops unless the checkout's script and skill match `origin/main`. It finds the sender's message and proposes the **verbatim** excerpt of the paragraphs about Jo (the one change allowed is joining lines a mail client hard-wrapped) and, when the note reads as a letter to the family, a **light rewrite** beside it with a change list ("your mom → Jo"). It then asks Rob, in one prompt, which text to save, who may see it (PUBLIC / FAMILY / PRIVATE), roughly when and where (or leave blank, or ask the sender in the reply), and resolves any unclear pronoun; names come from the obituary, never from a fixed substitution. Nothing is saved without an answered question (since 2026-11-05).
 3. The skill writes a JSON input with a `sourceInput` (gmail, sms or other) to the scratchpad and runs `scripts/draft-memory.ts --prod`. The script derives `source` and `sourceRef` through `lib/source-ref.ts` and posts to `POST /api/admin/memories` with the `ADMIN_API_SECRET` bearer. No default target (`--prod` or `ADMIN_API_URL`, never both), http only to loopback, redirects refused, the secret redacted from every output line.
-4. `draftMemory` runs one transaction: duplicate check on the unique `sourceRef`, then the daily budget, then a Contributor (`contactOptIn: false`), a Memory with `status: DRAFT`, `consentedAt: null` and a hashed claim token, and an ADMIN revision. Answers: 200 with the link, 409 `duplicate` with the existing id and status, 400, 429.
+4. `draftMemory` runs one transaction: duplicate check on the unique `sourceRef`, then the daily budget, then a Contributor (`contactOptIn: false`), a Memory with `status: DRAFT`, `consentedAt: null` and a hashed claim token, and an ADMIN revision. For a rewrite the revision's `before` is `{ note: <verbatim excerpt> }`, so History shows the sender's exact words → the saved text. Answers: 200 with the link and `originalNoteRecorded` (the script prints `originalNote: recorded`, which the skill checks so a rewrite can never lose its original against an older build), 409 `duplicate` with the existing id and status, 400, 429.
 5. The skill drafts Rob's Gmail reply to the sender only (no cc or bcc; it reads the draft back to check) with the claim link. Rob sends it himself. The site never emails the link.
 6. The person opens `/m/<token>`. A DRAFT shows "A memory of Jo, in your words", the file control above the form, both preference boxes ticked, and one button: **Share this memory**.
 7. Share, under the memory lock, moves DRAFT to PENDING, stamps `consentedAt` and `consentVersion`, and records the two preferences. A second press never re-stamps. An edit without Share leaves a DRAFT and cannot set preferences.
@@ -28,6 +28,7 @@ Share is the consent because "the person never performed an act of sharing befor
 |---|---|
 | "Rob sends the link himself from Gmail... The site never emails the link." (Rob, 2026-11-03) | [plan §1](../plans/2026-11-03-draft-memory-on-behalf.md) |
 | "The memory text is a verbatim excerpt... Claude proposes the cut, Rob approves before anything is saved." (Rob, 2026-11-03) | [plan §1](../plans/2026-11-03-draft-memory-on-behalf.md) |
+| Amended: verbatim *or* a light rewrite, Rob's choice per memory; "as light and as surgical as possible to have the memory make sense on a shared family website"; the verbatim excerpt is kept in the ADMIN revision (`originalNote`); the skill prompts for when, where, relationship and visibility (Rob, 2026-11-05) | [plan 2026-11-05 §1](../plans/2026-11-05-draft-skill-rewrite-prompts.md) |
 | "An admin API on the site (bearer secret)... No production DB credentials in the skill." "An email address is required to draft." Quality over speed. (Rob, 2026-11-03) | [plan §1](../plans/2026-11-03-draft-memory-on-behalf.md) |
 | Agent's calls, accepted at approval ("go build this plan", 2026-11-04): the DRAFT status; Share = consent; drafts never get site email; reissue is deliberate revocation; one button on the page; roll forward only once a DRAFT exists | [plan §1, §2](../plans/2026-11-03-draft-memory-on-behalf.md) |
 | Review buckets 1 and 2 in scope, including the CHECK constraint (Rob, 2026-11-04); merge "if no serious regressions" | [plan §8.1, §2](../plans/2026-11-03-draft-memory-on-behalf.md) |
@@ -38,8 +39,9 @@ Share is the consent because "the person never performed an act of sharing befor
 
 ```mermaid
 flowchart TD
-  A[Condolence note arrives<br/>in Rob's Gmail] --> B[Skill proposes a<br/>verbatim excerpt]
-  B --> C{Rob approves?}
+  A[Condolence note arrives<br/>in Rob's Gmail] --> B[Skill proposes the text:<br/>verbatim, or a light rewrite beside it]
+  B --> B2[Asks Rob: which text, visibility,<br/>when, where, unclear pronouns]
+  B2 --> C{Rob approves?}
   C -- yes --> D[scripts/draft-memory.ts<br/>POST /api/admin/memories<br/>bearer ADMIN_API_SECRET]
   D --> E[DRAFT row: hashed token,<br/>consentedAt null, no site email]
   E --> F[Skill drafts Gmail reply<br/>to the sender only]
@@ -98,6 +100,7 @@ The raw token lives only in the link; the row holds its hash, so the site cannot
 - M-E-12 (F10): expiry policy for drafts nobody shares; needs Rob.
 - M-E-13: the first two real drafts and the connector-mailbox check; needs Rob's "run it for real".
 - M-E-14: every future lister of memories must decide explicitly what to do with DRAFT.
+- History on the admin page shows the newest 25 revisions (`features/admin/get-memory.ts`); a memory edited more than 24 times no longer shows its creation revision, and with it a rewritten draft's verbatim original, on the page (still in the database). Low; see plan 2026-11-05 §10 bucket 4.
 - M-D-07 (F2 second half): no nudge email for unshared drafts.
 - Accepted minors (plan §8.2): drafts count against the daily memory budget; no request-path alert on Share (R1).
 - Launch tracking: [issue #38](https://github.com/RobertdWray/jowray_com/issues/38).

@@ -58,6 +58,15 @@ describe("summarize", () => {
     const lines = summarize(200, { success: true, data: { memoryId: "mem_1", claimLink: "https://www.jowray.com/m/tok" } });
     expect(lines).toEqual(["memoryId: mem_1", "claimLink: https://www.jowray.com/m/tok"]);
   });
+  it("says whether the verbatim excerpt was recorded, and stays silent when the server does not know the field", () => {
+    const data = { memoryId: "mem_1", claimLink: "https://www.jowray.com/m/tok" };
+    // A rewrite whose original reached the revision history.
+    expect(summarize(200, { success: true, data: { ...data, originalNoteRecorded: true } })).toEqual(["memoryId: mem_1", "claimLink: https://www.jowray.com/m/tok", "originalNote: recorded"]);
+    // A verbatim save (nothing to record) is reported as such, so the skill can check it against what it sent.
+    expect(summarize(200, { success: true, data: { ...data, originalNoteRecorded: false } })).toEqual(["memoryId: mem_1", "claimLink: https://www.jowray.com/m/tok", "originalNote: NOT recorded"]);
+    // An older server strips the field: no line, which the skill treats as "do not trust a rewrite".
+    expect(summarize(200, { success: true, data })).toEqual(["memoryId: mem_1", "claimLink: https://www.jowray.com/m/tok"]);
+  });
   it("prints memoryId and status on 409 duplicate, and the code and message otherwise", () => {
     expect(summarize(409, { error: { code: "duplicate", message: "exists", memoryId: "mem_1", status: "DRAFT" } })).toEqual(["409 duplicate: exists", "memoryId: mem_1", "status: DRAFT"]);
     expect(summarize(401, { error: { code: "unauthorized", message: "Unauthorized" } })).toEqual(["401 unauthorized: Unauthorized"]);
@@ -73,6 +82,9 @@ describe("prepareInput", () => {
 
   it("derives source and sourceRef from sourceInput through the canonical builders and drops sourceInput", () => {
     expect(prepareInput({ ...base, sourceInput: { kind: "gmail", messageId: "1A1A2317FBA34EEC" } })).toEqual({ ...base, source: "EMAIL", sourceRef: gmailSourceRef("1a1a2317fba34eec") });
+    // Every other key is the admin API's business: the verbatim excerpt and the visibility travel untouched.
+    const withChoices = { ...base, originalNote: "Dear Rob,\n\nYour mom was a light.", visibility: "FAMILY" };
+    expect(prepareInput({ ...withChoices, sourceInput: { kind: "gmail", messageId: "1a1a2317fba34eec" } })).toEqual({ ...withChoices, source: "EMAIL", sourceRef: gmailSourceRef("1a1a2317fba34eec") });
     expect(prepareInput({ ...base, sourceInput: { kind: "sms", number: "+14105551234", sentAt: "2026-11-03T10:05-04:00", text: "Jo was a light.\r\n" } })).toEqual({ ...base, source: "SMS", sourceRef: smsSourceRef("+14105551234", "2026-11-03T14:05Z", "Jo was a light.") });
     expect(prepareInput({ ...base, sourceInput: { kind: "other", email: "Pat@Example.com", originalText: "Dear Rob,\r\n\r\nJo was a light.\r\n" } })).toEqual({ ...base, source: "OTHER", sourceRef: otherSourceRef("pat@example.com", "Dear Rob,\n\nJo was a light.") });
   });

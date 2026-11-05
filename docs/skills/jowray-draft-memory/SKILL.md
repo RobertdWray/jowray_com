@@ -6,15 +6,16 @@ disable-model-invocation: true
 
 # Draft a memory of Jo on someone's behalf
 
-Condolence notes arrive in Rob's Gmail with real memories of Jo inside them. This skill saves the sender's own words as a **DRAFT** memory on jowray.com (invisible and silent until the sender presses **Share this memory** on their claim page) and drafts the reply Rob sends from Gmail with the claim link. The site never emails the sender; Rob's reply is the only message they get.
+Condolence notes arrive in Rob's Gmail with real memories of Jo inside them. This skill saves the sender's words as a **DRAFT** memory on jowray.com (invisible and silent until the sender presses **Share this memory** on their claim page) and drafts the reply Rob sends from Gmail with the claim link. The site never emails the sender; Rob's reply is the only message they get.
 
-Design and rulings: `docs/plans/2026-11-03-draft-memory-on-behalf.md` in the repo.
+Design and rulings: `docs/plans/2026-11-03-draft-memory-on-behalf.md` (the feature) and `docs/plans/2026-11-05-draft-skill-rewrite-prompts.md` (verbatim-or-rewrite choice, prompts, `originalNote`) in the repo.
 
 ## Prerequisites
 
 - The repo at `/Users/rob/Documents/active_work/jowray_com` with `node_modules` installed (Node 20+).
 - `/Users/rob/Documents/active_work/jowray_com/.env` holding `ADMIN_API_SECRET` (never print it). Real runs pass `--prod`; a local test sets `ADMIN_API_URL=http://localhost:3000` instead. There is no default target.
 - The Gmail connector (`get_thread`, `search_threads`, `list_drafts`, `get_draft`, `create_draft`, `update_draft`). Check which mailbox it is (`authuser=` in any `viewUrl`): the condolence notes may live in a different account from the one this session is connected to.
+- Rewrites need the production site to be at or past the merge of the 2026-11-05 plan's PR: the script then prints `originalNote: recorded` after a rewrite. Until it does, save verbatim only.
 
 ### Preflight (every run)
 
@@ -24,17 +25,28 @@ The checkout is shared with other agents and can be stale or on a feature branch
 cd /Users/rob/Documents/active_work/jowray_com && git fetch -q origin main && git diff --quiet origin/main -- scripts/draft-memory.ts lib/source-ref.ts docs/skills/jowray-draft-memory/SKILL.md && echo "script matches origin/main" || echo "STOP: the checkout's script or skill differs from origin/main"
 ```
 
-Stop if it says STOP (or if `scripts/draft-memory.ts` is missing: the feature has not merged). If `npx tsx` fails on an import, run `npm ci` in that checkout first.
+Stop if it says STOP (or if `scripts/draft-memory.ts` is missing: the feature has not merged). If `npx tsx` fails on an import, run `npm ci` in that checkout first. This check proves the local script matches `origin/main`; it says nothing about what production is serving, which is why step 3 reads the `originalNote:` line.
 
 ## Hard rules
 
-- **Verbatim.** The memory text is the sender's own paragraphs about Jo, copied exactly. Never paraphrase, polish or summarise. Rob approves the cut before anything is saved.
+- **Their words, their choice.** Each memory is saved either as a verbatim copy of the sender's paragraphs about Jo or as a light rewrite that Rob picks and approves, text in hand, before anything is saved. A rewrite is as light and surgical as the note allows (step 2); the verbatim excerpt is always sent as `originalNote` so it sits in the memory's history. Never save text Rob has not seen.
+- **Only an answered question authorises a save.** A question that was cancelled, timed out, closed with partial selections, or answered in chat with an instruction rather than a choice does not authorise anything. PUBLIC being the API default is not a visibility choice. Re-ask.
+- **Rob's typed text is either a replacement or an instruction.** Text that reads as the memory itself ("Jo always stopped…") is the approved note. Text that reads as a direction ("use the rewrite but keep 'Dad'") is an instruction: produce a revised proposal and ask again. Newly generated wording always goes back through step 2b.
+- **Never tell the sender the words are exactly theirs when they were rewritten.** The reply says what was done (step 4).
+- **A 409 means nothing from this attempt was saved.** Not the words, not the visibility, not the details. Never describe them as saved, never write a reply that assumes them, never change `sourceInput` to get past the duplicate. Resume from the existing draft (step 3).
+- **A rewrite that was sent but not recorded is a defect, not a success.** If the script printed `originalNote: NOT recorded`, or printed no `originalNote:` line after a payload that carried one, production is older than this skill: stop, tell Rob the row holds only the rewrite, and leave the fix to the admin page (edit the words or delete the draft). Draft no reply.
 - **Email required.** A note with no sender email is not drafted until Rob supplies one.
 - **Reply to the sender only.** `to` is the sender's address; `cc` stays empty. Never reply-all.
 - **Nobody presses Share.** Only the sender does, on their own claim page. Never open a real person's claim link to "check".
 - **No phone numbers, no street or unit details** in the relationship field or the reply (the field is PUBLIC by default).
 - **Reissue is revocation.** A second claim link for the same draft kills the one already sent. Only on Rob's explicit say-so, and only after step 3's Gmail check below.
-- **Rob never presses Share, and never edits a draft on its page.** The only button on a draft's page is Share, and Share is the sender's consent. If Rob opens the link to add an attachment, he uses the file control only and closes the tab; a typo is fixed by telling the sender, or by withdrawing and redrafting (follow-up F12). A `consentedAt` earlier than the time Rob sent the reply means Rob pressed it: flag it.
+- **Rob never presses Share, and never edits a draft on its page.** The only button on a draft's page is Share, and Share is the sender's consent. If Rob opens the link to add an attachment, he uses the file control only and closes the tab; a typo is fixed on the admin page or by telling the sender. A `consentedAt` earlier than the time Rob sent the reply means Rob pressed it: flag it.
+
+## Who's who
+
+From the obituary (`app/obituary/page.tsx`): Jo is the person being remembered, Rob's mother. **Richard** Wray is her husband ("Dad" in the notes). **Rob** (Robert) is her son. **Tracy** Gold is Rob's wife. Richard, Rob and Tracy are the family admins.
+
+Resolve every pronoun from *this* message. "You" in a letter to Rob is Rob; "your mom" is Jo; "your dad" is Richard; "you both" may be Rob and Tracy, or Rob and Richard, and "your parents" may be Jo and Richard or the sender's own. If the note does not settle a referent, leave it unchanged in the rewrite and ask Rob in step 2b. Never substitute names by rule.
 
 ## Procedure
 
@@ -52,17 +64,30 @@ printf '%x\n' <decimal>
 
 **Pasted text or a text message** → use it as given. Ask for the sender's name and email if missing (email is required). For a text message also ask for the number (E.164) and when it arrived (ISO-8601), which only ever appear hashed.
 
-Note whether the message has attachments: the skill cannot download them. The reply invites the sender to add the photo on their own page (step 4); Rob does not add it for them (hard rule above; `--attach` is follow-up F13).
+Note whether the message has attachments: the skill cannot download them. The reply invites the sender to add the photo on their own page (step 4); Rob does not add it for them (hard rule above).
 
-### 2. Propose the excerpt
+### 2. Propose the text
 
-Show Rob, and wait for his yes or edits:
+Show Rob, in this order:
 
-- Sender name and email.
-- Suggested relationship, with no street or unit details ("Neighbor at Broadmead", "Friend from Ticonderoga Methodist").
-- The verbatim paragraphs about Jo. Drop greetings, logistics, Dad's health, quoted earlier mail (`>` lines), signatures and "Sent from my iPhone". The **one** normalisation allowed: join lines that a mail client hard-wrapped inside a paragraph; keep the blank-line paragraph breaks. Show the exact string that will be stored in a fenced block, so Rob sees the line breaks the sender will see on their page.
-- `approxDateText` and `place` only if the note states them.
-- Whether the message has an attachment.
+1. **The verbatim cut**, in a fenced block: the sender's own paragraphs about Jo, exactly as written. Drop greetings, logistics, Dad's health, quoted earlier mail (`>` lines), signatures and "Sent from my iPhone". The **one** normalisation allowed: join lines that a mail client hard-wrapped inside a paragraph; keep the blank-line paragraph breaks. This block is what the sender will see if Rob chooses verbatim, line breaks included.
+2. **A light rewrite**, in a second fenced block, **only when the verbatim cut addresses the family rather than speaking about Jo**, followed by a one-line change list ("your mom → Jo ×2; dropped 'Dear Rob' and the closing line; 'you' → 'Rob'"). A light rewrite is the sender's own sentences, order, tense, vocabulary and paragraph breaks, with only the changes needed for the memory to make sense on a shared family website: addressee references become the person's name as the message establishes it (Who's who); direct address and condolence framing that is not part of the memory itself is dropped ("Dear Rob", "I'm so sorry", "thinking of you all"); pronouns are fixed only where a change requires it. No new facts, no added adjectives, no summarising, no reordering, no smoothing of style; typos stay unless they obscure meaning. If a pronoun's referent is unclear, leave it unchanged and list it as an open question. If the verbatim cut already reads as a memory about Jo, say so and show no rewrite.
+3. **Sender name and email.** Suggested **relationship**, with no street or unit details ("Neighbor at Broadmead", "Friend from Ticonderoga Methodist"). Proposed **roughly when** and **where**, each with the phrase in the note it comes from, or "not stated".
+4. Whether the message has an **attachment**.
+
+### 2b. Ask Rob
+
+One `AskUserQuestion` call with two to four questions; every question has two to four options. If no question tool is available, ask the same questions in one chat message and wait for choices. Skip any question Rob already answered in chat for this memory.
+
+- **Words** (always). Options: "Verbatim copy"; then "Light rewrite (as shown)" when step 2 showed one, otherwise "Propose a light rewrite" (step 2 then runs again with one). Rob's own text arrives through the free-text row: apply the replacement-or-instruction hard rule.
+- **Who may see it** (always). Options, from `lib/visibility.ts`: "Everyone who visits jowray.com (PUBLIC, default)" / "The whole family (FAMILY)" / "Richard, Rob and Tracy only (PRIVATE)".
+- **Roughly when.** Options: the proposed value when the note states one; always "Leave blank (the sender can fill it in)"; and "Ask the sender in the reply" (adds one line in step 4).
+- **Where.** Same three shapes.
+- **Open pronouns** (only when step 2 listed one): one question per unclear referent, candidates as options.
+
+A second call only if needed: **Relationship** (proposed wording / "Leave blank") and **Name** when the signature and the From line disagree or no name is known.
+
+If Rob edited the text, show the final text once more in a fenced block and get a plain yes before step 3.
 
 ### 3. Save the draft
 
@@ -71,31 +96,36 @@ Build the input JSON in the scratchpad (never in the repo). Describe **where the
 ```json
 {
   "contributor": { "name": "<name>", "email": "<email>", "relationship": "<relationship or omit>" },
-  "note": "<the verbatim excerpt>",
+  "note": "<the approved text: the verbatim cut, or the rewrite as Rob approved or edited it>",
+  "originalNote": "<the verbatim cut; include ONLY when note is a rewrite>",
   "approxDateText": "<or omit>",
   "place": "<or omit>",
+  "visibility": "<PUBLIC | FAMILY | PRIVATE, as Rob chose>",
   "sourceInput": { "kind": "gmail", "messageId": "<the sender's message id>" }
 }
 ```
+
+Omit `originalNote` for a verbatim save. Omit `relationship`, `approxDateText` and `place` when Rob chose "Leave blank" or "Ask the sender in the reply".
 
 `sourceInput` is one of:
 - `{ "kind": "gmail", "messageId": "<sender's message id>" }` → `source: EMAIL`.
 - `{ "kind": "sms", "number": "<E.164>", "sentAt": "<ISO-8601 with an explicit zone, e.g. 2026-11-03T14:05-05:00>", "text": "<the full text message>" }` → `source: SMS`. The zone is required (a zone-less time would hash differently on another machine). Keyed on number, the minute (UTC) and the text, so a retyped zone or seconds cannot make a second draft and two texts in one minute stay distinct.
 - `{ "kind": "other", "originalText": "<the whole original message, not the excerpt>" }` → `source: OTHER`. The dedup key uses `contributor.email`; an `email` field here must match it.
 
-Run the script (it prints the host it is about to call, then `memoryId` and `claimLink`):
+Run the script (it prints the host it is about to call, then `memoryId`, `claimLink` and, when the server knows the field, `originalNote: recorded` or `originalNote: NOT recorded`):
 
 ```bash
 npx tsx --env-file=/Users/rob/Documents/active_work/jowray_com/.env /Users/rob/Documents/active_work/jowray_com/scripts/draft-memory.ts --prod --input <json-file>
 ```
 
-Then delete the JSON file.
+Then delete the JSON file. Check the `originalNote:` line against what was sent: a rewrite must print `recorded` (hard rule above); a verbatim save prints `NOT recorded` or nothing.
 
-- **409 duplicate, status DRAFT**: a draft already exists for this message, and a link for it may already be in Gmail. **Check Gmail before offering anything.** Look in **this sender's thread** (the `threadId` from step 1; for a text or pasted note, `list_drafts(query: "to:<sender email>")` and `search_threads(query: "in:sent to:<sender email> jowray.com/m/")`):
+- **409 duplicate, status DRAFT**: a draft already exists for this message, with its own words, visibility and details; **nothing from this attempt was applied**, and a link for it may already be in Gmail. **Check Gmail before offering anything.** Look in **this sender's thread** (the `threadId` from step 1; for a text or pasted note, `list_drafts(query: "to:<sender email>")` and `search_threads(query: "in:sent to:<sender email> jowray.com/m/")`):
   - A Gmail **draft** in that thread with a `/m/` link → probably the link for this memory, and probably still live. The site cannot confirm a link without its token, so say so: show Rob the draft and the `memoryId` from the 409, and let him decide between sending it as is and a reissue (which replaces the link in that draft).
   - A **sent** reply in that thread with a `/m/` link → the person most likely holds a working link. Do not reissue unless Rob says, in so many words, that he wants to revoke it (for example because it leaked or he knows a reissue happened after it was sent).
   - Neither → the link was lost (a session died between the POST and the Gmail draft). Offer `--prod --reissue <memoryId>` and say that any link already sent stops working. Only on Rob's explicit yes.
   - After any reissue, put the new link into the existing Gmail draft with `update_draft` if one exists; never leave a draft carrying a dead link. A `/m/` link found for the same person but in another thread belongs to another memory: leave it alone.
+  - Rob wants different words, visibility or details than the existing draft has → the admin page (`/admin`, "Drafts") edits a DRAFT's words and fields. Do not try a second draft with an altered `sourceInput`.
 - **409 duplicate, status PENDING or later**: the person already shared it. Stop; tell Rob.
 - **401**: `ADMIN_API_SECRET` is missing locally or differs from Vercel. Stop.
 - **429**: the daily memory budget is spent. Try later.
@@ -108,7 +138,7 @@ Otherwise `create_draft`:
 - **Gmail source** (`sourceInput.kind = gmail`): `replyToMessageId` = the sender's message id (the same id as in `sourceRef`); `subject` = `Re: <original subject>` with any existing leading `Re:` / `RE:` / `Fwd:` stripped first, so it never reads `Re: Re:`.
 - **Text message or pasted note** (no Gmail message to reply to): omit `replyToMessageId`; `subject` = `A memory of Jo`.
 - `to`: `["<sender email>"]`. No `cc`, no `bcc`. The connector does **not** inherit recipients from the original (probe, 2026-11-04), so this list is exactly who gets the link.
-- `body`: plain text, in Rob's voice. Short, warm, first person. Thank them for the specific memory (name it in a few words, do not quote the note back at length). One line that it is saved to Jo's memorial in their own words. The claim link on its own line. "Change anything, add a photo or a recording, and press Share when it's right." A clean exit: "No need to do anything if you'd rather not." If the message had an attachment, one line that the photo can be added on that page (Rob does not add it for them). Never grovel, never include anyone's phone number, no "I know you're busy".
+- `body`: plain text, in Rob's voice. Short, warm, first person. Thank them for the specific memory (name it in a few words, do not quote the note back at length). One line that it is saved to Jo's memorial: **verbatim** → "in your own words"; **rewritten** → "I trimmed your note lightly so it reads as your memory of Jo on the page rather than a letter to me; please change anything that isn't how you'd say it." The claim link on its own line. "Change anything, add a photo or a recording, and press Share when it's right." When Rob chose "Ask the sender in the reply" for when or where, one line asks ("If you remember roughly when this was, there's a spot for it on the page."). A clean exit: "No need to do anything if you'd rather not." If the message had an attachment, one line that the photo can be added on that page (Rob does not add it for them). Never grovel, never include anyone's phone number, no "I know you're busy".
 
 **Then read the draft back** (`get_draft`, or `list_drafts` with `DRAFT_VIEW_FULL`) and stop if `to` is not exactly the sender, or `cc` / `bcc` is not empty: a CC'd person would hold the bearer link and could edit or Share the memory.
 
@@ -116,11 +146,12 @@ Rob reads and sends the draft himself. The skill never sends.
 
 ### 5. Report
 
-Give Rob: the Gmail draft `viewUrl`, the claim link (a bearer token: anyone with it can edit the memory), and the reminder that nothing is public until the sender presses Share. Rob watches `Memory.status` move DRAFT → PENDING in Prisma Studio or the Neon console; the family-admin alert email fires once the person shares.
+Give Rob: the Gmail draft `viewUrl`; the claim link (a bearer token: anyone with it can edit the memory); whether the saved text is verbatim or rewritten and whether `originalNote: recorded` was printed; the visibility chosen; which details were left blank or asked of the sender; and the reminder that nothing is public until the sender presses Share. Rob watches `Memory.status` move DRAFT → PENDING on the admin page; the family-admin alert email fires once the person shares.
 
 ## What the site does with a draft
 
 - `Memory.status = DRAFT`, `consentedAt = null`, `source = EMAIL|SMS|OTHER`, `sourceRef` unique. One Contributor per draft, with `contactOptIn` **off** until the person presses Share (the page prefills both checkboxes on, like /share, and Share records their choice).
+- A rewritten draft carries the verbatim excerpt in its first ADMIN revision (`before.note`, with the rewrite as `after.note`). The admin page's History shows the newest 25 revisions, so that first revision stays on the page until a memory has been edited more than 24 times; after that it is still in the database (`MemoryRevision`) but not shown. The sender's claim page never shows History. A verbatim draft's first revision has an empty `before`.
 - The claim page shows "A memory of Jo, in your words", the editable fields, the two preference checkboxes and one button, **Share this memory**. Pressing it sets `status = PENDING` and stamps `consentedAt` / `consentVersion`. A repeated press never restamps.
 - No site email, before or after Share. The reconcile cron skips these memories, so it never rotates the token behind the link Rob sent.
 - Reissue (`--reissue`) is allowed only while DRAFT.

@@ -35,7 +35,7 @@ Delete takes the memory out of the family's view at once and its claim link stop
 
 ## Drafts
 
-A DRAFT is a memory the family saved on someone's behalf (from this page, or from the `jowray-draft-memory` skill). It is invisible and silent until that person opens their link and presses Share, which is their consent; the admin page can edit a draft's words and make a new link (any earlier link stops working), but cannot approve it. Browser drafts are recorded as "pasted by the family"; a Gmail message or a text reference is recorded only by the script and the skill.
+A DRAFT is a memory the family saved on someone's behalf (from this page, or from the `jowray-draft-memory` skill). It is invisible and silent until that person opens their link and presses Share, which is their consent; the admin page can edit a draft's words and make a new link (any earlier link stops working), but cannot approve it. Browser drafts are recorded as "pasted by the family"; a Gmail message or a text reference is recorded only by the script and the skill. A skill draft may be a light rewrite of the sender's note (Rob's choice, 2026-11-05): History then shows the sender's exact words as the first revision's "before" and the saved text as its "after".
 
 ## Checking that a replayed request is refused
 
