@@ -22,10 +22,11 @@ export function mediaKindOf(mimeType: string): MediaKind {
 }
 
 /**
- * READY files in the order given (callers order by `createdAt`), as the email
- * templates show them. `preview` stays null until the derived-media pipeline
- * (issue #17 PR A) fills it here, for both the confirmation and the admin
- * alert at once.
+ * READY files in the order given (callers order by `createdAt`), as the admin
+ * alert shows them. `preview` stays null until the derived-media pipeline
+ * (issue #17 PR A) fills it here. Only the admin audience may see previews:
+ * since issue #46 the contributor receipts take kind and length only and never
+ * carry an uploaded picture.
  */
 export function summarizeReadyMedia(rows: SummarizableMedia[]): MemoryMediaSummary[] {
   return rows

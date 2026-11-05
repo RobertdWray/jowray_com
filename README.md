@@ -51,7 +51,7 @@ sequenceDiagram
         B->>SF: issueUploadTicket (HMAC, 15 min)
         B->>Blob: multipart PUT straight to Blob
         B->>SF: finalizeUpload
-        SF->>Blob: head() → READY
+        SF->>Blob: head() + first bytes → READY
         SF-->>Blob: after(): checksum, derive web copy + thumbnail
     end
     B->>SF: completeSubmission
@@ -125,17 +125,17 @@ Each feature has a one-to-two page document: what we built, why, the decisions R
 |---|---|---|
 | 📝 | [Share form](docs/features/share-form.md) | One page, no account: name and email, one memory card on phones or several on a computer, visibility asked once, a private link on the thank-you screen. |
 | 🎙️ | [Audio recording](docs/features/audio-recording.md) | Record in the browser with a live level meter, a "we're not hearing anything" warning with help for your device, and a silent-clip check before you send. |
-| 🖼️ | [Media uploads](docs/features/media-uploads.md) | Files go straight to private storage on a signed ticket; every photo (HEIC included) gets a web copy and an email thumbnail with location data stripped; the claim page lets you add, replace or remove files. |
+| 🖼️ | [Media uploads](docs/features/media-uploads.md) | Files go straight to private storage on a signed ticket and are checked by their first bytes before they count as received; every photo (HEIC included) gets a web copy and a thumbnail with location data stripped; serving is metered per viewer and day; the claim page lets you add, replace or remove files. |
 | 👨‍👩‍👧 | [Admin panel](docs/features/admin-panel.md) | The family's view of every memory: search, edit the words, approve or hide, delete with a 30-day undo, draft on someone's behalf. Entered once through a link; the secret never leaves the browser. |
 | ✉️ | [Draft on behalf](docs/features/draft-on-behalf.md) | Turn a condolence email or card into a draft memory in the sender's own words (verbatim, or lightly reworded with their exact words kept in the history); the site stays silent until the sender presses Share, which is their consent. |
-| 📬 | [Email and cron](docs/features/email-and-cron.md) | One receipt per send with every private link and inline thumbnails; a family alert with no links; an idempotent delivery log; the ten-minute reconcile cron and the three-phase purge. |
-| 🔭 | [Sentry telemetry](docs/features/sentry-telemetry.md) | 100 % traces and unmasked replays for the alpha, with claim tokens and upload tickets scrubbed from every event, proven by a test that runs the real SDK. |
+| 📬 | [Email and cron](docs/features/email-and-cron.md) | One fixed-content receipt per send with every private link and a card per file (never the visitor's words or pictures); a family alert with no links; per-inbox, hourly and daily caps; an idempotent delivery log; the ten-minute reconcile cron and the three-phase purge. |
+| 🔭 | [Sentry telemetry](docs/features/sentry-telemetry.md) | 100 % traces and unmasked replays for the alpha, with claim tokens and upload tickets scrubbed from every event by a linear-time scanner, proven by a test that runs the real SDK. |
 
 ---
 
 ## 🗃️ Data model
 
-Sixteen migrations, additive only. The raw claim token is never stored, only its SHA-256. Nothing is hard-deleted; every edit is a `MemoryRevision` (each memory keeps its first revision and the latest 199).
+Sixteen migrations, additive only. The raw claim token is never stored, only its SHA-256. No memory is hard-deleted; every edit that changes something is a `MemoryRevision`, and each memory keeps its first revision (which records consent) and the latest 199.
 
 ```mermaid
 erDiagram
@@ -170,6 +170,7 @@ erDiagram
         string caption "per-file words"
         datetime deletedAt
         datetime purgedAt "bytes being removed"
+        datetime reservedUntil "upload window, holds the budget"
     }
     DerivedMedia {
         enum kind "WEB_IMAGE · THUMBNAIL · POSTER"
@@ -178,10 +179,11 @@ erDiagram
     EmailLog {
         enum emailType "SUBMISSION_CONFIRMATION · MEMORY_CONFIRMATION · ADMIN_NEW_MEMORY"
         enum status "PENDING · SENDING · SENT · FAILED · SKIPPED"
+        string recipientKey "canonical inbox for the cap"
     }
 ```
 
-Full schema: [`prisma/schema.prisma`](prisma/schema.prisma). `WebhookEvent` (Blob upload callbacks, replayed by the cron) and `Person` (seeded with Jo; grows in Phase 2) are omitted from the picture.
+Full schema: [`prisma/schema.prisma`](prisma/schema.prisma). `WebhookEvent` (Blob upload callbacks, replayed by the cron), `EgressCounter` (bytes served per file and site-wide, and requests per viewer, each per UTC day) and `Person` (seeded with Jo; grows in Phase 2) are omitted from the picture.
 
 ---
 
@@ -191,14 +193,14 @@ Full schema: [`prisma/schema.prisma`](prisma/schema.prisma). `WebhookEvent` (Blo
 |---|---|
 | Who can edit a memory | Only someone holding its private link. The 32-byte token is hashed before storage; the cron rotates it when it has to email a link it never held. |
 | Who can upload | Only a browser holding an HMAC upload ticket (15 min) for one pathname, one MIME type, one size. Bytes never pass through our servers. |
-| Serving files | Originals are never served inline. Photos are shown from a derived copy with EXIF and GPS stripped; the original is a download. Inline views are 60-second presigned URLs. |
-| Untrusted images | HEIC is decoded by libheif compiled to WebAssembly, in a worker thread with a heap cap, a deadline and a 30-megapixel ceiling, and the bytes must match the declared type before libvips sees them. |
+| Serving files | Only `READY` files are served. Originals are never served inline. Photos are shown from a derived copy with EXIF and GPS stripped; the original is a download. Inline views are 60-second presigned URLs. Each viewer's first request for a file each UTC day is charged against that file's daily allowance and a 50 GiB site-wide one, and each viewer has a daily request cap per file; past any of them a claim link gets `429` until the next UTC day. The family's admin views are counted, never refused. |
+| Untrusted files | A file becomes `READY` only once its first bytes match an allowed type: a mislabel of the same kind is relabelled, anything unrecognised stays `FAILED` (`unrecognized_bytes`), is never served, and is kept rather than deleted on a 128-byte verdict. HEIC is decoded by libheif compiled to WebAssembly, in a worker thread with a heap cap, a deadline and a 30-megapixel ceiling; one decode runs at a time behind a short waiting line, and a long animated GIF becomes a still. |
 | The family's admin page | Entered through a link whose secret sits in the URL fragment, which browsers never send to a server. The 30-day cookie carries an HMAC, never the secret. `Referrer-Policy: no-referrer`, `noindex`, Server Function argument logging off. |
-| Email | Receipts carry the private links; the family alert carries **no links at all**, so being told about a memory never hands anyone the power to edit it. |
+| Email | Receipts are **fixed content**: the private links, a count of what was sent and a card per file by kind and length, never the visitor's words, filenames or pictures, so a receipt carries nothing a visitor wrote or uploaded. The family alert carries **no links at all**, so being told about a memory never hands anyone the power to edit it. Caps, decided under one advisory lock: 15 receipts a day per inbox (`+tag` and Gmail dots count as one), 60 an hour and 300 a day across all contributor email (held for the cron, not dropped), 20 alerts an hour, then one "arriving quickly" notice. |
 | Logs | Pino redacts `email`, `name`, `phone`, cookies and authorization headers. Logs carry ids, never rows or people. |
-| Telemetry | **An honest caveat.** For the alpha, Rob authorized 100 % traces, unmasked session replays and contributor email as user context: *"The family has approved these aggressive tracking measures since it is an alpha, vibe-coded website and only family will be using it."* Claim tokens, upload tickets and protected headers are still scrubbed from every event, span, log, breadcrumb and replay, and [`__tests__/lib/sentry-envelope.test.ts`](__tests__/lib/sentry-envelope.test.ts) proves it against the real SDK. One commit ends the alpha settings ([plan §13](docs/plans/2026-11-04-sentry-full-telemetry.md)). |
-| Abuse | Daily budgets on memories and ticketed bytes (allocated under one advisory lock, so concurrent sends cannot overshoot), a per-send declared-bytes cap, a total storage ceiling, reservations that stop counting once their upload window closes, a per-recipient email cap, and a Vercel WAF rate-limit rule on the public paths. |
-| Secrets | Never in git. Names and purposes are in [`docs/environment.md`](docs/environment.md); values live in `.env` (mode 600) and Vercel. |
+| Telemetry | **An honest caveat.** For the alpha, Rob authorized 100 % traces, unmasked session replays and contributor email as user context: *"The family has approved these aggressive tracking measures since it is an alpha, vibe-coded website and only family will be using it."* Claim tokens, upload tickets and protected headers are still scrubbed from every event, span, log, breadcrumb and replay, and [`__tests__/lib/sentry-envelope.test.ts`](__tests__/lib/sentry-envelope.test.ts) proves it against the real SDK. The scrubber is a linear-time scanner, held byte-for-byte equal to its regex predecessor by a seeded differential test, and replaces any string over 256 KiB whole. Rob, 2026-11-05: sampling and replay stay at 100 % for the alpha. One commit ends the alpha settings ([plan §13](docs/plans/2026-11-04-sentry-full-telemetry.md)). |
+| Abuse | Daily budgets on memories and ticketed bytes (allocated under one advisory lock, so concurrent sends cannot overshoot), a 4 GiB per-send declared-bytes cap, a 50 GiB total storage ceiling, and reservations that stop counting once their upload window closes. The cron retires an abandoned reservation only after its last token has expired and the store has no object for it. A save that changes nothing writes nothing, and a memory keeps at most 200 revisions. Add the email caps and egress allowance above and a Vercel WAF rate-limit rule on the public paths; the remaining dashboard limits are Rob's ([issue #43](https://github.com/RobertdWray/jowray_com/issues/43)). |
+| Secrets | Never in git. Names and purposes are in [`docs/environment.md`](docs/environment.md); values live in `.env` (mode 600) and Vercel. Existing keys and their scopes are kept as they are (Rob, 2026-11-05). |
 
 ---
 
@@ -218,6 +220,8 @@ npm run validate      # next typegen + tsc --noEmit, then eslint
 npm run test:run      # Vitest, ~1200 tests, Node environment
 ```
 
+The Postgres integration suite (`__tests__/integration/`) runs in CI; locally it is skipped unless `TEST_DATABASE_URL` points at a throwaway Postgres.
+
 ```bash
 npm run build:offline # the production build behind scripts/no-network.mjs (refuses any non-loopback socket)
 ```
@@ -236,8 +240,8 @@ Database scripts: `db:migrate` (dev), `db:migrate:prod` (deploy), `db:seed`, `db
 
 - **Hosting:** Vercel, production branch `main`, Node 26, region `iad1`. Build command (`vercel.json`) is `prisma migrate deploy && prisma db seed && next build`, so migrations run at build time and must be additive.
 - **Database:** Neon Postgres 18 through the Vercel integration. Every preview deployment gets its own `preview/<branch>` database branch; [`neon-cleanup.yml`](.github/workflows/neon-cleanup.yml) deletes it when the PR closes.
-- **Cron:** `/api/cron/reconcile-uploads` every 10 minutes behind `CRON_SECRET`, with a Sentry monitor in production. Steps: (a) stale uploads, (c) webhook replay, (d) email retries, (e/e2/e3) missing receipts and alerts, (b) checksums, (f) purge after the 30-day grace, (f2) cancelled reservations, (g) derived images. Details in [email-and-cron.md](docs/features/email-and-cron.md).
-- **CI:** [`ci.yml`](.github/workflows/ci.yml) runs lint, type-check, tests and the build on every PR and push to `main`.
+- **Cron:** `/api/cron/reconcile-uploads` every 10 minutes behind `CRON_SECRET`, with a Sentry monitor in production. Steps: (a0) repeat deletes of recently retired uploads for two hours, (a) stale uploads (given up only once the upload window has closed and `head()` finds no blob), (c) webhook replay, (d) email retries, including receipts held by the global caps, (e/e2/e3) missing receipts and alerts, (b) checksums, (f) purge after the 30-day grace, (f2) cancelled reservations, (g) derived images. Details in [email-and-cron.md](docs/features/email-and-cron.md).
+- **CI:** [`ci.yml`](.github/workflows/ci.yml) runs lint, type-check, the migrations and tests against a Postgres 18 service container (including the budget-concurrency suite), and the build, on every PR and push to `main`.
 - **Domain:** `www.jowray.com` is primary; the apex redirects with a 308. Cloudflare DNS, DNS-only records, certificates from Vercel. [`docs/domain.md`](docs/domain.md).
 - **Rollback floor:** once any memory has been deleted from the admin page, never roll production back below the admin-page merge; disable cron jobs first if you must. [`docs/admin.md`](docs/admin.md).
 - **Launch checklist:** the sorted list of everything still open before the family launch is [issue #38](https://github.com/RobertdWray/jowray_com/issues/38); its evidence is [`docs/2026-11-04-debt-catalog.md`](docs/2026-11-04-debt-catalog.md).
@@ -267,6 +271,10 @@ Share form with memory cards · in-browser recorder with silence detection · di
 
 Tracked in [issue #38](https://github.com/RobertdWray/jowray_com/issues/38): the remaining production environment values, a real iPhone and Android pass, the Vercel spend pause, and the wording of the thank-you screen's promise.
 
+### 🔓 Before the repo goes public
+
+The 2026-11-05 public-repo audit opened four issues: [#46](https://github.com/RobertdWray/jowray_com/issues/46) email, [#44](https://github.com/RobertdWray/jowray_com/issues/44) budgets and retention, [#45](https://github.com/RobertdWray/jowray_com/issues/45) media serving and processing, [#43](https://github.com/RobertdWray/jowray_com/issues/43) telemetry and platform. Their code fixes merged the same day ([#47](https://github.com/RobertdWray/jowray_com/pull/47) to [#50](https://github.com/RobertdWray/jowray_com/pull/50)); the issues stay open for Rob's follow-ups. #43 holds Rob's dashboard checklist (Vercel firewall rules, Sentry spike protection, a spend circuit breaker, the VoIP.ms sub-account) and the pre-flip steps, and closes last.
+
 ### 🔭 Phase 2 · Analyze and show
 
 Everything below reads from the Phase 1 tables and never changes them. Source: [issue #37](https://github.com/RobertdWray/jowray_com/issues/37) and the original design notes in [`docs/Memorial Memories Site initial thinking.md`](docs/Memorial%20Memories%20Site%20initial%20thinking.md).
@@ -279,7 +287,7 @@ Everything below reads from the Phase 1 tables and never changes them. Source: [
 - 👥 **People.** Grow the seeded `Person` table from mentions and faces; `MemoryPerson` with how (mentioned, pictured, contributor), a confidence, and a family confirmation flag.
 - 🔍 **Search.** Keyword search over a `tsvector` of note, transcript, descriptions, tags and people, plus semantic search over `pgvector` embeddings for questions like "memories about fishing".
 - ⏰ **The analysis job.** A Vercel Cron that picks up `analysisStatus = NOT_STARTED`, runs transcription, vision, tag extraction, embeddings and indexing, and reports to Sentry.
-- 🎬 **Video posters.** The reserved `POSTER` derived kind: a browser-captured frame so video cards in emails and the gallery show a picture instead of a badge.
+- 🎬 **Video posters.** The reserved `POSTER` derived kind: a browser-captured frame so video cards in the family alert and the gallery show a picture instead of a badge (receipts stay fixed content).
 - 📣 **Close the loop with contributors.** The "your story is posted" email (`notifyWhenPosted` is already collected) and the weekly mailing list (`mailingListOptIn` is already collected). Fix the thank-you screen's date promise once these exist.
 - 🧹 **Groundwork.** A Playwright browser harness against preview deployments, `build:offline` in CI, a one-page release and rollback sheet, and the Gemini billing and terms decision before any contributor media is sent to a model.
 

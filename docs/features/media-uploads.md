@@ -2,16 +2,16 @@
 
 How a photo, video or recording gets from a visitor's browser into private storage, how the server makes the web copy and thumbnail it shows (HEIC included), and how the private claim page lets the contributor add, remove and replace files.
 
-**Status:** merged to `main`, which deploys to production: [PR #7](https://github.com/RobertdWray/jowray_com/pull/7) (2026-11-03: tickets, `/api/upload`, finalize, claim links, cron), [PR #22](https://github.com/RobertdWray/jowray_com/pull/22) (2026-11-03: remove, replace, cancel), [PR #25](https://github.com/RobertdWray/jowray_com/pull/25) (2026-11-03: derived images, HEIC worker), [PR #27](https://github.com/RobertdWray/jowray_com/pull/27) (2026-11-04: many files per memory), [PR #28](https://github.com/RobertdWray/jowray_com/pull/28) (2026-11-04: `createSubmission`, `issueUploadTicket`, `completeSubmission`, lease). The production check of the HEIC pipeline is not recorded (see gaps).
+**Status:** merged to `main`, which deploys to production: [PR #7](https://github.com/RobertdWray/jowray_com/pull/7) (2026-11-03: tickets, `/api/upload`, finalize, claim links, cron), [PR #22](https://github.com/RobertdWray/jowray_com/pull/22) (2026-11-03: remove, replace, cancel), [PR #25](https://github.com/RobertdWray/jowray_com/pull/25) (2026-11-03: derived images, HEIC worker), [PR #27](https://github.com/RobertdWray/jowray_com/pull/27) (2026-11-04: many files per memory), [PR #28](https://github.com/RobertdWray/jowray_com/pull/28) (2026-11-04: `createSubmission`, `issueUploadTicket`, `completeSubmission`, lease), [PR #48](https://github.com/RobertdWray/jowray_com/pull/48) (2026-11-05: byte check before `READY`, egress allowance, bounded image pipeline; issue #45) and [PR #50](https://github.com/RobertdWray/jowray_com/pull/50) (2026-11-05: serialised budgets, reservation windows, per-send cap, storage ceiling, revision cap; issue #44). The production check of the HEIC pipeline is not recorded (see gaps).
 
 ## What we built
 
 1. On Send, `createSubmission` creates the contributor, up to 10 memories and their `PENDING` `Media` rows in one transaction. File bytes never reach the app server.
 2. For each file, photos first, the browser asks `issueUploadTicket` for an HMAC-signed ticket naming one row, its Blob pathname, MIME type and size ceiling. Tickets last 15 minutes.
 3. The browser trades the ticket at `/api/upload` for a Blob client token scoped to that pathname, type and size (1 hour), then uploads straight to the private Vercel Blob store, multipart, with progress.
-4. The browser calls `finalizeUpload`. The server runs `head()` on the ticketed pathname, checks size and type, marks the row `READY` (or `FAILED` and deletes the blob). After the response it hashes files of 50 MB or less and starts the derived copies.
+4. The browser calls `finalizeUpload`. The server runs `head()` on the ticketed pathname, checks size and type, then reads the first 128 bytes and marks the row `READY` (relabelled if the bytes are another allowed type of the same kind). Over the ticketed size or a type other than the ticket's makes it `FAILED` and deletes the blob; bytes it does not recognise make it `FAILED` as `unrecognized_bytes`, never served, with the bytes kept. After the response it hashes files of 50 MB or less and starts the derived copies.
 5. Every photo gets a `WEB_IMAGE` (long edge 2048 px, metadata and GPS stripped) and a `THUMBNAIL` (1000 px JPEG, at most 350 KB, transparency flattened onto the paper colour). HEIC is decoded by libheif in WebAssembly inside a worker thread; other formats go through sharp. Pages show only a derived copy; the claim page says "Preparing your photo…" until it exists. The original stays downloadable.
-6. When every file is done the browser calls `completeSubmission` once. It waits up to 10 seconds for thumbnails, then sends one receipt with every private link (see [Email and cron](./email-and-cron.md)).
+6. When every file is done the browser calls `completeSubmission` once. It sends one receipt with every private link straight away; receipts carry no pictures since issue #46, so nothing waits for thumbnails (see [Email and cron](./email-and-cron.md)).
 7. On `/m/<token>` the contributor can add files (10 live files per memory), remove one (two-step, soft delete), replace one (the old file stays until the new one is `READY`), edit per-file words, and use "Try again" or "Cancel" on a file that never arrived.
 8. Two backstops cover a closed tab: Blob's signed `onUploadCompleted` callback, and the reconcile cron every 10 minutes.
 
@@ -27,16 +27,17 @@ The lease exists because "a single 45-minute upload today already races" the cro
 
 | Decision | Source |
 |---|---|
-| Checksum: `READY` after `head()` verifies size and type; SHA-256 inline in `after()` only up to 50 MB, otherwise by the cron. | [ledger, decisions](../plans/phase1-ledger.md) |
+| Checksum: `READY` after `head()` verifies size and type (and, since issue #45, the first bytes); SHA-256 inline in `after()` only up to 50 MB, otherwise by the cron. | [ledger, decisions](../plans/phase1-ledger.md) |
 | Sharing `/share` publicly "Blocked until the Vercel WAF rate-limit rule and Spend Management are on". WAF rule set 2026-11-04 at 1200 requests per IP per 600 s (Rob: "each file costs about 3 requests"); Spend Management still open. | [ledger, one-off actions](../plans/phase1-ledger.md) |
 | Every photo gets a derived copy, EXIF and GPS stripped; "Placeholder until sanitized; originals downloadable." | [photos plan §2](../plans/2026-11-03-photos-derived-media.md) |
 | One Memory, many Media of mixed kinds; one claim link, one email. | [photos plan §2](../plans/2026-11-03-photos-derived-media.md) |
 | R5: HEIC originals "Kept at full quality; the server converts for previews only." R3: video posters deferred; `POSTER` reserved. | [ledger R3, R5](../plans/phase1-ledger.md) |
 | HEIC decodes in a `worker_threads` Worker with a heap cap and `terminate()` at the deadline. | [photos plan §2](../plans/2026-11-03-photos-derived-media.md) |
 | "Every device… No desktop/phone fork" was superseded by D9: cards on computers, one memory on phones, up to 10 mixed files per card. Requester's amendment, flagged for Rob. | [share redesign D9](../plans/2026-11-03-share-redesign.md) |
-| D10: no per-file words on the share form; PR #27's columns stay editable on the claim page only. Agent's call, not yet acknowledged. D16: completion waits up to 10 s for thumbnails. Agent's call. | [share redesign D10, D16](../plans/2026-11-03-share-redesign.md), [ledger Task 15](../plans/phase1-ledger.md) |
+| D10: no per-file words on the share form; PR #27's columns stay editable on the claim page only. Agent's call, not yet acknowledged. D16 (completion waited up to 10 s for thumbnails, agent's call) is retired: receipts carry no uploaded pictures since issue #46 D1. | [share redesign D10, D16](../plans/2026-11-03-share-redesign.md), [ledger Task 15](../plans/phase1-ledger.md) |
 | Inline views 302 to a 60-second presigned URL, so a 500 MB video never streams through a 60 s function. Agent ruling. | [ledger Task 5](../plans/phase1-ledger.md) |
 | The raw token is never stored, so the cron path rotates it; the emailed link supersedes the on-screen one. Agent ruling. | [ledger Task 8](../plans/phase1-ledger.md) |
+| Issues #44 and #45: Rob, 2026-11-05, each open decision takes the issue's suggested default: 4 GiB per send, 50 GiB total, 50 / 100 viewer-days per file before / after approval, 300 requests per viewer and copy a day, 50 GiB a day site-wide and 25 MiB proxy downloads (all env), 200 revisions per memory (a constant). A byte-check or decoder verdict never deletes an original (a deliberate departure from #45's acceptance item 2, under the merge-safety rule). | [PR #50](https://github.com/RobertdWray/jowray_com/pull/50), [PR #48](https://github.com/RobertdWray/jowray_com/pull/48) decisions tables |
 
 ## How it works
 
@@ -58,12 +59,12 @@ sequenceDiagram
     U-->>B: Blob token, one pathname, 1 h
     B->>Blob: multipart PUT
     B->>S: finalizeUpload
-    S->>Blob: head, check size and type
+    S->>Blob: head, check size and type,<br/>read the first 128 bytes
     S->>DB: Media READY
     S->>S: after: checksum up to 50 MB,<br/>deriveMedia, HEIC in worker
   end
   B->>S: completeSubmission
-  S-->>B: receipt sent after thumbnail wait
+  S-->>B: one receipt, no wait
   Blob-->>U: onUploadCompleted backstop
   C-->>DB: recheck, derive, email, purge
 ```
@@ -81,25 +82,28 @@ sequenceDiagram
 | `app/api/upload/route.ts` | Token exchange in `onBeforeGenerateToken`; `onUploadCompleted` backstop writes a `WebhookEvent` |
 | `app/api/media/[id]/route.ts` | Token-gated file route; `v=web|thumb|original`, `download=1` |
 | `app/m/[claimToken]/page.tsx`, `claim-form.tsx`, `media-list-client.tsx`, `actions.ts` | Claim page, edit form, per-file cards and their Server Functions |
-| `app/api/cron/reconcile-uploads/route.ts` | Steps (a) stale PENDING, (c) event replay, (d) email retries, (e) (e2) (e3) confirmations, (b) checksums, (f) purge, (g) derive |
+| `app/api/cron/reconcile-uploads/route.ts` | Steps (a0) late-arrival sweep, (a) stale PENDING, (c) event replay, (d) email retries, (e) (e2) (e3) confirmations, (b) checksums, (f) purge, (f2) cancelled reservations, (g) derive |
 | **features** | |
 | `features/memories/create-submission.ts`, `issue-upload-ticket.ts`, `ingest-upload.ts`, `complete-submission.ts` | Create, ticket, `recordMedia`/`finalizeUpload`/checksum/swap, complete (2-minute lease grace) |
-| `features/memories/create-memory.ts`, `claim.ts` | Claim-page tickets (add, replace); view, edit, remove, cancel, per-file words |
-| `features/memories/derive-media.ts`, `lock.ts`, `media-state.ts`, `upload-lease.ts` | Claim-decode-publish; row lock; type recompute and revisions; lease |
-| `features/media/serve-media.ts` | Shared body of the media routes; 404 for any staging key |
+| `features/memories/create-memory.ts`, `claim.ts` | `withinBudget` and claim-page tickets (add, replace); view, edit, remove, cancel, per-file words |
+| `features/memories/derive-media.ts`, `lock.ts`, `media-state.ts`, `upload-lease.ts` | Claim-decode-publish; row lock and `lockBudget`; type recompute, revisions and the 200 cap; lease |
+| `features/media/serve-media.ts`, `features/media/egress.ts` | Shared body of the media routes (`READY` only; 404 for any staging key); the `EgressCounter` statements |
 | **services and integrations** | |
-| `services/storage/index.ts`, `types.ts`, `integrations/vercel-blob/index.ts` | put, head, get, del, presignGet |
-| `services/images/index.ts`, `types.ts`, `integrations/images/sharp-heic.ts` | `DERIVE_DEFAULTS`; one decode, two encodes, semaphore |
+| `services/storage/index.ts`, `types.ts`, `integrations/vercel-blob/index.ts` | put, head, get, `readPrefix` (a `Range` read), del, presignGet |
+| `services/images/index.ts`, `types.ts`, `integrations/images/sharp-heic.ts` | `DERIVE_DEFAULTS` (`maxFrames` 300), `MAX_WAITING_DERIVATIONS`; one decode, two encodes, the slot taken with `acquire` |
 | **lib** | |
 | `lib/upload-ticket.ts`, `lib/upload-client.ts`, `lib/submission-pipeline.ts` | Ticket mint and verify with TTLs; `uploadWithTicket`; browser sequencing with one retry |
 | `lib/heic-worker.ts`, `lib/derived-keys.ts`, `lib/image-derive-error.ts`, `lib/site-url.ts` | Worker decode; key scheme; error codes; storage prefixes |
-| `lib/media-types.ts`, `lib/claim-token.ts`, `lib/validations/media.ts` | MIME allowlist and limits; hashed tokens; claim-page schemas |
+| `lib/media-types.ts`, `lib/claim-token.ts`, `lib/validations/media.ts` | MIME allowlist, limits and byte signatures (`detectMediaType`); hashed tokens; claim-page schemas |
+| `server/config/env.ts` | `getUploadEnv` (budgets, per-send cap, ceiling), `getMediaServingEnv` (allowances, proxy download size) |
 | **tests** | |
 | `__tests__/lib/upload-ticket.test.ts`, `upload-client.test.ts`, `claim-token.test.ts`, `derived-keys.test.ts`, `heic-worker.test.ts`, `media-types.test.ts`, `submission-pipeline.test.ts`, `validations-media.test.ts` | Pure logic |
 | `__tests__/features/create-submission.test.ts`, `issue-upload-ticket.test.ts`, `ingest-upload.test.ts`, `complete-submission.test.ts`, `claim.test.ts`, `derive-media.test.ts`, `lock.test.ts`, `media-state.test.ts`, `create-memory.test.ts` | Features with mocked db and storage |
-| `__tests__/api/upload.test.ts`, `media.test.ts`, `reconcile.test.ts`, `__tests__/integrations/images.test.ts`, `__tests__/fixtures/tiny.heic`, `rotated.heic` | Routes; real sharp and libheif against fixtures |
+| `__tests__/api/upload.test.ts`, `media.test.ts`, `admin-media.test.ts`, `reconcile.test.ts`, `__tests__/integrations/images.test.ts`, `vercel-blob.test.ts`, `__tests__/server/media-serving-env.test.ts`, `__tests__/fixtures/tiny.heic`, `rotated.heic`, `signatures.ts`, `anim-400.gif`, `anim-400x10.gif` | Routes and viewing sequences against the allowance; real sharp and libheif against fixtures; bounded prefix reads |
+| `__tests__/integration/budget-concurrency.test.ts` | Real Postgres (`TEST_DATABASE_URL`, a Postgres 18 container in `ci`): concurrent sends, adds, replacements and re-tickets at the budget's last slot, the lock timeout |
 | **Prisma** | |
-| `prisma/schema.prisma` | `Media` (`storageKey`, `status`, `maxBytes`, `deletedAt`, `purgedAt`, `replacesMediaId`, `sortOrder`, per-file words), `DerivedMedia` (`WEB_IMAGE`, `THUMBNAIL`, reserved `POSTER`), `WebhookEvent` |
+| `prisma/schema.prisma` | `Media` (`storageKey`, `status`, `maxBytes`, `deletedAt`, `purgedAt`, `reservedUntil`, `replacesMediaId`, `sortOrder`, per-file words), `DerivedMedia` (`WEB_IMAGE`, `THUMBNAIL`, reserved `POSTER`), `EgressCounter`, `WebhookEvent` |
+| `prisma/migrations/20261105140000_media_reserved_until`, `prisma/migrations/20261105140000_egress_counters` | `reservedUntil` with its backfill and index; the counter table |
 
 ## Tests and evidence
 
@@ -108,7 +112,7 @@ sequenceDiagram
 - `docs/plans/evidence/2026-11-issue17/` ([README](../plans/evidence/2026-11-issue17/README.md)): a 48×64 HEIC fixture uploaded on the PR #25 preview renders upright in desktop Chrome; inline, `v=thumb` and `v=original` behaved as designed.
 - `docs/plans/evidence/2026-11-share-redesign/` ([README](../plans/evidence/2026-11-share-redesign/README.md)): scripted Chromium checks, a phone send with a clip and two photos reaching `READY`, a real-database run of cron step (e3) honouring and then passing a lease.
 
-Not run or not recorded: the iPhone and Android pass (HEIC, `.mov`, recording, five mixed files), a real 24 MP HEIC on Vercel, the issue #17 production acceptance A1, real receipt emails with thumbnails, a 100 MB video, seeking past the 60 s presigned URL, the Spend Management pause, photos plan V4 to V8 and V10 to V13.
+Not run or not recorded: the iPhone and Android pass (HEIC, `.mov`, recording, five mixed files), a real 24 MP HEIC on Vercel, the issue #17 production acceptance A1, real receipt emails, a 100 MB video, seeking past the 60 s presigned URL, the Spend Management pause, photos plan V4 to V8 and V10 to V13.
 
 ## Known gaps and follow-ups
 
@@ -123,6 +127,7 @@ Not run or not recorded: the iPhone and Android pass (HEIC, `.mov`, recording, f
 - M-C-09, M-B-16 (§3.6): per-file words on the share form await Rob; a replacement cannot clear inherited words.
 - M-C-20: the claim page shows the web copy, never `v=thumb`.
 - Issue #45: the allowance numbers are first guesses (Rob to adjust by env); `EgressCounter` rows are never pruned (one per file, copy, viewer and day; a cron prune step is B's file); `FAILED` rows with `unrecognized_bytes` keep their blob until the file is cleared or the memory deleted (a cron sweep is B's file); the device matrix for the byte check has not been run on a preview; whether the private blob host honours `download=1` on a presigned URL is unverified.
+- Issue #44: the 4 GiB per-send cap and 50 GiB ceiling are first guesses (Rob to confirm against real sends); D5, expiring never-approved memories, is not built.
 
 ## Related
 

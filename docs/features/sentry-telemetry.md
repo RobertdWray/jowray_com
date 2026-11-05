@@ -2,7 +2,7 @@
 
 Error tracking and full telemetry for jowray.com: both Sentry inits, a handler-mode tunnel, the alpha "collect everything" data policy, and the scrubber that keeps bearer secrets out regardless.
 
-**Status:** merged. Phase 1 install: [PR #5](https://github.com/RobertdWray/jowray_com/pull/5), [PR #8](https://github.com/RobertdWray/jowray_com/pull/8), [PR #13](https://github.com/RobertdWray/jowray_com/pull/13) (2026-11-03). Alpha telemetry: [PR #32](https://github.com/RobertdWray/jowray_com/pull/32), [PR #33](https://github.com/RobertdWray/jowray_com/pull/33), [PR #34](https://github.com/RobertdWray/jowray_com/pull/34) (2026-11-04). All six are on `main`, the production branch. The production smoke check (plan §11.4) is not recorded.
+**Status:** merged. Phase 1 install: [PR #5](https://github.com/RobertdWray/jowray_com/pull/5), [PR #8](https://github.com/RobertdWray/jowray_com/pull/8), [PR #13](https://github.com/RobertdWray/jowray_com/pull/13) (2026-11-03). Alpha telemetry: [PR #32](https://github.com/RobertdWray/jowray_com/pull/32), [PR #33](https://github.com/RobertdWray/jowray_com/pull/33), [PR #34](https://github.com/RobertdWray/jowray_com/pull/34) (2026-11-04). Public-repo audit D: [PR #47](https://github.com/RobertdWray/jowray_com/pull/47) (2026-11-05: linear-time scrubber, bounded input, `/api/upload` 400; refs issue #43). All seven are on `main`, the production branch. The production smoke check (plan §11.4) is not recorded.
 
 ## What we built
 
@@ -13,7 +13,8 @@ Error tracking and full telemetry for jowray.com: both Sentry inits, a handler-m
 5. A floating "Report a problem" button opens the feedback form; email optional, screenshots on, success text "Thank you. Rob will take a look."
 6. Browser events leave through `POST /sentry-tunnel`, so ad blockers and Vercel Deployment Protection do not drop them.
 7. On the server every Pino line becomes a Sentry Log and `fatal` lines become issues. Counters `memory.created`, `upload.finalized{status}`, `confirmation.sent{outcome}` and the distribution `reconcile.run` record volume. The reconcile cron reports explicit check-ins to the `reconcile-uploads` monitor, production only, each item in its own isolation scope.
-8. Before anything leaves either runtime, `lib/sentry/scrub.ts` removes claim tokens, upload tickets and protected header values from events, spans, logs, breadcrumbs, contexts and replay custom events.
+8. Before anything leaves either runtime, `lib/sentry/scrub.ts` removes claim tokens, upload tickets and protected header values from events, spans, logs, breadcrumbs, contexts and replay custom events. Since issue #43 (2026-11-05) its text scanner runs in linear time and any string over 256 KiB is replaced whole, because `instrumentedAction` scrubs the raw input of every public Server Function before validation.
+9. A malformed body on `POST /api/upload` answers `400 invalid_json` instead of an unhandled error reported once per request; the log line carries the error's name, never its message (which quotes the body).
 
 ## Why we built it
 
@@ -41,6 +42,8 @@ Still forbidden everywhere (§3 ruling 2): claim tokens in any form (`/m/<token>
 | Cron check-in semantics, the identity contract and "Rob ends the alpha" are the plan's proposals, still marked Proposed, implemented as written | [plan §2](../plans/2026-11-04-sentry-full-telemetry.md), M-F-11 |
 | Handler-mode tunnel; stable check-in API, not the experimental Vercel cron flag; identity only where the contributor row is already loaded | [plan §3 rulings 4 to 6](../plans/2026-11-04-sentry-full-telemetry.md) |
 | Agent rulings Rob accepted: `normalizeDepth: 6` (R4), identity set in `confirmSubmission` (R6), `key` as an exact-match secret for `enterAdmin` (R8), no render tests for the browser init (R9) | [plan §16](../plans/2026-11-04-sentry-full-telemetry.md), [PR #33](https://github.com/RobertdWray/jowray_com/pull/33) |
+| Rob, 2026-11-05: sampling and Session Replay stay at 100 % "so I can check this alpha code"; existing keys are kept, no rotation or re-scoping | [phase1-ledger decisions](../plans/phase1-ledger.md), [PR #47](https://github.com/RobertdWray/jowray_com/pull/47) |
+| Issue #43 §7.1 defaults, taken in PR #47: bound input inside `scrubText` so every caller is covered; 256 KiB cap; marker `[Filtered: oversized]`; `serverActions.bodySizeLimit` left at 1 MB; no app-side ceiling on the tunnel | [PR #47](https://github.com/RobertdWray/jowray_com/pull/47) decisions table |
 
 ## How it works
 
@@ -61,7 +64,7 @@ flowchart TD
   CK --> S
 ```
 
-Both inits share one `DATA_COLLECTION` object and the same `before*` hooks. The browser also registers `scrubReplayEvent` as an event processor, because `beforeSend` never sees replay or feedback events, and `scrubRecordingEvent` on replay network bodies (same-origin requests only, never the Blob uploads). The scrubber rewrites `/m/<token>` to `/m/[claimToken]`, strips `t=` and `key=`, filters secret keys in objects, JSON text (including double-encoded bodies) and React Flight text, and fails closed on truncation. The header deny list also drops `next-router-state-tree`, which encodes the `[claimToken]` segment on Server Function POSTs.
+Both inits share one `DATA_COLLECTION` object and the same `before*` hooks. The browser also registers `scrubReplayEvent` as an event processor, because `beforeSend` never sees replay or feedback events, and `scrubRecordingEvent` on replay network bodies (same-origin requests only, never the Blob uploads). The scrubber rewrites `/m/<token>` to `/m/[claimToken]`, strips `t=` and `key=`, filters secret keys in objects, JSON text (including double-encoded bodies) and React Flight text, and fails closed on truncation. Text that is not JSON goes through a hand-written scanner, one left-to-right pass with sticky regexes for the key run and the `:` separator, so each character is read a bounded number of times; it replaced a backtracking regex that went quadratic on adversarial text (1,908 ms at 160,001 characters, measured 2026-11-05). Its matching rules, escaped-quote handling, fail-closed truncation and idempotence are the old scanner's. Any string longer than `MAX_SCRUB_TEXT_LENGTH` (256 KiB) becomes `[Filtered: oversized]` before it is parsed or scanned; the cap sits above a full 10 × 10,000-character submission and Replay's 150,000-character body cap. The header deny list also drops `next-router-state-tree`, which encodes the `[claimToken]` segment on Server Function POSTs.
 
 ## Key files
 
@@ -79,23 +82,28 @@ Both inits share one `DATA_COLLECTION` object and the same `before*` hooks. The 
 | `next.config.ts` | `withSentryConfig` (tunnel, `widenClientFileUpload`, `reactComponentAnnotation`, `applicationKey`) and the `Document-Policy` header |
 | **features** | |
 | `features/memories/create-submission.ts`, `complete-submission.ts`, `claim.ts`, `ingest-upload.ts`, `issue-upload-ticket.ts` | Server identity, tags and metrics where the contributor row is already loaded |
-| `app/api/upload/route.ts` | Blob callback: tags and `afterWithFlush("upload.callback")` |
+| `app/api/upload/route.ts` | Blob callback: tags and `afterWithFlush("upload.callback")`; `400 invalid_json` on a malformed body |
 | **lib + server** | |
 | `lib/sentry/data-collection.ts` | The one `DATA_COLLECTION` policy, with Rob's authorization |
 | `lib/sentry/secrets.ts` | Secret field keys, key fragments (`token`, `ticket`), denied headers |
-| `lib/sentry/scrub.ts` | Scrubber v2: `scrubUrl`, `scrubSecrets`, `scrubEvent`, `scrubSpan`, `scrubLog`, `scrubBreadcrumb`, `scrubReplayEvent`, `scrubRecordingEvent` |
+| `lib/sentry/scrub.ts` | Scrubber v2: `scrubUrl`, `scrubSecrets`, `scrubEvent`, `scrubSpan`, `scrubLog`, `scrubBreadcrumb`, `scrubReplayEvent`, `scrubRecordingEvent`; the linear member scanner and `MAX_SCRUB_TEXT_LENGTH` |
 | `lib/sentry/user.ts`, `server-action.ts`, `report.ts`, `metrics.ts`, `after-flush.ts` | `identifyContributor` / `tagIds`, `instrumentedAction`, `reportClientError`, the four metrics, `afterWithFlush` |
 | `lib/logger/logger.ts` | Pino with redaction; imports the header deny list from `secrets.ts` |
 | **tests** | |
 | `__tests__/lib/sentry-envelope.test.ts` | The gate (below) |
 | `__tests__/lib/sentry-scrub.test.ts`, `sentry-user`, `sentry-report`, `sentry-metrics`, `sentry-after-flush` | Unit contracts |
+| `__tests__/lib/sentry-scrub-differential.test.ts`, `__tests__/fixtures/scrub-regex-main-73609cf.ts` | The old regex scanner kept as a fixture; byte-for-byte equality over a seeded corpus |
+| `__tests__/lib/sentry-scrub-timing.test.ts`, `__tests__/api/upload.test.ts` | Linear-time budget and the oversized cap; `invalid_json` |
 | `__tests__/next-config.test.ts`, `__tests__/api/reconcile.test.ts` | `Document-Policy` header; cron check-in status mapping |
 | **Prisma** | none; Sentry adds no tables |
 
 ## Tests and evidence
 
 - `__tests__/lib/sentry-envelope.test.ts` runs the real server SDK with the production `DATA_COLLECTION` and `before*` hooks over a capturing transport. It sets a user, a `server_action_input` context holding tokens, a request with a bypass header, a cookie and the router-state header, throws from a function holding token locals, emits a log and streams spans. No envelope may contain a `SENTRYTEST_` value; the error and log envelopes must carry the test email. It also proves the tunnel handler rejects a foreign DSN.
-- `sentry-scrub.test.ts` pins the scrubber, including frame locals (R3: the envelope test cannot reach them offline). `reconcile.test.ts` pins `ok` and `error` check-ins and that previews never check in.
+- `sentry-scrub.test.ts` pins the scrubber, including frame locals (R3: the envelope test cannot reach them offline) and the mixed-quoting cases from PR #47's reviews.
+- `sentry-scrub-differential.test.ts` keeps `main`'s regex scanner (commit `73609cf`) as a test fixture and asserts that the linear scanner's output is byte-for-byte equal over a seeded 1,400-case corpus (consistent, escaped and mixed quoting, attacker text beside real secrets, Flight prefixes, truncation), that it never leaves a secret the old one filtered, and that it is idempotent.
+- `sentry-scrub-timing.test.ts` runs seven 200,000-character adversarial shapes with their exact expected output against a 200 ms budget (fastest of three runs; the old regex took 3,162 ms and 5,257 ms on the two worst, the new scanner 0 to 9 ms), plus the oversized marker at any depth, no secret through oversized text, and the largest legitimate payload left alone.
+- `reconcile.test.ts` pins `ok` and `error` check-ins and that previews never check in.
 - There is no `docs/plans/evidence/` directory for this feature. The evidence is the plan's §16 ledger: on PR #34's preview the tunnel answered 200 behind Deployment Protection, a forced `/api/upload` error arrived scrubbed (JOWRAY_COM-5), a browser error arrived with replay, profile and React contexts (JOWRAY_COM-4), the header was on `/share`, the feedback button was injected. Recorded test counts: 925, 978 and 979 on the three PR tips.
 - Not run: the §11.2 submission and identity checks, the feedback-form submission, the `/m/*` replay, the §10 sentry.io checklist and the §11.4 production smoke. Phase 1's Task 4 step 6 checks (an event with no query string or cookies) are superseded by the policy flip.
 
@@ -112,6 +120,7 @@ Both inits share one `DATA_COLLECTION` object and the same `before*` hooks. The 
 - M-F-09: per-segment `error.tsx` for `/share` and `/m` (F4); #38 §2.4.
 - M-F-10: an `error` check-in needs two consecutive failures; decide `failureIssueThreshold: 1` or a metric alert (F5); #38 §2.3.
 - M-F-11, ending the alpha (plan §13): one commit restores the Phase 1 `DATA_COLLECTION` values, sets `replaysSessionSampleRate: 0.1` and `replaysOnErrorSampleRate: 1.0`, removes the three unmasking options and sets `tracesSampleRate: 0.2`; scrubbers and identity stay. Instant stop without a deploy: disable the DSN in Sentry. The §2a comments stay with an "Ended on <date>" line. Four §2 rows still read Proposed; #38 §3.6.
+- Issue #43 (open, closes last): Rob's dashboard items, namely Sentry Spike Protection with a notification, the on-demand budget and a per-key rate limit if the plan allows, further Vercel firewall rules and the spend circuit breaker; then the pre-flip checklist. Sampling stays at 100 % by ruling, so these are the quota guards.
 - If a Content-Security-Policy is ever added, Replay needs `worker-src 'self' blob:` and the tunnel `connect-src 'self'` (plan §14).
 
 ## Related
