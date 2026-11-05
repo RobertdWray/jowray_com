@@ -2,7 +2,7 @@
 
 The `/share` page of jowray.com, where a visitor writes or records a memory of Jo: who they are once, then one memory card on a phone or several on a computer, sent together with one receipt email.
 
-**Status:** merged 2026-11-03 in [PR #7](https://github.com/RobertdWray/jowray_com/pull/7) (single-memory form), [PR #11](https://github.com/RobertdWray/jowray_com/pull/11) (no consent checkbox), [PR #16](https://github.com/RobertdWray/jowray_com/pull/16) (defaults, remembered contributor, preferences, consent v2) and [PR #21](https://github.com/RobertdWray/jowray_com/pull/21) (draft autosave); merged 2026-11-04 in [PR #28](https://github.com/RobertdWray/jowray_com/pull/28) and [PR #29](https://github.com/RobertdWray/jowray_com/pull/29) (memory cards), [PR #35](https://github.com/RobertdWray/jowray_com/pull/35) (required name and email, placeholders, two visibility options) and [PR #36](https://github.com/RobertdWray/jowray_com/pull/36) (desktop layout). Every merge to `main` deploys to production. The ledger still marks sharing the `/share` link publicly as blocked until the Task 10 gates are on: the WAF rule exists since 2026-11-04, Spend Management is not set.
+**Status:** merged 2026-11-03 in [PR #7](https://github.com/RobertdWray/jowray_com/pull/7) (single-memory form), [PR #11](https://github.com/RobertdWray/jowray_com/pull/11) (no consent checkbox), [PR #16](https://github.com/RobertdWray/jowray_com/pull/16) (defaults, remembered contributor, preferences, consent v2) and [PR #21](https://github.com/RobertdWray/jowray_com/pull/21) (draft autosave); merged 2026-11-04 in [PR #28](https://github.com/RobertdWray/jowray_com/pull/28) and [PR #29](https://github.com/RobertdWray/jowray_com/pull/29) (memory cards), [PR #35](https://github.com/RobertdWray/jowray_com/pull/35) (required name and email, placeholders, two visibility options) and [PR #36](https://github.com/RobertdWray/jowray_com/pull/36) (desktop layout); changed 2026-11-05 by [PR #49](https://github.com/RobertdWray/jowray_com/pull/49) (fixed-content receipt, email caps; issue #46) and [PR #50](https://github.com/RobertdWray/jowray_com/pull/50) (per-send cap, serialised budgets; issue #44). Every merge to `main` deploys to production. The ledger still marks sharing the `/share` link publicly as blocked until the Task 10 gates are on: the WAF rule exists since 2026-11-04, Spend Management is not set.
 
 ## What we built
 
@@ -12,9 +12,10 @@ The `/share` page of jowray.com, where a visitor writes or records a memory of J
 4. **"Who can see this?"** is asked once per send: "Everyone" (default) or "Family".
 5. Under Send: the Richard, Rob and Tracy line, three preference checkboxes (family may contact me, on; tell me when it is posted, on; weekly mailing list, off) and one consent sentence. There is no consent checkbox.
 6. **Send** checks the form in the browser. A `role="alert"` summary lists each problem as a link and the first invalid field is focused and scrolled to the centre. A clip that sounds silent asks "Send anyway" first.
-7. While sending, the button reads "Sending file 2 of 5 · 40% done" and a polite line says "Please keep this page open".
-8. **Thank-you screen:** "Jo would have loved this.", one private link per memory labelled like "Memory 2 · Summer 1985 · Lake George", files that did not arrive named, and "We couldn't email you just now, so this page is the only copy" when no receipt went out. Phones also see a tip that a computer can send several at once.
+7. While sending, the button reads "Sending file 2 of 5 · 40% done" and a polite line says "Please keep this page open". The server can refuse a send before anything is written: one that declares more than 4 GiB of files gets "That is more than we can take in one go. Please send the biggest files in a separate send."; a full daily budget, the 50 GiB storage ceiling or a budget lock that stays busy for 5 s gets "We are receiving a lot of memories right now. Please try again later." Both name no field, so they show above the button, and the words stay.
+8. **Thank-you screen:** "Jo would have loved this.", one private link per memory labelled like "Memory 2 · Summer 1985 · Lake George", files that did not arrive named, and "We couldn't email you just now, so this page is the only copy" when no receipt went out: the mail failed, or a cap or a busy outbound lock held it, in which case the cron sends it later with fresh links that supersede the ones on screen. Phones also see a tip that a computer can send several at once.
 9. The typed words are a **draft** on the device (`jowray.share.draft.v2`, 30 days), saved as the person types, when the tab is hidden and before a picker opens. Email is never stored. Reopening restores it with "We kept the words you typed last time."
+10. The **receipt** is fixed content since issue #46: the private links, a "what you sent" line from counts and a card per file by kind and length. Nothing the visitor typed or uploaded is in it: no name, note, date, place, filename or picture (see [Email and cron](./email-and-cron.md)).
 
 ## Why we built it
 
@@ -37,6 +38,7 @@ The quick fixes answered Rob's review of 2026-11-04: email "should not be option
 | Ruling 3: plain "Everyone" and "Family" (amends D13), Everyone first and default; PRIVATE is admin-only. | same |
 | Ruling 4: "Desktop: single column at 1040px with side-by-side rows. No right-hand rail." | same |
 | R5 (agent, accepted): a failed Send focuses the first invalid field, not the summary. | [quick fixes, Rulings log](../plans/2026-11-04-share-form-quick-fixes.md) |
+| Rob, 2026-11-05: the public-repo audit's open decisions take each issue's default: fixed-content receipts (#46 D1, replacing R1's full echo), 60 / 300 contributor emails per hour / day held for the cron (#46 D2), 4 GiB declared per send with no file-count cap (#44 D3). No form change: the per-send message is shown as the server words it. | [PR #49](https://github.com/RobertdWray/jowray_com/pull/49), [PR #50](https://github.com/RobertdWray/jowray_com/pull/50) |
 
 ## How it works
 
@@ -58,7 +60,7 @@ flowchart TD
   L --> D
 ```
 
-`share-form.tsx` orchestrates; the logic lives in pure modules under `lib/`, tested in Node. `cardsReducer` owns the cards (deterministic ids so server and client render the same markup), the draft is read once and applied during render, and `runSubmission` creates the submission once, uploads photos first one file at a time, and completes exactly once in a `finally` (details in [Media uploads](./media-uploads.md)). A server refusal that names a field or card lands on it through `issuesFromSendFailure`; one that names nothing shows above the button.
+`share-form.tsx` orchestrates; the logic lives in pure modules under `lib/`, tested in Node. `cardsReducer` owns the cards (deterministic ids so server and client render the same markup), the draft is read once and applied during render, and `runSubmission` creates the submission once, uploads photos first one file at a time, and completes exactly once in a `finally` (details in [Media uploads](./media-uploads.md)). A server refusal that names a field or card lands on it through `issuesFromSendFailure`; one that names nothing (the per-send cap, the budget) shows above the button.
 
 ## Key files
 
@@ -72,7 +74,7 @@ flowchart TD
 | `app/share/actions.ts` | Thin Server Functions |
 | `app/_components/field-classes.ts`, `app/globals.css` | Field styling (`font-normal`, invalid ring); `wide`, `narrow`, `roomy` variants |
 | **features** | |
-| `features/memories/create-submission.ts`, `features/memories/complete-submission.ts` | Server side of a send |
+| `features/memories/create-submission.ts`, `features/memories/complete-submission.ts` | Server side of a send: `SEND_TOO_LARGE_MESSAGE` and the budget refusal; the receipt |
 | **lib** | |
 | `lib/memory-cards.ts` | Reducer, `acceptFiles`, `labelFor`, `validateContributor`, `validateForSend`, `issuesFromSendFailure` |
 | `lib/submission-pipeline.ts` | `runSubmission` |
@@ -86,7 +88,7 @@ flowchart TD
 
 ## Tests and evidence
 
-Unit tests cover the reducer, file acceptance, labels, both validators, the refusal mapping, the pipeline's ordering and retry rules, draft TTL and migration, remembered fields, the two visibility options and the reveal arithmetic. `create-submission.test.ts` pins the required-field messages and the stored trimmed name and lower-cased email. Last recorded suite counts: 1000/1000 (PR #35), 1004/1004 after the review fixes.
+Unit tests cover the reducer, file acceptance, labels, both validators, the refusal mapping, the pipeline's ordering and retry rules, draft TTL and migration, remembered fields, the two visibility options and the reveal arithmetic. `create-submission.test.ts` pins the required-field messages, the stored trimmed name and lower-cased email, the per-send cap at its boundary (nothing written, no lock taken) and the budget lock; `complete-submission.test.ts` pins that no name, note, filename or preview reaches the receipt and that nothing waits. Last recorded suite counts: 1000/1000 (PR #35), 1004/1004 after the review fixes.
 
 Evidence: [share redesign README](../plans/evidence/2026-11-share-redesign/README.md) (51 scripted Chromium checks at 390, 852×393 and 1280; a two-memory send; draft v2 and v1 migration; no hydration warnings) and [quick fixes README](../plans/evidence/2026-11-share-quick-fixes/README.md) (blank Send focuses Name centred, then Email; typing clears inline state only; offline Send keeps the words; contrast numbers; the layout table at six window sizes; `scrollHeight` 2190px at every `roomy` width, down from 2837px).
 
@@ -102,6 +104,7 @@ Evidence: [share redesign README](../plans/evidence/2026-11-share-redesign/READM
 - D10 per-file fields and the right-hand rail after 2560 evidence await Rob (M-C-09, M-C-21; §3.6).
 - Drafts never hold media; iOS has no `beforeunload` (M-C-19, deliberately not doing). Webcam recording on computers is release 2, not built (M-C-11).
 - Sentry noise from `use-share-draft.ts` storage probes (M-F-03; §2.9).
+- A receipt held by a cap or a busy lock shows the same "only copy" sentence as a failed one; gentler wording is a #46 follow-up (`app/share/thank-you-client.tsx`).
 
 ## Related
 
