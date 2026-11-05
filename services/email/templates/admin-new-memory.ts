@@ -110,7 +110,7 @@ export function buildAdminNewMemory(input: AdminNewMemoryContent): RenderedAdmin
   const submitted = SUBMITTED_FORMAT.format(input.submittedAt);
   const memoryId = stripControl(input.memoryId);
   const visibility = VISIBILITY_LABEL[input.visibility];
-  const { cards, attachments: previewAttachments, badges } = buildMediaCards(input.media);
+  const { cards, attachments: previewAttachments, badges } = buildMediaCards(input.media, { filenames: true });
   const fileCount = cards.length > 1 ? `${cards.length} files` : null;
   const notReady = filesNotReadyLine(input.filesNotReady);
   const subject = adminNewMemorySubject(input.name);

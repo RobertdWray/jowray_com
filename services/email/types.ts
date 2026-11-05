@@ -1,21 +1,31 @@
 export type MediaKind = "PHOTO" | "VOICE" | "VIDEO";
 
-/** One READY file as the email shows it; `preview` is the derived JPEG when one exists. */
-export interface MemoryMediaSummary {
+/**
+ * One READY file as the contributor's receipt shows it: its kind, its length
+ * and the derived preview JPEG when one exists. No filename: the receipt is
+ * fixed content (issue #46, D1, 2026-11-05).
+ */
+export interface ReceiptMediaSummary {
   kind: MediaKind;
-  originalFilename: string | null;
   durationSeconds: number | null;
   preview: { contentId: string; contentBase64: string; width: number; height: number } | null;
 }
 
-/** Everything the confirmation template renders; every field is untrusted contributor input except `claimLink` and `media[].preview`. */
+/** One READY file as the family-admin alert shows it: the receipt's summary plus the name the contributor gave the file. */
+export interface MemoryMediaSummary extends ReceiptMediaSummary {
+  originalFilename: string | null;
+}
+
+/**
+ * Everything the confirmation template renders. Nothing here is contributor-written
+ * text: the receipt is fixed content (issue #46, D1, 2026-11-05, replacing ruling
+ * R1 of 2026-11-03), so an anonymous send can never put a visitor's words into a
+ * jowray.com-signed email to an address of their choosing. `hasWords` only picks
+ * between "your words" and nothing in the fixed "what you sent" line.
+ */
 export interface MemoryConfirmationContent {
-  name?: string | null;
-  relationship?: string | null;
-  approxDateText?: string | null;
-  place?: string | null;
-  note?: string | null;
-  media: MemoryMediaSummary[];
+  hasWords: boolean;
+  media: ReceiptMediaSummary[];
   claimLink: string;
 }
 
@@ -30,23 +40,19 @@ export interface MemoryConfirmationInput extends MemoryConfirmationContent {
   rotateToClaimTokenHash?: string;
 }
 
-/** One memory of a send as the receipt shows it (Task 15). Every field but `position`, `claimLink` and `media[].preview` is untrusted contributor input. */
+/** One memory of a send as the receipt shows it (Task 15). Fixed content: nothing here is contributor-written text (issue #46, D1). */
 export interface SubmissionMemoryContent {
   /** 1-based place in the send: the stable "Memory N" heading. */
   position: number;
-  approxDateText?: string | null;
-  place?: string | null;
-  note?: string | null;
-  media: MemoryMediaSummary[];
+  hasWords: boolean;
+  media: ReceiptMediaSummary[];
   claimLink: string;
-  /** Original filenames of files that never arrived (cron path), so the person can add them again from the link. */
-  missingFiles: string[];
+  /** How many files never arrived (cron path), so the person can add them again from the link. Names stay out of the email. */
+  missingFiles: number;
 }
 
-/** Everything the send receipt renders: the contributor once, then every memory in order. */
+/** Everything the send receipt renders: every memory in order. */
 export interface SubmissionConfirmationContent {
-  name?: string | null;
-  relationship?: string | null;
   memories: SubmissionMemoryContent[];
 }
 
@@ -95,6 +101,10 @@ export type SkipReason =
   | "in_progress"
   | "outbound_disabled"
   | "recipient_capped"
+  /** The global outbound ceiling for contributor email is reached; the row is FAILED with `nextAttemptAt` at the window's end, so the cron sends it later (issue #46, D2). */
+  | "global_capped"
+  /** More admin alerts this hour than `ADMIN_ALERT_HOURLY_CAP`; a terminal SKIPPED row, the admins got one pause notice (issue #46, D4). */
+  | "admin_capped"
   | "no_recipients"
   | "nothing_to_send"
   | "failed";

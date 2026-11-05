@@ -1,13 +1,10 @@
-import type { EmailAttachment, MediaKind, MemoryConfirmationContent, MemoryMediaSummary } from "../types";
+import type { EmailAttachment, MediaKind, MemoryConfirmationContent, ReceiptMediaSummary } from "../types";
 import {
   BODY_FONT,
   brandAttachments,
   buildMediaCards,
   cardHeading,
   cardHtml,
-  cleanNote,
-  cleanOptional,
-  detailRow,
   DISPLAY_FONT,
   escapeHtml,
   headlineRow,
@@ -16,8 +13,6 @@ import {
   JO_RED_DEEP,
   JO_RED_SHADOW,
   leadRow,
-  NAME_MAX,
-  noteToHtml,
   NOUN,
   renderCardHtml,
   renderCardText,
@@ -31,12 +26,17 @@ import {
 export { cleanNote, escapeHtml, formatSeconds, stripControl } from "./shared";
 
 /**
- * The contributor's receipt: what they just sent, in the site's brand. Fixed
- * subject with no user text in it.
+ * The contributor's receipt, in the site's brand. Fixed content: the subject,
+ * the copy, a "what you sent" line built from counts, the media cards (kind,
+ * length, derived preview) and the private link. Nothing the visitor typed
+ * (name, relationship, date, place, note, filenames) is echoed.
  *
- * Every interpolated field is HTML-entity-encoded in the HTML part (alt text
- * included) and stripped of control characters in the text part. The note
- * keeps its paragraphs (ruling R1, 2026-11-03: the full note is echoed).
+ * Ruling (issue #46, D1 default, 2026-11-05): the receipt carries no
+ * contributor-written text, because an anonymous `/share` send could otherwise
+ * put a visitor's words, URLs included, into a jowray.com-signed email to any
+ * address they chose. This replaces ruling R1 (2026-11-03, "the full note is
+ * echoed"); the words are still on the private page the link opens.
+ *
  * Images are inline CID attachments only (rulings R2/R4): the HTML never
  * references a URL, so no token and no tracking request leaves the reader's
  * client. The shared chrome lives in `./shared`.
@@ -48,8 +48,9 @@ export const MEMORY_CONFIRMATION_SUBJECT = "Thank you for sharing a memory";
 
 /** The approved copy, shared with the send receipt (`./submission-confirmation`) so the two never drift. */
 export const CONFIRMATION_COPY = {
-  preheader: "Your memory of Jo is safe with the family. Here is what you sent.",
+  preheader: "Your memory of Jo is safe with the family. Here is your private link.",
   headline: "Jo would have loved this.",
+  greeting: "Thank you.",
   leadRest: "Your memory is on its way to Richard, Rob and Tracy. We read every single one, usually more than once.",
   button: "See or add to your memory",
   privacy: "Keep this link private: anyone who has it can edit this memory.",
@@ -62,6 +63,7 @@ export const CONFIRMATION_COPY = {
 
 const PREHEADER = CONFIRMATION_COPY.preheader;
 const HEADLINE = CONFIRMATION_COPY.headline;
+const GREETING = CONFIRMATION_COPY.greeting;
 const LEAD_REST = CONFIRMATION_COPY.leadRest;
 const BUTTON = CONFIRMATION_COPY.button;
 const PRIVACY = CONFIRMATION_COPY.privacy;
@@ -69,8 +71,8 @@ const CLOSER = CONFIRMATION_COPY.closer;
 const MADE_WITH_LOVE = CONFIRMATION_COPY.madeWithLove;
 const QUESTIONS = CONFIRMATION_COPY.questions;
 
-/** "your words and a photo", "2 videos", "a voice recording and a photo". */
-export function describeReceived(media: MemoryMediaSummary[], hasWords: boolean): string {
+/** "your words and a photo", "2 videos", "a voice recording and a photo". Built from counts only. */
+export function describeReceived(media: ReceiptMediaSummary[], hasWords: boolean): string {
   const counts = new Map<MediaKind, number>();
   for (const item of media) {
     counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
@@ -101,39 +103,17 @@ export interface RenderedMemoryConfirmation {
 }
 
 export function buildMemoryConfirmation(input: MemoryConfirmationContent): RenderedMemoryConfirmation {
-  const name = cleanOptional(input.name, NAME_MAX);
-  const relationship = cleanOptional(input.relationship, 120);
-  const when = cleanOptional(input.approxDateText, 120);
-  const where = cleanOptional(input.place, 200);
-  const note = input.note ? cleanNote(input.note) : "";
-  const hasWords = note.length > 0;
   const link = stripControl(input.claimLink);
-  const { cards, attachments: previewAttachments, badges } = buildMediaCards(input.media);
-  const received = describeReceived(input.media, hasWords);
-  const greeting = name ? `Thank you, ${name}.` : "Thank you.";
+  const { cards, attachments: previewAttachments, badges } = buildMediaCards(input.media, { filenames: false });
+  const received = describeReceived(input.media, input.hasWords);
 
   // ---- text part -----------------------------------------------------------
-  const details: string[] = [];
-  if (name) {
-    details.push(`Your name: ${name}`);
-  }
-  if (relationship) {
-    details.push(`How you knew Jo: ${relationship}`);
-  }
-  if (when) {
-    details.push(`When: ${when}`);
-  }
-  if (where) {
-    details.push(`Where: ${where}`);
-  }
   const text = [
     HEADLINE,
     "",
-    `${greeting} ${LEAD_REST}`,
+    `${GREETING} ${LEAD_REST}`,
     "",
     `What you sent: ${received}`,
-    ...(details.length > 0 ? ["", ...details] : []),
-    ...(hasWords ? ["", "Your memory of Jo:", note] : []),
     ...(cards.length > 0 ? ["", "Files:", ...cards.map(renderCardText)] : []),
     "",
     `${BUTTON}:`,
@@ -149,24 +129,12 @@ export function buildMemoryConfirmation(input: MemoryConfirmationContent): Rende
 
   // ---- html part -----------------------------------------------------------
   const safeLink = escapeHtml(link);
-  const detailRows = [
-    name ? detailRow("Your name", name) : "",
-    relationship ? detailRow("How you knew Jo", relationship) : "",
-    when ? detailRow("When", when) : "",
-    where ? detailRow("Where", where) : "",
-  ].join("");
 
   const card = cardHtml(
     [
       cardHeading("What you sent"),
       `<tr><td style="padding:0 0 18px 0;font-family:${BODY_FONT};font-size:17px;line-height:1.4;color:${WALNUT_SOFT};">${escapeHtml(received.charAt(0).toUpperCase() + received.slice(1))}.</td></tr>`,
-      detailRows,
-      hasWords
-        ? `<tr><td style="padding:4px 0 0 0;font-family:${BODY_FONT};">
-<div style="padding:0 0 6px 0;font-size:17px;line-height:1.4;color:${WALNUT_SOFT};">Your memory of Jo</div>
-<div style="font-size:20px;line-height:1.5;color:${WALNUT};white-space:pre-wrap;word-break:break-word;">${noteToHtml(note)}</div>
-</td></tr>`
-        : "",
+      `<tr><td style="padding:0;font-family:${BODY_FONT};font-size:17px;line-height:1.5;color:${WALNUT};">Your words and details are on your private page, exactly as you sent them.</td></tr>`,
       cards.map((c) => renderCardHtml(c, link)).join("\n"),
     ].join("\n")
   );
@@ -175,7 +143,7 @@ export function buildMemoryConfirmation(input: MemoryConfirmationContent): Rende
     HEART_ROW,
     "",
     headlineRow(HEADLINE),
-    leadRow(`${escapeHtml(greeting)} ${escapeHtml(LEAD_REST)}`),
+    leadRow(`${escapeHtml(GREETING)} ${escapeHtml(LEAD_REST)}`),
     "",
     card,
     "",

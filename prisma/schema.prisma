@@ -255,6 +255,7 @@ model EmailLog {                            // mirrors EmpathIQ, keyed per memor
   id                String      @id @default(uuid())
   memoryId          String
   recipientEmail    String                   // one address, or the attempted admin recipients joined with ", " (ADMIN_NEW_MEMORY)
+  recipientKey      String?                  // canonical form of recipientEmail for the per-recipient cap (+tag and Gmail dots folded; issue #46); null only on rows older than the column
   emailType         EmailType
   status            EmailStatus @default(PENDING)
   sendgridMessageId String?     @unique
@@ -267,5 +268,7 @@ model EmailLog {                            // mirrors EmpathIQ, keyed per memor
   memory            Memory      @relation(fields: [memoryId], references: [id])
   @@unique([memoryId, emailType])          // confirmation idempotency by constraint
   @@index([status, nextAttemptAt])
-  @@index([recipientEmail, createdAt])     // per-recipient cap
+  @@index([recipientEmail, createdAt])     // per-recipient cap (pre-#46 key; kept for the audit view)
+  @@index([recipientKey, updatedAt])       // per-recipient cap, counted by the canonical key and the last state change
+  @@index([emailType, status, updatedAt])  // global outbound ceilings and the admin hourly cap
 }

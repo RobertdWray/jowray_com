@@ -11,7 +11,7 @@ import { identifyContributor, tagIds } from "@/lib/sentry/user";
 import { getSiteUrl } from "@/lib/site-url";
 import { completeSubmissionSchema } from "@/lib/validations/memory";
 import { getDb } from "@/server/db/client";
-import { type ClaimRotation, type MemoryMediaSummary, type SendResult, sendSubmissionConfirmation, skipDelivery, type SubmissionMemoryContent } from "@/services/email";
+import { type ClaimRotation, type ReceiptMediaSummary, type SendResult, sendSubmissionConfirmation, skipDelivery, type SubmissionMemoryContent } from "@/services/email";
 import { createStorageService } from "@/services/storage";
 
 const log = createLogger({ category: "email" });
@@ -49,7 +49,6 @@ interface LoadedMedia {
   id: string;
   status: "PENDING" | "READY" | "FAILED";
   mimeType: string;
-  originalFilename: string | null;
   durationSeconds: number | null;
   derivatives: Array<{ storageKey: string; width: number | null; height: number | null }>;
 }
@@ -80,7 +79,6 @@ async function loadSubmission(submissionId: string): Promise<LoadedMemory[]> {
           id: true,
           status: true,
           mimeType: true,
-          originalFilename: true,
           durationSeconds: true,
           derivatives: { where: { kind: "THUMBNAIL", status: "READY" }, select: { storageKey: true, width: true, height: true } },
         },
@@ -103,22 +101,24 @@ async function readBase64(pathname: string): Promise<string | null> {
 
 /**
  * The email's view of one send: READY files per memory (with up to four
- * thumbnails fetched across the whole send), files that are not READY named
- * as missing, and one entry per live memory even when it has nothing yet,
- * because its link is how the contributor recovers.
+ * thumbnails fetched across the whole send), a count of files that are not
+ * READY, and one entry per live memory even when it has nothing yet, because
+ * its link is how the contributor recovers. Fixed content (issue #46, D1):
+ * no note, date, place or filename leaves here; `hasWords` only drives the
+ * "what you sent" line.
  */
 async function buildMemories(live: LoadedMemory[], links: Map<string, string>): Promise<SubmissionMemoryContent[]> {
   let fetched = 0;
   const memories: SubmissionMemoryContent[] = [];
   for (const memory of live) {
-    const media: MemoryMediaSummary[] = [];
-    const missing: string[] = [];
+    const media: ReceiptMediaSummary[] = [];
+    let missing = 0;
     for (const row of memory.media) {
       if (row.status !== "READY") {
-        missing.push(row.originalFilename ?? `${mediaKindOf(row.mimeType).toLowerCase()} file`);
+        missing += 1;
         continue;
       }
-      let preview: MemoryMediaSummary["preview"] = null;
+      let preview: ReceiptMediaSummary["preview"] = null;
       const thumb = row.derivatives[0];
       if (thumb && thumb.width && thumb.height && fetched < MAX_PREVIEW_FETCHES) {
         fetched += 1;
@@ -127,13 +127,11 @@ async function buildMemories(live: LoadedMemory[], links: Map<string, string>): 
           preview = { contentId: `thumb-${row.id.toLowerCase()}`, contentBase64, width: thumb.width, height: thumb.height };
         }
       }
-      media.push({ kind: mediaKindOf(row.mimeType), originalFilename: row.originalFilename, durationSeconds: row.durationSeconds, preview });
+      media.push({ kind: mediaKindOf(row.mimeType), durationSeconds: row.durationSeconds, preview });
     }
     memories.push({
       position: (memory.submissionIndex ?? 0) + 1,
-      approxDateText: memory.approxDateText,
-      place: memory.place,
-      note: memory.contributorNote,
+      hasWords: (memory.contributorNote ?? "").trim().length > 0,
       media,
       claimLink: `${getSiteUrl()}/m/${links.get(memory.id)}`,
       missingFiles: missing,
@@ -152,7 +150,7 @@ async function buildMemories(live: LoadedMemory[], links: Map<string, string>): 
  * Cron path (`claimTokens` omitted): returns `leased` while the anchor's
  * upload lease is live. After it expires, any PENDING file is re-checked
  * against the store (the browser may have gone away between upload and
- * finalize); files still not READY are named as missing. Every live memory's
+ * finalize); files still not READY are counted as missing. Every live memory's
  * token is rotated, anchor first then ascending index, committed by the email
  * service together with SENT (C22, C25). A soft-deleted memory gets no link
  * and no rotation; a send with no live memory writes a terminal SKIPPED row.
@@ -222,12 +220,10 @@ async function confirmSubmissionInner({ anchorId, claimTokens }: { anchorId: str
     }
   }
 
-  const contributor = live[0]?.contributor ?? null;
+  // Fixed-content receipt (issue #46, D1): the address and the links; no name or relationship.
   const result = await sendSubmissionConfirmation({
     anchorMemoryId: anchor.id,
     to: email,
-    name: contributor?.name ?? null,
-    relationship: contributor?.relationship ?? null,
     memories: await buildMemories(live, links),
     ...(rotating && { rotations }),
   });

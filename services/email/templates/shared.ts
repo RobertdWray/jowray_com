@@ -1,5 +1,5 @@
 import { EMAIL_ASSETS, type EmailAsset } from "../../../lib/email-assets";
-import type { EmailAttachment, MediaKind, MemoryMediaSummary } from "../types";
+import type { EmailAttachment, MediaKind, MemoryMediaSummary, ReceiptMediaSummary } from "../types";
 
 /**
  * Pieces shared by the transactional email templates (the contributor
@@ -99,7 +99,7 @@ function base64Bytes(value: string): number {
   return Math.floor((value.length * 3) / 4) - padding;
 }
 
-export function usablePreview(preview: NonNullable<MemoryMediaSummary["preview"]>): boolean {
+export function usablePreview(preview: NonNullable<ReceiptMediaSummary["preview"]>): boolean {
   return (
     Number.isFinite(preview.width) &&
     Number.isFinite(preview.height) &&
@@ -129,15 +129,21 @@ export function assetImg(asset: EmailAsset, displayPx: number, alt: string, extr
  * inline images (`alt` text per kind), the rest badge cards. Preview content
  * ids come from server ids, so a bad, reserved or duplicate one is a
  * programming error and throws.
+ *
+ * Filenames are contributor-written text: the admin alert shows them
+ * (`filenames: true`, the summaries carry `originalFilename`); the contributor
+ * receipts never do (issue #46, D1), and their summaries have no filename field.
  */
-export function buildMediaCards(media: MemoryMediaSummary[]): { cards: Card[]; attachments: EmailAttachment[]; badges: Set<MediaKind> } {
+export function buildMediaCards(media: ReceiptMediaSummary[], options: { filenames: false }): { cards: Card[]; attachments: EmailAttachment[]; badges: Set<MediaKind> };
+export function buildMediaCards(media: MemoryMediaSummary[], options: { filenames: true }): { cards: Card[]; attachments: EmailAttachment[]; badges: Set<MediaKind> };
+export function buildMediaCards(media: Array<ReceiptMediaSummary & { originalFilename?: string | null }>, options: { filenames: boolean }): { cards: Card[]; attachments: EmailAttachment[]; badges: Set<MediaKind> } {
   const cards: Card[] = [];
   const attachments: EmailAttachment[] = [];
   const badges = new Set<MediaKind>();
   const seen = new Set<string>();
   let previews = 0;
   media.forEach((item, index) => {
-    const filename = cleanOptional(item.originalFilename, 255);
+    const filename = options.filenames ? cleanOptional(item.originalFilename, 255) : null;
     const duration = item.durationSeconds !== null && Number.isFinite(item.durationSeconds) ? formatSeconds(item.durationSeconds) : null;
     if (item.preview) {
       if (!CONTENT_ID.test(item.preview.contentId)) {

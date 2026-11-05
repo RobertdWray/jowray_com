@@ -3,37 +3,39 @@ import { describe, expect, it } from "vitest";
 import { EMAIL_ASSETS } from "@/lib/email-assets";
 import { buildMemoryConfirmation, MEMORY_CONFIRMATION_SUBJECT } from "@/services/email/templates/memory-confirmation";
 import { buildSubmissionConfirmation, SUBMISSION_HTML_BUDGET_BYTES, submissionConfirmationSubject } from "@/services/email/templates/submission-confirmation";
-import type { MemoryMediaSummary, SubmissionMemoryContent } from "@/services/email/types";
+import type { ReceiptMediaSummary, SubmissionMemoryContent } from "@/services/email/types";
 
 const JPEG_1PX = "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";
 const token = (n: number) => String.fromCharCode(97 + n).repeat(43);
 const link = (n: number) => `https://www.jowray.com/m/${token(n)}`;
 
-function photo(over: Partial<MemoryMediaSummary> = {}): MemoryMediaSummary {
-  return { kind: "PHOTO", originalFilename: "IMG_0001.jpg", durationSeconds: null, preview: null, ...over };
+function photo(over: Partial<ReceiptMediaSummary> = {}): ReceiptMediaSummary {
+  return { kind: "PHOTO", durationSeconds: null, preview: null, ...over };
 }
-function preview(id: string): MemoryMediaSummary["preview"] {
+function preview(id: string): ReceiptMediaSummary["preview"] {
   return { contentId: `preview-${id}`, contentBase64: JPEG_1PX, width: 1000, height: 750 };
 }
 function memory(n: number, over: Partial<SubmissionMemoryContent> = {}): SubmissionMemoryContent {
-  return { position: n + 1, approxDateText: `Summer 198${n}`, place: n === 0 ? "her classroom" : null, note: `Memory number ${n + 1}.`, media: [], claimLink: link(n), missingFiles: [], ...over };
+  return { position: n + 1, hasWords: true, media: [], claimLink: link(n), missingFiles: 0, ...over };
 }
-function build(memories: SubmissionMemoryContent[], over: { name?: string | null; relationship?: string | null } = {}) {
-  return buildSubmissionConfirmation({ name: "Kay", relationship: "former student", memories, ...over });
+function build(memories: SubmissionMemoryContent[]) {
+  return buildSubmissionConfirmation({ memories });
 }
+const POISON = '"><img src=x onerror=alert(1)>https://evil.test/x.jpg';
 
 describe("buildSubmissionConfirmation: one memory", () => {
   it("renders byte-for-byte as the single-memory confirmation", () => {
-    const single = buildMemoryConfirmation({ name: "Kay", relationship: "former student", approxDateText: "Summer 1980", place: "her classroom", note: "Memory number 1.", media: [photo({ preview: preview("m1") }), photo({ kind: "VOICE", durationSeconds: 30 })], claimLink: link(0) });
-    const batch = build([memory(0, { media: [photo({ preview: preview("m1") }), photo({ kind: "VOICE", durationSeconds: 30 })] })]);
+    const media = [photo({ preview: preview("m1") }), photo({ kind: "VOICE", durationSeconds: 30 })];
+    const single = buildMemoryConfirmation({ hasWords: true, media, claimLink: link(0) });
+    const batch = build([memory(0, { media })]);
     expect(batch).toEqual(single);
     expect(batch.subject).toBe(MEMORY_CONFIRMATION_SUBJECT);
   });
 });
 
 describe("buildSubmissionConfirmation: one memory with a missing file", () => {
-  it("reads in the singular everywhere and names the file", () => {
-    const { subject, text, html } = build([memory(0, { missingFiles: ["IMG_2231.MOV"] })]);
+  it("reads in the singular everywhere and counts the file without naming it", () => {
+    const { subject, text, html } = build([memory(0, { missingFiles: 1 })]);
     expect(subject).toBe(MEMORY_CONFIRMATION_SUBJECT);
     expect(text).toContain("Your memory is on its way to Richard, Rob and Tracy.");
     expect(text).not.toMatch(/1 memories/);
@@ -41,31 +43,49 @@ describe("buildSubmissionConfirmation: one memory with a missing file", () => {
     expect(text.trimEnd().endsWith("Keep this link private: anyone who has it can edit this memory.")).toBe(true);
     expect(html).toContain("Your private link");
     expect(html).not.toContain("Your private links");
-    expect(html).toContain("IMG_2231.MOV");
+    expect(html).toMatch(/One file didn&#39;t arrive/);
+    expect(text).toContain("One file didn't arrive");
   });
 });
 
-describe("buildSubmissionConfirmation: several memories", () => {
-  it("has a plural subject, puts every link first, and names each memory", () => {
+describe("buildSubmissionConfirmation: several memories (fixed content, issue #46 D1)", () => {
+  it("has a plural subject, puts every link first, and heads each memory by its number only", () => {
     const { subject, html, text } = build([memory(0), memory(1), memory(2)]);
     expect(subject).toBe(submissionConfirmationSubject(3));
     expect(subject).toBe("Thank you for sharing 3 memories");
-    expect(subject).not.toContain("Kay");
-    // Links come before any words, in both parts.
+    // Links come before any memory card, in both parts.
     const firstLinkText = text.indexOf(link(0));
     expect(firstLinkText).toBeGreaterThan(-1);
-    expect(firstLinkText).toBeLessThan(text.indexOf("Memory number 1."));
-    expect(text.indexOf(link(2))).toBeLessThan(text.indexOf("Memory number 1."));
-    expect(html.indexOf(`href="${link(0)}"`)).toBeLessThan(html.indexOf("Memory number 1."));
-    expect(html.indexOf(`href="${link(2)}"`)).toBeLessThan(html.indexOf("Memory number 1."));
-    // Each memory has a stable heading and a label built from its details.
-    expect(html).toContain("Memory 1");
-    expect(html).toContain("Memory 3");
-    expect(text).toContain("Memory 1 · Summer 1980 · her classroom");
-    expect(text).toContain("Memory 2 · Summer 1981");
+    expect(firstLinkText).toBeLessThan(text.indexOf("What you sent"));
+    expect(text.indexOf(link(2))).toBeLessThan(text.indexOf("What you sent"));
+    expect(html.indexOf(`href="${link(0)}"`)).toBeLessThan(html.indexOf(">Memory 1</td>"));
+    expect(html.indexOf(`href="${link(2)}"`)).toBeLessThan(html.indexOf(">Memory 1</td>"));
+    expect(html).toContain(">Memory 1</a>");
+    expect(html).toContain(">Memory 3</a>");
+    expect(html).toContain(">Memory 2</td>");
+    expect(text).toContain("- Memory 1\n  ");
+    expect(text).toContain("\nMemory 2\nWhat you sent: your words");
     // No red button: text links only.
     expect(html).not.toContain("v:roundrect");
     expect(text).toContain("Your 3 memories are on their way");
+    expect(text).toContain("Thank you. Your 3 memories");
+    expect(html).toContain("Your words and details are on each memory");
+  });
+
+  it("carries nothing the contributor typed: no name, relationship, date, place, note or filename", () => {
+    const { html, text } = build([memory(0, { media: [{ ...photo(), originalFilename: POISON } as ReceiptMediaSummary] }), memory(1, { media: [{ ...photo({ kind: "VOICE", durationSeconds: 4 }), originalFilename: POISON } as ReceiptMediaSummary] })]);
+    for (const part of [html, text]) {
+      expect(part).not.toContain("evil.test");
+      expect(part).not.toContain("x.jpg");
+      expect(part).not.toContain("Your name");
+      expect(part).not.toContain("How you knew Jo");
+      expect(part).not.toContain("When:");
+      expect(part).not.toContain("Where:");
+      expect(part).not.toContain("Your memory of Jo:");
+      expect(part).not.toContain("Your memory of Jo</div>");
+    }
+    expect(html).not.toContain("<img src=x");
+    expect(html).not.toMatch(/src="https?:/);
   });
 
   it("puts each token only in its own memory's links, never in alt text or the preheader", () => {
@@ -86,7 +106,7 @@ describe("buildSubmissionConfirmation: several memories", () => {
     expect(preheader).not.toContain(token(0));
     // A memory's media card links to that memory, not to another.
     // The memory cards follow the links card, so the last headings are the cards' own.
-    const cardOne = html.slice(html.lastIndexOf(">Memory 1 ·"), html.lastIndexOf(">Memory 2 ·"));
+    const cardOne = html.slice(html.lastIndexOf(">Memory 1</td>"), html.lastIndexOf(">Memory 2</td>"));
     expect(cardOne).toContain(`href="${link(0)}"`);
     expect(cardOne).not.toContain(token(1));
   });
@@ -105,46 +125,31 @@ describe("buildSubmissionConfirmation: several memories", () => {
     expect(() => build([memory(0, { media: [photo({ preview: preview("dup") })] }), memory(1, { media: [photo({ preview: preview("dup") })] })])).toThrow(/duplicate/);
   });
 
-  it("keeps ten memories with maximum-length notes under the Gmail budget by shortening the words, and never shortens when it fits", () => {
-    const chunk = "Spelling <doesn't> count & “never” did — 😊 ligne\n";
-    const note = chunk.repeat(Math.ceil(10_000 / chunk.length)).slice(0, 10_000);
-    const big = build(Array.from({ length: 10 }, (_, n) => memory(n, { note, approxDateText: "D".repeat(120), place: "P".repeat(200), media: [photo({ originalFilename: "f".repeat(255) }), photo({ kind: "VOICE", durationSeconds: 86400 })] })), { name: "N".repeat(60), relationship: "R".repeat(120) });
-    expect(Buffer.byteLength(big.html, "utf8")).toBeLessThan(SUBMISSION_HTML_BUDGET_BYTES);
+  it("keeps the largest possible send (ten memories, ten files each, ten missing each) under the Gmail budget by dropping the file cards, never words", () => {
+    const tenFiles = (n: number) => Array.from({ length: 10 }, (_, i) => photo({ kind: i % 3 === 0 ? "VOICE" : i % 3 === 1 ? "VIDEO" : "PHOTO", durationSeconds: 86400, preview: i % 3 === 1 ? preview(`m${n}-${i}`) : null }));
+    const biggest = build(Array.from({ length: 10 }, (_, n) => memory(n, { media: tenFiles(n), missingFiles: 10 })));
+    expect(Buffer.byteLength(biggest.html, "utf8")).toBeLessThan(SUBMISSION_HTML_BUDGET_BYTES);
     expect(SUBMISSION_HTML_BUDGET_BYTES).toBeLessThanOrEqual(100 * 1024);
-    expect(big.html).toContain("read it all from its link");
-    expect(big.text).toContain("read it all from its link");
-    // Links still come first even when the words were shortened.
-    expect(big.text.indexOf(link(9))).toBeLessThan(big.text.indexOf("Spelling"));
-    const small = build([memory(0, { note }), memory(1)]);
-    expect(small.html).not.toContain("read it all from its link");
-    expect(small.html).toContain("Spelling &lt;doesn&#39;t&gt; count");
-  });
-
-  it("never cuts an emoji in half when shortening the words", () => {
-    // Every note ends in emoji so that any cap lands on, or next to, a surrogate pair.
-    const note = `${"x".repeat(151)}${"😊".repeat(5_000)}`;
-    const { html, text } = build(Array.from({ length: 10 }, (_, n) => memory(n, { note })));
-    expect(html).toContain("read it all from its link");
-    for (const part of [html, text]) {
-      expect(part).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
-      expect(part).not.toContain("\uFFFD");
+    expect(biggest.html).not.toContain("read it all from its link");
+    expect(biggest.html).not.toContain("cid:preview-");
+    expect(biggest.attachments.filter((a) => a.contentId.startsWith("preview-"))).toHaveLength(0);
+    // The counts still say what arrived, and every link is there.
+    expect(biggest.text).toContain("What you sent: your words, 3 photos, 3 videos and 4 voice recordings");
+    expect(biggest.text).toContain("10 files didn't arrive");
+    for (let n = 0; n < 10; n += 1) {
+      expect(biggest.html).toContain(`href="${link(n)}"`);
     }
+    // A send that fits keeps its cards.
+    const fits = build([memory(0, { media: tenFiles(0) }), memory(1, { media: tenFiles(1) })]);
+    expect(Buffer.byteLength(fits.html, "utf8")).toBeLessThan(SUBMISSION_HTML_BUDGET_BYTES);
+    expect(fits.html).toContain("cid:preview-");
+    expect(fits.html.split("Voice recording · 1440:00").length - 1).toBe(8);
   });
 
-  it("names the files that did not arrive, with the link to add them again", () => {
-    const { html, text } = build([memory(0, { missingFiles: ["IMG_2231.MOV"] }), memory(1)]);
-    expect(text).toContain("IMG_2231.MOV");
-    expect(text).toMatch(/didn.t arrive/);
-    expect(html).toContain("IMG_2231.MOV");
-    expect(html).toMatch(/didn&#39;t arrive|didn’t arrive/);
-  });
-
-  it("escapes every field and loads nothing from the network", () => {
-    const { html } = build([memory(0, { note: "<script>alert(1)</script>", place: "a & b" }), memory(1, { media: [photo({ originalFilename: '"><img src=x>.jpg' })] })], { name: '<a href="https://evil.test">Jo</a>' });
-    expect(html).not.toContain('href="https://evil.test"');
-    expect(html).not.toContain("<script>");
-    expect(html).toContain("a &amp; b");
-    expect(html).not.toContain("<img src=x");
-    expect(html).not.toMatch(/src="https?:/);
+  it("counts the files that did not arrive, with the link to add them again", () => {
+    const { html, text } = build([memory(0, { missingFiles: 3 }), memory(1)]);
+    expect(text).toContain("3 files didn't arrive — add them again from this link:");
+    expect(html).toMatch(/3 files didn&#39;t arrive/);
+    expect(build([memory(0, { missingFiles: 1 }), memory(1)]).text).toContain("One file didn't arrive — add it again from this link:");
   });
 });

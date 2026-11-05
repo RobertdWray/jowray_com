@@ -89,7 +89,7 @@ function photo(id: string, memoryId: string, over: Partial<MediaRow> = {}): Medi
   return { id, memoryId, status: "READY", mimeType: "image/jpeg", originalFilename: `${id}.jpg`, durationSeconds: null, deletedAt: null, sortOrder: 0, createdAt: new Date(), storageKey: `dev/originals/${memoryId}/${id}.jpg`, derivatives: [], ...over };
 }
 const thumb = (id: string, status: Derivative["status"] = "READY"): Derivative => ({ kind: "THUMBNAIL", status, storageKey: `dev/derived/${id}-thumb.jpg`, width: 520, height: 390 });
-type SendArg = { anchorMemoryId: string; to: string; memories: Array<{ position: number; claimLink: string; media: Array<{ preview: { contentId: string; contentBase64: string; width: number; height: number } | null }>; missingFiles: string[]; note: string | null }>; rotations?: Array<{ memoryId: string; claimTokenHash: string }> };
+type SendArg = { anchorMemoryId: string; to: string; name?: unknown; relationship?: unknown; memories: Array<{ position: number; claimLink: string; media: Array<{ preview: { contentId: string; contentBase64: string; width: number; height: number } | null; originalFilename?: unknown }>; missingFiles: number; hasWords: boolean; note?: unknown }>; rotations?: Array<{ memoryId: string; claimTokenHash: string }> };
 const lastSend = () => sendMock.mock.calls.at(-1)?.[0] as SendArg;
 
 beforeEach(() => {
@@ -196,18 +196,31 @@ describe("completeSubmission (request path)", () => {
     expect(recordMediaMock).toHaveBeenCalledWith({ mediaId: "p2" });
     expect(recordMediaMock).not.toHaveBeenCalledWith({ mediaId: "p1" });
     const arg = lastSend();
-    expect(arg.memories[0]!.missingFiles).toEqual([]);
+    expect(arg.memories[0]!.missingFiles).toBe(0);
     expect(arg.memories[0]!.media).toHaveLength(2);
   });
 
-  it("lists files that are not READY as missing, so the person can add them again", async () => {
+  it("counts files that are not READY as missing (never naming them), so the person can add them again", async () => {
     media = [photo("p1", "mem_0"), photo("p2", "mem_0", { status: "PENDING", sortOrder: 1, originalFilename: "IMG_2231.MOV", mimeType: "video/quicktime" }), photo("p3", "mem_1", { status: "FAILED", originalFilename: "big.mp4", mimeType: "video/mp4" })];
     await completeSubmission({ claimTokens: [T(0), T(1), T(2)] }, { thumbnailWaitMs: 0 });
     const arg = lastSend();
-    expect(arg.memories[0]!.missingFiles).toEqual(["IMG_2231.MOV"]);
+    expect(arg.memories[0]!.missingFiles).toBe(1);
     expect(arg.memories[0]!.media).toHaveLength(1);
-    expect(arg.memories[1]!.missingFiles).toEqual(["big.mp4"]);
-    expect(arg.memories[2]!.missingFiles).toEqual([]);
+    expect(arg.memories[1]!.missingFiles).toBe(1);
+    expect(arg.memories[2]!.missingFiles).toBe(0);
+    // Fixed-content receipt (issue #46, D1): nothing the contributor typed reaches the email service.
+    expect(JSON.stringify(arg)).not.toContain("IMG_2231.MOV");
+    expect(JSON.stringify(arg)).not.toContain("big.mp4");
+    expect(arg).not.toHaveProperty("name");
+    expect(arg).not.toHaveProperty("relationship");
+    for (const m of arg.memories) {
+      expect(m).not.toHaveProperty("note");
+      expect(m).not.toHaveProperty("approxDateText");
+      expect(m).not.toHaveProperty("place");
+      for (const file of m.media) {
+        expect(file).not.toHaveProperty("originalFilename");
+      }
+    }
   });
 
   it("maps already_sent and in_progress to emailed, other skips and errors to not emailed, and never throws", async () => {
@@ -241,7 +254,7 @@ describe("confirmSubmission (cron path)", () => {
     expect(recordMediaMock).not.toHaveBeenCalled();
   });
 
-  it("after expiry it re-checks PENDING rows, sends with the missing files named, and rotates every live token in a pinned order", async () => {
+  it("after expiry it re-checks PENDING rows, sends with the missing files counted, and rotates every live token in a pinned order", async () => {
     memories[0]!.uploadLeaseUntil = new Date(Date.now() - 1_000);
     media = [
       photo("p1", "mem_0", { status: "PENDING", originalFilename: "landed.jpg" }),
@@ -258,8 +271,8 @@ describe("confirmSubmission (cron path)", () => {
     expect(recordMediaMock.mock.calls.map((c) => c[0].mediaId).sort()).toEqual(["p1", "p2"]);
     const arg = lastSend();
     expect(arg.memories[0]!.media).toHaveLength(1);
-    expect(arg.memories[0]!.missingFiles).toEqual([]);
-    expect(arg.memories[2]!.missingFiles).toEqual(["lost.mov"]);
+    expect(arg.memories[0]!.missingFiles).toBe(0);
+    expect(arg.memories[2]!.missingFiles).toBe(1);
     expect(arg.rotations?.map((r) => r.memoryId)).toEqual(["mem_0", "mem_1", "mem_2"]);
     for (const [i, rotation] of arg.rotations!.entries()) {
       const token = arg.memories[i]!.claimLink.split("/m/")[1]!;
@@ -277,7 +290,8 @@ describe("confirmSubmission (cron path)", () => {
     const arg = lastSend();
     expect(arg.memories.map((m) => m.position)).toEqual([1, 3]);
     expect(arg.rotations?.map((r) => r.memoryId)).toEqual(["mem_0", "mem_2"]);
-    expect(arg.memories[1]!.note).toBeNull();
+    expect(arg.memories[1]!.hasWords).toBe(false);
+    expect(arg.memories[0]!.hasWords).toBe(true);
 
     sendMock.mockClear();
     memories[0]!.deletedAt = new Date();

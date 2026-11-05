@@ -20,8 +20,9 @@ export type ConfirmResult = SendResult | { sent: false; skipped: "not_found" | "
  * are left to `confirmSubmission` (`in_submission`). Idempotency, the
  * outbound guard and the per-recipient cap live in the email service.
  *
- * The email echoes the contributor's words and details (ruling R1) and lists
- * every READY file in upload order.
+ * The email is fixed content (issue #46, D1, 2026-11-05, replacing ruling R1):
+ * the private link, what kinds of files arrived, and nothing the contributor
+ * typed. Their words and details live on the page the link opens.
  *
  * The claim link needs the raw token, which is never stored. Request-time
  * callers (finalizeUpload) pass it in. The reconcile cron has
@@ -102,12 +103,9 @@ export async function confirmMemory({
   const result = await sendMemoryConfirmation({
     memoryId,
     to: email,
-    name: memory.contributor?.name ?? null,
-    relationship: memory.contributor?.relationship ?? null,
-    approxDateText: memory.approxDateText,
-    place: memory.place,
-    note: memory.contributorNote,
-    media,
+    hasWords,
+    // Kind, length and preview only: filenames are the contributor's text and stay out of the receipt.
+    media: media.map(({ kind, durationSeconds, preview }) => ({ kind, durationSeconds, preview })),
     claimLink: `${getSiteUrl()}/m/${token}`,
     ...(rotating && { rotateToClaimTokenHash: hashClaimToken(token) }),
   });

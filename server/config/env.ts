@@ -51,10 +51,21 @@ const blobSchema = z.object({
   BLOB_READ_WRITE_TOKEN: z.string().min(1, "BLOB_READ_WRITE_TOKEN is required"),
 });
 
-/** The outbound guard only; readable even when SendGrid is not configured. */
+/** A positive integer with a default; `KEY=` (empty) means unset, like the admin secrets, so a blank Vercel row never breaks a deploy. */
+const positiveIntOr = (fallback: number) => z.preprocess((value) => (value === "" ? undefined : value), z.coerce.number().int().positive().default(fallback));
+
+/**
+ * The outbound guard and the global ceilings for contributor email (issue #46,
+ * D2). The ceilings count every confirmation and send receipt across all
+ * recipients in a rolling hour and a rolling day; a send past either is left
+ * as a retryable row the reconcile cron sends once the window has moved on.
+ * Readable even when SendGrid is not configured.
+ */
 const outboundSchema = z.object({
   OUTBOUND_ENABLED: strictBoolean.default(false),
   OUTBOUND_ALLOWLIST: csvList.default([]),
+  OUTBOUND_HOURLY_CAP: positiveIntOr(20),
+  OUTBOUND_DAILY_CAP: positiveIntOr(100),
 });
 
 const emailSchema = z.object({
@@ -77,9 +88,16 @@ const cronSchema = z.object({
   CRON_SECRET: z.string().min(16).optional(),
 });
 
-/** Family admins who get the "new memory" alert; empty means the alert is off (the cron catches up once set). */
+/**
+ * Family admins who get the "new memory" alert; empty means the alert is off
+ * (the cron catches up once set). `ADMIN_ALERT_HOURLY_CAP` (issue #46, D4):
+ * after this many alerts in a rolling hour the admins get one "arriving
+ * quickly" notice and further alerts that hour are skipped (the memories are
+ * still on the admin page).
+ */
 const adminAlertSchema = z.object({
   ADMIN_ALERT_EMAILS: csvList.pipe(z.array(z.email())).default([]),
+  ADMIN_ALERT_HOURLY_CAP: positiveIntOr(20),
 });
 
 /** Bearer secret for the admin API (/api/admin/*); unset means the routes answer 401 to everything. */
