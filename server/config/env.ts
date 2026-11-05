@@ -2,6 +2,8 @@ import "server-only";
 
 import { z } from "zod";
 
+import { logError } from "@/lib/logger";
+
 /**
  * Per-feature environment sub-schemas.
  *
@@ -51,10 +53,40 @@ const blobSchema = z.object({
   BLOB_READ_WRITE_TOKEN: z.string().min(1, "BLOB_READ_WRITE_TOKEN is required"),
 });
 
-/** The outbound guard only; readable even when SendGrid is not configured. */
+/**
+ * A positive-integer ceiling with a default. `KEY=` (empty) means unset, like
+ * the admin secrets. A malformed value (`0`, `-1`, `2.5`, `abc`) is reported
+ * once per process (the sub-schema is memoized) and the default is used: these
+ * keys gate the family's receipts, so a typo in Vercel must never stop them
+ * (#49 regression review). The value itself is not logged.
+ */
+const lenientPositiveInt = (key: string, fallback: number) =>
+  z.preprocess((value) => {
+    if (value === undefined || value === "") {
+      return undefined;
+    }
+    const n = typeof value === "string" ? Number(value.trim()) : Number(value);
+    if (Number.isInteger(n) && n > 0) {
+      return n;
+    }
+    logError(`${key} is not a positive integer; using the default`, new Error(`invalid ${key}`), { category: "email", key, fallback });
+    return undefined;
+  }, z.number().int().positive().default(fallback));
+
+/**
+ * The outbound guard and the global ceilings for contributor email (issue #46,
+ * D2). The ceilings count every confirmation and send receipt across all
+ * recipients in a rolling hour and a rolling day; a send past either is left
+ * as a retryable row the reconcile cron sends once the window has moved on,
+ * with rotated links, so the defaults are sized for a memorial afternoon (30
+ * relatives, one to three memories each, one send apiece) never to hold one.
+ * Readable even when SendGrid is not configured.
+ */
 const outboundSchema = z.object({
   OUTBOUND_ENABLED: strictBoolean.default(false),
   OUTBOUND_ALLOWLIST: csvList.default([]),
+  OUTBOUND_HOURLY_CAP: lenientPositiveInt("OUTBOUND_HOURLY_CAP", 60),
+  OUTBOUND_DAILY_CAP: lenientPositiveInt("OUTBOUND_DAILY_CAP", 300),
 });
 
 const emailSchema = z.object({
@@ -77,9 +109,16 @@ const cronSchema = z.object({
   CRON_SECRET: z.string().min(16).optional(),
 });
 
-/** Family admins who get the "new memory" alert; empty means the alert is off (the cron catches up once set). */
+/**
+ * Family admins who get the "new memory" alert; empty means the alert is off
+ * (the cron catches up once set). `ADMIN_ALERT_HOURLY_CAP` (issue #46, D4):
+ * after this many alerts in a rolling hour the admins get one "arriving
+ * quickly" notice and further alerts that hour are skipped (the memories are
+ * still on the admin page).
+ */
 const adminAlertSchema = z.object({
   ADMIN_ALERT_EMAILS: csvList.pipe(z.array(z.email())).default([]),
+  ADMIN_ALERT_HOURLY_CAP: lenientPositiveInt("ADMIN_ALERT_HOURLY_CAP", 20),
 });
 
 /** Bearer secret for the admin API (/api/admin/*); unset means the routes answer 401 to everything. */

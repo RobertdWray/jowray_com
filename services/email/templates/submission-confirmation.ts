@@ -1,4 +1,4 @@
-import type { EmailAttachment, MediaKind, MemoryMediaSummary, SubmissionConfirmationContent, SubmissionMemoryContent } from "../types";
+import type { EmailAttachment, MediaKind, SubmissionConfirmationContent, SubmissionMemoryContent } from "../types";
 import { buildMemoryConfirmation, CONFIRMATION_COPY, describeReceived, MEMORY_CONFIRMATION_SUBJECT, type RenderedMemoryConfirmation } from "./memory-confirmation";
 import {
   BODY_FONT,
@@ -7,26 +7,17 @@ import {
   type Card,
   cardHeading,
   cardHtml,
-  cleanNote,
-  cleanOptional,
-  CONTENT_ID,
-  detailRow,
   DISPLAY_FONT,
   escapeHtml,
   headlineRow,
   HEART_ROW,
   JO_RED_DEEP,
   leadRow,
-  MAX_PREVIEWS,
-  NAME_MAX,
-  NOTE_MAX,
-  noteToHtml,
   renderCardHtml,
   renderCardText,
   renderDocument,
   STITCHED_HEART_ROW,
   stripControl,
-  usablePreview,
   WALNUT,
   WALNUT_SOFT,
   WOOD_LIGHT,
@@ -36,21 +27,27 @@ import {
  * The receipt for a whole send of several memories (Task 15, D3/D14). One
  * memory renders exactly as the single-memory confirmation. Several render
  * with every private link first, then one card per memory with a text link
- * instead of the red button; the words are shortened only when the HTML would
- * otherwise pass Gmail's clipping size, so the links can never be hidden.
+ * instead of the red button.
+ *
+ * Fixed content (issue #46, D1, 2026-11-05): "Memory N" headings, a "what you
+ * sent" line from counts, badge cards by kind and length, a count of files that
+ * did not arrive, and the links. No name, relationship, date, place, note,
+ * filename or uploaded picture; nothing the visitor typed or uploaded. The Gmail-size fallback no longer shortens words
+ * (there are none): a send whose per-file cards would pass the budget renders
+ * without the cards, and each memory's "what you sent" line still names the
+ * kinds and counts. The largest possible send (ten memories, ten files each)
+ * is proven to take that path and stay under the budget by its test.
  *
  * Pure module (no server-only, no env): also usable by `scripts/*` under tsx.
  */
 
 /** Gmail clips HTML over 102 KB (C38); stay under the repo's 100 KB template ceiling with a margin for the clipping marker. */
 export const SUBMISSION_HTML_BUDGET_BYTES = 96 * 1024;
-/** Note ceilings tried in turn until the HTML fits the budget; the first is the form's own limit, so a fitting email is never shortened. */
-const NOTE_CAPS = [NOTE_MAX, 2_000, 800, 300, 120] as const;
-const SHORTENED = "… read it all from its link.";
-const missingLead = (count: number) => (count === 1 ? "One file didn't arrive — add it again from this link:" : "These files didn't arrive — add them again from this link:");
+const missingLead = (count: number) => (count === 1 ? "One file didn't arrive — add it again from this link:" : `${count} files didn't arrive — add them again from this link:`);
 const MEMORY_BUTTON = "See or add to this memory";
 const PRIVACY_PLURAL = "Keep these links private: anyone who has one can edit that memory.";
 const LINKS_HEADING = "Your private links";
+const WORDS_ON_PAGE = "Your words and details are on each memory's private page, exactly as you sent them.";
 
 /** The copy that changes with the number of memories; one memory reaches this layout only when a file is missing. */
 function wording(count: number) {
@@ -69,80 +66,34 @@ export function submissionConfirmationSubject(count: number): string {
   return count === 1 ? MEMORY_CONFIRMATION_SUBJECT : `Thank you for sharing ${count} memories`;
 }
 
-/** "Memory 2 · Summer 1985 · Lake George": the stable heading plus whatever details were given. */
-export function memoryLabel(memory: { position: number; approxDateText?: string | null; place?: string | null }): string {
-  const when = cleanOptional(memory.approxDateText, 120);
-  const where = cleanOptional(memory.place, 200);
-  return [`Memory ${memory.position}`, when, where].filter((part): part is string => part !== null).join(" · ");
+/** "Memory 2": the stable heading, and nothing the contributor typed. */
+export function memoryLabel(memory: { position: number }): string {
+  return `Memory ${memory.position}`;
 }
 
 interface PreparedMemory {
   position: number;
   label: string;
-  when: string | null;
-  where: string | null;
-  note: string;
   link: string;
   cards: Card[];
   attachments: EmailAttachment[];
   badges: Set<MediaKind>;
-  missing: string[];
+  missing: number;
   received: string;
 }
 
-/**
- * At most four previews in the whole send, in order, and every preview id
- * unique across memories (the per-memory builder only checks within one).
- */
-function capPreviews(memories: SubmissionMemoryContent[]): MemoryMediaSummary[][] {
-  const seen = new Set<string>();
-  let previews = 0;
-  return memories.map((memory) =>
-    memory.media.map((item) => {
-      if (!item.preview) {
-        return item;
-      }
-      if (!CONTENT_ID.test(item.preview.contentId)) {
-        throw new Error(`preview content id is not cid-safe: ${JSON.stringify(item.preview.contentId)}`);
-      }
-      if (seen.has(item.preview.contentId)) {
-        throw new Error(`duplicate preview content id: ${item.preview.contentId}`);
-      }
-      seen.add(item.preview.contentId);
-      const usable = item.kind !== "VOICE" && usablePreview(item.preview) && previews < MAX_PREVIEWS;
-      if (usable) {
-        previews += 1;
-        return item;
-      }
-      return { ...item, preview: null };
-    })
-  );
-}
-
-/** `slice` counts UTF-16 units and can halve an emoji; back off one unit when the cut lands after a high surrogate. */
-function cutAtCodePoint(value: string, max: number): string {
-  const code = value.charCodeAt(max - 1);
-  return value.slice(0, code >= 0xd800 && code <= 0xdbff ? max - 1 : max);
-}
-
-function prepare(memories: SubmissionMemoryContent[], noteCap: number): PreparedMemory[] {
-  const media = capPreviews(memories);
-  return memories.map((memory, i) => {
-    const full = memory.note ? cleanNote(memory.note) : "";
-    const note = full.length > noteCap ? `${cutAtCodePoint(full, noteCap).trimEnd()}${SHORTENED}` : full;
-    const { cards, attachments, badges } = buildMediaCards(media[i]!);
+function prepare(memories: SubmissionMemoryContent[], withCards: boolean): PreparedMemory[] {
+  return memories.map((memory) => {
+    const { cards, attachments, badges } = withCards ? buildMediaCards(memory.media, "contributor") : { cards: [], attachments: [], badges: new Set<MediaKind>() };
     return {
       position: memory.position,
       label: memoryLabel(memory),
-      when: cleanOptional(memory.approxDateText, 120),
-      where: cleanOptional(memory.place, 200),
-      note,
       link: stripControl(memory.claimLink),
       cards,
       attachments: attachments.map((a) => ({ ...a, filename: `memory-${memory.position}-${a.filename}` })),
       badges,
-      missing: memory.missingFiles.map((name) => cleanOptional(name, 255)).filter((name): name is string => name !== null),
-      received: describeReceived(media[i]!, full.length > 0),
+      missing: Math.max(0, Math.floor(memory.missingFiles)),
+      received: describeReceived(memory.media, memory.hasWords),
     };
   });
 }
@@ -155,22 +106,17 @@ function textLinkRow(link: string): string {
   ].join("\n");
 }
 
-function missingRows(missing: string[]): string {
-  if (missing.length === 0) {
+function missingRow(missing: number): string {
+  if (missing === 0) {
     return "";
   }
-  return `<tr><td style="padding:18px 0 0 0;font-family:${BODY_FONT};font-size:17px;line-height:1.5;color:${WALNUT};">
-<div style="font-weight:700;">${escapeHtml(missingLead(missing.length))}</div>
-${missing.map((name) => `<div style="word-break:break-word;overflow-wrap:anywhere;">${escapeHtml(name)}</div>`).join("\n")}
-</td></tr>`;
+  return `<tr><td style="padding:18px 0 0 0;font-family:${BODY_FONT};font-size:17px;line-height:1.5;color:${WALNUT};font-weight:700;">${escapeHtml(missingLead(missing))}</td></tr>`;
 }
 
-function render(input: SubmissionConfirmationContent, noteCap: number): RenderedMemoryConfirmation {
-  const name = cleanOptional(input.name, NAME_MAX);
-  const relationship = cleanOptional(input.relationship, 120);
-  const memories = prepare(input.memories, noteCap);
+function render(input: SubmissionConfirmationContent, options: { cards: boolean }): RenderedMemoryConfirmation {
+  const memories = prepare(input.memories, options.cards);
   const count = memories.length;
-  const greeting = name ? `Thank you, ${name}.` : "Thank you.";
+  const greeting = CONFIRMATION_COPY.greeting;
   const words = wording(count);
   const lead = words.lead;
   const subject = submissionConfirmationSubject(count);
@@ -183,16 +129,14 @@ function render(input: SubmissionConfirmationContent, noteCap: number): Rendered
     "",
     `${words.linksHeading} (${words.linksNote}):`,
     ...memories.flatMap((m) => [`- ${m.label}`, `  ${m.link}`]),
-    ...(name || relationship ? ["", ...(name ? [`Your name: ${name}`] : []), ...(relationship ? [`How you knew Jo: ${relationship}`] : [])] : []),
+    "",
+    WORDS_ON_PAGE,
     ...memories.flatMap((m) => [
       "",
       m.label,
       `What you sent: ${m.received}`,
-      ...(m.when ? [`When: ${m.when}`] : []),
-      ...(m.where ? [`Where: ${m.where}`] : []),
-      ...(m.note.length > 0 ? ["Your memory of Jo:", m.note] : []),
       ...(m.cards.length > 0 ? ["Files:", ...m.cards.map(renderCardText)] : []),
-      ...(m.missing.length > 0 ? [missingLead(m.missing.length), ...m.missing.map((f) => `- ${f}`)] : []),
+      ...(m.missing > 0 ? [missingLead(m.missing)] : []),
       `${MEMORY_BUTTON}:`,
       m.link,
     ]),
@@ -214,25 +158,16 @@ function render(input: SubmissionConfirmationContent, noteCap: number): Rendered
           `<tr><td style="padding:0 0 12px 0;font-family:${BODY_FONT};font-size:20px;line-height:1.5;"><a href="${escapeHtml(m.link)}" style="color:${JO_RED_DEEP};font-weight:700;text-decoration:underline;">${escapeHtml(m.label)}</a></td></tr>`
       ),
       `<tr><td style="padding:6px 0 0 0;font-family:${BODY_FONT};font-size:17px;line-height:1.5;color:${WALNUT_SOFT};">${escapeHtml(words.privacy)}</td></tr>`,
+      `<tr><td style="padding:12px 0 0 0;font-family:${BODY_FONT};font-size:17px;line-height:1.5;color:${WALNUT};">${escapeHtml(WORDS_ON_PAGE)}</td></tr>`,
     ].join("\n")
   );
-  const whoRows = [name ? detailRow("Your name", name) : "", relationship ? detailRow("How you knew Jo", relationship) : ""].join("");
-  const whoCard = whoRows.length > 0 ? cardHtml([cardHeading("About you", 12), whoRows].join("\n")) : "";
   const memoryCards = memories.map((m) =>
     cardHtml(
       [
         cardHeading(m.label),
         `<tr><td style="padding:0 0 18px 0;font-family:${BODY_FONT};font-size:17px;line-height:1.4;color:${WALNUT_SOFT};">${escapeHtml(m.received.charAt(0).toUpperCase() + m.received.slice(1))}.</td></tr>`,
-        m.when ? detailRow("When", m.when) : "",
-        m.where ? detailRow("Where", m.where) : "",
-        m.note.length > 0
-          ? `<tr><td style="padding:4px 0 0 0;font-family:${BODY_FONT};">
-<div style="padding:0 0 6px 0;font-size:17px;line-height:1.4;color:${WALNUT_SOFT};">Your memory of Jo</div>
-<div style="font-size:20px;line-height:1.5;color:${WALNUT};white-space:pre-wrap;word-break:break-word;">${noteToHtml(m.note)}</div>
-</td></tr>`
-          : "",
         m.cards.map((c) => renderCardHtml(c, m.link)).join("\n"),
-        missingRows(m.missing),
+        missingRow(m.missing),
         textLinkRow(m.link),
       ].join("\n")
     )
@@ -246,7 +181,6 @@ function render(input: SubmissionConfirmationContent, noteCap: number): Rendered
     "",
     linksCard,
     spacer,
-    ...(whoCard ? [whoCard, spacer] : []),
     ...memoryCards.flatMap((card) => [card, spacer]),
     `<tr><td align="center" style="padding:12px 0 36px 0;font-family:${DISPLAY_FONT};font-size:20px;line-height:1.5;font-style:italic;color:${WALNUT_SOFT};">${escapeHtml(CONFIRMATION_COPY.closer)}</td></tr>`,
     "",
@@ -271,24 +205,14 @@ export function buildSubmissionConfirmation(input: SubmissionConfirmationContent
     throw new Error("a send receipt needs at least one memory");
   }
   const [only] = input.memories;
-  if (input.memories.length === 1 && only && only.missingFiles.length === 0) {
+  if (input.memories.length === 1 && only && only.missingFiles === 0) {
     // One memory: exactly today's confirmation (D14 leaves one-memory emails unchanged).
-    return buildMemoryConfirmation({
-      name: input.name,
-      relationship: input.relationship,
-      approxDateText: only.approxDateText,
-      place: only.place,
-      note: only.note,
-      media: only.media,
-      claimLink: only.claimLink,
-    });
+    return buildMemoryConfirmation({ hasWords: only.hasWords, media: only.media, claimLink: only.claimLink });
   }
-  let rendered = render(input, NOTE_CAPS[0]);
-  for (const cap of NOTE_CAPS.slice(1)) {
-    if (Buffer.byteLength(rendered.html, "utf8") <= SUBMISSION_HTML_BUDGET_BYTES) {
-      break;
-    }
-    rendered = render(input, cap);
+  const withCards = render(input, { cards: true });
+  if (Buffer.byteLength(withCards.html, "utf8") <= SUBMISSION_HTML_BUDGET_BYTES) {
+    return withCards;
   }
-  return rendered;
+  // Too big for Gmail with every file as a card: keep the links and the per-memory counts, drop the cards.
+  return render(input, { cards: false });
 }

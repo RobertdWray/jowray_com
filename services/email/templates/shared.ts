@@ -1,5 +1,5 @@
 import { EMAIL_ASSETS, type EmailAsset } from "../../../lib/email-assets";
-import type { EmailAttachment, MediaKind, MemoryMediaSummary } from "../types";
+import type { EmailAttachment, MediaKind, MemoryMediaSummary, ReceiptMediaSummary } from "../types";
 
 /**
  * Pieces shared by the transactional email templates (the contributor
@@ -124,39 +124,47 @@ export function assetImg(asset: EmailAsset, displayPx: number, alt: string, extr
   return `<img src="cid:${asset.contentId}" width="${displayPx}" height="${displayPx}" alt="${escapeHtml(alt)}" style="display:block;border:0;width:${displayPx}px;height:${displayPx}px;${extraStyle}">`;
 }
 
+/** Who reads the email: the admins may see uploaded previews and filenames; a contributor's receipt shows kinds and lengths only (issue #46, D1 and review #6). */
+export type Audience = "admin" | "contributor";
+
 /**
- * Turn the READY files into cards: the first four usable previews become
- * inline images (`alt` text per kind), the rest badge cards. Preview content
- * ids come from server ids, so a bad, reserved or duplicate one is a
- * programming error and throws.
+ * Turn the READY files into cards. For the admins, the first four usable
+ * previews become inline images (`alt` text per kind) and the rest badge
+ * cards with the filename; preview content ids come from server ids, so a
+ * bad, reserved or duplicate one is a programming error and throws. For a
+ * contributor, every file is a badge card by kind and length: a receipt
+ * carries nothing the visitor uploaded or typed, whatever the summaries hold.
  */
-export function buildMediaCards(media: MemoryMediaSummary[]): { cards: Card[]; attachments: EmailAttachment[]; badges: Set<MediaKind> } {
+export function buildMediaCards(media: MemoryMediaSummary[], audience: "admin"): { cards: Card[]; attachments: EmailAttachment[]; badges: Set<MediaKind> };
+export function buildMediaCards(media: ReceiptMediaSummary[], audience: "contributor"): { cards: Card[]; attachments: EmailAttachment[]; badges: Set<MediaKind> };
+export function buildMediaCards(media: Array<ReceiptMediaSummary & Partial<MemoryMediaSummary>>, audience: Audience): { cards: Card[]; attachments: EmailAttachment[]; badges: Set<MediaKind> } {
   const cards: Card[] = [];
   const attachments: EmailAttachment[] = [];
   const badges = new Set<MediaKind>();
   const seen = new Set<string>();
   let previews = 0;
   media.forEach((item, index) => {
-    const filename = cleanOptional(item.originalFilename, 255);
+    const filename = audience === "admin" ? cleanOptional(item.originalFilename, 255) : null;
+    const preview = audience === "admin" ? (item.preview ?? null) : null;
     const duration = item.durationSeconds !== null && Number.isFinite(item.durationSeconds) ? formatSeconds(item.durationSeconds) : null;
-    if (item.preview) {
-      if (!CONTENT_ID.test(item.preview.contentId)) {
-        throw new Error(`preview content id is not cid-safe: ${JSON.stringify(item.preview.contentId)}`);
+    if (preview) {
+      if (!CONTENT_ID.test(preview.contentId)) {
+        throw new Error(`preview content id is not cid-safe: ${JSON.stringify(preview.contentId)}`);
       }
-      if (RESERVED_CONTENT_IDS.has(item.preview.contentId)) {
-        throw new Error(`preview content id is reserved for a brand mark: ${item.preview.contentId}`);
+      if (RESERVED_CONTENT_IDS.has(preview.contentId)) {
+        throw new Error(`preview content id is reserved for a brand mark: ${preview.contentId}`);
       }
-      if (seen.has(item.preview.contentId)) {
-        throw new Error(`duplicate preview content id: ${item.preview.contentId}`);
+      if (seen.has(preview.contentId)) {
+        throw new Error(`duplicate preview content id: ${preview.contentId}`);
       }
-      seen.add(item.preview.contentId);
+      seen.add(preview.contentId);
     }
-    const usable = item.preview !== null && item.kind !== "VOICE" && previews < MAX_PREVIEWS && usablePreview(item.preview);
-    if (usable && item.preview) {
+    const usable = preview !== null && item.kind !== "VOICE" && previews < MAX_PREVIEWS && usablePreview(preview);
+    if (usable && preview) {
       previews += 1;
       const previewFilename = `${item.kind === "VIDEO" ? "video" : "photo"}-${index + 1}.jpg`;
-      attachments.push({ filename: previewFilename, contentType: "image/jpeg", contentBase64: item.preview.contentBase64, contentId: item.preview.contentId });
-      cards.push({ kind: item.kind, filename, duration, preview: { contentId: item.preview.contentId, width: item.preview.width, height: item.preview.height, filename: previewFilename } });
+      attachments.push({ filename: previewFilename, contentType: "image/jpeg", contentBase64: preview.contentBase64, contentId: preview.contentId });
+      cards.push({ kind: item.kind, filename, duration, preview: { contentId: preview.contentId, width: preview.width, height: preview.height, filename: previewFilename } });
     } else {
       badges.add(item.kind);
       cards.push({ kind: item.kind, filename, duration, preview: null });
