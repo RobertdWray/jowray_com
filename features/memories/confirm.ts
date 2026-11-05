@@ -1,6 +1,6 @@
 import "server-only";
 
-import { submissionInFlight, summarizeReadyMedia } from "@/features/memories/media-summary";
+import { mediaKindOf, submissionInFlight } from "@/features/memories/media-summary";
 import { siteEmailsConfirmation } from "@/features/memories/site-email";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
@@ -43,13 +43,23 @@ export async function confirmMemory({
   settleNow?: boolean;
 }): Promise<ConfirmResult> {
   const db = getDb();
+  // Only what the decision and the fixed-content receipt need: no contributor-written text is selected (issue #46, review #5).
   const memory = await db.memory.findUnique({
     where: { id: memoryId },
-    include: {
-      contributor: { select: { name: true, email: true, relationship: true } },
+    select: {
+      id: true,
+      deletedAt: true,
+      status: true,
+      source: true,
+      submissionId: true,
+      claimTokenHash: true,
+      type: true,
+      contributorNote: true,
+      uploadLeaseUntil: true,
+      contributor: { select: { email: true } },
       media: {
         where: { deletedAt: null },
-        select: { id: true, status: true, mimeType: true, originalFilename: true, durationSeconds: true, createdAt: true },
+        select: { id: true, status: true, mimeType: true, durationSeconds: true, createdAt: true },
         orderBy: { createdAt: "asc" },
       },
     },
@@ -77,7 +87,7 @@ export async function confirmMemory({
   if (!email) {
     return { sent: false, skipped: "no_email" };
   }
-  const media = summarizeReadyMedia(memory.media);
+  const media = memory.media.filter((row) => row.status === "READY").map((row) => ({ kind: mediaKindOf(row.mimeType), durationSeconds: row.durationSeconds }));
   const hasWords = (memory.contributorNote ?? "").trim().length > 0;
   // Something to confirm: a file that arrived, or words (a TEXT memory, or a
   // memory whose file failed but whose note was saved).
@@ -104,8 +114,7 @@ export async function confirmMemory({
     memoryId,
     to: email,
     hasWords,
-    // Kind, length and preview only: filenames are the contributor's text and stay out of the receipt.
-    media: media.map(({ kind, durationSeconds, preview }) => ({ kind, durationSeconds, preview })),
+    media,
     claimLink: `${getSiteUrl()}/m/${token}`,
     ...(rotating && { rotateToClaimTokenHash: hashClaimToken(token) }),
   });

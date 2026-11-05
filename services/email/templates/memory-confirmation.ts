@@ -27,9 +27,10 @@ export { cleanNote, escapeHtml, formatSeconds, stripControl } from "./shared";
 
 /**
  * The contributor's receipt, in the site's brand. Fixed content: the subject,
- * the copy, a "what you sent" line built from counts, the media cards (kind,
- * length, derived preview) and the private link. Nothing the visitor typed
- * (name, relationship, date, place, note, filenames) is echoed.
+ * the copy, a "what you sent" line built from counts, badge cards per file
+ * (kind and length) and the private link. Nothing the visitor typed or
+ * uploaded (name, relationship, date, place, note, filenames, pictures) is
+ * echoed; the only images are the brand marks.
  *
  * Ruling (issue #46, D1 default, 2026-11-05): the receipt carries no
  * contributor-written text, because an anonymous `/share` send could otherwise
@@ -104,7 +105,7 @@ export interface RenderedMemoryConfirmation {
 
 export function buildMemoryConfirmation(input: MemoryConfirmationContent): RenderedMemoryConfirmation {
   const link = stripControl(input.claimLink);
-  const { cards, attachments: previewAttachments, badges } = buildMediaCards(input.media, { filenames: false });
+  const { cards, attachments: cardAttachments, badges } = buildMediaCards(input.media, "contributor");
   const received = describeReceived(input.media, input.hasWords);
 
   // ---- text part -----------------------------------------------------------
@@ -169,7 +170,7 @@ export function buildMemoryConfirmation(input: MemoryConfirmationContent): Rende
 
   const html = renderDocument({ title: MEMORY_CONFIRMATION_SUBJECT, preheader: PREHEADER, body });
 
-  const attachments: EmailAttachment[] = [...brandAttachments(badges), ...previewAttachments];
+  const attachments: EmailAttachment[] = [...brandAttachments(badges), ...cardAttachments];
 
   return { subject: MEMORY_CONFIRMATION_SUBJECT, text, html, attachments };
 }

@@ -31,21 +31,27 @@ interface Where {
   recipientKey?: string;
   emailType?: EmailType | { in: EmailType[] };
   createdAt?: { gte: Date };
-  updatedAt?: { gte: Date };
-  status?: { in: Status[] };
-  NOT?: { memoryId: string };
+  updatedAt?: { gte?: Date; lt?: Date };
+  status?: Status | { in: Status[] };
+  errorMessage?: string | null;
+  NOT?: { memoryId?: string; id?: string };
+  OR?: Where[];
 }
 const rows: Row[] = [];
 function matches(r: Row, where: Where): boolean {
   const typeMatches = where.emailType === undefined || (typeof where.emailType === "string" ? r.emailType === where.emailType : where.emailType.in.includes(r.emailType));
+  const statusMatches = where.status === undefined || (typeof where.status === "string" ? r.status === where.status : where.status.in.includes(r.status));
   return (
     (where.recipientEmail === undefined || r.recipientEmail === where.recipientEmail) &&
     (where.recipientKey === undefined || r.recipientKey === where.recipientKey) &&
     typeMatches &&
-    (!where.updatedAt || where.updatedAt.gte <= r.updatedAt) &&
+    statusMatches &&
+    (!where.updatedAt?.gte || where.updatedAt.gte <= r.updatedAt) &&
+    (!where.updatedAt?.lt || r.updatedAt < where.updatedAt.lt) &&
     (!where.createdAt || where.createdAt.gte <= r.createdAt) &&
-    (!where.status || where.status.in.includes(r.status)) &&
-    (!where.NOT || r.memoryId !== where.NOT.memoryId)
+    (where.errorMessage === undefined || r.errorMessage === where.errorMessage) &&
+    (!where.NOT || ((where.NOT.memoryId === undefined || r.memoryId !== where.NOT.memoryId) && (where.NOT.id === undefined || r.id !== where.NOT.id))) &&
+    (!where.OR || where.OR.some((w) => matches(r, w)))
   );
 }
 function newRow(data: Pick<Row, "memoryId" | "recipientEmail" | "emailType" | "status"> & Partial<Row>): Row {
@@ -54,6 +60,7 @@ function newRow(data: Pick<Row, "memoryId" | "recipientEmail" | "emailType" | "s
 const memoryUpdateMock = vi.fn(async (_arg: unknown) => ({}));
 // Interactive transactions run one at a time, as the advisory lock serialises the real ones.
 let txChain: Promise<unknown> = Promise.resolve();
+const rawSql: string[] = [];
 const dbStub = {
   $transaction: vi.fn((ops: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) => {
     if (typeof ops === "function") {
@@ -63,7 +70,12 @@ const dbStub = {
     }
     return Promise.all(ops);
   }),
-  $executeRaw: vi.fn(async () => 1),
+  // Renders the statement as sent: `Prisma.raw` values carry their text in `.sql`, parameters are inlined for the assertion.
+  $executeRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const render = (v: unknown) => (typeof v === "object" && v !== null && "sql" in v ? String((v as { sql: unknown }).sql) : String(v));
+    rawSql.push(strings.reduce((out, str, i) => out + str + (i < values.length ? render(values[i]) : ""), ""));
+    return 1;
+  }),
   memory: { update: (arg: unknown) => memoryUpdateMock(arg) },
   emailLog: {
     findUnique: vi.fn(async ({ where }: { where: { memoryId_emailType: { memoryId: string; emailType: EmailType } } }) =>
@@ -87,18 +99,9 @@ const dbStub = {
       Object.assign(row, data, { updatedAt: new Date() });
       return row;
     }),
-    updateMany: vi.fn(async ({ where, data }: { where: { id?: string; memoryId?: string; emailType?: EmailType; OR?: Array<{ status?: { in: Status[] } | Status; updatedAt?: { lt: Date } }>; status?: { in: Status[] } }; data: Partial<Row> }) => {
-      const matchesStatus = (r: Row) => {
-        if (where.OR) {
-          return where.OR.some((c) => {
-            const st = c.status === undefined ? true : typeof c.status === "string" ? r.status === c.status : c.status.in.includes(r.status);
-            const stale = c.updatedAt === undefined ? true : r.updatedAt < c.updatedAt.lt;
-            return st && stale;
-          });
-        }
-        return where.status ? where.status.in.includes(r.status) : true;
-      };
-      const row = rows.find((r) => (where.id ? r.id === where.id : r.memoryId === where.memoryId && (!where.emailType || r.emailType === where.emailType)) && matchesStatus(r));
+    updateMany: vi.fn(async ({ where, data }: { where: Where & { id?: string; memoryId?: string }; data: Partial<Row> }) => {
+      const { id, memoryId, ...rest } = where;
+      const row = rows.find((r) => (id ? r.id === id : r.memoryId === memoryId) && matches(r, rest));
       if (!row) {
         return { count: 0 };
       }
@@ -124,6 +127,8 @@ const ENV_KEYS = ["OUTBOUND_HOURLY_CAP", "OUTBOUND_DAILY_CAP", "ADMIN_ALERT_HOUR
 
 beforeEach(() => {
   rows.length = 0;
+  rawSql.length = 0;
+  dbStub.$executeRaw.mockClear();
   sendMock.mockReset();
   sendMock.mockResolvedValue([{ statusCode: 202, headers: { "x-message-id": "msg-1" } }, {}]);
   for (const key of ENV_KEYS) {
@@ -183,13 +188,26 @@ describe("sendMemoryConfirmation", () => {
     expect(sendMock).toHaveBeenCalledTimes(1);
   });
 
-  it("takes the outbound lock inside the decision transaction, before any row is written", async () => {
+  it("bounds the lock wait, then takes the outbound lock, inside the decision transaction and before any row is written (#7)", async () => {
     await sendMemoryConfirmation(base);
-    expect(dbStub.$executeRaw).toHaveBeenCalled();
-    const lockCall = dbStub.$executeRaw.mock.invocationCallOrder[0]!;
+    expect(rawSql).toEqual(["SET LOCAL lock_timeout = '3s'", "SELECT pg_advisory_xact_lock(2026110546::bigint)"]);
+    const lockCall = dbStub.$executeRaw.mock.invocationCallOrder[1]!;
     const createCall = dbStub.emailLog.create.mock.invocationCallOrder[0]!;
     expect(lockCall).toBeLessThan(createCall);
     expect(sendMock.mock.invocationCallOrder[0]!).toBeGreaterThan(createCall);
+  });
+
+  it("answers `busy` without a row when the lock wait runs out, so the cron's catch-up finds the send and nothing is lost (#3, #7)", async () => {
+    dbStub.$executeRaw.mockRejectedValueOnce(Object.assign(new Error("canceling statement due to lock timeout"), { code: "P2010", meta: { code: "55P03", message: "canceling statement due to lock timeout" } }));
+    expect(await sendMemoryConfirmation(base)).toEqual({ sent: false, skipped: "busy" });
+    expect(rows).toHaveLength(0);
+    expect(sendMock).not.toHaveBeenCalled();
+    // Any other decision failure is reported and answered as failed, never thrown at the caller.
+    dbStub.$executeRaw.mockRejectedValueOnce(new Error("connection reset"));
+    expect(await sendMemoryConfirmation(base)).toMatchObject({ sent: false, skipped: "failed", error: expect.stringMatching(/connection reset/) });
+    expect(rows).toHaveLength(0);
+    // And the same send goes out normally afterwards.
+    expect(await sendMemoryConfirmation(base)).toEqual({ sent: true, messageId: "msg-1" });
   });
 
   it("marks FAILED with attempts and nextAttemptAt when SendGrid fails", async () => {
@@ -225,7 +243,8 @@ describe("sendMemoryConfirmation", () => {
   it("claims the row atomically so two concurrent sends produce one email", async () => {
     const [a, b] = await Promise.all([sendMemoryConfirmation(base), sendMemoryConfirmation(base)]);
     expect([a, b].filter((r) => r.sent)).toHaveLength(1);
-    expect([a, b].filter((r) => !r.sent && r.skipped === "in_progress")).toHaveLength(1);
+    // The loser waits on the lock; by the time it decides, the winner is either still at SendGrid (in_progress) or done (already_sent).
+    expect([a, b].filter((r) => !r.sent && (r.skipped === "in_progress" || r.skipped === "already_sent"))).toHaveLength(1);
     expect(sendMock).toHaveBeenCalledTimes(1);
   });
 
@@ -280,12 +299,13 @@ describe("sendMemoryConfirmation", () => {
     for (let i = 1; i <= RECIPIENT_DAILY_CAP; i += 1) {
       expect((await sendMemoryConfirmation({ ...base, memoryId: `g_${i}`, to: `f.i.r.s.t+${i}@gmail.com` })).sent).toBe(true);
     }
-    expect(await sendMemoryConfirmation({ ...base, memoryId: "g_dots", to: "first@googlemail.com" })).toEqual({ sent: true, messageId: "msg-1" });
+    expect(await sendMemoryConfirmation({ ...base, memoryId: "g_dots", to: "first@googlemail.com" })).toEqual({ sent: false, skipped: "recipient_capped" });
     expect(await sendMemoryConfirmation({ ...base, memoryId: "g_more", to: "fir.st@gmail.com" })).toEqual({ sent: false, skipped: "recipient_capped" });
+    expect(rows.find((r) => r.memoryId === "g_dots")?.recipientKey).toBe("first@gmail.com");
   });
 
   it("keeps the subject fixed and carries only fixed copy, kind labels and the link", async () => {
-    await sendMemoryConfirmation({ ...base, media: [{ kind: "VOICE", durationSeconds: 134, preview: null }] });
+    await sendMemoryConfirmation({ ...base, media: [{ kind: "VOICE", durationSeconds: 134 }] });
     const msg = lastMessage();
     expect(msg.subject).toBe("Thank you for sharing a memory");
     expect(msg.text).toContain("What you sent: your words and a voice recording");
@@ -356,6 +376,15 @@ describe("global outbound ceilings for contributor email (issue #46, D2)", () =>
     expect(sendMock).toHaveBeenCalledTimes(1);
   });
 
+  it("counts the other confirmation type on the same anchor: only this row is left out of its own count (#8)", async () => {
+    process.env.OUTBOUND_HOURLY_CAP = "1";
+    resetEnvCache();
+    const send: SubmissionConfirmationInput = { anchorMemoryId: "mem_anchor", to: "a@example.net", memories: [{ position: 1, hasWords: true, media: [], claimLink: "https://www.jowray.com/m/aaaa", missingFiles: 0 }] };
+    expect((await sendSubmissionConfirmation(send)).sent).toBe(true);
+    expect(await sendMemoryConfirmation({ ...base, memoryId: "mem_anchor", to: "a@example.net" })).toEqual({ sent: false, skipped: "global_capped" });
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+
   it("uses the defaults (20 an hour, 100 a day) when the keys are unset", async () => {
     for (let i = 1; i <= 20; i += 1) {
       expect((await sendMemoryConfirmation({ ...base, memoryId: `mem_${i}`, to: `p${i}@example.net` })).sent).toBe(true);
@@ -389,7 +418,7 @@ describe("sendAdminNewMemory", () => {
     sendMock.mockClear();
     const [a, b] = await Promise.all([sendAdminNewMemory(adminContent), sendAdminNewMemory(adminContent)]);
     expect([a, b].filter((r) => r.sent)).toHaveLength(1);
-    expect([a, b].filter((r) => !r.sent && r.skipped === "in_progress")).toHaveLength(1);
+    expect([a, b].filter((r) => !r.sent && (r.skipped === "in_progress" || r.skipped === "already_sent"))).toHaveLength(1);
     expect(sendMock).toHaveBeenCalledTimes(1);
   });
 
@@ -427,6 +456,31 @@ describe("sendAdminNewMemory", () => {
     age(HOUR_MS + 1);
     expect((await sendAdminNewMemory({ ...adminContent, memoryId: "mem_7" })).sent).toBe(true);
     expect(lastMessage().subject).toBe("New memory from Jo Contributor");
+  });
+
+  it("with staggered arrivals the notice goes once per hour, later alerts that hour skip, and normal alerts resume on their own (#1, #9)", async () => {
+    process.env.ADMIN_ALERT_HOURLY_CAP = "2";
+    resetEnvCache();
+    const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
+    expect((await sendAdminNewMemory({ ...adminContent, memoryId: "mem_1" })).sent).toBe(true);
+    expect((await sendAdminNewMemory({ ...adminContent, memoryId: "mem_2" })).sent).toBe(true);
+    adminRow("mem_1")!.updatedAt = minutesAgo(50);
+    adminRow("mem_2")!.updatedAt = minutesAgo(40);
+    expect((await sendAdminNewMemory({ ...adminContent, memoryId: "mem_3" })).sent).toBe(true);
+    expect(lastMessage().subject).toBe(ADMIN_ALERTS_PAUSED_SUBJECT);
+    // The first alert leaves the hour; the count of normal alerts is back at the cap, but the notice is still within the hour: skip, no second notice.
+    adminRow("mem_1")!.updatedAt = minutesAgo(61);
+    expect(await sendAdminNewMemory({ ...adminContent, memoryId: "mem_4" })).toEqual({ sent: false, skipped: "admin_capped" });
+    adminRow("mem_2")!.updatedAt = minutesAgo(61);
+    expect(await sendAdminNewMemory({ ...adminContent, memoryId: "mem_5" })).toEqual({ sent: false, skipped: "admin_capped" });
+    expect(sendMock).toHaveBeenCalledTimes(3);
+    // Once the notice itself is an hour old, a normal alert goes again.
+    adminRow("mem_3")!.updatedAt = minutesAgo(61);
+    expect((await sendAdminNewMemory({ ...adminContent, memoryId: "mem_6" })).sent).toBe(true);
+    expect(lastMessage().subject).toBe("New memory from Jo Contributor");
+    // The notice row is told apart from the alerts it replaced, so the cron and the admin page can see what happened.
+    expect(adminRow("mem_3")).toMatchObject({ status: "SENT", errorMessage: "admin_paused" });
+    expect(adminRow("mem_6")).toMatchObject({ status: "SENT", errorMessage: null });
   });
 
   it("writes no row at all when ADMIN_ALERT_EMAILS is empty, so the cron can alert once it is set", async () => {
@@ -617,19 +671,53 @@ describe("stranded and racing rows", () => {
     expect(await sendMemoryConfirmation(base)).toEqual({ sent: false, skipped: "in_progress" });
   });
 
-  it("a skip never overwrites a row that is SENDING or SENT", async () => {
-    rows.push(newRow({ id: "sent", memoryId: "mem_x", recipientEmail: "stranger@example.net", recipientKey: "stranger@example.net", emailType: "MEMORY_CONFIRMATION", status: "SENDING" }));
-    const result = await sendMemoryConfirmation({ ...base, memoryId: "mem_x", to: "stranger@example.net" });
-    expect(result).toEqual({ sent: false, skipped: "outbound_disabled" });
+  it("a skip never overwrites a row that is SENDING or SENT: a live claim answers in_progress, a SENT row already_sent", async () => {
+    rows.push(newRow({ id: "sending", memoryId: "mem_x", recipientEmail: "stranger@example.net", recipientKey: "stranger@example.net", emailType: "MEMORY_CONFIRMATION", status: "SENDING" }));
+    expect(await sendMemoryConfirmation({ ...base, memoryId: "mem_x", to: "stranger@example.net" })).toEqual({ sent: false, skipped: "in_progress" });
     expect(rows[0]?.status).toBe("SENDING");
+    rows[0]!.status = "SENT";
+    expect(await sendMemoryConfirmation({ ...base, memoryId: "mem_x", to: "stranger@example.net" })).toEqual({ sent: false, skipped: "already_sent" });
+    expect(rows[0]?.status).toBe("SENT");
   });
 
-  it("a fresh SENDING row by another sender counts toward the caps, a stale one is reclaimed and counted once", async () => {
+  it("a fresh SENDING row by another sender counts toward the caps; a stale one does not (#2)", async () => {
     process.env.OUTBOUND_ENABLED = "true";
     process.env.OUTBOUND_HOURLY_CAP = "1";
     resetEnvCache();
     rows.push(newRow({ id: "inflight", memoryId: "mem_other", recipientEmail: "o@example.net", recipientKey: "o@example.net", emailType: "MEMORY_CONFIRMATION", status: "SENDING" }));
     expect(await sendMemoryConfirmation({ ...base, memoryId: "mem_me", to: "me@example.net" })).toEqual({ sent: false, skipped: "global_capped" });
+    rows[0]!.updatedAt = new Date(Date.now() - 16 * 60_000);
+    expect(await sendMemoryConfirmation({ ...base, memoryId: "mem_me", to: "me@example.net" })).toEqual({ sent: true, messageId: "msg-1" });
+  });
+
+  it("a fresh SENDING row for the same delivery answers in_progress before any cap can misreport it (#2)", async () => {
+    process.env.OUTBOUND_ENABLED = "true";
+    process.env.OUTBOUND_HOURLY_CAP = "1";
+    resetEnvCache();
+    rows.push(newRow({ id: "mine", memoryId: base.memoryId, recipientEmail: base.to, recipientKey: base.to, emailType: "MEMORY_CONFIRMATION", status: "SENDING" }));
+    rows.push(newRow({ id: "other", memoryId: "mem_other", recipientEmail: "o@example.net", recipientKey: "o@example.net", emailType: "MEMORY_CONFIRMATION", status: "SENT" }));
+    expect(await sendMemoryConfirmation(base)).toEqual({ sent: false, skipped: "in_progress" });
+    expect(rows[0]?.status).toBe("SENDING");
+    expect(await skipDelivery({ memoryId: base.memoryId, emailType: "MEMORY_CONFIRMATION", reason: "nothing_to_send" })).toEqual({ sent: false, skipped: "in_progress" });
+  });
+
+  it("a stale SENDING row is moved on by a skip, a global-cap hold and skipDelivery, never left stuck (#2)", async () => {
+    const stale = () => new Date(Date.now() - 16 * 60_000);
+    rows.push(newRow({ id: "s1", memoryId: "mem_s1", recipientEmail: "stranger@example.net", recipientKey: "stranger@example.net", emailType: "MEMORY_CONFIRMATION", status: "SENDING", updatedAt: stale() }));
+    expect(await sendMemoryConfirmation({ ...base, memoryId: "mem_s1", to: "stranger@example.net" })).toEqual({ sent: false, skipped: "outbound_disabled" });
+    expect(rows[0]).toMatchObject({ status: "SKIPPED", errorMessage: "outbound_disabled" });
+
+    process.env.OUTBOUND_ENABLED = "true";
+    process.env.OUTBOUND_HOURLY_CAP = "1";
+    resetEnvCache();
+    rows.push(newRow({ id: "full", memoryId: "mem_full", recipientEmail: "f@example.net", recipientKey: "f@example.net", emailType: "MEMORY_CONFIRMATION", status: "SENT" }));
+    rows.push(newRow({ id: "s2", memoryId: "mem_s2", recipientEmail: "two@example.net", recipientKey: "two@example.net", emailType: "MEMORY_CONFIRMATION", status: "SENDING", updatedAt: stale() }));
+    expect(await sendMemoryConfirmation({ ...base, memoryId: "mem_s2", to: "two@example.net" })).toEqual({ sent: false, skipped: "global_capped" });
+    expect(rows.find((r) => r.id === "s2")).toMatchObject({ status: "FAILED", errorMessage: "global_capped", nextAttemptAt: expect.any(Date) });
+
+    rows.push(newRow({ id: "s3", memoryId: "mem_s3", recipientEmail: "", recipientKey: "", emailType: "SUBMISSION_CONFIRMATION", status: "SENDING", updatedAt: stale() }));
+    expect(await skipDelivery({ memoryId: "mem_s3", emailType: "SUBMISSION_CONFIRMATION", reason: "nothing_to_send" })).toEqual({ sent: false, skipped: "nothing_to_send" });
+    expect(rows.find((r) => r.id === "s3")).toMatchObject({ status: "SKIPPED", errorMessage: "nothing_to_send" });
   });
 });
 

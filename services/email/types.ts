@@ -1,19 +1,24 @@
 export type MediaKind = "PHOTO" | "VOICE" | "VIDEO";
 
 /**
- * One READY file as the contributor's receipt shows it: its kind, its length
- * and the derived preview JPEG when one exists. No filename: the receipt is
- * fixed content (issue #46, D1, 2026-11-05).
+ * One READY file as the contributor's receipt shows it: its kind and its
+ * length, nothing else. No filename and no uploaded image: the receipt is
+ * fixed content (issue #46, D1, 2026-11-05; review #6), because an uploaded
+ * picture is as much the visitor's content as their words.
  */
 export interface ReceiptMediaSummary {
   kind: MediaKind;
   durationSeconds: number | null;
-  preview: { contentId: string; contentBase64: string; width: number; height: number } | null;
 }
 
-/** One READY file as the family-admin alert shows it: the receipt's summary plus the name the contributor gave the file. */
+/**
+ * One READY file as the family-admin alert shows it: the receipt's summary
+ * plus the name the contributor gave the file and the derived preview JPEG
+ * when one exists (the admins are the audience that may see uploaded content).
+ */
 export interface MemoryMediaSummary extends ReceiptMediaSummary {
   originalFilename: string | null;
+  preview: { contentId: string; contentBase64: string; width: number; height: number } | null;
 }
 
 /**
@@ -105,6 +110,8 @@ export type SkipReason =
   | "global_capped"
   /** More admin alerts this hour than `ADMIN_ALERT_HOURLY_CAP`; a terminal SKIPPED row, the admins got one pause notice (issue #46, D4). */
   | "admin_capped"
+  /** The outbound lock could not be taken within its bound; nothing was written, so the cron's catch-up finds the memory and tries again. */
+  | "busy"
   | "no_recipients"
   | "nothing_to_send"
   | "failed";

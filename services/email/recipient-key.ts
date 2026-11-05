@@ -6,12 +6,14 @@
  * - lower-cased and trimmed (the validation layer already does this for the
  *   contributor address; the admin list is lower-cased by `csvList`);
  * - the `+tag` sub-address is dropped on every domain;
- * - dots in the local part are dropped for Gmail and Googlemail, which ignore them.
+ * - `googlemail.com` is the same inbox as `gmail.com` and folds into it; dots
+ *   in a Gmail local part are dropped, because Gmail ignores them.
  *
  * Pure module (no server-only, no env).
  */
 
-const DOT_INSENSITIVE_DOMAINS = new Set(["gmail.com", "googlemail.com"]);
+const GMAIL = "gmail.com";
+const GMAIL_ALIASES = new Set([GMAIL, "googlemail.com"]);
 
 export function recipientKey(address: string): string {
   const lower = address.trim().toLowerCase();
@@ -19,13 +21,14 @@ export function recipientKey(address: string): string {
   if (at <= 0) {
     return lower;
   }
-  const domain = lower.slice(at + 1);
+  const gmail = GMAIL_ALIASES.has(lower.slice(at + 1));
+  const domain = gmail ? GMAIL : lower.slice(at + 1);
   let local = lower.slice(0, at);
   const plus = local.indexOf("+");
   if (plus > 0) {
     local = local.slice(0, plus);
   }
-  if (DOT_INSENSITIVE_DOMAINS.has(domain)) {
+  if (gmail) {
     local = local.replaceAll(".", "");
   }
   return `${local}@${domain}`;

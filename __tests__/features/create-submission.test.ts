@@ -37,8 +37,8 @@ const tagIdsMock = vi.fn();
 vi.mock("@/lib/sentry/user", () => ({ identifyContributor: (...a: unknown[]) => identifyMock(...a), tagIds: (...a: unknown[]) => tagIdsMock(...a) }));
 const metricsMock = vi.hoisted(() => ({ memoryCreated: vi.fn(), uploadFinalized: vi.fn(), confirmationSent: vi.fn(), reconcileRun: vi.fn() }));
 vi.mock("@/lib/sentry/metrics", () => metricsMock);
-const completeMock = vi.fn(async (_input: unknown, _options?: unknown) => ({ ok: true as const, emailed: true }));
-vi.mock("@/features/memories/complete-submission", () => ({ completeSubmission: (input: unknown, options?: unknown) => completeMock(input, options) }));
+const completeMock = vi.fn(async (_input: unknown) => ({ ok: true as const, emailed: true }));
+vi.mock("@/features/memories/complete-submission", () => ({ completeSubmission: (input: unknown) => completeMock(input) }));
 
 import { createSubmission } from "@/features/memories/create-submission";
 
@@ -181,12 +181,12 @@ describe("createSubmission", () => {
     expect(afterCalls).toHaveLength(0);
   });
 
-  it("a text-only send is completed inline, once, with every raw token and no thumbnail wait", async () => {
+  it("a text-only send is completed inline, once, with every raw token", async () => {
     const result = await createSubmission({ ...contributor, memories: [{ note: "a", files: [] }, { note: "b", files: [] }] });
     expect(result).toMatchObject({ ok: true, emailed: true });
     if (!result.ok) { return; }
     expect(completeMock).toHaveBeenCalledTimes(1);
-    expect(completeMock).toHaveBeenCalledWith({ claimTokens: result.memories.map((m) => m.claimToken) }, { thumbnailWaitMs: 0 });
+    expect(completeMock).toHaveBeenCalledWith({ claimTokens: result.memories.map((m) => m.claimToken) });
     completeMock.mockResolvedValueOnce({ ok: true, emailed: false });
     expect(await createSubmission({ ...contributor, memories: [{ note: "c", files: [] }] })).toMatchObject({ ok: true, emailed: false });
   });

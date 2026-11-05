@@ -1,4 +1,4 @@
-import type { EmailAttachment, MediaKind, ReceiptMediaSummary, SubmissionConfirmationContent, SubmissionMemoryContent } from "../types";
+import type { EmailAttachment, MediaKind, SubmissionConfirmationContent, SubmissionMemoryContent } from "../types";
 import { buildMemoryConfirmation, CONFIRMATION_COPY, describeReceived, MEMORY_CONFIRMATION_SUBJECT, type RenderedMemoryConfirmation } from "./memory-confirmation";
 import {
   BODY_FONT,
@@ -7,20 +7,17 @@ import {
   type Card,
   cardHeading,
   cardHtml,
-  CONTENT_ID,
   DISPLAY_FONT,
   escapeHtml,
   headlineRow,
   HEART_ROW,
   JO_RED_DEEP,
   leadRow,
-  MAX_PREVIEWS,
   renderCardHtml,
   renderCardText,
   renderDocument,
   STITCHED_HEART_ROW,
   stripControl,
-  usablePreview,
   WALNUT,
   WALNUT_SOFT,
   WOOD_LIGHT,
@@ -33,9 +30,9 @@ import {
  * instead of the red button.
  *
  * Fixed content (issue #46, D1, 2026-11-05): "Memory N" headings, a "what you
- * sent" line from counts, media cards without filenames, a count of files that
- * did not arrive, and the links. No name, relationship, date, place or note;
- * nothing the visitor typed. The Gmail-size fallback no longer shortens words
+ * sent" line from counts, badge cards by kind and length, a count of files that
+ * did not arrive, and the links. No name, relationship, date, place, note,
+ * filename or uploaded picture; nothing the visitor typed or uploaded. The Gmail-size fallback no longer shortens words
  * (there are none): a send whose per-file cards would pass the budget renders
  * without the cards, and each memory's "what you sent" line still names the
  * kinds and counts. The largest possible send (ten memories, ten files each)
@@ -85,39 +82,9 @@ interface PreparedMemory {
   received: string;
 }
 
-/**
- * At most four previews in the whole send, in order, and every preview id
- * unique across memories (the per-memory builder only checks within one).
- */
-function capPreviews(memories: SubmissionMemoryContent[]): ReceiptMediaSummary[][] {
-  const seen = new Set<string>();
-  let previews = 0;
-  return memories.map((memory) =>
-    memory.media.map((item) => {
-      if (!item.preview) {
-        return item;
-      }
-      if (!CONTENT_ID.test(item.preview.contentId)) {
-        throw new Error(`preview content id is not cid-safe: ${JSON.stringify(item.preview.contentId)}`);
-      }
-      if (seen.has(item.preview.contentId)) {
-        throw new Error(`duplicate preview content id: ${item.preview.contentId}`);
-      }
-      seen.add(item.preview.contentId);
-      const usable = item.kind !== "VOICE" && usablePreview(item.preview) && previews < MAX_PREVIEWS;
-      if (usable) {
-        previews += 1;
-        return item;
-      }
-      return { ...item, preview: null };
-    })
-  );
-}
-
 function prepare(memories: SubmissionMemoryContent[], withCards: boolean): PreparedMemory[] {
-  const media = capPreviews(memories);
-  return memories.map((memory, i) => {
-    const { cards, attachments, badges } = withCards ? buildMediaCards(media[i]!, { filenames: false }) : { cards: [], attachments: [], badges: new Set<MediaKind>() };
+  return memories.map((memory) => {
+    const { cards, attachments, badges } = withCards ? buildMediaCards(memory.media, "contributor") : { cards: [], attachments: [], badges: new Set<MediaKind>() };
     return {
       position: memory.position,
       label: memoryLabel(memory),
@@ -126,7 +93,7 @@ function prepare(memories: SubmissionMemoryContent[], withCards: boolean): Prepa
       attachments: attachments.map((a) => ({ ...a, filename: `memory-${memory.position}-${a.filename}` })),
       badges,
       missing: Math.max(0, Math.floor(memory.missingFiles)),
-      received: describeReceived(media[i]!, memory.hasWords),
+      received: describeReceived(memory.media, memory.hasWords),
     };
   });
 }

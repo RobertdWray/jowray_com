@@ -24,8 +24,10 @@ let memory: MemoryRow | null = null;
 const emailUpdateMock = vi.fn(async (_arg: unknown) => ({ count: 1 }));
 const dbStub = {
   memory: {
-    findUnique: vi.fn(async ({ include }: { include?: { media?: { where?: { deletedAt?: null } } } } = {}) =>
-      memory && include?.media?.where && "deletedAt" in include.media.where ? { ...memory, media: memory.media.filter((m) => (m.deletedAt ?? null) === null) } : memory),
+    findUnique: vi.fn(async ({ include, select }: { include?: { media?: { where?: { deletedAt?: null } } }; select?: { media?: { where?: { deletedAt?: null } } } } = {}) => {
+      const mediaWhere = (select ?? include)?.media?.where;
+      return memory && mediaWhere && "deletedAt" in mediaWhere ? { ...memory, media: memory.media.filter((m) => (m.deletedAt ?? null) === null) } : memory;
+    }),
     update: vi.fn(async ({ data }: { data: Partial<MemoryRow> }) => { Object.assign(memory!, data); return memory; }),
   },
   emailLog: { updateMany: (arg: unknown) => emailUpdateMock(arg) },
@@ -79,7 +81,7 @@ describe("confirmMemory", () => {
       memoryId: "mem_1",
       to: "jo@example.com",
       hasWords: true,
-      media: [{ kind: "PHOTO", durationSeconds: null, preview: null }],
+      media: [{ kind: "PHOTO", durationSeconds: null }],
       claimLink: `https://www.jowray.com/m/${TOKEN}`,
     });
     const arg = sendMock.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
@@ -99,8 +101,8 @@ describe("confirmMemory", () => {
     await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN });
     const arg = sendMock.mock.calls[0]?.[0] as unknown as { media: Array<{ kind: string; durationSeconds: number | null }> };
     expect(arg.media).toEqual([
-      { kind: "VOICE", durationSeconds: 134, preview: null },
-      { kind: "VIDEO", durationSeconds: null, preview: null },
+      { kind: "VOICE", durationSeconds: 134 },
+      { kind: "VIDEO", durationSeconds: null },
     ]);
   });
 

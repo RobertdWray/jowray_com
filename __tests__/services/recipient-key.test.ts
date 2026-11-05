@@ -13,9 +13,10 @@ describe("recipientKey (issue #46 D3: the per-recipient cap counts one inbox onc
     expect(recipientKey("PERSON+Tag@Example.org")).toBe("person@example.org");
   });
 
-  it("ignores dots in the local part only for Gmail and Googlemail", () => {
+  it("ignores dots in the local part only for Gmail, and folds googlemail.com into gmail.com (one inbox, one key)", () => {
     expect(recipientKey("first.last@gmail.com")).toBe("firstlast@gmail.com");
-    expect(recipientKey("f.i.r.s.t+promo@googlemail.com")).toBe("first@googlemail.com");
+    expect(recipientKey("f.i.r.s.t+promo@googlemail.com")).toBe("first@gmail.com");
+    expect(recipientKey("First@GoogleMail.com")).toBe("first@gmail.com");
     expect(recipientKey("first.last@example.com")).toBe("first.last@example.com");
   });
 

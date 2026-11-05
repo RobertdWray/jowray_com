@@ -89,7 +89,7 @@ function photo(id: string, memoryId: string, over: Partial<MediaRow> = {}): Medi
   return { id, memoryId, status: "READY", mimeType: "image/jpeg", originalFilename: `${id}.jpg`, durationSeconds: null, deletedAt: null, sortOrder: 0, createdAt: new Date(), storageKey: `dev/originals/${memoryId}/${id}.jpg`, derivatives: [], ...over };
 }
 const thumb = (id: string, status: Derivative["status"] = "READY"): Derivative => ({ kind: "THUMBNAIL", status, storageKey: `dev/derived/${id}-thumb.jpg`, width: 520, height: 390 });
-type SendArg = { anchorMemoryId: string; to: string; name?: unknown; relationship?: unknown; memories: Array<{ position: number; claimLink: string; media: Array<{ preview: { contentId: string; contentBase64: string; width: number; height: number } | null; originalFilename?: unknown }>; missingFiles: number; hasWords: boolean; note?: unknown }>; rotations?: Array<{ memoryId: string; claimTokenHash: string }> };
+type SendArg = { anchorMemoryId: string; to: string; name?: unknown; relationship?: unknown; memories: Array<{ position: number; claimLink: string; media: Array<{ kind: string; durationSeconds: number | null; preview?: unknown; originalFilename?: unknown }>; missingFiles: number; hasWords: boolean; note?: unknown }>; rotations?: Array<{ memoryId: string; claimTokenHash: string }> };
 const lastSend = () => sendMock.mock.calls.at(-1)?.[0] as SendArg;
 
 beforeEach(() => {
@@ -139,50 +139,26 @@ describe("completeSubmission (request path)", () => {
     expect(memories.map((m) => m.claimTokenHash)).toEqual([hashClaimToken(T(0)), hashClaimToken(T(1)), hashClaimToken(T(2))]);
   });
 
-  it("waits up to the budget for READY thumbnails, attaches them as previews, and sends with whatever is ready", async () => {
-    media = [photo("p1", "mem_0", { derivatives: [thumb("p1", "PENDING")] }), photo("p2", "mem_1", { derivatives: [thumb("p2")] })];
-    let clock = 0;
-    const sleep = vi.fn(async (ms: number) => { clock += ms; if (clock >= 3_000) { media[0]!.derivatives[0]!.status = "READY"; } });
-    const result = await completeSubmission({ claimTokens: [T(0), T(1), T(2)] }, { thumbnailWaitMs: 10_000, sleep, now: () => clock });
-    expect(result.ok).toBe(true);
-    expect(sleep).toHaveBeenCalledTimes(3);
+  it("never reads an uploaded file or waits for thumbnails: receipts carry no contributor content (#46 review #6)", async () => {
+    media = [photo("p1", "mem_0", { derivatives: [thumb("p1")] }), photo("p2", "mem_1", { derivatives: [thumb("p2", "PENDING")] })];
+    const started = Date.now();
+    const result = await completeSubmission({ claimTokens: [T(0), T(1), T(2)] });
+    expect(result).toEqual({ ok: true, emailed: true });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(storageGetMock).not.toHaveBeenCalled();
     const arg = lastSend();
-    expect(arg.memories[0]!.media[0]!.preview).toEqual({ contentId: "thumb-p1", contentBase64: Buffer.from("bytes-of-dev/derived/p1-thumb.jpg").toString("base64"), width: 520, height: 390 });
-    expect(arg.memories[1]!.media[0]!.preview?.contentId).toBe("thumb-p2");
-
-    // Never ready: stop at the budget and send with the badge.
-    sendMock.mockClear();
-    media[0]!.derivatives[0]!.status = "PENDING";
-    clock = 0;
-    const slowSleep = vi.fn(async (ms: number) => { clock += ms; });
-    await completeSubmission({ claimTokens: [T(0), T(1), T(2)] }, { thumbnailWaitMs: 10_000, sleep: slowSleep, now: () => clock });
-    expect(clock).toBeGreaterThanOrEqual(10_000);
-    expect(clock).toBeLessThan(12_000);
-    expect(lastSend().memories[0]!.media[0]!.preview).toBeNull();
-    expect(lastSend().memories[1]!.media[0]!.preview?.contentId).toBe("thumb-p2");
-
-    // No photos: no waiting at all.
-    media = [];
-    const noSleep = vi.fn(async () => {});
-    await completeSubmission({ claimTokens: [T(0), T(1), T(2)] }, { thumbnailWaitMs: 10_000, sleep: noSleep, now: () => 0 });
-    expect(noSleep).not.toHaveBeenCalled();
+    expect(arg.memories[0]!.media).toEqual([{ kind: "PHOTO", durationSeconds: null }]);
+    expect(arg.memories[1]!.media).toEqual([{ kind: "PHOTO", durationSeconds: null }]);
+    expect(JSON.stringify(arg)).not.toContain("preview");
   });
 
-  it("answers already_sent before fetching any thumbnail when the receipt row is already SENT", async () => {
+  it("answers already_sent before any other work when the receipt row is already SENT", async () => {
     media = [photo("p1", "mem_0", { derivatives: [thumb("p1")] })];
     receiptRow = { status: "SENT" };
-    expect(await completeSubmission({ claimTokens: [T(0), T(1), T(2)] }, { thumbnailWaitMs: 0 })).toEqual({ ok: true, emailed: true });
+    expect(await completeSubmission({ claimTokens: [T(0), T(1), T(2)] })).toEqual({ ok: true, emailed: true });
     expect(await confirmSubmission({ anchorId: "mem_0" })).toEqual({ sent: false, skipped: "already_sent" });
     expect(storageGetMock).not.toHaveBeenCalled();
     expect(sendMock).not.toHaveBeenCalled();
-  });
-
-  it("fetches at most four thumbnails per send", async () => {
-    media = Array.from({ length: 6 }, (_, i) => photo(`p${i}`, `mem_${i % 3}`, { sortOrder: i, derivatives: [thumb(`p${i}`)] }));
-    await completeSubmission({ claimTokens: [T(0), T(1), T(2)] }, { thumbnailWaitMs: 0 });
-    expect(storageGetMock).toHaveBeenCalledTimes(4);
-    const previews = lastSend().memories.flatMap((m) => m.media.map((x) => x.preview?.contentId ?? null));
-    expect(previews.filter((p) => p !== null)).toHaveLength(4);
   });
 
   it("re-checks PENDING rows against the store before building, so a file that landed late is not called missing", async () => {
@@ -192,7 +168,7 @@ describe("completeSubmission (request path)", () => {
       row.status = "READY";
       return { status: "READY", mediaId, memoryId: row.memoryId, sizeBytes: 1 };
     });
-    await completeSubmission({ claimTokens: [T(0), T(1), T(2)] }, { thumbnailWaitMs: 0 });
+    await completeSubmission({ claimTokens: [T(0), T(1), T(2)] });
     expect(recordMediaMock).toHaveBeenCalledWith({ mediaId: "p2" });
     expect(recordMediaMock).not.toHaveBeenCalledWith({ mediaId: "p1" });
     const arg = lastSend();
@@ -202,7 +178,7 @@ describe("completeSubmission (request path)", () => {
 
   it("counts files that are not READY as missing (never naming them), so the person can add them again", async () => {
     media = [photo("p1", "mem_0"), photo("p2", "mem_0", { status: "PENDING", sortOrder: 1, originalFilename: "IMG_2231.MOV", mimeType: "video/quicktime" }), photo("p3", "mem_1", { status: "FAILED", originalFilename: "big.mp4", mimeType: "video/mp4" })];
-    await completeSubmission({ claimTokens: [T(0), T(1), T(2)] }, { thumbnailWaitMs: 0 });
+    await completeSubmission({ claimTokens: [T(0), T(1), T(2)] });
     const arg = lastSend();
     expect(arg.memories[0]!.missingFiles).toBe(1);
     expect(arg.memories[0]!.media).toHaveLength(1);
@@ -225,20 +201,20 @@ describe("completeSubmission (request path)", () => {
 
   it("maps already_sent and in_progress to emailed, other skips and errors to not emailed, and never throws", async () => {
     sendMock.mockResolvedValueOnce({ sent: false, skipped: "already_sent" });
-    expect(await completeSubmission({ claimTokens: [T(0), T(1), T(2)] }, { thumbnailWaitMs: 0 })).toEqual({ ok: true, emailed: true });
+    expect(await completeSubmission({ claimTokens: [T(0), T(1), T(2)] })).toEqual({ ok: true, emailed: true });
     sendMock.mockResolvedValueOnce({ sent: false, skipped: "in_progress" });
-    expect(await completeSubmission({ claimTokens: [T(0), T(1), T(2)] }, { thumbnailWaitMs: 0 })).toEqual({ ok: true, emailed: true });
+    expect(await completeSubmission({ claimTokens: [T(0), T(1), T(2)] })).toEqual({ ok: true, emailed: true });
     sendMock.mockResolvedValueOnce({ sent: false, skipped: "recipient_capped" });
-    expect(await completeSubmission({ claimTokens: [T(0), T(1), T(2)] }, { thumbnailWaitMs: 0 })).toEqual({ ok: true, emailed: false });
+    expect(await completeSubmission({ claimTokens: [T(0), T(1), T(2)] })).toEqual({ ok: true, emailed: false });
     sendMock.mockRejectedValueOnce(new Error("sendgrid down"));
-    expect(await completeSubmission({ claimTokens: [T(0), T(1), T(2)] }, { thumbnailWaitMs: 0 })).toEqual({ ok: true, emailed: false });
+    expect(await completeSubmission({ claimTokens: [T(0), T(1), T(2)] })).toEqual({ ok: true, emailed: false });
     for (const m of memories) { m.contributor = { ...contributor, email: null }; }
-    expect(await completeSubmission({ claimTokens: [T(0), T(1), T(2)] }, { thumbnailWaitMs: 0 })).toEqual({ ok: true, emailed: false });
+    expect(await completeSubmission({ claimTokens: [T(0), T(1), T(2)] })).toEqual({ ok: true, emailed: false });
   });
 
   it("schedules one admin alert per live memory after the response, none before", async () => {
     memories[1]!.deletedAt = new Date();
-    await completeSubmission({ claimTokens: [T(0), T(2)] }, { thumbnailWaitMs: 0 });
+    await completeSubmission({ claimTokens: [T(0), T(2)] });
     expect(notifyMock).not.toHaveBeenCalled();
     expect(afterCalls.length).toBeGreaterThan(0);
     for (const cb of afterCalls) { await cb(); }

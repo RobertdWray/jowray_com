@@ -164,7 +164,7 @@ export async function createSubmission(raw: unknown): Promise<CreateSubmissionRe
   // response. A send with files is completed by the browser after its uploads.
   let emailed = false;
   if (!hasFiles) {
-    const completion = await completeSubmission({ claimTokens: created.map((m) => m.claimToken) }, { thumbnailWaitMs: 0 });
+    const completion = await completeSubmission({ claimTokens: created.map((m) => m.claimToken) });
     emailed = completion.ok && completion.emailed;
   }
   return { ok: true, submissionId, memories: created, emailed };

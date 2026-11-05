@@ -10,10 +10,11 @@ const token = (n: number) => String.fromCharCode(97 + n).repeat(43);
 const link = (n: number) => `https://www.jowray.com/m/${token(n)}`;
 
 function photo(over: Partial<ReceiptMediaSummary> = {}): ReceiptMediaSummary {
-  return { kind: "PHOTO", durationSeconds: null, preview: null, ...over };
+  return { kind: "PHOTO", durationSeconds: null, ...over };
 }
-function preview(id: string): ReceiptMediaSummary["preview"] {
-  return { contentId: `preview-${id}`, contentBase64: JPEG_1PX, width: 1000, height: 750 };
+/** An uploaded thumbnail as the admin shape carries it: never receipt content (#46 review #6). */
+function withPreview(item: ReceiptMediaSummary, id: string): ReceiptMediaSummary {
+  return { ...item, preview: { contentId: `preview-${id}`, contentBase64: JPEG_1PX, width: 1000, height: 750 } } as ReceiptMediaSummary;
 }
 function memory(n: number, over: Partial<SubmissionMemoryContent> = {}): SubmissionMemoryContent {
   return { position: n + 1, hasWords: true, media: [], claimLink: link(n), missingFiles: 0, ...over };
@@ -25,7 +26,7 @@ const POISON = '"><img src=x onerror=alert(1)>https://evil.test/x.jpg';
 
 describe("buildSubmissionConfirmation: one memory", () => {
   it("renders byte-for-byte as the single-memory confirmation", () => {
-    const media = [photo({ preview: preview("m1") }), photo({ kind: "VOICE", durationSeconds: 30 })];
+    const media = [photo(), photo({ kind: "VOICE", durationSeconds: 30 })];
     const single = buildMemoryConfirmation({ hasWords: true, media, claimLink: link(0) });
     const batch = build([memory(0, { media })]);
     expect(batch).toEqual(single);
@@ -89,7 +90,7 @@ describe("buildSubmissionConfirmation: several memories (fixed content, issue #4
   });
 
   it("puts each token only in its own memory's links, never in alt text or the preheader", () => {
-    const { html, text } = build([memory(0, { media: [photo({ preview: preview("m1") })] }), memory(1, { media: [photo({ kind: "VOICE" })] })]);
+    const { html, text } = build([memory(0, { media: [photo()] }), memory(1, { media: [photo({ kind: "VOICE" })] })]);
     for (const n of [0, 1]) {
       const outsideHref = html.replaceAll(`href="${link(n)}"`, "");
       // The one copyable link text per memory.
@@ -111,28 +112,25 @@ describe("buildSubmissionConfirmation: several memories (fixed content, issue #4
     expect(cardOne).not.toContain(token(1));
   });
 
-  it("uses at most four previews per send, with unique content ids, and attaches the brand marks once", () => {
-    const memories = Array.from({ length: 3 }, (_, n) => memory(n, { media: [photo({ preview: preview(`m${n}a`) }), photo({ preview: preview(`m${n}b`) })] }));
+  it("carries no uploaded image even when summaries hold previews: attachments are the brand marks once, nothing else (#6)", () => {
+    const memories = Array.from({ length: 3 }, (_, n) => memory(n, { media: [withPreview(photo(), `m${n}a`), withPreview(photo({ kind: "VIDEO", durationSeconds: 3 }), `m${n}b`)] }));
     const { html, attachments } = build(memories);
-    const previews = attachments.filter((a) => a.contentId.startsWith("preview-"));
-    expect(previews.map((a) => a.contentId)).toEqual(["preview-m0a", "preview-m0b", "preview-m1a", "preview-m1b"]);
-    expect([...html.matchAll(/src="cid:preview-([a-z0-9-]+)"/g)]).toHaveLength(4);
-    // The other two photos fall back to badge cards.
-    expect(html.split(`cid:${EMAIL_ASSETS.badgePhoto.contentId}`).length - 1).toBeGreaterThanOrEqual(2);
+    const brand = new Set<string>(Object.values(EMAIL_ASSETS).map((a) => a.contentId));
+    expect(attachments.every((a) => brand.has(a.contentId) && a.contentType === "image/png")).toBe(true);
+    expect(attachments.some((a) => a.contentBase64 === JPEG_1PX)).toBe(false);
+    expect(html).not.toContain("cid:preview-");
     expect(attachments.filter((a) => a.contentId === EMAIL_ASSETS.heart.contentId)).toHaveLength(1);
     expect(attachments.filter((a) => a.contentId === EMAIL_ASSETS.badgePhoto.contentId)).toHaveLength(1);
     expect(new Set(attachments.map((a) => a.contentId)).size).toBe(attachments.length);
-    expect(() => build([memory(0, { media: [photo({ preview: preview("dup") })] }), memory(1, { media: [photo({ preview: preview("dup") })] })])).toThrow(/duplicate/);
   });
 
   it("keeps the largest possible send (ten memories, ten files each, ten missing each) under the Gmail budget by dropping the file cards, never words", () => {
-    const tenFiles = (n: number) => Array.from({ length: 10 }, (_, i) => photo({ kind: i % 3 === 0 ? "VOICE" : i % 3 === 1 ? "VIDEO" : "PHOTO", durationSeconds: 86400, preview: i % 3 === 1 ? preview(`m${n}-${i}`) : null }));
+    const tenFiles = (_n: number) => Array.from({ length: 10 }, (_, i) => photo({ kind: i % 3 === 0 ? "VOICE" : i % 3 === 1 ? "VIDEO" : "PHOTO", durationSeconds: 86400 }));
     const biggest = build(Array.from({ length: 10 }, (_, n) => memory(n, { media: tenFiles(n), missingFiles: 10 })));
     expect(Buffer.byteLength(biggest.html, "utf8")).toBeLessThan(SUBMISSION_HTML_BUDGET_BYTES);
     expect(SUBMISSION_HTML_BUDGET_BYTES).toBeLessThanOrEqual(100 * 1024);
     expect(biggest.html).not.toContain("read it all from its link");
     expect(biggest.html).not.toContain("cid:preview-");
-    expect(biggest.attachments.filter((a) => a.contentId.startsWith("preview-"))).toHaveLength(0);
     // The counts still say what arrived, and every link is there.
     expect(biggest.text).toContain("What you sent: your words, 3 photos, 3 videos and 4 voice recordings");
     expect(biggest.text).toContain("10 files didn't arrive");
@@ -142,8 +140,8 @@ describe("buildSubmissionConfirmation: several memories (fixed content, issue #4
     // A send that fits keeps its cards.
     const fits = build([memory(0, { media: tenFiles(0) }), memory(1, { media: tenFiles(1) })]);
     expect(Buffer.byteLength(fits.html, "utf8")).toBeLessThan(SUBMISSION_HTML_BUDGET_BYTES);
-    expect(fits.html).toContain("cid:preview-");
     expect(fits.html.split("Voice recording · 1440:00").length - 1).toBe(8);
+    expect(biggest.html.split("Voice recording · 1440:00").length - 1).toBe(0);
   });
 
   it("counts the files that did not arrive, with the link to add them again", () => {

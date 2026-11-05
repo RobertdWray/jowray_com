@@ -9,10 +9,11 @@ const LINK = `https://www.jowray.com/m/${TOKEN}`;
 const JPEG_1PX = "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";
 
 function photo(over: Partial<ReceiptMediaSummary> = {}): ReceiptMediaSummary {
-  return { kind: "PHOTO", durationSeconds: null, preview: null, ...over };
+  return { kind: "PHOTO", durationSeconds: null, ...over };
 }
-function preview(id: string, width = 1000, height = 750): ReceiptMediaSummary["preview"] {
-  return { contentId: `preview-${id}`, contentBase64: JPEG_1PX, width, height };
+/** An uploaded thumbnail, as the admin alert's summaries carry it: contributor content, never shown in a receipt (#46 review #6). */
+function withPreview(item: ReceiptMediaSummary, id: string): ReceiptMediaSummary {
+  return { ...item, preview: { contentId: `preview-${id}`, contentBase64: JPEG_1PX, width: 1000, height: 750 } } as ReceiptMediaSummary;
 }
 function build(over: Partial<Parameters<typeof buildMemoryConfirmation>[0]> = {}) {
   return buildMemoryConfirmation({ hasWords: true, media: [], claimLink: LINK, ...over });
@@ -47,6 +48,20 @@ describe("buildMemoryConfirmation: fixed content (issue #46, D1)", () => {
     expect(html).toContain("Voice recording · 2:14");
   });
 
+  it("never carries an uploaded image: attachments are the fixed brand marks only, even when a summary carries a preview (#6)", () => {
+    const { html, attachments } = build({ media: [withPreview(photo(), "m1"), withPreview(photo({ kind: "VIDEO", durationSeconds: 9 }), "v1"), photo({ kind: "VOICE" })] });
+    const brand = new Set<string>(Object.values(EMAIL_ASSETS).map((a) => a.contentId));
+    for (const a of attachments) {
+      expect(brand.has(a.contentId)).toBe(true);
+      expect(a.contentType).toBe("image/png");
+    }
+    expect(attachments.some((a) => a.contentBase64 === JPEG_1PX)).toBe(false);
+    expect(html).not.toContain("cid:preview-");
+    expect(html).toContain("Photo</span>");
+    expect(html).toContain("Video · 0:09");
+    expect(cids(html).every((id) => brand.has(id))).toBe(true);
+  });
+
   it("greets without a name and points to the private page for the words", () => {
     const { html, text } = build();
     expect(html).toContain("Thank you.");
@@ -66,7 +81,7 @@ describe("buildMemoryConfirmation: fixed content (issue #46, D1)", () => {
   });
 
   it("puts the raw token only in href attributes, the one copyable link text, and the text link line", () => {
-    const { html, text } = build({ media: [photo({ preview: preview("m1") }), photo({ kind: "VOICE" })] });
+    const { html, text } = build({ media: [photo(), photo({ kind: "VOICE" })] });
     const outsideHref = html.replaceAll(`href="${LINK}"`, "");
     expect(outsideHref.split(TOKEN).length - 1).toBe(1);
     expect(outsideHref).toContain(`>${LINK}</a>`);
@@ -86,7 +101,7 @@ describe("buildMemoryConfirmation: fixed content (issue #46, D1)", () => {
   });
 
   it("has a hidden preheader and loads nothing from the network", () => {
-    const { html } = build({ media: [photo({ preview: preview("m1") }), photo({ kind: "VOICE" })] });
+    const { html } = build({ media: [photo(), photo({ kind: "VOICE" })] });
     expect(html).toMatch(/mso-hide:all[^>]*>Your memory of Jo is safe with the family/);
     expect(html).not.toMatch(/src="https?:/);
     expect(html).not.toMatch(/url\(https?:/);
@@ -111,28 +126,7 @@ describe("buildMemoryConfirmation: media cards and attachments", () => {
     expect(html).not.toContain("cid:preview-");
   });
 
-  it("shows a photo preview as an inline image linked to the private page, with a width capped at 520", () => {
-    const { html, attachments } = build({ media: [photo({ preview: preview("m1", 1000, 750) })] });
-    expect(html).toMatch(/<a href="[^"]+"[^>]*><img src="cid:preview-m1" width="520"[^>]*alt="Your photo"/);
-    expect(html).toContain("max-width:520px");
-    expect(attachments.find((a) => a.contentId === "preview-m1")).toMatchObject({ contentType: "image/jpeg", contentBase64: JPEG_1PX, filename: "photo-1.jpg" });
-    expect(html).not.toContain(EMAIL_ASSETS.badgePhoto.contentId);
-  });
-
-  it("keeps a portrait preview at its own width and omits a height attribute", () => {
-    const { html } = build({ media: [photo({ preview: preview("m1", 300, 400) })] });
-    expect(html).toMatch(/<img src="cid:preview-m1" width="300"/);
-    expect(html).not.toMatch(/<img src="cid:preview-m1"[^>]*height="/);
-  });
-
-  it("renders a video poster as the image alone (the play badge is already composited)", () => {
-    const { html, attachments } = build({ media: [photo({ kind: "VIDEO", preview: preview("v1") })] });
-    expect(html).toMatch(/<img src="cid:preview-v1"[^>]*alt="Your video"/);
-    expect(cids(html)).not.toContain(EMAIL_ASSETS.badgePlay.contentId);
-    expect(attachments.map((a) => a.contentId)).not.toContain(EMAIL_ASSETS.badgePlay.contentId);
-  });
-
-  it("shows badge cards for audio, for a photo without a preview, and for a video without a poster", () => {
+  it("shows badge cards for audio, photo and video, each linked to the private page", () => {
     const { html, attachments } = build({
       media: [photo({ kind: "VOICE", durationSeconds: 134 }), photo(), photo({ kind: "VIDEO" })],
     });
@@ -140,6 +134,7 @@ describe("buildMemoryConfirmation: media cards and attachments", () => {
     expect(html).toContain("Photo</span>");
     expect(html).toContain("Video</span>");
     expect(html).toContain("Tap to play on your private page");
+    expect(html).toContain("Tap to see it on your private page");
     const ids = attachments.map((a) => a.contentId);
     expect(ids).toContain(EMAIL_ASSETS.badgeAudio.contentId);
     expect(ids).toContain(EMAIL_ASSETS.badgePhoto.contentId);
@@ -154,18 +149,6 @@ describe("buildMemoryConfirmation: media cards and attachments", () => {
     expect(build({ media: [photo({ kind: "VOICE" })] }).html).toContain("Voice recording</span>");
   });
 
-  it("uses at most four previews; further files fall back to badge cards", () => {
-    const media = Array.from({ length: 6 }, (_, i) => photo({ preview: preview(`m${i}`) }));
-    const { html, attachments } = build({ media });
-    expect(cids(html).filter((id) => id.startsWith("preview-"))).toHaveLength(4);
-    expect(attachments.filter((a) => a.contentId.startsWith("preview-"))).toHaveLength(4);
-    expect(html.split("Photo</span>").length - 1).toBe(2);
-  });
-
-  it("refuses a preview content id that is not cid-safe", () => {
-    expect(() => build({ media: [photo({ preview: { contentId: "bad id<", contentBase64: JPEG_1PX, width: 10, height: 10 } })] })).toThrow(/content id/i);
-  });
-
   it("lists files in the text part by kind and duration only", () => {
     const { text } = build({ media: [photo({ kind: "VOICE", durationSeconds: 134 }), photo()] });
     expect(text).toContain("- Voice recording (2:14)");
@@ -175,8 +158,8 @@ describe("buildMemoryConfirmation: media cards and attachments", () => {
 });
 
 describe("buildMemoryConfirmation: size", () => {
-  it("stays under 100 KB of UTF-8 with the maximum of ten files (four previews, six badge cards)", () => {
-    const media = Array.from({ length: 10 }, (_, i) => photo({ kind: i % 3 === 0 ? "VOICE" : i % 3 === 1 ? "VIDEO" : "PHOTO", durationSeconds: 86400, preview: i < 6 && i % 3 !== 0 ? preview(`m${i}`) : null }));
+  it("stays under 100 KB of UTF-8 with the maximum of ten files (ten badge cards)", () => {
+    const media = Array.from({ length: 10 }, (_, i) => photo({ kind: i % 3 === 0 ? "VOICE" : i % 3 === 1 ? "VIDEO" : "PHOTO", durationSeconds: 86400 }));
     const { html } = build({ media });
     expect(Buffer.byteLength(html, "utf8")).toBeLessThan(100 * 1024);
   });
@@ -198,27 +181,9 @@ describe("buildMemoryConfirmation: review round 1 (PR #20)", () => {
     }
   });
 
-  it("rejects duplicate preview content ids and ids reserved for brand marks", () => {
-    expect(() => build({ media: [photo({ preview: preview("same") }), photo({ preview: preview("same") })] })).toThrow(/duplicate/i);
-    expect(() => build({ media: [photo({ preview: { contentId: EMAIL_ASSETS.heart.contentId, contentBase64: JPEG_1PX, width: 10, height: 10 } })] })).toThrow(/reserved/i);
-  });
-
   it("does not wrap the decorative badge in its own link", () => {
     const { html } = build({ media: [photo({ kind: "VOICE" })] });
     expect(html).not.toMatch(/<a [^>]*><img src="cid:brand-badge-audio"/);
     expect(html).toMatch(/<img src="cid:brand-badge-audio"[^>]*alt=""/);
-  });
-
-  it("falls back to a badge card when a preview has bad dimensions or is too large", () => {
-    const big = Buffer.alloc(351 * 1024, 1).toString("base64");
-    const { html, attachments } = build({
-      media: [
-        photo({ preview: { contentId: "preview-a", contentBase64: JPEG_1PX, width: Number.NaN, height: 10 } }),
-        photo({ preview: { contentId: "preview-b", contentBase64: JPEG_1PX, width: 0, height: 10 } }),
-        photo({ preview: { contentId: "preview-c", contentBase64: big, width: 100, height: 100 } }),
-      ],
-    });
-    expect(attachments.filter((a) => a.contentId.startsWith("preview-"))).toHaveLength(0);
-    expect(html.split("Photo</span>").length - 1).toBe(3);
   });
 });

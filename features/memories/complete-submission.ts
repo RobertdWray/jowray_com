@@ -12,24 +12,18 @@ import { getSiteUrl } from "@/lib/site-url";
 import { completeSubmissionSchema } from "@/lib/validations/memory";
 import { getDb } from "@/server/db/client";
 import { type ClaimRotation, type ReceiptMediaSummary, type SendResult, sendSubmissionConfirmation, skipDelivery, type SubmissionMemoryContent } from "@/services/email";
-import { createStorageService } from "@/services/storage";
 
 const log = createLogger({ category: "email" });
 
-/** D16: completion waits at most this long for the send's photo thumbnails before emailing with whatever is ready. */
-export const THUMBNAIL_WAIT_MS = 10_000;
 /**
  * How long the anchor's lease is left live once completion starts: long enough
- * for the thumbnail wait and the send to finish under a live request, short
- * enough that the cron takes over soon after a request that died here. Never
- * clear the lease outright: a slow send older than the cron's 30-minute age
- * would otherwise have its tokens rotated by (e3) while the browser still
- * holds the raw ones and its page says they are the only copy.
+ * for the send to finish under a live request, short enough that the cron
+ * takes over soon after a request that died here. Never clear the lease
+ * outright: a slow send older than the cron's 30-minute age would otherwise
+ * have its tokens rotated by (e3) while the browser still holds the raw ones
+ * and its page says they are the only copy.
  */
 export const COMPLETION_GRACE_MS = 2 * 60_000;
-const THUMBNAIL_POLL_MS = 1_000;
-/** The template shows at most four previews; fetching more would be wasted bytes. */
-const MAX_PREVIEW_FETCHES = 4;
 
 export type SubmissionConfirmResult =
   | SendResult
@@ -37,80 +31,55 @@ export type SubmissionConfirmResult =
 
 export type CompleteSubmissionResult = { ok: true; emailed: boolean } | { ok: false; code: "invalid" | "not_found" };
 
-export interface CompletionOptions {
-  /** How long to wait for READY thumbnails; the default is `THUMBNAIL_WAIT_MS`. */
-  thumbnailWaitMs?: number;
-  /** Injected for tests. */
-  sleep?: (ms: number) => Promise<void>;
-  now?: () => number;
-}
-
 interface LoadedMedia {
   id: string;
   status: "PENDING" | "READY" | "FAILED";
   mimeType: string;
   durationSeconds: number | null;
-  derivatives: Array<{ storageKey: string; width: number | null; height: number | null }>;
 }
 
+/** Only what the receipt and the identity need: no contributor-written text is selected (issue #46, D1 and review #5). */
 interface LoadedMemory {
   id: string;
   submissionIndex: number | null;
   deletedAt: Date | null;
   contributorNote: string | null;
-  approxDateText: string | null;
-  place: string | null;
   claimTokenHash: string;
-  contributor: { name: string | null; email: string | null; relationship: string | null } | null;
+  contributor: { name: string | null; email: string | null } | null;
   media: LoadedMedia[];
 }
 
-/** Every memory of the send in index order, with live media in display order and their READY thumbnails. */
+/** Every memory of the send in index order, with live media in display order. */
 async function loadSubmission(submissionId: string): Promise<LoadedMemory[]> {
   return getDb().memory.findMany({
     where: { submissionId },
     orderBy: { submissionIndex: "asc" },
-    include: {
-      contributor: { select: { name: true, email: true, relationship: true } },
+    select: {
+      id: true,
+      submissionIndex: true,
+      deletedAt: true,
+      contributorNote: true,
+      claimTokenHash: true,
+      contributor: { select: { name: true, email: true } },
       media: {
         where: { deletedAt: null },
         orderBy: [...LIVE_MEDIA_ORDER],
-        select: {
-          id: true,
-          status: true,
-          mimeType: true,
-          durationSeconds: true,
-          derivatives: { where: { kind: "THUMBNAIL", status: "READY" }, select: { storageKey: true, width: true, height: true } },
-        },
+        select: { id: true, status: true, mimeType: true, durationSeconds: true },
       },
     },
   });
 }
 
-async function readBase64(pathname: string): Promise<string | null> {
-  const file = await createStorageService().get(pathname);
-  if (!file) {
-    return null;
-  }
-  const chunks: Buffer[] = [];
-  for await (const chunk of file.stream as unknown as AsyncIterable<Uint8Array>) {
-    chunks.push(Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks).toString("base64");
-}
-
 /**
- * The email's view of one send: READY files per memory (with up to four
- * thumbnails fetched across the whole send), a count of files that are not
- * READY, and one entry per live memory even when it has nothing yet, because
- * its link is how the contributor recovers. Fixed content (issue #46, D1):
- * no note, date, place or filename leaves here; `hasWords` only drives the
- * "what you sent" line.
+ * The email's view of one send: READY files per memory by kind and length, a
+ * count of files that are not READY, and one entry per live memory even when
+ * it has nothing yet, because its link is how the contributor recovers. Fixed
+ * content (issue #46, D1; review #6): no note, date, place, filename or
+ * uploaded picture leaves here; `hasWords` only drives the "what you sent"
+ * line. Nothing is read from storage.
  */
-async function buildMemories(live: LoadedMemory[], links: Map<string, string>): Promise<SubmissionMemoryContent[]> {
-  let fetched = 0;
-  const memories: SubmissionMemoryContent[] = [];
-  for (const memory of live) {
+function buildMemories(live: LoadedMemory[], links: Map<string, string>): SubmissionMemoryContent[] {
+  return live.map((memory) => {
     const media: ReceiptMediaSummary[] = [];
     let missing = 0;
     for (const row of memory.media) {
@@ -118,26 +87,16 @@ async function buildMemories(live: LoadedMemory[], links: Map<string, string>): 
         missing += 1;
         continue;
       }
-      let preview: ReceiptMediaSummary["preview"] = null;
-      const thumb = row.derivatives[0];
-      if (thumb && thumb.width && thumb.height && fetched < MAX_PREVIEW_FETCHES) {
-        fetched += 1;
-        const contentBase64 = await readBase64(thumb.storageKey);
-        if (contentBase64) {
-          preview = { contentId: `thumb-${row.id.toLowerCase()}`, contentBase64, width: thumb.width, height: thumb.height };
-        }
-      }
-      media.push({ kind: mediaKindOf(row.mimeType), durationSeconds: row.durationSeconds, preview });
+      media.push({ kind: mediaKindOf(row.mimeType), durationSeconds: row.durationSeconds });
     }
-    memories.push({
+    return {
       position: (memory.submissionIndex ?? 0) + 1,
       hasWords: (memory.contributorNote ?? "").trim().length > 0,
       media,
       claimLink: `${getSiteUrl()}/m/${links.get(memory.id)}`,
       missingFiles: missing,
-    });
-  }
-  return memories;
+    };
+  });
 }
 
 /**
@@ -168,7 +127,7 @@ async function confirmSubmissionInner({ anchorId, claimTokens }: { anchorId: str
   if (!anchor || anchor.submissionId === null || anchor.submissionIndex !== 0) {
     return { sent: false, skipped: "not_found" };
   }
-  // A receipt that already went out needs no thumbnails fetched and no re-check: answer before any of that work.
+  // A receipt that already went out needs no re-check: answer before any of that work.
   const existing = await db.emailLog.findUnique({ where: { memoryId_emailType: { memoryId: anchor.id, emailType: "SUBMISSION_CONFIRMATION" } } });
   if (existing?.status === "SENT") {
     return { sent: false, skipped: "already_sent" };
@@ -224,7 +183,7 @@ async function confirmSubmissionInner({ anchorId, claimTokens }: { anchorId: str
   const result = await sendSubmissionConfirmation({
     anchorMemoryId: anchor.id,
     to: email,
-    memories: await buildMemories(live, links),
+    memories: buildMemories(live, links),
     ...(rotating && { rotations }),
   });
   if (rotating && result.sent) {
@@ -233,30 +192,19 @@ async function confirmSubmissionInner({ anchorId, claimTokens }: { anchorId: str
   return result;
 }
 
-/** True once every READY photo of the send has a THUMBNAIL row that is no longer PENDING. */
-async function thumbnailsSettled(submissionId: string): Promise<boolean> {
-  const photos = await getDb().media.findMany({
-    where: { memory: { submissionId }, deletedAt: null, status: "READY", mimeType: { startsWith: "image/" } },
-    select: { id: true, derivatives: { where: { kind: "THUMBNAIL" }, select: { status: true } } },
-  });
-  return photos.every((photo) => photo.derivatives.length > 0 && photo.derivatives.every((d) => d.status !== "PENDING"));
-}
-
-const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 /**
  * The browser calls this once, in a `finally`, after its uploads: it holds
  * every raw token of the send, so the receipt can carry every link without
  * rotating anything. The tokens must cover every live memory of exactly one
  * send (C2). The anchor's lease is shortened to a brief grace in its own
  * statement (so the cron takes over soon if this request dies, and never while
- * it is still running), the photo thumbnails get up to ten seconds (D16), then
- * the receipt is sent outside any transaction. Email
- * problems are reported and never hide the links; `already_sent` and
- * `in_progress` count as emailed. The admin alerts, one per live memory,
- * run after the response (D18).
+ * it is still running), then the receipt is sent outside any transaction. The
+ * receipt carries no uploaded picture (issue #46, review #6), so nothing waits
+ * for thumbnails (the D16 wait is gone with them). Email problems are reported
+ * and never hide the links; `already_sent` and `in_progress` count as emailed.
+ * The admin alerts, one per live memory, run after the response (D18).
  */
-export async function completeSubmission(raw: unknown, options: CompletionOptions = {}): Promise<CompleteSubmissionResult> {
+export async function completeSubmission(raw: unknown): Promise<CompleteSubmissionResult> {
   const parsed = completeSubmissionSchema.safeParse(raw);
   if (!parsed.success) {
     return { ok: false, code: "invalid" };
@@ -283,17 +231,6 @@ export async function completeSubmission(raw: unknown, options: CompletionOption
   // Its own statement, committed before anything slow: the lease shrinks to a short grace, so the cron
   // finishes the send a couple of minutes after a request that dies here, and never during a live one.
   await db.memory.updateMany({ where: { submissionId, submissionIndex: 0 }, data: { uploadLeaseUntil: new Date(Date.now() + COMPLETION_GRACE_MS) } });
-
-  const waitMs = options.thumbnailWaitMs ?? THUMBNAIL_WAIT_MS;
-  const now = options.now ?? Date.now;
-  const sleep = options.sleep ?? realSleep;
-  const started = now();
-  while (waitMs > 0 && now() - started < waitMs) {
-    if (await thumbnailsSettled(submissionId)) {
-      break;
-    }
-    await sleep(Math.min(THUMBNAIL_POLL_MS, waitMs - (now() - started)));
-  }
 
   let emailed = false;
   try {
