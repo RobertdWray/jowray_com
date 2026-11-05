@@ -128,7 +128,7 @@ model Memory {
   approxYear      Int?
   approxMonth     Int?
   place           String?
-  contributorNote String?        // exactly as typed; never rewritten
+  contributorNote String?        // the person's words: as typed on /share, or an admin-drafted excerpt (verbatim, or a light rewrite the sender edits before Share; the verbatim text is in the ADMIN revision's before)
   language        String         @default("en")
   visibility      Visibility     @default(FAMILY)
   notifyWhenPosted Boolean       @default(true)  // "let me know when my story is posted" checkbox; on by default (Rob, 2026-11-03)

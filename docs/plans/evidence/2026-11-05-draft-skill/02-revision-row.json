@@ -1,0 +1,32 @@
+{
+  "dbHost": "ep-solitary-tree-bbnwysvl-pooler",
+  "memory": [
+    {
+      "status": "DRAFT",
+      "visibility": "FAMILY",
+      "source": "OTHER",
+      "consentedAt": null,
+      "contributorNote": "Jo always stopped to watch the birds at my feeder when she walked past, and she knew every one of them by name. One spring she brought me a bag of seed because she said my cardinals looked thin!"
+    }
+  ],
+  "revisions": [
+    {
+      "changedVia": "ADMIN",
+      "before": {
+        "note": "Dear Rob,\n\nI was so sorry to hear about your mom. Your mom always stopped to watch the birds at my feeder when she walked past, and she knew every one of them by name. One spring she brought me a bag of seed because she said my cardinals looked thin!\n\nThinking of you both at this hard time."
+      },
+      "after": {
+        "name": "Pat Example",
+        "note": "Jo always stopped to watch the birds at my feeder when she walked past, and she knew every one of them by name. One spring she brought me a bag of seed because she said my cardinals looked thin!",
+        "place": null,
+        "source": "OTHER",
+        "status": "DRAFT",
+        "sourceRef": "other:9cf7cf594ce13f29f0a058a6ec96b438",
+        "visibility": "FAMILY",
+        "relationship": "Neighbor",
+        "approxDateText": null
+      },
+      "createdAt": "2026-11-05T18:43:11.402Z"
+    }
+  ]
+}

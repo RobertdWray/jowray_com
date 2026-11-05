@@ -36,6 +36,7 @@
 **Rob decided (2026-11-03):**
 1. Rob sends the link himself from Gmail. The skill drafts the reply; Rob reads and sends. The site never emails the link.
 2. The memory text is a verbatim excerpt: only the sender's paragraphs about Jo, copied exactly. Claude proposes the cut, Rob approves before anything is saved. `contributorNote` stays "exactly as typed; never rewritten".
+   **Amended 2026-11-05 (Rob):** verbatim copy *or* a light rewrite, Rob's choice per memory at a prompt; a rewrite keeps the verbatim excerpt in the ADMIN revision (`originalNote`). See `docs/plans/2026-11-05-draft-skill-rewrite-prompts.md` §1.
 3. The skill reaches the database through an admin API on the site (bearer secret), via a small repo script. No production DB credentials in the skill.
 4. An email address is required to draft. A text with no email is not drafted until Rob supplies one.
 5. Quality over speed; "breeze through PR review"; four-bucket triage of reviewer findings with a parking lot.
@@ -350,6 +351,7 @@ Reviewers: these were considered and declined. Please do not re-raise them unles
 
 **Product**
 - **No AI rewriting of anyone's words.** The memory text is a verbatim excerpt the sender can edit. `contributorNote` is "exactly as typed; never rewritten" (schema). A polished draft would stop being theirs.
+  **Amended 2026-11-05 (Rob):** a light rewrite is allowed when Rob chooses it per memory and approves the text; the sender's exact words are kept in the revision history. Reasons and limits in `docs/plans/2026-11-05-draft-skill-rewrite-prompts.md` §1 and §4.
 - **No site-sent invitation email, and no site email at all for admin-drafted memories.** Rob's Gmail reply is the only message (Rob's decision). The existing confirmation ("stored exactly as you sent it") would be false for an excerpt, and the cron's token rotation would break the link Rob sent.
 - **No phone-only drafts.** An email address is required (Rob's decision). SMS sending is not built; VoIP.ms is deferred, not chosen or rejected.
 - **No "save for later" button on a draft's claim page.** One button, Share. A person who is not ready closes the tab; the server still accepts a share-less edit for API completeness.

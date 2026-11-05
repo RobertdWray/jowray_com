@@ -1,0 +1,4 @@
+target: localhost:3105
+memoryId: 49e2f7a2-2e95-47ac-8a16-843de7eacd71
+claimLink: http://localhost:3000/m/<token redacted>
+originalNote: recorded

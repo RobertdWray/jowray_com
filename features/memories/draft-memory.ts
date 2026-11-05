@@ -15,7 +15,8 @@ const log = createLogger({ category: "api" });
 export type MemoryStatus = "DRAFT" | "PENDING" | "APPROVED" | "HIDDEN";
 
 export type DraftMemoryResult =
-  | { ok: true; memoryId: string; claimToken: string; claimLink: string }
+  /** `originalNoteRecorded` is true when the input carried the verbatim excerpt behind a rewrite and it went into the revision. */
+  | { ok: true; memoryId: string; claimToken: string; claimLink: string; originalNoteRecorded: boolean }
   | { ok: false; code: "invalid"; message: string }
   | { ok: false; code: "duplicate"; memoryId: string; status: MemoryStatus }
   | { ok: false; code: "budget_exceeded" };
@@ -34,10 +35,15 @@ function claimLinkFor(token: string): string {
 }
 
 /**
- * Draft a memory on a sender's behalf (docs/plans/2026-11-03-draft-memory-on-behalf.md):
- * a new Contributor, a DRAFT TEXT memory holding the sender's verbatim words
- * with no consent stamp yet (the person consents by pressing Share on the
- * claim page), a fresh claim token (stored hashed) and an ADMIN revision.
+ * Draft a memory on a sender's behalf (docs/plans/2026-11-03-draft-memory-on-behalf.md,
+ * amended by docs/plans/2026-11-05-draft-skill-rewrite-prompts.md): a new
+ * Contributor, a DRAFT TEXT memory holding the sender's words (verbatim, or the
+ * light rewrite Rob approved) with no consent stamp yet (the person consents by
+ * pressing Share on the claim page), a fresh claim token (stored hashed) and an
+ * ADMIN revision. When the stored words are a rewrite, the verbatim excerpt is
+ * the revision's `before`, so the admin History shows what the sender wrote and
+ * what changed; the result says so (`originalNoteRecorded`) because an older
+ * server would drop the field silently.
  * One memory per `sourceRef`: a repeat answers `duplicate` with the existing
  * row's id and status, before anything is written, so a retry never leaves an
  * orphan Contributor. Admin-drafted memories get no site email (confirm.ts).
@@ -108,7 +114,9 @@ export async function draftMemory(raw: unknown): Promise<DraftMemoryResult> {
         source: input.source,
         sourceRef: input.sourceRef,
       };
-      await tx.memoryRevision.create({ data: { memoryId: memory.id, changedVia: "ADMIN", before: {}, after } });
+      // A rewrite starts its history from the sender's exact words; a verbatim save starts from nothing.
+      const before: Prisma.InputJsonObject = input.originalNote === undefined ? {} : { note: input.originalNote };
+      await tx.memoryRevision.create({ data: { memoryId: memory.id, changedVia: "ADMIN", before, after } });
       return { memoryId: memory.id };
     }, TX_OPTIONS);
   } catch (error) {
@@ -139,7 +147,7 @@ export async function draftMemory(raw: unknown): Promise<DraftMemoryResult> {
     return { ok: false, code: "duplicate", ...created.duplicate };
   }
   log.info({ action: "memory_drafted", memoryId: created.memoryId, source: input.source }, "memory drafted on a sender's behalf");
-  return { ok: true, memoryId: created.memoryId, claimToken, claimLink: claimLinkFor(claimToken) };
+  return { ok: true, memoryId: created.memoryId, claimToken, claimLink: claimLinkFor(claimToken), originalNoteRecorded: input.originalNote !== undefined };
 }
 
 /**

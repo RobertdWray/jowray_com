@@ -13,7 +13,9 @@ const log = createLogger({ category: "api" });
 /**
  * Draft a memory on a sender's behalf (the jowray-draft-memory skill, through
  * scripts/draft-memory.ts). Bearer `ADMIN_API_SECRET`. Body: draftMemoryInputSchema.
- * 200 { memoryId, claimLink } · 400 invalid · 409 duplicate { memoryId, status } · 429 budget_exceeded.
+ * 200 { memoryId, claimLink, originalNoteRecorded } · 400 invalid · 409 duplicate { memoryId, status } · 429 budget_exceeded.
+ * `originalNoteRecorded` is always present on a 200: the skill reads it to confirm that a rewrite's verbatim excerpt reached
+ * the revision history (an older build without the field would strip `originalNote` and answer 200 regardless).
  */
 export async function POST(request: NextRequest): Promise<Response> {
   const denied = unauthorized(request);
@@ -28,7 +30,7 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
   const result = await draftMemory(body);
   if (result.ok) {
-    return NextResponse.json({ success: true, data: { memoryId: result.memoryId, claimLink: result.claimLink } });
+    return NextResponse.json({ success: true, data: { memoryId: result.memoryId, claimLink: result.claimLink, originalNoteRecorded: result.originalNoteRecorded } });
   }
   switch (result.code) {
     case "invalid":

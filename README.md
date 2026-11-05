@@ -11,7 +11,7 @@
 ![Neon Postgres](https://img.shields.io/badge/Neon-Postgres%2018-00e599)
 ![Vercel](https://img.shields.io/badge/Deployed%20on-Vercel-000000)
 ![Sentry 11](https://img.shields.io/badge/Sentry-11-362d59)
-![Tests](https://img.shields.io/badge/Vitest-~1000%20tests-6e9f18)
+![Tests](https://img.shields.io/badge/Vitest-~1200%20tests-6e9f18)
 
 **Live:** [www.jowray.com](https://www.jowray.com) · **Share a memory:** [/share](https://www.jowray.com/share) · **Obituary:** [/obituary](https://www.jowray.com/obituary)
 
@@ -127,7 +127,7 @@ Each feature has a one-to-two page document: what we built, why, the decisions R
 | 🎙️ | [Audio recording](docs/features/audio-recording.md) | Record in the browser with a live level meter, a "we're not hearing anything" warning with help for your device, and a silent-clip check before you send. |
 | 🖼️ | [Media uploads](docs/features/media-uploads.md) | Files go straight to private storage on a signed ticket; every photo (HEIC included) gets a web copy and an email thumbnail with location data stripped; the claim page lets you add, replace or remove files. |
 | 👨‍👩‍👧 | [Admin panel](docs/features/admin-panel.md) | The family's view of every memory: search, edit the words, approve or hide, delete with a 30-day undo, draft on someone's behalf. Entered once through a link; the secret never leaves the browser. |
-| ✉️ | [Draft on behalf](docs/features/draft-on-behalf.md) | Turn a condolence email or card into a draft memory in the sender's own words; the site stays silent until the sender presses Share, which is their consent. |
+| ✉️ | [Draft on behalf](docs/features/draft-on-behalf.md) | Turn a condolence email or card into a draft memory in the sender's own words (verbatim, or lightly reworded with their exact words kept in the history); the site stays silent until the sender presses Share, which is their consent. |
 | 📬 | [Email and cron](docs/features/email-and-cron.md) | One receipt per send with every private link and inline thumbnails; a family alert with no links; an idempotent delivery log; the ten-minute reconcile cron and the three-phase purge. |
 | 🔭 | [Sentry telemetry](docs/features/sentry-telemetry.md) | 100 % traces and unmasked replays for the alpha, with claim tokens and upload tickets scrubbed from every event, proven by a test that runs the real SDK. |
 
@@ -135,7 +135,7 @@ Each feature has a one-to-two page document: what we built, why, the decisions R
 
 ## 🗃️ Data model
 
-Thirteen migrations, additive only. The raw claim token is never stored, only its SHA-256. Nothing is hard-deleted; every edit is a `MemoryRevision`.
+Sixteen migrations, additive only. The raw claim token is never stored, only its SHA-256. Nothing is hard-deleted; every edit is a `MemoryRevision` (each memory keeps its first revision and the latest 199).
 
 ```mermaid
 erDiagram
@@ -215,7 +215,7 @@ npm run validate      # next typegen + tsc --noEmit, then eslint
 ```
 
 ```bash
-npm run test:run      # Vitest, ~1000 tests, Node environment
+npm run test:run      # Vitest, ~1200 tests, Node environment
 ```
 
 ```bash

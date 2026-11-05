@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetEnvCache } from "@/server/config/env";
 
 const SECRET = "a".repeat(40);
-const draftMock = vi.fn(async (_raw: unknown): Promise<unknown> => ({ ok: true, memoryId: "mem_1", claimToken: "t".repeat(43), claimLink: `https://www.jowray.com/m/${"t".repeat(43)}` }));
+const draftMock = vi.fn(async (_raw: unknown): Promise<unknown> => ({ ok: true, memoryId: "mem_1", claimToken: "t".repeat(43), claimLink: `https://www.jowray.com/m/${"t".repeat(43)}`, originalNoteRecorded: false }));
 const reissueMock = vi.fn(async (_raw: unknown): Promise<unknown> => ({ ok: true, memoryId: "mem_1", claimLink: `https://www.jowray.com/m/${"u".repeat(43)}` }));
 vi.mock("@/features/memories/draft-memory", () => ({ draftMemory: (raw: unknown) => draftMock(raw), reissueDraftClaimLink: (raw: unknown) => reissueMock(raw) }));
 
@@ -44,8 +44,16 @@ describe("POST /api/admin/memories", () => {
   it("drafts the memory and answers the house shape with the id and the claim link", async () => {
     const res = await postDraft(body, `Bearer ${SECRET}`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ success: true, data: { memoryId: "mem_1", claimLink: `https://www.jowray.com/m/${"t".repeat(43)}` } });
+    // originalNoteRecorded is always present on a 200, so the skill can tell a verbatim save (false) from a server that does not know the field (absent).
+    expect(await res.json()).toEqual({ success: true, data: { memoryId: "mem_1", claimLink: `https://www.jowray.com/m/${"t".repeat(43)}`, originalNoteRecorded: false } });
     expect(draftMock).toHaveBeenCalledWith(body);
+  });
+
+  it("passes originalNoteRecorded: true through unchanged when the feature kept a rewrite's verbatim excerpt", async () => {
+    draftMock.mockResolvedValueOnce({ ok: true, memoryId: "mem_2", claimToken: "t".repeat(43), claimLink: `https://www.jowray.com/m/${"t".repeat(43)}`, originalNoteRecorded: true });
+    const res = await postDraft({ ...body, originalNote: "Dear Rob,\n\nYour mom was a light." }, `Bearer ${SECRET}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, data: { memoryId: "mem_2", claimLink: `https://www.jowray.com/m/${"t".repeat(43)}`, originalNoteRecorded: true } });
   });
 
   it("400s invalid input and a body that is not JSON", async () => {

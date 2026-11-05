@@ -248,6 +248,24 @@ describe("draftMemoryInputSchema", () => {
     expect(draftMemoryInputSchema.safeParse({ ...valid, note: "x".repeat(10_001) }).success).toBe(false);
   });
 
+  it("takes an optional originalNote (the verbatim excerpt behind a light rewrite) with the same limits as note, untrimmed", () => {
+    expect(draftMemoryInputSchema.parse(valid).originalNote).toBeUndefined();
+    const original = "Dear Rob,\n\nYour mom always had a kind word.\n";
+    expect(draftMemoryInputSchema.parse({ ...valid, originalNote: original }).originalNote).toBe(original);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, originalNote: "   " }).success).toBe(false);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, originalNote: "x".repeat(10_001) }).success).toBe(false);
+    // Optional means absent, not null: a null would otherwise read as "no original" while looking like a value.
+    expect(draftMemoryInputSchema.safeParse({ ...valid, originalNote: null }).success).toBe(false);
+  });
+
+  it("refuses an originalNote identical to note: that is a verbatim save, and the revision would record no change", () => {
+    const result = draftMemoryInputSchema.safeParse({ ...valid, originalNote: valid.note });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.path).toEqual(["originalNote"]);
+    }
+  });
+
   it("only accepts the admin sources and a sourceRef that follows the scheme", () => {
     expect(draftMemoryInputSchema.safeParse({ ...valid, source: "WEB_UPLOAD" }).success).toBe(false);
     expect(draftMemoryInputSchema.safeParse({ ...valid, source: "SMS", sourceRef: `sms:${"a".repeat(32)}` }).success).toBe(true);
