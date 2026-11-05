@@ -5,7 +5,7 @@ import { UPLOAD_LEASE_MS, UPLOAD_WINDOW_MS } from "@/lib/upload-ticket";
 import { EMAIL_REQUIRED_MESSAGE, NAME_REQUIRED_MESSAGE } from "@/lib/validations/memory";
 import { resetEnvCache } from "@/server/config/env";
 
-import { aggregateMock } from "../helpers/prisma-where";
+import { budgetStats, isBudgetStatsQuery } from "../helpers/budget-stats";
 
 interface MemoryRow {
   id: string; memorialId: string; contributorId: string; type: string; source: string; status: string; claimTokenHash: string; consentVersion: string; consentedAt: Date; createdAt: Date; deletedAt: Date | null;
@@ -19,20 +19,20 @@ const contributors: Record<string, unknown>[] = [];
 let memorial: { id: string; slug: string } | null = { id: "memorial_1", slug: "jo" };
 /** Every statement in issue order, so a test can prove the budget lock precedes the budget reads. */
 const order: string[] = [];
-const mediaAggregate = aggregateMock(() => medias as unknown as Record<string, unknown>[]);
 const tx = {
-  $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { order.push(`lock:${String(values[0])}`); return [{ id: values[0] }]; }),
-  $executeRaw: vi.fn(async (strings: TemplateStringsArray) => { order.push(strings.join("?").includes("pg_advisory_xact_lock") ? "lock:budget" : "execute"); return 1; }),
+  $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    if (isBudgetStatsQuery(strings)) { order.push("budget.read"); return [budgetStats({ memories, media: medias, derived: [] })]; }
+    order.push(`lock:${String(values[0])}`);
+    return [{ id: values[0] }];
+  }),
+  $executeRaw: vi.fn(async (strings: TemplateStringsArray) => { const sql = strings.join("?"); order.push(sql.includes("pg_advisory_xact_lock") ? "lock:budget" : sql.startsWith("SET LOCAL lock_timeout") ? "set:lock_timeout" : "execute"); return 1; }),
   memorial: { findUnique: vi.fn(async () => memorial) },
   memory: {
-    count: vi.fn(async ({ where }: { where?: { createdAt?: { gt: Date } } } = {}) => { order.push("memory.count"); return memories.filter((m) => !where?.createdAt || m.createdAt > where.createdAt.gt).length; }),
     create: vi.fn(async ({ data }: { data: Omit<MemoryRow, "id" | "createdAt" | "deletedAt"> }) => { const row: MemoryRow = { id: `mem_${memories.length + 1}`, createdAt: new Date(), deletedAt: null, ...data }; memories.push(row); return row; }),
   },
   media: {
-    aggregate: vi.fn(async (args: Parameters<typeof mediaAggregate>[0]) => { order.push("media.aggregate"); return mediaAggregate(args); }),
     create: vi.fn(async ({ data }: { data: Omit<MediaRow, "id" | "createdAt" | "deletedAt"> }) => { const row: MediaRow = { deletedAt: null, ...data, id: `med_${medias.length + 1}`, createdAt: new Date() }; medias.push(row); return row; }),
   },
-  derivedMedia: { aggregate: vi.fn(aggregateMock(() => [])) },
   contributor: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `con_${contributors.length + 1}`, ...data }; contributors.push(row); return row; }) },
 };
 const dbStub = { ...tx, $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx)) };
@@ -129,11 +129,20 @@ describe("createSubmission", () => {
     expect((await createSubmission(twoMemories)).ok).toBe(true);
   });
 
-  it("takes the budget lock before the first budget read, and it is the transaction's only lock (issue #44)", async () => {
+  it("takes the budget lock before the one budget read, and it is the transaction's only lock (issue #44)", async () => {
     expect((await createSubmission(twoMemories)).ok).toBe(true);
-    expect(order[0]).toBe("lock:budget");
+    expect(order.slice(0, 2)).toEqual(["set:lock_timeout", "lock:budget"]);
     expect(order.filter((o) => o.startsWith("lock:"))).toEqual(["lock:budget"]);
-    expect(order.indexOf("memory.count")).toBeGreaterThan(0);
+    expect(order.filter((o) => o === "budget.read")).toHaveLength(1);
+    expect(order.indexOf("budget.read")).toBeGreaterThan(0);
+  });
+
+  it("answers budget_exceeded and writes nothing when the budget lock wait runs out (TCR #4)", async () => {
+    const timeout = Object.assign(new Error("Raw query failed. Code: `55P03`. Message: `canceling statement due to lock timeout`"), { code: "P2010", meta: { driverAdapterError: { cause: { code: "55P03" } } } });
+    tx.$executeRaw.mockImplementationOnce(async () => 1).mockImplementationOnce(async () => { throw timeout; }); // SET LOCAL succeeds, the lock wait times out
+    expect(await createSubmission(twoMemories)).toMatchObject({ ok: false, code: "budget_exceeded", memoryIndex: null, fileIndex: null, field: null });
+    expect(memories).toHaveLength(0);
+    expect(contributors).toHaveLength(0);
   });
 
   it("stamps every reservation of the send with reservedUntil = now + UPLOAD_WINDOW_MS", async () => {

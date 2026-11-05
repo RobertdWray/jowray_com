@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { hashClaimToken } from "@/lib/claim-token";
-import { UPLOAD_WINDOW_MS, verifyUploadTicket } from "@/lib/upload-ticket";
+import { BLOB_TOKEN_LIFETIME_MS, UPLOAD_WINDOW_MS, verifyUploadTicket } from "@/lib/upload-ticket";
 import { resetEnvCache } from "@/server/config/env";
 
-import { aggregateMock } from "../helpers/prisma-where";
+import { budgetStats, isBudgetStatsQuery } from "../helpers/budget-stats";
 
 interface MemoryRow { id: string; memorialId: string; contributorId: string; type: string; source: string; status: string; claimTokenHash: string; consentVersion: string; consentedAt: Date; createdAt: Date; deletedAt: Date | null; approxDateText: string | null; contributorNote: string | null; visibility: string; notifyWhenPosted: boolean; submissionId?: string | null; submissionIndex?: number | null; uploadLeaseUntil?: Date | null }
 interface MediaRow { id: string; memoryId: string; storageKey: string; mimeType: string; maxBytes: number; status: string; createdAt: Date; originalFilename: string | null; durationSeconds?: number | null; deletedAt: Date | null; sortOrder: number; replacesMediaId: string | null; caption?: string | null; approxDateText?: string | null; place?: string | null; reservedUntil?: Date | null; sizeBytes?: number | null }
@@ -25,17 +25,28 @@ const medias: MediaRow[] = [];
 const derived: DerivedRow[] = [];
 const contributors: Record<string, unknown>[] = [];
 let memorial: { id: string; slug: string } | null = { id: "memorial_1", slug: "jo" };
-const mediaAggregate = aggregateMock(() => medias as unknown as Record<string, unknown>[]);
 /** Both raw channels record the same way: row locks go through $queryRaw, the void-returning advisory lock through $executeRaw. */
 function recordLock(strings: TemplateStringsArray, values: unknown[]): void {
   const sql = strings.join("?");
+  if (sql.startsWith("SET LOCAL lock_timeout")) {
+    order.push("set:lock_timeout");
+    return;
+  }
   lockCalls.push(`${sql}|${String(values[0])}`);
   order.push(sql.includes("pg_advisory_xact_lock") ? "lock:budget" : `lock:memory:${String(values[0])}`);
 }
+/** The budget's one statement is answered from the tables; everything else through $queryRaw is a row lock. */
+function queryRaw(strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown> {
+  if (isBudgetStatsQuery(strings)) {
+    order.push("budget.read");
+    return Promise.resolve([budgetStats({ memories, media: medias, derived })]);
+  }
+  recordLock(strings, values);
+  return Promise.resolve([{ id: values[0] }]);
+}
 const tx = {
-  $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { recordLock(strings, values); return [{ id: values[0] }]; }),
+  $queryRaw: vi.fn(queryRaw),
   $executeRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { recordLock(strings, values); return 1; }),
-  derivedMedia: { aggregate: vi.fn(aggregateMock(() => derived as unknown as Record<string, unknown>[])) },
   memorial: { findUnique: vi.fn(async () => memorial) },
   memory: {
     updateMany: vi.fn(async ({ where, data }: { where: { submissionId: string; submissionIndex: number }; data: { uploadLeaseUntil: Date } }) => {
@@ -50,7 +61,6 @@ const tx = {
     update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MemoryRow> }) => { const m = memories.find((x) => x.id === where.id)!; Object.assign(m, data); return m; }),
   },
   media: {
-    aggregate: vi.fn(async (args: Parameters<typeof mediaAggregate>[0]) => { order.push("media.aggregate"); return mediaAggregate(args); }),
     count: vi.fn(async ({ where }: { where: Record<string, unknown> }) => medias.filter((m) => matchesMedia(m, where)).length),
     findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => medias.find((m) => matchesMedia(m, where)) ?? null),
     create: vi.fn(async ({ data }: { data: Omit<MediaRow, "id" | "createdAt" | "deletedAt"> }) => { const row: MediaRow = { deletedAt: null, ...data, id: `med_${medias.length + 1}`, createdAt: new Date() }; medias.push(row); return row; }),
@@ -225,13 +235,28 @@ describe("daily byte budget and total ceiling (issue #44)", () => {
     return { memoryId: "mem_x", storageKey: `k_${overrides.id}`, mimeType: "video/mp4", maxBytes: 500 * MB, createdAt: new Date(Date.now() - ageMs), originalFilename: null, deletedAt: null, sortOrder: 0, replacesMediaId: null, reservedUntil: null, sizeBytes: null, ...overrides };
   }
 
-  it("takes the budget lock after the memory lock and before any budget read; the lock is the transaction's last lock", async () => {
+  it("takes the budget lock after the memory lock and before the one budget read; the lock is the transaction's last lock", async () => {
     const { claimToken } = await seedMemory();
     order.length = 0;
     expect((await createUploadTicket({ claimToken, file: jpeg("a.jpg") })).ok).toBe(true);
-    expect(order.indexOf("lock:memory:mem_1")).toBeLessThan(order.indexOf("lock:budget"));
-    expect(order.indexOf("lock:budget")).toBeLessThan(order.indexOf("media.aggregate"));
+    expect(order.indexOf("lock:memory:mem_1")).toBeLessThan(order.indexOf("set:lock_timeout"));
+    expect(order.indexOf("set:lock_timeout")).toBeLessThan(order.indexOf("lock:budget"));
+    expect(order.indexOf("lock:budget")).toBeLessThan(order.indexOf("budget.read"));
+    // One statement, one snapshot (TCR #10): never a second budget read in the same transaction.
+    expect(order.filter((o) => o === "budget.read")).toHaveLength(1);
     expect(order.filter((o) => o.startsWith("lock:")).at(-1)).toBe("lock:budget");
+  });
+
+  it("answers budget_exceeded, not a 500, when the budget lock wait runs out (TCR #4)", async () => {
+    const { claimToken } = await seedMemory();
+    const timeout = Object.assign(new Error("Raw query failed. Code: `55P03`. Message: `canceling statement due to lock timeout`"), { code: "P2010", meta: { driverAdapterError: { cause: { code: "55P03" } } } });
+    tx.$executeRaw.mockImplementationOnce(async () => 1).mockImplementationOnce(async () => { throw timeout; }); // SET LOCAL succeeds, the lock wait times out
+    expect(await createUploadTicket({ claimToken, file: jpeg("a.jpg") })).toEqual({ ok: false, code: "budget_exceeded" });
+    expect(medias).toHaveLength(0);
+    medias.push({ id: "00000000-0000-4000-8000-000000000001", memoryId: "mem_1", storageKey: "k", mimeType: "image/jpeg", maxBytes: 1, status: "READY", createdAt: new Date(), originalFilename: "a.jpg", deletedAt: null, sortOrder: 0, replacesMediaId: null, sizeBytes: 1 });
+    tx.$executeRaw.mockImplementationOnce(async () => 1).mockImplementationOnce(async () => { throw timeout; }); // SET LOCAL succeeds, the lock wait times out
+    expect(await createReplacementTicket({ claimToken, mediaId: "00000000-0000-4000-8000-000000000001", file: { name: "b.jpg", type: "image/jpeg", size: 5 } })).toEqual({ ok: false, code: "budget_exceeded" });
+    expect(medias).toHaveLength(1);
   });
 
   it("fits exactly at the boundary and refuses one byte past it", async () => {
@@ -246,13 +271,13 @@ describe("daily byte budget and total ceiling (issue #44)", () => {
     expect((await createUploadTicket({ claimToken, file: jpeg("exactly.jpg") })).ok).toBe(true);
   });
 
-  it("counts READY rows and open reservations only: expired, cancelled and FAILED reservations stop holding the budget", async () => {
+  it("counts READY rows and open reservations only: expired and FAILED reservations stop holding the budget; cancelled ones hold it until their window closes", async () => {
     const { claimToken } = await seedMemory();
     process.env.DAILY_BYTE_BUDGET = String(PHOTO_MAX + 1); resetEnvCache();
     const future = new Date(Date.now() + 60_000);
     const past = new Date(Date.now() - 1);
     medias.push(row({ id: "expired", status: "PENDING", reservedUntil: past }));
-    medias.push(row({ id: "cancelled", status: "PENDING", reservedUntil: future, deletedAt: new Date() }));
+    medias.push(row({ id: "cancelled_closed", status: "PENDING", reservedUntil: past, deletedAt: new Date() }));
     medias.push(row({ id: "failed", status: "FAILED", reservedUntil: future }));
     medias.push(row({ id: "yesterday", status: "READY", maxBytes: 500 * MB, sizeBytes: 500 * MB }, 25 * 60 * 60 * 1000));
     expect((await createUploadTicket({ claimToken, file: jpeg("ok.jpg") })).ok).toBe(true);
@@ -265,15 +290,31 @@ describe("daily byte budget and total ceiling (issue #44)", () => {
     medias.pop();
     medias.push(row({ id: "stored", status: "READY", maxBytes: 2, sizeBytes: 1 }));
     expect(await createUploadTicket({ claimToken, file: jpeg("no3.jpg") })).toEqual({ ok: false, code: "budget_exceeded" });
+    medias.pop();
+    // Cancelling cannot recall a Blob token already handed out: a cancelled reservation holds its bytes until its window closes (TCR #3/#9).
+    medias.push(row({ id: "cancelled_open", status: "PENDING", reservedUntil: future, deletedAt: new Date(), maxBytes: 2 }));
+    expect(await createUploadTicket({ claimToken, file: jpeg("no4.jpg") })).toEqual({ ok: false, code: "budget_exceeded" });
   });
 
-  it("stamps a new reservation with reservedUntil = now + UPLOAD_WINDOW_MS", async () => {
+  it("an open reservation counts toward the day whatever its createdAt: being open means it was ticketed within the last 75 minutes (TCR #5)", async () => {
+    const { claimToken } = await seedMemory();
+    process.env.DAILY_BYTE_BUDGET = String(PHOTO_MAX + 1); resetEnvCache();
+    medias.push(row({ id: "old_but_open", status: "PENDING", reservedUntil: new Date(Date.now() + 60_000), maxBytes: 2 }, 25 * 60 * 60 * 1000));
+    expect(await createUploadTicket({ claimToken, file: jpeg("no.jpg") })).toEqual({ ok: false, code: "budget_exceeded" });
+    medias[0]!.reservedUntil = new Date(Date.now() - 1);
+    expect((await createUploadTicket({ claimToken, file: jpeg("ok.jpg") })).ok).toBe(true);
+  });
+
+  it("stamps a new reservation with reservedUntil = now + UPLOAD_WINDOW_MS, exactly the ticket's expiry plus the token's life (TCR #6)", async () => {
     const { claimToken } = await seedMemory();
     const before = Date.now();
-    expect((await createUploadTicket({ claimToken, file: jpeg("a.jpg") })).ok).toBe(true);
+    const result = await createUploadTicket({ claimToken, file: jpeg("a.jpg") });
+    expect(result.ok).toBe(true);
+    if (!result.ok) { return; }
     const reservedUntil = medias.at(-1)!.reservedUntil!.getTime();
     expect(reservedUntil).toBeGreaterThanOrEqual(before + UPLOAD_WINDOW_MS - 50);
     expect(reservedUntil).toBeLessThanOrEqual(Date.now() + UPLOAD_WINDOW_MS + 50);
+    expect(reservedUntil).toBe(result.upload.ticket.expiresAt + BLOB_TOKEN_LIFETIME_MS);
   });
 
   it("refuses a reservation that would take retained originals, derived copies and open reservations past TOTAL_BYTE_CEILING, whatever the day's budget", async () => {

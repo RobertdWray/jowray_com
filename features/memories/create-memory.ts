@@ -2,7 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import { lockBudget, lockMemory, type Tx } from "@/features/memories/lock";
+import { BudgetBusyError, lockBudget, lockMemory, type Tx } from "@/features/memories/lock";
 import { renewUploadLease } from "@/features/memories/upload-lease";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
@@ -65,58 +65,99 @@ export function resolveFile(file: MemoryFileInput): ResolvedFile | "unsupported_
   };
 }
 
+/** What the budget knows about the tables at one instant (one statement, one snapshot). */
+export interface BudgetStats {
+  /** Memories created in the last 24 h. */
+  memoriesToday: number;
+  /** READY rows created in the last 24 h (their ticketed `maxBytes`) plus every open reservation. */
+  bytesToday: number;
+  /** READY originals, by their real size. */
+  storedBytes: number;
+  /** READY derived copies (web images and thumbnails), by their real size. */
+  derivedBytes: number;
+  /** Every open reservation's `maxBytes`, whatever its age. */
+  openBytes: number;
+}
+
 /**
- * Rows that still hold the byte budget without having delivered bytes: live
- * PENDING reservations whose upload window (`reservedUntil`, creation or last
- * ticket + UPLOAD_WINDOW_MS) is still open. A row the old code wrote before the
- * column existed (`reservedUntil` null) is treated as open for a day from its
- * creation, which is what it always was. Expired, cancelled and FAILED
- * reservations never got bytes and no token for them can still be valid, so
- * they stop counting (issue #44, T10).
+ * The budget's one read. A PENDING row is an *open reservation* while its
+ * upload window (`reservedUntil`: creation or last ticket + UPLOAD_WINDOW_MS)
+ * is ahead; a row the old code wrote before the column existed is open for a
+ * day from its creation, which is what it always was. Cancelled rows count
+ * like any other until their window closes: cancelling cannot recall a Blob
+ * token that was already handed out (TCR #3/#9). Expired and FAILED
+ * reservations never got bytes and no token for them is still valid, so they
+ * stop counting (T10). An open reservation counts toward the day whatever its
+ * `createdAt`: being open means it was ticketed within the last 75 min (TCR #5).
+ *
+ * One statement rather than five aggregates: at READ COMMITTED each statement
+ * has its own snapshot, and a file finalized between two of them would appear
+ * in neither the stored nor the open sum (TCR #10). The whole read also holds
+ * the budget lock for one round trip instead of five. (REPEATABLE READ would
+ * not do: its snapshot is taken by the lock statement itself, before the lock
+ * is granted, so it would predate the previous holder's commit.)
+ *
+ * Caller holds `lockBudget`. The sums are cast to float8 so they arrive as
+ * numbers; every value is an exact integer well under 2^53.
  */
-function openReservation(now: Date): { status: "PENDING"; deletedAt: null; OR: Array<Record<string, unknown>> } {
-  return { status: "PENDING", deletedAt: null, OR: [{ reservedUntil: { gt: now } }, { reservedUntil: null, createdAt: { gt: new Date(now.getTime() - DAY_MS) } }] };
+export async function readBudgetStats(tx: Tx, now: Date): Promise<BudgetStats> {
+  const since = new Date(now.getTime() - DAY_MS);
+  const rows = await tx.$queryRaw<BudgetStats[]>`
+    SELECT
+      (SELECT COUNT(*) FROM "Memory" WHERE "createdAt" > ${since})::int AS "memoriesToday",
+      (SELECT COALESCE(SUM("maxBytes"), 0) FROM "Media"
+        WHERE ("status" = 'READY' AND "createdAt" > ${since})
+           OR ("status" = 'PENDING' AND ("reservedUntil" > ${now} OR ("reservedUntil" IS NULL AND "createdAt" > ${since}))))::float8 AS "bytesToday",
+      (SELECT COALESCE(SUM("sizeBytes"), 0) FROM "Media" WHERE "status" = 'READY')::float8 AS "storedBytes",
+      (SELECT COALESCE(SUM("sizeBytes"), 0) FROM "DerivedMedia" WHERE "status" = 'READY')::float8 AS "derivedBytes",
+      (SELECT COALESCE(SUM("maxBytes"), 0) FROM "Media"
+        WHERE "status" = 'PENDING' AND ("reservedUntil" > ${now} OR ("reservedUntil" IS NULL AND "createdAt" > ${since})))::float8 AS "openBytes"`;
+  const stats = rows[0];
+  if (!stats) {
+    throw new Error("budget statistics query returned no row");
+  }
+  return stats;
 }
 
 /**
  * True when `addMemories` more memories and `addBytes` more ticketed bytes fit
- * in today's budgets and under the total ceiling. The budget is global, so the
- * first statement is the global advisory lock (issue #44, Oscar #13): without
- * it, concurrent writers at READ COMMITTED each see the same capacity and all
- * commit past it. Callers that also take row locks take them before calling
- * this (lease → memory → budget); nothing waits on a row lock afterwards.
+ * in today's budgets and under the total ceiling, given the lock is already
+ * held (`issueUploadTicket` takes it earlier, for its own re-read).
  *
  * The day's bytes are READY rows (their ticketed ceiling, `maxBytes`) plus
- * open reservations created in the last 24 h. The stock is READY originals
- * (`sizeBytes`) plus READY derived copies plus every open reservation, of
- * any age, against TOTAL_BYTE_CEILING (Oscar #16).
+ * open reservations. The stock is READY originals (`sizeBytes`) plus READY
+ * derived copies plus every open reservation, of any age, against
+ * TOTAL_BYTE_CEILING (Oscar #16).
  */
-export async function withinBudget(tx: Tx, addBytes: number, addMemories: number): Promise<boolean> {
-  await lockBudget(tx);
+export async function budgetHasRoom(tx: Tx, addBytes: number, addMemories: number, now = new Date()): Promise<boolean> {
   const env = getUploadEnv();
-  const now = new Date();
-  const since = new Date(now.getTime() - DAY_MS);
-  if (addMemories > 0) {
-    const memories = await tx.memory.count({ where: { createdAt: { gt: since } } });
-    if (memories + addMemories > env.DAILY_MEMORY_BUDGET) {
-      return false;
-    }
+  const stats = await readBudgetStats(tx, now);
+  if (addMemories > 0 && stats.memoriesToday + addMemories > env.DAILY_MEMORY_BUDGET) {
+    return false;
   }
   if (addBytes > 0) {
-    const today = await tx.media.aggregate({ _sum: { maxBytes: true }, where: { createdAt: { gt: since }, OR: [{ status: "READY" }, openReservation(now)] } });
-    if ((today._sum.maxBytes ?? 0) + addBytes > env.DAILY_BYTE_BUDGET) {
+    if (stats.bytesToday + addBytes > env.DAILY_BYTE_BUDGET) {
       return false;
     }
-    const originals = await tx.media.aggregate({ _sum: { sizeBytes: true }, where: { status: "READY" } });
-    const copies = await tx.derivedMedia.aggregate({ _sum: { sizeBytes: true }, where: { status: "READY" } });
-    const open = await tx.media.aggregate({ _sum: { maxBytes: true }, where: openReservation(now) });
-    const stock = (originals._sum.sizeBytes ?? 0) + (copies._sum.sizeBytes ?? 0) + (open._sum.maxBytes ?? 0);
+    const stock = stats.storedBytes + stats.derivedBytes + stats.openBytes;
     if (stock + addBytes > env.TOTAL_BYTE_CEILING) {
       log.warn({ action: "ceiling_refusal", stock, addBytes }, "total byte ceiling reached");
       return false;
     }
   }
   return true;
+}
+
+/**
+ * `budgetHasRoom` behind the global advisory lock (issue #44, Oscar #13):
+ * without it, concurrent writers at READ COMMITTED each see the same capacity
+ * and all commit past it. Callers that also take row locks take them before
+ * calling this (lease → memory → budget); nothing waits on a row lock
+ * afterwards. Throws `BudgetBusyError` when the lock is not granted in time.
+ */
+export async function withinBudget(tx: Tx, addBytes: number, addMemories: number): Promise<boolean> {
+  await lockBudget(tx);
+  return budgetHasRoom(tx, addBytes, addMemories);
 }
 
 /** Live rows (READY or PENDING, not removed) count against MAX_FILES_PER_MEMORY; FAILED and removed rows do not. */
@@ -128,14 +169,15 @@ async function liveFileCount(tx: Tx, memoryId: string): Promise<number> {
  * The PENDING row alone, with a fresh write-once pathname; the caller decides
  * whether a ticket is minted now (the claim page) or per file later
  * (createSubmission). Either way the reservation opens with one full upload
- * window: a ticket minted now can land bytes until then, and until then the
- * row holds its bytes of the budget (issue #44).
+ * window from `now`: a ticket minted at that same instant can land bytes until
+ * then, and until then the row holds its bytes of the budget (issue #44).
  */
 export async function createPendingMediaRow(
   tx: Tx,
   memoryId: string,
   file: ResolvedFile,
-  placement: { sortOrder: number; replacesMediaId: string | null }
+  placement: { sortOrder: number; replacesMediaId: string | null },
+  now = Date.now()
 ): Promise<{ mediaId: string; pathname: string }> {
   const pathname = `${storagePrefix()}${memoryId}/${randomUUID()}.${file.extension}`;
   const media = await tx.media.create({
@@ -150,7 +192,7 @@ export async function createPendingMediaRow(
       approxDateText: file.approxDateText,
       place: file.place,
       status: "PENDING",
-      reservedUntil: new Date(Date.now() + UPLOAD_WINDOW_MS),
+      reservedUntil: new Date(now + UPLOAD_WINDOW_MS),
       sortOrder: placement.sortOrder,
       replacesMediaId: placement.replacesMediaId,
     },
@@ -164,9 +206,24 @@ async function createPendingMedia(
   file: ResolvedFile,
   placement: { sortOrder: number; replacesMediaId: string | null }
 ): Promise<UploadGrant> {
-  const { mediaId, pathname } = await createPendingMediaRow(tx, memoryId, file, placement);
-  const ticket = mintUploadTicket({ mediaId, memoryId, pathname, mimeType: file.mimeType, maxBytes: file.maxBytes });
+  // One clock reading for the row and the ticket, so the window is exactly the token's last possible byte (TCR #6).
+  const now = Date.now();
+  const { mediaId, pathname } = await createPendingMediaRow(tx, memoryId, file, placement, now);
+  const ticket = mintUploadTicket({ mediaId, memoryId, pathname, mimeType: file.mimeType, maxBytes: file.maxBytes }, { now });
   return { pathname, ticket };
+}
+
+/** The claim-page ticket transactions answer a lock wait with the ordinary budget refusal instead of a 500 (TCR #4). */
+async function ticketTransaction<T>(run: () => Promise<T | "budget_exceeded">): Promise<T | "budget_exceeded"> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof BudgetBusyError) {
+      log.warn({ action: "budget_busy" }, "budget lock wait timed out; answered budget_exceeded");
+      return "budget_exceeded";
+    }
+    throw error;
+  }
 }
 
 /** Next display slot: rows are never hard-deleted, so the row count is monotonic. */
@@ -185,7 +242,7 @@ export async function createUploadTicket(raw: unknown): Promise<UploadTicketResu
     return { ok: false, code: file };
   }
   const claimTokenHash = hashClaimToken(parsed.data.claimToken);
-  const result = await getDb().$transaction(async (tx) => {
+  const result = await ticketTransaction(() => getDb().$transaction(async (tx) => {
     const memory = await tx.memory.findUnique({ where: { claimTokenHash } });
     if (!memory || memory.deletedAt !== null) {
       return "not_found" as const;
@@ -203,7 +260,7 @@ export async function createUploadTicket(raw: unknown): Promise<UploadTicketResu
     const grant = await createPendingMedia(tx, memory.id, file, { sortOrder: await nextSortOrder(tx, memory.id), replacesMediaId: null });
     tagIds({ memoryId: memory.id, mediaId: grant.ticket.mediaId });
     return grant;
-  }, TX_OPTIONS);
+  }, TX_OPTIONS));
   if (typeof result === "string") {
     return { ok: false, code: result };
   }
@@ -227,7 +284,7 @@ export async function createReplacementTicket(raw: unknown): Promise<UploadTicke
   }
   const { claimToken, mediaId } = parsed.data;
   const claimTokenHash = hashClaimToken(claimToken);
-  const result = await getDb().$transaction(async (tx) => {
+  const result = await ticketTransaction(() => getDb().$transaction(async (tx) => {
     const memory = await tx.memory.findUnique({ where: { claimTokenHash } });
     if (!memory || memory.deletedAt !== null) {
       return "not_found" as const;
@@ -258,7 +315,7 @@ export async function createReplacementTicket(raw: unknown): Promise<UploadTicke
     const grant = await createPendingMedia(tx, memory.id, inherited, { sortOrder: target.sortOrder, replacesMediaId: target.id });
     tagIds({ memoryId: memory.id, mediaId: grant.ticket.mediaId });
     return grant;
-  }, TX_OPTIONS);
+  }, TX_OPTIONS));
   if (typeof result === "string") {
     return { ok: false, code: result };
   }

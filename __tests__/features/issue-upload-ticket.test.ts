@@ -4,7 +4,8 @@ import { hashClaimToken } from "@/lib/claim-token";
 import { BLOB_TOKEN_LIFETIME_MS, UPLOAD_LEASE_MS, UPLOAD_WINDOW_MS, verifyUploadTicket } from "@/lib/upload-ticket";
 import { resetEnvCache } from "@/server/config/env";
 
-import { aggregateMock, matchesWhere } from "../helpers/prisma-where";
+import { budgetStats, isBudgetStatsQuery } from "../helpers/budget-stats";
+import { matchesWhere } from "../helpers/prisma-where";
 
 const ANCHOR_TOKEN = "a".repeat(43);
 const SECOND_TOKEN = "b".repeat(43);
@@ -13,12 +14,16 @@ interface MemoryRow { id: string; claimTokenHash: string; deletedAt: Date | null
 interface MediaRow { id: string; memoryId: string; storageKey: string; mimeType: string; maxBytes: number; status: "PENDING" | "READY" | "FAILED"; deletedAt: Date | null; createdAt: Date; reservedUntil: Date | null; sizeBytes?: number | null }
 let memories: MemoryRow[] = [];
 let media: MediaRow[] = [];
+let fresh: { createdAt: Date; reservedUntil: Date };
 const calls: string[] = [];
 const dbStub = {
-  $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { calls.push(`lock:${String(values[0])}`); return [{ id: values[0] }]; }),
+  $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    if (isBudgetStatsQuery(strings)) { calls.push("budget.read"); return [budgetStats({ memories: [], media, derived: [] })]; }
+    calls.push(`lock:${String(values[0])}`);
+    return [{ id: values[0] }];
+  }),
   $executeRaw: vi.fn(async (strings: TemplateStringsArray) => { calls.push(strings.join("?").includes("pg_advisory_xact_lock") ? "lock:budget" : "execute"); return 1; }),
   $transaction: vi.fn(async (fn: (t: typeof dbStub) => Promise<unknown>) => fn(dbStub)),
-  derivedMedia: { aggregate: vi.fn(aggregateMock(() => [])) },
   memory: {
     findUnique: vi.fn(async ({ where }: { where: { claimTokenHash: string } }) => { calls.push("memory.findUnique"); return memories.find((m) => m.claimTokenHash === where.claimTokenHash) ?? null; }),
     updateMany: vi.fn(async ({ where, data }: { where: { submissionId: string; submissionIndex: number }; data: { uploadLeaseUntil: Date } }) => {
@@ -30,13 +35,14 @@ const dbStub = {
   },
   media: {
     findFirst: vi.fn(async ({ where }: { where: { id: string; memoryId: string; deletedAt: null } }) => { calls.push("media.findFirst"); return media.find((m) => m.id === where.id && m.memoryId === where.memoryId && m.deletedAt === null) ?? null; }),
+    // The re-read under the lock answers a copy, like a real row: later mutations are only visible through another read.
+    findUnique: vi.fn(async ({ where }: { where: { id: string } }) => { calls.push("media.findUnique"); const row = media.find((m) => m.id === where.id); return row ? { ...row } : null; }),
     updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: { reservedUntil: Date } }) => {
       calls.push("media.updateMany");
       const rows = media.filter((m) => matchesWhere(m as unknown as Record<string, unknown>, where));
       for (const r of rows) { r.reservedUntil = data.reservedUntil; }
       return { count: rows.length };
     }),
-    aggregate: vi.fn(async (args: { where?: Record<string, unknown>; _sum: Record<string, boolean> }) => { calls.push("media.aggregate"); return aggregateMock(() => media as unknown as Record<string, unknown>[])(args); }),
   },
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
@@ -53,7 +59,7 @@ beforeEach(() => {
     { id: "mem_second", claimTokenHash: hashClaimToken(SECOND_TOKEN), deletedAt: null, submissionId: "sub_1", submissionIndex: 1, uploadLeaseUntil: null },
     { id: "mem_legacy", claimTokenHash: hashClaimToken("c".repeat(43)), deletedAt: null, submissionId: null, submissionIndex: null, uploadLeaseUntil: null },
   ];
-  const fresh = { createdAt: new Date(Date.now() - 60_000), reservedUntil: new Date(Date.now() + UPLOAD_WINDOW_MS - 60_000) };
+  fresh = { createdAt: new Date(Date.now() - 60_000), reservedUntil: new Date(Date.now() + UPLOAD_WINDOW_MS - 60_000) };
   media = [
     { id: "med_1", memoryId: "mem_second", storageKey: "dev/originals/mem_second/x.jpg", mimeType: "image/jpeg", maxBytes: 2_000_000, status: "PENDING", deletedAt: null, ...fresh },
     { id: "med_ready", memoryId: "mem_second", storageKey: "dev/originals/mem_second/y.jpg", mimeType: "image/jpeg", maxBytes: 2_000_000, status: "READY", deletedAt: null, ...fresh },
@@ -87,11 +93,31 @@ describe("issueUploadTicket", () => {
     expect(anchor.uploadLeaseUntil!.getTime()).toBeLessThanOrEqual(Date.now() + UPLOAD_LEASE_MS + 50);
     expect(memories[1]!.uploadLeaseUntil).toBeNull();
     expect(dbStub.memory.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { submissionId: "sub_1", submissionIndex: 0 } }));
-    // Inside one transaction: the lease first (anchor lock order C24), then the row's own conditional stamp; an open window needs no budget lock.
+    // Inside one transaction: the lease first (anchor lock order C24), then the budget lock (last in lock order), then a fresh read of
+    // the row under it; an open window needs no budget read. The stamp is conditional on exactly the state that was read (TCR #2/#11).
     expect(dbStub.$transaction).toHaveBeenCalledTimes(1);
-    expect(calls.indexOf("memory.updateMany")).toBeLessThan(calls.indexOf("media.updateMany"));
-    expect(calls).not.toContain("lock:budget");
-    expect(dbStub.media.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "med_1", status: "PENDING", deletedAt: null } }));
+    expect(calls.indexOf("memory.updateMany")).toBeLessThan(calls.indexOf("lock:budget"));
+    expect(calls.indexOf("lock:budget")).toBeLessThan(calls.indexOf("media.findUnique"));
+    expect(calls.indexOf("media.findUnique")).toBeLessThan(calls.indexOf("media.updateMany"));
+    expect(calls).not.toContain("budget.read");
+    expect(dbStub.media.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "med_1", status: "PENDING", deletedAt: null, reservedUntil: fresh.reservedUntil } }));
+  });
+
+  it("decides open-or-expired under the lock on a fresh read: a window that closes while waiting for the lock is re-reserved, never silently extended (TCR #2/#11)", async () => {
+    // The lock wait is where the window closes (another allocator held the lock and counted this row as expired).
+    dbStub.$executeRaw.mockImplementationOnce(async (strings: TemplateStringsArray) => { calls.push(strings.join("?").includes("pg_advisory_xact_lock") ? "lock:budget" : "execute"); media[0]!.reservedUntil = new Date(Date.now() - 1); return 1; });
+    process.env.DAILY_BYTE_BUDGET = "1"; resetEnvCache();
+    expect(await issueUploadTicket({ claimToken: SECOND_TOKEN, mediaId: "med_1" })).toEqual({ ok: false, code: "budget_exceeded" });
+    expect(calls.indexOf("lock:budget")).toBeLessThan(calls.indexOf("media.findUnique"));
+    expect(calls).toContain("budget.read");
+    expect(dbStub.media.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("answers budget_exceeded, not a 500, when the budget lock wait runs out (TCR #4)", async () => {
+    const timeout = Object.assign(new Error("Raw query failed. Code: `55P03`. Message: `canceling statement due to lock timeout`"), { code: "P2010", meta: { driverAdapterError: { cause: { code: "55P03" } } } });
+    dbStub.$executeRaw.mockImplementationOnce(async () => 1).mockImplementationOnce(async () => { throw timeout; }); // SET LOCAL succeeds, the lock wait times out
+    expect(await issueUploadTicket({ claimToken: SECOND_TOKEN, mediaId: "med_1" })).toEqual({ ok: false, code: "budget_exceeded" });
+    expect(dbStub.media.updateMany).not.toHaveBeenCalled();
   });
 
   it("refuses READY, removed and foreign rows, a wrong token and bad input, and renews or stamps nothing", async () => {
@@ -111,7 +137,7 @@ describe("issueUploadTicket", () => {
     expect(result.ok).toBe(true);
     expect(dbStub.memory.updateMany).not.toHaveBeenCalled();
     expect(memories.every((m) => m.id !== "mem_legacy" || m.uploadLeaseUntil === null)).toBe(true);
-    expect(calls).not.toContain("lock:budget");
+    expect(calls).not.toContain("budget.read");
     expect(media.find((m) => m.id === "med_legacy")!.reservedUntil).toBeInstanceOf(Date);
   });
 
@@ -123,7 +149,8 @@ describe("issueUploadTicket", () => {
     expect(media[0]!.reservedUntil).toBe(closed);
     expect(dbStub.media.updateMany).not.toHaveBeenCalled();
     expect(calls.indexOf("memory.updateMany")).toBeLessThan(calls.indexOf("lock:budget"));
-    expect(calls.indexOf("lock:budget")).toBeLessThan(calls.indexOf("media.aggregate"));
+    expect(calls.indexOf("lock:budget")).toBeLessThan(calls.indexOf("media.findUnique"));
+    expect(calls.indexOf("media.findUnique")).toBeLessThan(calls.indexOf("budget.read"));
 
     calls.length = 0;
     process.env.DAILY_BYTE_BUDGET = String(20 * 1024 ** 3); resetEnvCache();

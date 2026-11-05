@@ -18,9 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     # A throwaway Postgres for `__tests__/integration/*` (issue #44, D7): the budget race is an
     # isolation property the in-memory mocks cannot show. The app's DATABASE_URL stays unset.
+    # Same major as production Neon (18); the suite fails rather than skips when CI forgets the URL.
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: jowray_test

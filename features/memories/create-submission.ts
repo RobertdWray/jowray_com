@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import { completeSubmission } from "@/features/memories/complete-submission";
 import { createPendingMediaRow, resolveFile, type ResolvedFile, TX_OPTIONS, withinBudget } from "@/features/memories/create-memory";
+import { BudgetBusyError } from "@/features/memories/lock";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { memoryCreated } from "@/lib/sentry/metrics";
@@ -113,6 +114,7 @@ export async function createSubmission(raw: unknown): Promise<CreateSubmissionRe
     if (!(await withinBudget(tx, declaredTotal, resolved.length))) {
       return null;
     }
+    const reservedFrom = Date.now();
     const memorial = await tx.memorial.findUnique({ where: { slug: MEMORIAL_SLUG } });
     if (!memorial) {
       throw new Error(`Memorial "${MEMORIAL_SLUG}" is not seeded`);
@@ -154,13 +156,20 @@ export async function createSubmission(raw: unknown): Promise<CreateSubmissionRe
       });
       const files: SubmissionFile[] = [];
       for (const [fileIndex, file] of memory.files.entries()) {
-        const { mediaId } = await createPendingMediaRow(tx, row.id, file, { sortOrder: fileIndex, replacesMediaId: null });
+        const { mediaId } = await createPendingMediaRow(tx, row.id, file, { sortOrder: fileIndex, replacesMediaId: null }, reservedFrom);
         files.push({ fileIndex, mediaId });
       }
       memories.push({ index, memoryId: row.id, claimToken: tokens[index]!, files });
     }
     return memories;
-  }, TX_OPTIONS);
+  }, TX_OPTIONS).catch((error: unknown) => {
+    // A lock wait that ran out is the same answer as a full budget: try again later, never a 500 (TCR #4).
+    if (error instanceof BudgetBusyError) {
+      log.warn({ action: "budget_busy", memories: resolved.length }, "budget lock wait timed out; answered budget_exceeded");
+      return null;
+    }
+    throw error;
+  });
 
   if (!created) {
     log.warn({ action: "budget_refusal", memories: resolved.length }, "daily budget reached");

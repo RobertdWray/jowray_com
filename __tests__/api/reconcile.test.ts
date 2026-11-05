@@ -156,10 +156,18 @@ beforeEach(() => {
     { id: "med_orphan_env", memoryId: "mem_2", status: "PENDING", checksumSha256: null, createdAt: ancient, storageKey: "dev/originals/mem_2/o", blobUrl: null, deletedAt: null, memory: { deletedAt: null } },
     { id: "med_orphan_open", memoryId: "mem_2", status: "PENDING", checksumSha256: null, createdAt: ancient, storageKey: "dev/originals/mem_2/open", blobUrl: null, deletedAt: null, reservedUntil: new Date(Date.now() + 30 * 60 * 1000), memory: { deletedAt: null } },
     { id: "med_orphan_raced", memoryId: "mem_2", status: "PENDING", checksumSha256: null, createdAt: ancient, storageKey: "dev/originals/mem_2/raced", blobUrl: null, deletedAt: null, reservedUntil: new Date(Date.now() - 1000), memory: { deletedAt: null } },
+    // The worst case (TCR #1/#12): the family's upload finishes and finalize flips the row READY right after step (a)'s
+    // head() check said "no blob yet". The cron must claim the row (status still PENDING) before it deletes anything.
+    { id: "med_orphan_finalized", memoryId: "mem_2", status: "PENDING", checksumSha256: null, createdAt: ancient, storageKey: "dev/originals/mem_2/finalized", blobUrl: null, deletedAt: null, reservedUntil: new Date(Date.now() - 1000), mimeType: "video/mp4", memory: { deletedAt: null } },
     // (issue #44) Cancelled reservations are purged when their window has closed, however old the row is: a 2 h old one whose
     // last ticket is recent waits; one created minutes ago whose window already passed goes now.
     { id: "med_cancelled_window_open", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: old, storageKey: "dev/originals/mem_1/wo", blobUrl: null, deletedAt: old, reservedUntil: new Date(Date.now() + 30 * 60 * 1000), memory: { deletedAt: null } },
     { id: "med_cancelled_window_closed", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: new Date(), storageKey: "dev/originals/mem_1/wc", blobUrl: null, deletedAt: new Date(), reservedUntil: new Date(Date.now() - 1000), memory: { deletedAt: null } },
+    // (f3, TCR #14) Rows retired recently get their pathname deleted again for two hours (a request that began before its token
+    // expired may finish after it); one retired three hours ago and a production copy are left alone.
+    { id: "med_retired_recent", memoryId: "mem_2", status: "FAILED", checksumSha256: null, createdAt: ancient, storageKey: "dev/originals/mem_2/retired", blobUrl: null, deletedAt: null, purgedAt: new Date(Date.now() - 30 * 60 * 1000), memory: { deletedAt: null } },
+    { id: "med_retired_old", memoryId: "mem_2", status: "FAILED", checksumSha256: null, createdAt: ancient, storageKey: "dev/originals/mem_2/retired_old", blobUrl: null, deletedAt: null, purgedAt: new Date(Date.now() - 3 * HOUR), memory: { deletedAt: null } },
+    { id: "med_retired_prod", memoryId: "mem_9", status: "FAILED", checksumSha256: null, createdAt: ancient, storageKey: "originals/mem_9/retired", blobUrl: null, deletedAt: null, purgedAt: new Date(Date.now() - 30 * 60 * 1000), memory: { deletedAt: null } },
   ];
   events = [{ id: "evt_1", processedAt: null, attempts: 1, error: "boom", payload: { tokenPayload: JSON.stringify({ mediaId: "med_stale" }) } }];
   emails = [
@@ -216,11 +224,18 @@ beforeEach(() => {
   emails.push({ id: "log_leased", memoryId: "mem_leased_retry", emailType: "MEMORY_CONFIRMATION", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: null, uploadLeaseUntil: new Date(Date.now() + 30 * 60 * 1000) } });
   inTransaction = false; onLock = null; lockCalls.length = 0; delMock.mockReset(); delMock.mockImplementation(async () => { if (inTransaction) { throw new Error("storage.del inside the purge transaction"); } });
     recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); confirmSubmissionMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
-  recordMediaMock.mockImplementation(async ({ mediaId }) => mediaId.startsWith("med_orphan") ? { status: "PENDING", mediaId, memoryId: "mem_2" } : { status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 });
-  // A re-ticket that lands while the cron is deleting the raced row's empty pathname.
-  delMock.mockImplementation(async (key: string) => {
-    if (inTransaction) { throw new Error("storage.del inside the purge transaction"); }
-    if (key === "dev/originals/mem_2/raced") { media.find((m) => m.id === "med_orphan_raced")!.reservedUntil = new Date(Date.now() + 60 * 60 * 1000); }
+  recordMediaMock.mockImplementation(async ({ mediaId }) => {
+    if (mediaId === "med_orphan_finalized") {
+      // head() saw nothing; a finalize from the browser lands the moment after and records the file.
+      Object.assign(media.find((m) => m.id === mediaId)!, { status: "READY", blobUrl: "u", sizeBytes: 5 });
+      return { status: "PENDING", mediaId, memoryId: "mem_2" };
+    }
+    if (mediaId === "med_orphan_raced") {
+      // A re-ticket commits between the cron's read and its claim: the window moved, so the claim must match nothing.
+      media.find((m) => m.id === mediaId)!.reservedUntil = new Date(Date.now() + 60 * 60 * 1000);
+      return { status: "PENDING", mediaId, memoryId: "mem_2" };
+    }
+    return mediaId.startsWith("med_orphan") ? { status: "PENDING", mediaId, memoryId: "mem_2" } : { status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 };
   });
 });
 
@@ -239,17 +254,24 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(body.success).toBe(true);
     // (a) stale PENDING (>1h) re-recorded; the fresh one untouched; the >24h orphan whose blob is still missing → FAILED
     // step (a) re-records both stale rows; step (c) replays med_stale once more from the event
-    expect(new Set(recordMediaMock.mock.calls.map((c) => c[0].mediaId))).toEqual(new Set(["med_orphan", "med_orphan_env", "med_orphan_open", "med_orphan_raced", "med_stale"]));
-    expect(recordMediaMock).toHaveBeenCalledTimes(6);
+    expect(new Set(recordMediaMock.mock.calls.map((c) => c[0].mediaId))).toEqual(new Set(["med_orphan", "med_orphan_env", "med_orphan_open", "med_orphan_raced", "med_orphan_finalized", "med_stale"]));
+    expect(recordMediaMock).toHaveBeenCalledTimes(7);
     expect(media.find((m) => m.id === "med_orphan")?.status).toBe("FAILED");
-    // (issue #44) a production copy's pathname is never touched from here; this environment's orphan loses its pathname before it is failed
+    // (issue #44) a production copy's pathname is never touched from here; this environment's orphan is claimed (FAILED + purgedAt,
+    // conditional on status and window) BEFORE its pathname is deleted (TCR #1/#12)
     expect(delMock).not.toHaveBeenCalledWith("originals/mem_2/c");
-    expect(media.find((m) => m.id === "med_orphan_env")?.status).toBe("FAILED");
-    expect(delMock.mock.calls.findIndex((c) => c[0] === "dev/originals/mem_2/o")).toBeLessThan(dbStub.media.updateMany.mock.calls.findIndex((c) => (c[0] as unknown as { where: { id: string } }).where.id === "med_orphan_env"));
+    expect(media.find((m) => m.id === "med_orphan_env")).toMatchObject({ status: "FAILED", purgedAt: expect.any(Date) });
+    const claimIndex = (id: string) => dbStub.media.updateMany.mock.invocationCallOrder[dbStub.media.updateMany.mock.calls.findIndex((c) => (c[0] as unknown as { where: { id: string } }).where.id === id)]!;
+    const deleteIndex = (key: string) => delMock.mock.invocationCallOrder[delMock.mock.calls.findIndex((c) => c[0] === key)]!;
+    expect(claimIndex("med_orphan_env")).toBeLessThan(deleteIndex("dev/originals/mem_2/o"));
     // an orphan whose window is still open (a recent re-ticket) is neither failed nor deleted; a race lost to a re-ticket leaves the row PENDING
     expect(media.find((m) => m.id === "med_orphan_open")?.status).toBe("PENDING");
     expect(delMock).not.toHaveBeenCalledWith("dev/originals/mem_2/open");
     expect(media.find((m) => m.id === "med_orphan_raced")?.status).toBe("PENDING");
+    expect(delMock).not.toHaveBeenCalledWith("dev/originals/mem_2/raced");
+    // A file that was finalized a moment after the head() check keeps its bytes: the cron claims (status PENDING) before any delete.
+    expect(media.find((m) => m.id === "med_orphan_finalized")).toMatchObject({ status: "READY", blobUrl: "u" });
+    expect(delMock).not.toHaveBeenCalledWith("dev/originals/mem_2/finalized");
     // (b) checksum backfill
     expect(checksumMock).toHaveBeenCalledWith({ mediaId: "med_nohash" });
     // (c) unprocessed webhook events re-run
@@ -309,14 +331,22 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(delMock).not.toHaveBeenCalledWith("dev/originals/mem_1/wo");
     expect(media.find((m) => m.id === "med_cancelled_window_open")?.status).toBe("PENDING");
     expect(delMock).toHaveBeenCalledWith("dev/originals/mem_1/wc");
-    expect(media.find((m) => m.id === "med_cancelled_window_closed")?.status).toBe("FAILED");
+    expect(media.find((m) => m.id === "med_cancelled_window_closed")).toMatchObject({ status: "FAILED", purgedAt: expect.any(Date) });
+    // (f2) also claims before it deletes
+    expect(claimIndex("med_cancelled")).toBeLessThan(deleteIndex("dev/originals/mem_1/g"));
+    // (f3) rows retired in the last two hours get their pathname deleted again; older ones and production copies do not
+    expect(delMock).toHaveBeenCalledWith("dev/originals/mem_2/retired");
+    expect(delMock).not.toHaveBeenCalledWith("dev/originals/mem_2/retired_old");
+    expect(delMock).not.toHaveBeenCalledWith("originals/mem_9/retired");
+    expect(body.data.lateSweeps).toBeGreaterThanOrEqual(1);
     // (g) derived copies: the photo without copies, the one with a stale claim and the one whose claim has no timestamp, this environment only, terminal failures left alone
     expect(deriveMediaMock.mock.calls.map((c) => c[0].mediaId).sort()).toEqual(["med_photo_new", "med_photo_nullclaim", "med_photo_stale"]);
     expect(deriveMediaMock.mock.calls[0]![0].deadlineMs).toBeLessThanOrEqual(30_000);
     expect(deriveMediaMock.mock.calls[0]![0].deadlineMs).toBeGreaterThan(25_000);
     // the staging pathname is only ever deleted for videos
     expect(delMock.mock.calls.map((c) => c[0] as string).filter((k) => k.endsWith(".upload.jpg"))).toEqual([]);
-    expect(body.data).toMatchObject({ pendingRechecked: 5, orphansFailed: 2, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 3, confirmationsSent: 2, adminAlertsSent: 8, submissionReceiptsSent: 1, deletedBlobsRemoved: 4, derived: 3 });
+    // checksumsComputed 2: med_nohash, plus the file finalized during (a), which (b) hashes in the same run.
+    expect(body.data).toMatchObject({ pendingRechecked: 6, orphansFailed: 2, checksumsComputed: 2, eventsReplayed: 1, emailsRetried: 3, confirmationsSent: 2, adminAlertsSent: 8, submissionReceiptsSent: 1, deletedBlobsRemoved: 4, derived: 3 });
   });
 
   it("(e2) waits for a send's lease before alerting any of its memories, and (e3) emails the anchor once the lease is gone", async () => {
@@ -387,7 +417,12 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(checksumMock).not.toHaveBeenCalled();
     expect(confirmMock).not.toHaveBeenCalled();
     expect(notifyMock).not.toHaveBeenCalled();
-    expect(delMock).not.toHaveBeenCalled();
+    // Nothing is retired or purged again; the only deletes are step (f3)'s repeat deletes for rows retired within the last two hours.
+    expect(body.data.orphansFailed).toBe(0);
+    expect(body.data.deletedBlobsRemoved).toBe(0);
+    for (const [key] of delMock.mock.calls) {
+      expect(media.find((m) => m.storageKey === key)).toMatchObject({ status: "FAILED", purgedAt: expect.any(Date) });
+    }
     expect(deriveMediaMock).not.toHaveBeenCalled();
     // Only the still-leased receipt row is retried again (and answers `leased` again).
     expect(confirmSubmissionMock.mock.calls.map((c) => c[0].anchorId)).toEqual(["mem_live0"]);
