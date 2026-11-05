@@ -4,7 +4,7 @@ import type { Sharp } from "sharp";
 
 import { decodeHeicInWorker } from "@/lib/heic-worker";
 import { ImageDeriveError } from "@/lib/image-derive-error";
-import type { DeriveOptions, DerivedSet, Encoded, ImageService } from "@/services/images/types";
+import type { DeriveOptions, DerivedSet, DeriveSlot, Encoded, ImageService } from "@/services/images/types";
 
 type Family = "jpeg" | "png" | "webp" | "gif";
 
@@ -24,36 +24,104 @@ function isPixelLimitError(error: unknown): boolean {
   return error instanceof Error && /pixel limit/i.test(error.message);
 }
 
+interface Waiter {
+  grant: () => void;
+  fail: (error: ImageDeriveError) => void;
+}
+
 /**
  * sharp for everything it can decode (JPEG, PNG, WebP, GIF) and for every
  * encode; HEIC/HEIF pixels come from libheif in a worker thread. One
  * derivation at a time per process: a Fluid instance shares one heap and a
- * 24 MP decode peaks near 0.8 GB.
+ * 24 MP decode peaks near 0.8 GB. The slot is acquired *before* the original
+ * is downloaded (issue #45) and the waiting line is short, so a burst of
+ * finalizations holds at most `1 + maxWaiting` originals in memory; the rest
+ * are answered `busy` at once and left to the cron.
  */
 export class SharpHeicImageService implements ImageService {
-  private queue: Promise<unknown> = Promise.resolve();
   private running = 0;
+  private readonly waiters: Waiter[] = [];
+
+  constructor(private readonly maxWaiting: number = 2) {}
 
   inFlight(): number {
     return this.running;
   }
 
-  derive(input: Buffer, options: DeriveOptions): Promise<DerivedSet> {
+  waiting(): number {
+    return this.waiters.length;
+  }
+
+  acquire(deadlineMs: number): Promise<DeriveSlot> {
+    if (deadlineMs <= 0) {
+      return Promise.reject(new ImageDeriveError("timeout"));
+    }
+    if (this.running === 0 && this.waiters.length === 0) {
+      this.running = 1;
+      return Promise.resolve(this.slot());
+    }
+    if (this.waiters.length >= this.maxWaiting) {
+      return Promise.reject(new ImageDeriveError("busy"));
+    }
+    return new Promise<DeriveSlot>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const index = this.waiters.indexOf(waiter);
+        if (index !== -1) {
+          this.waiters.splice(index, 1);
+        }
+        reject(new ImageDeriveError("timeout"));
+      }, Math.max(0, deadlineMs));
+      const waiter: Waiter = {
+        grant: () => {
+          clearTimeout(timer);
+          this.running = 1;
+          resolve(this.slot());
+        },
+        fail: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      };
+      this.waiters.push(waiter);
+    });
+  }
+
+  private slot(): DeriveSlot {
+    let released = false;
+    return {
+      derive: (input, options) => {
+        if (released) {
+          return Promise.reject(new Error("derive slot already released"));
+        }
+        return this.deriveNow(input, options);
+      },
+      release: () => {
+        if (released) {
+          return;
+        }
+        released = true;
+        this.running = 0;
+        const next = this.waiters.shift();
+        if (next) {
+          next.grant();
+        }
+      },
+    };
+  }
+
+  async derive(input: Buffer, options: DeriveOptions): Promise<DerivedSet> {
     // The deadline is absolute from the call: time spent waiting for the slot counts.
     const deadlineAt = Date.now() + options.deadlineMs;
-    const run = this.queue.then(() => {
+    const slot = await this.acquire(options.deadlineMs);
+    try {
       const remainingMs = deadlineAt - Date.now();
       if (remainingMs <= 0) {
         throw new ImageDeriveError("timeout");
       }
-      this.running += 1;
-      return this.deriveNow(input, { ...options, deadlineMs: remainingMs }).finally(() => {
-        this.running -= 1;
-      });
-    });
-    // Keep the chain alive whatever this derivation does.
-    this.queue = run.catch(() => undefined);
-    return run;
+      return await slot.derive(input, { ...options, deadlineMs: remainingMs });
+    } finally {
+      slot.release();
+    }
   }
 
   private async deriveNow(input: Buffer, options: DeriveOptions): Promise<DerivedSet> {
@@ -87,10 +155,21 @@ export class SharpHeicImageService implements ImageService {
           throw new ImageDeriveError("unsupported_type");
         }
         if (family === "gif") {
-          base = sharp(input, { animated: true, limitInputPixels: options.maxPixels }).timeout(timeout);
+          // Decided from the header, before any frame is decoded (issue #45): an animation whose
+          // frame count or whole strip (width × frame height × frames, what libvips builds for
+          // `animated: true`) is over the ceiling is served as a still of its first frame. The
+          // contributor still gets an inline picture and an email thumbnail; the download keeps
+          // the animation. One frame over the pixel ceiling is a refusal, as for any photo.
+          const frames = meta.pages ?? 1;
+          const frameHeight = meta.pageHeight ?? meta.height;
+          if (meta.width * frameHeight > options.maxPixels) {
+            throw new ImageDeriveError("too_many_pixels", { limit: options.maxPixels });
+          }
+          const animate = frames <= options.maxFrames && meta.width * frameHeight * frames <= options.maxPixels;
+          base = sharp(input, { animated: animate, limitInputPixels: options.maxPixels }).timeout(timeout);
           thumbSource = sharp(input, { page: 0, limitInputPixels: options.maxPixels }).timeout(timeout);
           sourceWidth = meta.width;
-          sourceHeight = meta.pageHeight ?? meta.height;
+          sourceHeight = frameHeight;
         } else {
           base = sharp(input, { limitInputPixels: options.maxPixels }).rotate().timeout(timeout);
           thumbSource = sharp(input, { limitInputPixels: options.maxPixels }).rotate().timeout(timeout);

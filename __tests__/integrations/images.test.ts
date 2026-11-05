@@ -5,6 +5,7 @@ import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 
 import { ImageDeriveError } from "@/lib/image-derive-error";
+import { SharpHeicImageService } from "@/integrations/images/sharp-heic";
 import { createImageService, DERIVE_DEFAULTS, type DeriveOptions } from "@/services/images";
 
 const fixture = (name: string) => readFile(resolve(__dirname, "../fixtures", name));
@@ -128,5 +129,78 @@ describe("ImageService.derive", () => {
     await Promise.all([a, b]);
     expect(order).toEqual(["a", "b"]);
     expect(service.inFlight()).toBe(0);
+  });
+
+  it("falls back to a still of the first frame when an animation has more frames than the cap (nothing fails, nothing 404s)", async () => {
+    // anim.gif is 2 frames; with the cap at 1 the web copy is a single-frame GIF, with the cap at 2 it stays animated.
+    const still = await service.derive(await fixture("anim.gif"), opts("image/gif", { maxFrames: 1 }));
+    expect(still.web.mimeType).toBe("image/gif");
+    expect((await meta(still.web.data)).pages ?? 1).toBe(1);
+    expect([still.web.width, still.web.height]).toEqual([32, 32]);
+    expect("failed" in still.thumb).toBe(false);
+    const animated = await service.derive(await fixture("anim.gif"), opts("image/gif", { maxFrames: 2 }));
+    expect((await meta(animated.web.data)).pages).toBe(2);
+    // A 400-frame file is well over the default cap and still yields copies.
+    expect((await service.derive(await fixture("anim-400.gif"), opts("image/gif"))).web.mimeType).toBe("image/gif");
+  });
+
+  it("applies the pixel ceiling to the whole frame strip: over it, a still of one frame; one frame over it, a refusal", async () => {
+    // anim.gif: 32×32 × 2 = 2048 strip pixels, 1024 per frame.
+    const still = await service.derive(await fixture("anim.gif"), opts("image/gif", { maxPixels: 1500 }));
+    expect((await meta(still.web.data)).pages ?? 1).toBe(1);
+    await expect(service.derive(await fixture("anim.gif"), opts("image/gif", { maxPixels: 500 }))).rejects.toMatchObject({ code: "too_many_pixels", limit: 500 });
+    // 10×10 × 400 = 40,000 strip pixels: a still under a 30,000 ceiling, animated under 50,000.
+    const strip = await fixture("anim-400x10.gif");
+    expect((await meta((await service.derive(strip, opts("image/gif", { maxPixels: 30_000, maxFrames: 1000 }))).web.data)).pages ?? 1).toBe(1);
+    expect((await service.derive(strip, opts("image/gif", { maxPixels: 50_000, maxFrames: 1000 }))).web.mimeType).toBe("image/gif");
+  });
+});
+
+describe("ImageService.acquire (issue #45: the slot is taken before anything is downloaded)", () => {
+  it("serves waiters in order and answers busy at once beyond the waiting line, without consuming the deadline", async () => {
+    const own = new SharpHeicImageService(2);
+    const first = await own.acquire(1_000);
+    expect(own.inFlight()).toBe(1);
+    const second = own.acquire(5_000);
+    const third = own.acquire(5_000);
+    expect(own.waiting()).toBe(2);
+    const started = Date.now();
+    await expect(own.acquire(5_000)).rejects.toMatchObject({ code: "busy" });
+    expect(Date.now() - started).toBeLessThan(100);
+    first.release();
+    first.release(); // idempotent: releasing twice hands the slot over once
+    const s2 = await second;
+    expect(own.inFlight()).toBe(1);
+    expect(own.waiting()).toBe(1);
+    s2.release();
+    const s3 = await third;
+    s3.release();
+    expect(own.inFlight()).toBe(0);
+    expect(own.waiting()).toBe(0);
+  });
+
+  it("rejects at once with timeout when no time is left, even if the slot is idle", async () => {
+    const own = new SharpHeicImageService(2);
+    await expect(own.acquire(0)).rejects.toMatchObject({ code: "timeout" });
+    await expect(own.acquire(-5)).rejects.toMatchObject({ code: "timeout" });
+    expect(own.inFlight()).toBe(0);
+    expect(own.waiting()).toBe(0);
+  });
+
+  it("times out a waiter whose deadline passes and removes it from the line", async () => {
+    const own = new SharpHeicImageService(2);
+    const held = await own.acquire(1_000);
+    await expect(own.acquire(5)).rejects.toMatchObject({ code: "timeout" });
+    expect(own.waiting()).toBe(0);
+    held.release();
+    const next = await own.acquire(10);
+    next.release();
+  });
+
+  it("a released slot cannot decode any more", async () => {
+    const own = new SharpHeicImageService(2);
+    const slot = await own.acquire(1_000);
+    slot.release();
+    await expect(slot.derive(Buffer.alloc(0), opts("image/jpeg"))).rejects.toThrow(/released/);
   });
 });

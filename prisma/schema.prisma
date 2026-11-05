@@ -215,6 +215,18 @@ model DerivedMedia {
   @@index([status, updatedAt])
 }
 
+/// Bytes served per UTC day, per scope (`global` or `media:<id>`): the egress
+/// allowance behind /api/media (issue #45, features/media/egress.ts). Rows are
+/// counters written by one conditional upsert each; nothing else reads them.
+model EgressCounter {
+  scope     String
+  day       DateTime @db.Date
+  bytes     BigInt   @default(0)
+  updatedAt DateTime @default(now())
+  @@id([scope, day])
+  @@index([day])
+}
+
 model Person {
   id                     String   @id @default(uuid())
   memorialId             String

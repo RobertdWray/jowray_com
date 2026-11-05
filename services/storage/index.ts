@@ -7,6 +7,7 @@ import type { StorageService } from "./types";
 export type {
   PresignGetOptions,
   PresignGetResult,
+  StorageGetOptions,
   StorageGetResult,
   StorageHeadResult,
   StorageService,

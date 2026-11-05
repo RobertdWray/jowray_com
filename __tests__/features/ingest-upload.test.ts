@@ -73,8 +73,10 @@ vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
 const headMock = vi.fn();
 const delMock = vi.fn();
+/** By default the blob's first bytes match the row's declared type (the honest case); tests override it. */
+const readPrefixMock = vi.fn(async (pathname: string): Promise<Uint8Array | null> => SIGNATURE_SAMPLES[media.find((m) => m.storageKey === pathname)?.mimeType ?? ""] ?? null);
 vi.mock("@/services/storage", () => ({
-  createStorageService: () => ({ head: headMock, del: delMock, get: vi.fn(), put: vi.fn(), presignGet: vi.fn() }),
+  createStorageService: () => ({ head: headMock, del: delMock, readPrefix: readPrefixMock, get: vi.fn(), put: vi.fn(), presignGet: vi.fn() }),
 }));
 
 const confirmMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m1" }));
@@ -85,6 +87,9 @@ const notifyMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m2"
 vi.mock("@/features/memories/notify-admins", () => ({ notifyAdminsOfMemory: (arg: unknown) => notifyMock(arg) }));
 
 import { finalizeUpload, recordMedia } from "@/features/memories/ingest-upload";
+import { SIGNATURE_PREFIX_BYTES } from "@/lib/media-types";
+
+import { NOT_MEDIA, REAL_BUT_NOT_ALLOWED, SIGNATURE_SAMPLES } from "../fixtures/signatures";
 
 function row(over: Partial<MediaRow> = {}): MediaRow {
   return {
@@ -117,6 +122,7 @@ beforeEach(() => {
   p2002Once = false;
   headMock.mockReset();
   delMock.mockReset();
+  readPrefixMock.mockClear();
   deriveMock.mockClear();
   headMock.mockResolvedValue({
     pathname: "originals/mem_1/abc.jpg",
@@ -264,6 +270,103 @@ describe("recordMedia", () => {
     const results = await Promise.all([recordMedia({ mediaId: "med_1" }), recordMedia({ mediaId: "med_1" })]);
     expect(results.map((r) => r.status).sort()).toEqual(["READY", "READY"]);
     expect(media).toHaveLength(1);
+  });
+});
+
+describe("recordMedia byte check (issue #45): the declared type is a claim, the first bytes are the evidence", () => {
+  it("reads only a bounded prefix and makes the row READY when the bytes match the declared type", async () => {
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("READY");
+    expect(readPrefixMock).toHaveBeenCalledTimes(1);
+    expect(readPrefixMock).toHaveBeenCalledWith("originals/mem_1/abc.jpg", SIGNATURE_PREFIX_BYTES);
+    expect(delMock).not.toHaveBeenCalled();
+  });
+
+  it("bytes of another kind: FAILED as unrecognized_bytes, never READY, but the bytes are KEPT (a byte-check verdict alone deletes nothing)", async () => {
+    readPrefixMock.mockResolvedValueOnce(SIGNATURE_SAMPLES["audio/wav"]!);
+    const outcome = await recordMedia({ mediaId: "med_1" });
+    expect(outcome).toMatchObject({ status: "FAILED", reason: "unrecognized_bytes" });
+    expect(delMock).not.toHaveBeenCalled();
+    // The row says the bytes exist, so a later purge can find them.
+    expect(media[0]).toMatchObject({ status: "FAILED", blobUrl: "https://blob.test/originals/mem_1/abc.jpg" });
+  });
+
+  it("non-media bytes under a video label never become servable, and are kept likewise", async () => {
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 10, contentType: "video/mp4", uploadedAt: new Date() });
+    media = [row({ mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 })];
+    readPrefixMock.mockResolvedValueOnce(NOT_MEDIA.zip!);
+    expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "unrecognized_bytes" });
+    expect(delMock).not.toHaveBeenCalled();
+    expect(media[0]!.status).toBe("FAILED");
+  });
+
+  it("a real file the allowlist does not carry (AIFF named .wav, TIFF named .jpg) is FAILED and kept, never deleted", async () => {
+    for (const [mime, sample] of [["audio/wav", REAL_BUT_NOT_ALLOWED.aiff!], ["image/jpeg", REAL_BUT_NOT_ALLOWED.tiff!], ["image/jpeg", REAL_BUT_NOT_ALLOWED.bmp!]] as const) {
+      media = [row({ mimeType: mime, maxBytes: 100 * 1024 * 1024 })];
+      headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 10, contentType: mime, uploadedAt: new Date() });
+      readPrefixMock.mockResolvedValueOnce(sample);
+      expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "unrecognized_bytes" });
+    }
+    expect(delMock).not.toHaveBeenCalled();
+  });
+
+  it("still deletes on the checks main already had: over the ticketed size, or a declared type that is not the ticket's", async () => {
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 10, contentType: "text/html", uploadedAt: new Date() });
+    expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "wrong_type" });
+    expect(delMock).toHaveBeenCalledTimes(1);
+    expect(readPrefixMock).not.toHaveBeenCalled();
+  });
+
+  it("leaves the row PENDING, deleting nothing, when the blob vanished between head() and the prefix read", async () => {
+    readPrefixMock.mockResolvedValueOnce(null);
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("PENDING");
+    expect(delMock).not.toHaveBeenCalled();
+    expect(media[0]!.status).toBe("PENDING");
+  });
+
+  it("does not read any bytes of a file that already failed the size or label check", async () => {
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 26 * 1024 * 1024, contentType: "image/jpeg", uploadedAt: new Date() });
+    expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "too_large" });
+    expect(readPrefixMock).not.toHaveBeenCalled();
+  });
+
+  it("never re-reads a row that is already READY: files recorded before the byte check keep working", async () => {
+    media = [row({ status: "READY", sizeBytes: 5, blobUrl: "u" })];
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("READY");
+    expect(readPrefixMock).not.toHaveBeenCalled();
+    expect(headMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses an empty file before asking for a byte range (a range on nothing is a 416, not a prefix)", async () => {
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 0, contentType: "image/jpeg", uploadedAt: new Date() });
+    expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "unrecognized_bytes" });
+    expect(readPrefixMock).not.toHaveBeenCalled();
+    expect(delMock).not.toHaveBeenCalled();
+  });
+
+  it("relabels a file whose bytes are another allowed type of the same kind instead of destroying it (JPEG saved as .heic)", async () => {
+    media = [row({ mimeType: "image/heic", storageKey: "originals/mem_1/abc.heic" })];
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.heic", url: "u", size: 1234, contentType: "image/heic", uploadedAt: new Date() });
+    readPrefixMock.mockResolvedValueOnce(SIGNATURE_SAMPLES["image/jpeg"]!);
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("READY");
+    expect(media[0]).toMatchObject({ status: "READY", mimeType: "image/jpeg", sizeBytes: 1234 });
+    expect(delMock).not.toHaveBeenCalled();
+  });
+
+  it("relabels a HEIC that arrived as image/jpeg and a Voice Memo that arrived as audio/mpeg", async () => {
+    readPrefixMock.mockResolvedValueOnce(SIGNATURE_SAMPLES["image/heic"]!);
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("READY");
+    expect(media[0]!.mimeType).toBe("image/heic");
+    media = [row({ mimeType: "audio/mpeg", maxBytes: 100 * 1024 * 1024 })];
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 10, contentType: "audio/mpeg", uploadedAt: new Date() });
+    readPrefixMock.mockResolvedValueOnce(SIGNATURE_SAMPLES["audio/x-m4a"]!);
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("READY");
+    expect(media[0]!.mimeType).toBe("audio/mp4");
+  });
+
+  it("still refuses bytes of a different kind (a video labelled as a photo), keeping them", async () => {
+    readPrefixMock.mockResolvedValueOnce(SIGNATURE_SAMPLES["video/mp4"]!);
+    expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "unrecognized_bytes" });
+    expect(delMock).not.toHaveBeenCalled();
   });
 });
 

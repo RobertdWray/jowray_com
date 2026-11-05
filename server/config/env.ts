@@ -133,7 +133,30 @@ const adminPageSchema = z.object({
   ADMIN_PAGE_SECRET: z.preprocess((value) => (value === "" ? undefined : value), z.string().min(32, "ADMIN_PAGE_SECRET must be at least 32 characters").optional()),
 });
 
+/**
+ * Egress allowances behind `/api/media` and `/admin/media` (issue #45). Every
+ * value has a default, so a deployment works with none of them set. Sizes are
+ * bytes; the multiples are "distinct viewers per UTC day, each charged once
+ * at the file's size" (a viewer's later requests that day are free up to the
+ * request cap), so ordinary playback, seeking and reloading never reach them.
+ */
+/** `KEY=` (blank) means unset, like `ADMIN_PAGE_SECRET`: the default applies. `z.coerce` alone would turn "" into 0. */
+const blankIsUnset = <T extends z.ZodTypeAny>(schema: T) => z.preprocess((value) => (value === "" ? undefined : value), schema);
+const mediaServingSchema = z.object({
+  /** Viewer-days a file whose memory is APPROVED may be served to per day, each at the file's size. */
+  MEDIA_FILE_DAILY_MULTIPLE: blankIsUnset(z.coerce.number().int().positive().default(100)),
+  /** Before approval (the contributor and whoever they forwarded the link to): fewer viewer-days. */
+  MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED: blankIsUnset(z.coerce.number().int().positive().default(50)),
+  /** Bytes the whole site may serve to claim-link holders per day (default 50 GiB). */
+  MEDIA_DAILY_EGRESS_BYTES: blankIsUnset(z.coerce.number().int().positive().default(50 * 1024 ** 3)),
+  /** Requests one viewer may make for one copy of one file per day; a long day of seeking and reloading is well under it. */
+  MEDIA_VIEWER_DAILY_REQUESTS: blankIsUnset(z.coerce.number().int().positive().default(300)),
+  /** Downloads up to this size stream through the function (sanitized filename, as on main); larger ones redirect (default 25 MiB). */
+  MEDIA_PROXY_DOWNLOAD_MAX_BYTES: blankIsUnset(z.coerce.number().int().nonnegative().default(25 * 1024 ** 2)),
+});
+
 export type DbEnv = z.infer<typeof dbSchema>;
+export type MediaServingEnv = z.infer<typeof mediaServingSchema>;
 export type AdminPageEnv = z.infer<typeof adminPageSchema>;
 export type AdminEnv = z.infer<typeof adminSchema>;
 export type CronEnv = z.infer<typeof cronSchema>;
@@ -178,6 +201,7 @@ export const getCronEnv = memoized("cron", cronSchema);
 export const getAdminAlertEnv = memoized("adminAlert", adminAlertSchema);
 export const getAdminEnv = memoized("admin", adminSchema);
 export const getAdminPageEnv = memoized("adminPage", adminPageSchema);
+export const getMediaServingEnv = memoized("mediaServing", mediaServingSchema);
 
 /** Test helper: forget every parsed sub-schema so the next call re-reads `process.env`. */
 export function resetEnvCache(): void {
