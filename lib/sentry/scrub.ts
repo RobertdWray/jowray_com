@@ -184,15 +184,16 @@ function scrubMembers(text: string): string {
       i = text.indexOf('"', keyEnd);
       continue;
     }
-    const valueStart = keyEnd + closeLength + separator.length;
-    // In malformed text the key's quoting and the value's can disagree (`\"token":"x"`, `"token\":\"x\"`). A quoted
-    // value says itself how it is quoted; anything else takes the more cautious reading, which runs further, never shorter.
-    const valueEscaped = text[valueStart] === '"' ? false : text[valueStart] === "\\" && text[valueStart + 1] === '"' ? true : escaped || closeLength === 2;
-    const end = valueEnd(text, valueStart, valueEscaped);
-    // The marker is written in the value's own quoting, so a double-encoded string stays well formed (and a second pass is a no-op).
-    const quote = valueEscaped ? '\\"' : '"';
-    const openQuote = escaped ? '\\"' : '"';
-    out += `${text.slice(last, openStart)}${openQuote}${key}${text.slice(keyEnd, keyEnd + closeLength)}:${quote}${FILTERED}${quote}`;
+    // The key's quoting decides how far the value runs, exactly as the regex scanner did. In malformed text the
+    // key's quoting and the value's can disagree (`\"token":"x"`, `"token\":\"x y\"`); do not try to be cleverer
+    // here. Reading the value another way moves where the scan resumes, and both directions have been shown to
+    // swallow the opening quote of the *next* member and hide it (PR #47 regression review: an escaped key before
+    // a plain `"` hid `"claimToken"`; a plain key before `\"` hid `"ticket\"`). `__tests__/lib/sentry-scrub-differential.test.ts`
+    // pins byte-for-byte equality with the regex scanner over a seeded corpus of such text.
+    const end = valueEnd(text, keyEnd + closeLength + separator.length, escaped);
+    // The marker is written in the member's own quoting, so a double-encoded string stays well formed (and a second pass is a no-op).
+    const quote = escaped ? '\\"' : '"';
+    out += `${text.slice(last, openStart)}${quote}${key}${text.slice(keyEnd, keyEnd + closeLength)}:${quote}${FILTERED}${quote}`;
     last = end;
     i = text.indexOf('"', end);
   }
