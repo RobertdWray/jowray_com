@@ -34,7 +34,7 @@ Stop if it says STOP (or if `scripts/draft-memory.ts` is missing: the feature ha
 - **Rob's typed text is either a replacement or an instruction.** Text that reads as the memory itself ("Jo always stopped…") is the approved note. Text that reads as a direction ("use the rewrite but keep 'Dad'") is an instruction: produce a revised proposal and ask again. Newly generated wording always goes back through step 2b.
 - **Never tell the sender the words are exactly theirs when they were rewritten.** The reply says what was done (step 4).
 - **A 409 means nothing from this attempt was saved.** Not the words, not the visibility, not the details. Never describe them as saved, never write a reply that assumes them, never change `sourceInput` to get past the duplicate. Resume from the existing draft (step 3).
-- **A rewrite that was sent but not recorded is a defect, not a success.** If the script printed `originalNote: NOT recorded`, or printed no `originalNote:` line after a payload that carried one, production is older than this skill: stop, tell Rob the row holds only the rewrite, and leave the fix to the admin page (edit the words or delete the draft). Draft no reply.
+- **A rewrite that was sent but not recorded is a defect, not a success.** After a 200 for a payload that carried `originalNote`, the script must print `originalNote: recorded`. `NOT recorded`, or no `originalNote:` line at all, means production is older than this skill: stop, tell Rob the row holds only the rewrite and the sender's words survive only in the source message, and leave the fix to the admin page (edit the words or delete the draft). Draft no reply; the claim link is live but stays unsent. A verbatim save prints `NOT recorded` or nothing, which is correct. A 409 prints no line and follows the 409 rule instead.
 - **Email required.** A note with no sender email is not drafted until Rob supplies one.
 - **Reply to the sender only.** `to` is the sender's address; `cc` stays empty. Never reply-all.
 - **Nobody presses Share.** Only the sender does, on their own claim page. Never open a real person's claim link to "check".
@@ -46,9 +46,11 @@ Stop if it says STOP (or if `scripts/draft-memory.ts` is missing: the feature ha
 
 From the obituary (`app/obituary/page.tsx`): Jo is the person being remembered, Rob's mother. **Richard** Wray is her husband ("Dad" in the notes). **Rob** (Robert) is her son. **Tracy** Gold is Rob's wife. Richard, Rob and Tracy are the family admins.
 
-Resolve every pronoun from *this* message. "You" in a letter to Rob is Rob; "your mom" is Jo; "your dad" is Richard; "you both" may be Rob and Tracy, or Rob and Richard, and "your parents" may be Jo and Richard or the sender's own. If the note does not settle a referent, leave it unchanged in the rewrite and ask Rob in step 2b. Never substitute names by rule.
+Resolve every pronoun from *this* message. In a letter addressed to Rob, "your mom" is Jo, "your dad" is Richard, "your parents" and "your mom and dad" are Jo and Richard, and "you" is Rob: these need no question. "You both", "you two", "the family" and any "your …" in a note not addressed to Rob are open until the sentence settles them: leave the words unchanged in the rewrite and ask Rob in step 2b. A pronoun inside a sentence the cut drops needs no question. Never substitute a name the message does not support.
 
 ## Procedure
+
+Run the Preflight (above) first, and note which mailbox the Gmail connector is on.
 
 ### 1. Resolve the source
 
@@ -62,7 +64,7 @@ printf '%x\n' <decimal>
 
 **`thread-a:r…` URLs cannot be converted.** Use `search_threads` with the sender and subject Rob gives (for example `from:someone@example.com subject:(Jo)`); if nothing matches, ask Rob to paste the message.
 
-**Pasted text or a text message** → use it as given. Ask for the sender's name and email if missing (email is required). For a text message also ask for the number (E.164) and when it arrived (ISO-8601), which only ever appear hashed.
+**Pasted text or a text message** → use it as given. Ask for the sender's name and email if missing (email is required). For a text message also ask for the number (E.164) and the time on the message (ISO-8601 with a zone; the dedup key uses that minute), which only ever appear hashed.
 
 Note whether the message has attachments: the skill cannot download them. The reply invites the sender to add the photo on their own page (step 4); Rob does not add it for them (hard rule above).
 
@@ -70,24 +72,24 @@ Note whether the message has attachments: the skill cannot download them. The re
 
 Show Rob, in this order:
 
-1. **The verbatim cut**, in a fenced block: the sender's own paragraphs about Jo, exactly as written. Drop greetings, logistics, Dad's health, quoted earlier mail (`>` lines), signatures and "Sent from my iPhone". The **one** normalisation allowed: join lines that a mail client hard-wrapped inside a paragraph; keep the blank-line paragraph breaks. This block is what the sender will see if Rob chooses verbatim, line breaks included.
-2. **A light rewrite**, in a second fenced block, **only when the verbatim cut addresses the family rather than speaking about Jo**, followed by a one-line change list ("your mom → Jo ×2; dropped 'Dear Rob' and the closing line; 'you' → 'Rob'"). A light rewrite is the sender's own sentences, order, tense, vocabulary and paragraph breaks, with only the changes needed for the memory to make sense on a shared family website: addressee references become the person's name as the message establishes it (Who's who); direct address and condolence framing that is not part of the memory itself is dropped ("Dear Rob", "I'm so sorry", "thinking of you all"); pronouns are fixed only where a change requires it. No new facts, no added adjectives, no summarising, no reordering, no smoothing of style; typos stay unless they obscure meaning. If a pronoun's referent is unclear, leave it unchanged and list it as an open question. If the verbatim cut already reads as a memory about Jo, say so and show no rewrite.
-3. **Sender name and email.** Suggested **relationship**, with no street or unit details ("Neighbor at Broadmead", "Friend from Ticonderoga Methodist"). Proposed **roughly when** and **where**, each with the phrase in the note it comes from, or "not stated".
+1. **The verbatim cut**, in a fenced block: the sender's own sentences about Jo, exactly as written, whole sentences only. The cut drops greetings and sign-offs ("Dear Rob,", "With love, Pat"), signatures and "Sent from my iPhone", quoted earlier mail (`>` lines), logistics and Dad's health, and sentences addressed to the family that hold no memory ("I was so sorry to hear about your mom.", "Thinking of you both."), even when such a sentence sits inside a paragraph about Jo. Everything kept is verbatim: no word changes, no partial sentences. The **one** normalisation allowed: join lines that a mail client hard-wrapped inside a paragraph; keep the blank-line paragraph breaks. This block is what the sender will see if Rob chooses verbatim, line breaks included. When the cut itself names a street, unit or phone number, say so under it: the note is PUBLIC by default, and Rob may answer the Words question with a replacement or choose FAMILY.
+2. **A light rewrite**, in a second fenced block, **only when the verbatim cut still addresses the family rather than speaking about Jo** ("your mom", "you", "your dad"), followed by a one-line change list measured against the cut ("your mom → Jo ×2; 'you' → 'Rob'"). A light rewrite is the cut's own sentences, order, tense, vocabulary and paragraph breaks, with only the changes needed for the memory to make sense on a shared family website: addressee references become the person's name as the message establishes it (Who's who); pronouns are fixed only where a change requires it. No new facts, no added adjectives, no summarising, no reordering, no smoothing of style; typos stay unless they obscure meaning. If a pronoun's referent is unclear, leave it unchanged and list it as an open question. If the cut already reads as a memory about Jo, say so and show no rewrite.
+3. **Sender name and email.** The **relationship**: "stated" with the phrase it comes from, or "inferred" with the reason ("Neighbor", from 'when she walked past my feeder'), with no street or unit details ("Neighbor at Broadmead", "Friend from Ticonderoga Methodist"). Proposed **roughly when** and **where**, each with the phrase in the note it comes from, or "not stated". A time phrase is proposable only when it names a period a reader can place ("Summer 1998", "every Fourth of July", "the winter she retired"); a bare season or "years ago" is "not stated". A place is proposable when it names somewhere ("the lake", "Broadmead", "her kitchen"); a street or unit is never proposed.
 4. Whether the message has an **attachment**.
 
 ### 2b. Ask Rob
 
-One `AskUserQuestion` call with two to four questions; every question has two to four options. If no question tool is available, ask the same questions in one chat message and wait for choices. Skip any question Rob already answered in chat for this memory.
+Questions, in this priority order; each call holds at most four questions and every question has two to four options, so the overflow goes into a second call right after the first. Headers are at most 12 characters: `Words`, `Visibility`, `Pronoun`, `When`, `Where`, `Relationship`, `Name`. If no question tool is available, ask the same questions in one chat message and wait for choices. Skip any question Rob already answered in chat for this memory; a selection a timed-out dialog submitted is not an answer.
 
-- **Words** (always). Options: "Verbatim copy"; then "Light rewrite (as shown)" when step 2 showed one, otherwise "Propose a light rewrite" (step 2 then runs again with one). Rob's own text arrives through the free-text row: apply the replacement-or-instruction hard rule.
-- **Who may see it** (always). Options, from `lib/visibility.ts`: "Everyone who visits jowray.com (PUBLIC, default)" / "The whole family (FAMILY)" / "Richard, Rob and Tracy only (PRIVATE)".
-- **Roughly when.** Options: the proposed value when the note states one; always "Leave blank (the sender can fill it in)"; and "Ask the sender in the reply" (adds one line in step 4).
-- **Where.** Same three shapes.
-- **Open pronouns** (only when step 2 listed one): one question per unclear referent, candidates as options.
+1. **Words** (always). Options: "Verbatim copy"; then "Light rewrite (as shown)" when step 2 showed one, otherwise "Propose a light rewrite" (step 2 then runs again with one). Rob's own text arrives through the free-text row: apply the replacement-or-instruction hard rule.
+2. **Visibility** (always). Options, from `lib/visibility.ts`: "Everyone who visits jowray.com (PUBLIC, default)" / "The whole family (FAMILY)" / "Richard, Rob and Tracy only (PRIVATE)".
+3. **Pronoun** (one per open referent from step 2): the sentence quoted, the Who's who candidates as options, plus "Keep as written". Rob's answer is what supports the name; the free-text row does not count toward the two-to-four options.
+4. **When.** Options: the proposed value when step 2 proposed one; always "Leave blank (the sender can fill it in)"; and "Ask the sender in the reply" (adds one line in step 4).
+5. **Where.** Same three shapes.
+6. **Relationship** (when step 2 marked it inferred, or when nothing was proposed). Options: "Leave blank" first, then the inferred wording. A stated relationship is used without asking.
+7. **Name** (only when the signature and the From line disagree, or no name is known).
 
-A second call only if needed: **Relationship** (proposed wording / "Leave blank") and **Name** when the signature and the From line disagree or no name is known.
-
-If Rob edited the text, show the final text once more in a fenced block and get a plain yes before step 3.
+Then, before step 3: if Rob typed his own text and it differs from the block he was shown, or a pronoun answer changed the rewrite, show the final text once more in a fenced block and get a plain yes. Typed text identical to the shown rewrite needs no second yes.
 
 ### 3. Save the draft
 
@@ -138,7 +140,7 @@ Otherwise `create_draft`:
 - **Gmail source** (`sourceInput.kind = gmail`): `replyToMessageId` = the sender's message id (the same id as in `sourceRef`); `subject` = `Re: <original subject>` with any existing leading `Re:` / `RE:` / `Fwd:` stripped first, so it never reads `Re: Re:`.
 - **Text message or pasted note** (no Gmail message to reply to): omit `replyToMessageId`; `subject` = `A memory of Jo`.
 - `to`: `["<sender email>"]`. No `cc`, no `bcc`. The connector does **not** inherit recipients from the original (probe, 2026-11-04), so this list is exactly who gets the link.
-- `body`: plain text, in Rob's voice. Short, warm, first person. Thank them for the specific memory (name it in a few words, do not quote the note back at length). One line that it is saved to Jo's memorial: **verbatim** → "in your own words"; **rewritten** → "I trimmed your note lightly so it reads as your memory of Jo on the page rather than a letter to me; please change anything that isn't how you'd say it." The claim link on its own line. "Change anything, add a photo or a recording, and press Share when it's right." When Rob chose "Ask the sender in the reply" for when or where, one line asks ("If you remember roughly when this was, there's a spot for it on the page."). A clean exit: "No need to do anything if you'd rather not." If the message had an attachment, one line that the photo can be added on that page (Rob does not add it for them). Never grovel, never include anyone's phone number, no "I know you're busy".
+- `body`: plain text, in Rob's voice. Short, warm, first person. Thank them for the specific memory (name it in a few words, do not quote the note back at length). Then the saved line, in one of two forms: **verbatim** → "I've saved it to Jo's memorial in your own words:"; **rewritten** → "I've saved it to Jo's memorial. I trimmed your note lightly so it reads as your memory of Jo on the page rather than a letter to me; please change anything that isn't how you'd say it." ("Mom's memorial" is fine where Rob would say Mom.) The claim link on its own line. "Change anything, add a photo or a recording, and press Share when it's right." When Rob chose "Ask the sender in the reply" for when or where, one line asks ("If you remember roughly when this was, there's a spot for it on the page."). A clean exit: "No need to do anything if you'd rather not." If the message had an attachment, one line that the photo can be added on that page (Rob does not add it for them). Never grovel, never include anyone's phone number, no "I know you're busy".
 
 **Then read the draft back** (`get_draft`, or `list_drafts` with `DRAFT_VIEW_FULL`) and stop if `to` is not exactly the sender, or `cc` / `bcc` is not empty: a CC'd person would hold the bearer link and could edit or Share the memory.
 

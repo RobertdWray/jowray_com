@@ -43,7 +43,8 @@ This reverses the 2026-11-03 ruling "verbatim, never rewritten" (plan §1 decisi
 | SKILL.md rewritten (§4) | **yes** (158 lines) | commit 71959e5 | `wc -l` under 500; §9.2 micro-tests pass |
 | Docs amended (§5) | **yes** | commit 71959e5 | grep for "verbatim" in the five files returns only the amended sentences |
 | Original-text retrieval proof (§8 item 3) | **yes** (2026-11-05, local `next dev` :3105 against the Neon `dev` branch `ep-solitary-tree`, admin page entered with a throwaway `ADMIN_PAGE_SECRET` set on the dev process so no real secret entered a tool call) | `docs/plans/evidence/2026-11-05-draft-skill/00-03` | script printed `originalNote: recorded`; revision row `before.note` = letter, `after.note` = rewrite; History page shows the same |
-| PR opened, `ci` green, Team Code Review bucketed | no | PR # | `gh pr checks` |
+| Skill micro-tests (§9.2), ten scenarios + three re-tests after one tightening round | **yes** (2026-11-05; all pass) | `docs/plans/evidence/2026-11-05-draft-skill/README.md`, `micro-tests/01-13` | every scenario's pass criterion met; re-tests show the tightened cut and question order |
+| PR opened, `ci` green, Team Code Review bucketed | in progress | PR # | `gh pr checks` |
 | Merged; production deployment **Ready** for the merge commit | no | `vercel ls --environment production` age/URL | the newest Production row is younger than the merge |
 | Installed skill is the merged text | no | | `diff ~/.claude/skills/jowray-draft-memory/SKILL.md <(git show origin/main:docs/skills/jowray-draft-memory/SKILL.md)` is empty (the symlink makes this automatic once the main checkout is on `origin/main`) |
 | `CONSENT_VERSION=2026-11-v2` in Vercel Production and `.env` | **no** (checked 2026-11-05: `grep -c '^CONSENT_VERSION=2026-11-v2' .env` = 0 [C42]) | | the grep = 1 and `vercel env ls` shows it |
