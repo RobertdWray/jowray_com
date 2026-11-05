@@ -45,6 +45,20 @@ export const SIGNATURE_SAMPLES: Record<string, Bytes> = {
 
 /** An MP3 without an ID3 tag: the first frame's sync word. */
 export const MP3_FRAME_SYNC: Bytes = Uint8Array.from([0xff, 0xfb, 0x90, 0x64, 0x00]);
+/** Real-world MP3 and WAV layouts that are still the declared type (issue #45 review cycle 2). */
+export const ALSO_VALID: Record<string, Bytes> = {
+  mp3_zero_padded: bytes(new Array(24).fill(0), [0xff, 0xfb, 0x90, 0x64]),
+  mp3_ape_tag: bytes("APETAGEX", [0xd0, 0x07, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00]),
+  mp3_mpeg2_layer3: bytes([0xff, 0xf3, 0x82, 0x44]),
+  wav_rf64: bytes("RF64", [0xff, 0xff, 0xff, 0xff], "WAVE", "ds64"),
+  wav_bw64: bytes("BW64", [0xff, 0xff, 0xff, 0xff], "WAVE", "ds64"),
+};
+/** Real formats the allowlist does not carry: never READY, but never deleted on the byte check alone. */
+export const REAL_BUT_NOT_ALLOWED: Record<string, Bytes> = {
+  aiff: bytes("FORM", [0x00, 0x00, 0x10, 0x00], "AIFF", "COMM"),
+  tiff: bytes("II", [0x2a, 0x00, 0x08, 0x00, 0x00, 0x00]),
+  bmp: bytes("BM", [0x36, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x00]),
+};
 
 export const NOT_MEDIA: Record<string, Bytes> = {
   empty: new Uint8Array(0),

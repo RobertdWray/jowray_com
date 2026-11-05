@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { getMediaServingEnv, resetEnvCache } from "@/server/config/env";
 
-const KEYS = ["MEDIA_FILE_DAILY_MULTIPLE", "MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED", "MEDIA_DAILY_EGRESS_BYTES", "MEDIA_PROXY_DOWNLOAD_MAX_BYTES"] as const;
+const KEYS = ["MEDIA_FILE_DAILY_MULTIPLE", "MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED", "MEDIA_DAILY_EGRESS_BYTES", "MEDIA_PROXY_DOWNLOAD_MAX_BYTES", "MEDIA_VIEWER_DAILY_REQUESTS"] as const;
 const saved: Partial<Record<(typeof KEYS)[number], string | undefined>> = {};
 
 beforeEach(() => {
@@ -14,7 +14,7 @@ afterEach(() => {
   resetEnvCache();
 });
 
-const DEFAULTS = { MEDIA_FILE_DAILY_MULTIPLE: 20, MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED: 10, MEDIA_DAILY_EGRESS_BYTES: 50 * 1024 ** 3, MEDIA_PROXY_DOWNLOAD_MAX_BYTES: 2 * 1024 ** 2 };
+const DEFAULTS = { MEDIA_FILE_DAILY_MULTIPLE: 100, MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED: 50, MEDIA_DAILY_EGRESS_BYTES: 50 * 1024 ** 3, MEDIA_PROXY_DOWNLOAD_MAX_BYTES: 25 * 1024 ** 2, MEDIA_VIEWER_DAILY_REQUESTS: 300 };
 
 describe("getMediaServingEnv (issue #45: every allowance is optional and safe unset)", () => {
   it("uses the defaults when nothing is set", () => {
@@ -32,8 +32,9 @@ describe("getMediaServingEnv (issue #45: every allowance is optional and safe un
     process.env.MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED = "15";
     process.env.MEDIA_DAILY_EGRESS_BYTES = "1073741824";
     process.env.MEDIA_PROXY_DOWNLOAD_MAX_BYTES = "0";
+    process.env.MEDIA_VIEWER_DAILY_REQUESTS = "50";
     resetEnvCache();
-    expect(getMediaServingEnv()).toEqual({ MEDIA_FILE_DAILY_MULTIPLE: 40, MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED: 15, MEDIA_DAILY_EGRESS_BYTES: 1073741824, MEDIA_PROXY_DOWNLOAD_MAX_BYTES: 0 });
+    expect(getMediaServingEnv()).toEqual({ MEDIA_FILE_DAILY_MULTIPLE: 40, MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED: 15, MEDIA_DAILY_EGRESS_BYTES: 1073741824, MEDIA_PROXY_DOWNLOAD_MAX_BYTES: 0, MEDIA_VIEWER_DAILY_REQUESTS: 50 });
   });
 
   it("still refuses values that are genuinely invalid", () => {

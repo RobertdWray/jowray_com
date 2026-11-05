@@ -1,23 +1,34 @@
 import "server-only";
 
-import { GLOBAL_EGRESS_SCOPE, mediaEgressScope, recordEgress, releaseEgress, reserveEgress, secondsUntilNextUtcDay, utcDay } from "@/features/media/egress";
+import {
+  countRequest,
+  GLOBAL_EGRESS_SCOPE,
+  mediaEgressScope,
+  mediaViewerScope,
+  recordEgress,
+  releaseEgress,
+  reserveEgress,
+  secondsUntilNextUtcDay,
+  utcDay,
+} from "@/features/media/egress";
 import { isStagingKey } from "@/lib/derived-keys";
 import { attachmentDisposition, extensionFor, isAllowedMime } from "@/lib/media-types";
-import { createLogger } from "@/lib/logger";
+import { createLogger, logError } from "@/lib/logger";
 import { getMediaServingEnv, type MediaServingEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 import { createStorageService } from "@/services/storage";
+
+export { viewerKeyFrom } from "@/features/media/egress";
 
 const log = createLogger({ category: "media" });
 
 /** Inline views are redirected to a presigned URL served by the blob host (which supports Range). */
 const PRESIGN_TTL_MS = 60_000;
 /**
- * A media element issues several requests for one playback (a probe, the
- * metadata, chunks, seeks) and each is a new request to this route. Letting
- * the browser alone reuse the redirect for a little less than the URL's life
- * makes one playback one charge, not one per range request. Nothing shared
- * may cache it, and streams and refusals stay `no-store`.
+ * The browser alone may reuse a redirect for a little less than the URL's
+ * life. Not every engine does for ranged requests (WebKit does not), which
+ * is why the allowance is per viewer and day rather than per request; this
+ * only saves round trips where it works. Streams and refusals stay `no-store`.
  */
 const REDIRECT_CACHE_CONTROL = `private, max-age=${PRESIGN_TTL_MS / 1000 - 5}`;
 
@@ -55,6 +66,8 @@ export interface ServeMediaOptions {
   variant: MediaVariant;
   download: boolean;
   caller: MediaCaller;
+  /** The requesting client as `viewerKeyFrom(request.headers)` reports it; the allowance is per viewer and day. */
+  viewerKey?: string;
   /** The admin page shows a deleted memory's files (Restore is decided there); the claim page never does. */
   allowDeletedMemory: boolean;
   /** Decides whether the caller may see this memory's files; called only for a servable row. Must be constant-time when it compares secrets. */
@@ -68,17 +81,21 @@ export interface ServeMediaOptions {
  * `/api/media/[id]` (claim token) and `/admin/media/[id]` (admin cookie).
  * Photos are only ever shown inline from a server-made, metadata-stripped copy
  * (plan P17); `original` and `download=1` return the untouched file. Downloads
- * up to the proxy cap stream through; everything else is a 60-second presigned
- * redirect. Every authorization refusal is the same 404 (no oracle). A
- * soft-deleted media row or one marked for purge (`purgedAt`, whatever its
- * status) is never served.
+ * up to the proxy cap stream through with the sanitized attachment filename;
+ * everything else is a 60-second presigned redirect (downloads carry the blob
+ * host's download switch). Every authorization refusal is the same 404 (no
+ * oracle). A soft-deleted media row or one marked for purge (`purgedAt`,
+ * whatever its status) is never served.
  *
- * Allowance (issue #45): every response is charged with the size of the copy
- * it serves against two daily counters, the file's own (a multiple of its size,
- * larger once the memory is APPROVED) and the site's. A claim-link holder over
- * either gets 429 with `Retry-After`; the admin is counted and never refused.
+ * Allowance (issue #45): the first request a viewer makes for a copy of a
+ * file on a given day charges that copy's size to the file's daily counter
+ * (a multiple of the original's size, larger once the memory is APPROVED)
+ * and to the site's; the viewer's later requests that day are free up to a
+ * request cap. A claim-link holder over any of the three gets 429 with
+ * `Retry-After`; the admin is counted and never refused. A counter that
+ * cannot be reached fails open: the file is served and the error reported.
  */
-export async function serveMedia({ id, variant, download, caller, allowDeletedMemory, authorize, now = () => new Date() }: ServeMediaOptions): Promise<Response> {
+export async function serveMedia({ id, variant, download, caller, viewerKey = "unknown", allowDeletedMemory, authorize, now = () => new Date() }: ServeMediaOptions): Promise<Response> {
   const db = getDb();
   const media = await db.media.findUnique({
     where: { id },
@@ -106,29 +123,32 @@ export async function serveMedia({ id, variant, download, caller, allowDeletedMe
   // Which copy, and what it costs.
   let pathname = media.storageKey;
   let cost = originalBytes;
+  let copy: "original" | "web" | "thumb" = "original";
   if (!download && variant !== "original" && media.mimeType.startsWith("image/")) {
-    const copy = (kind: "WEB_IMAGE" | "THUMBNAIL") => media.derivatives.find((d) => d.kind === kind);
-    const chosen = (variant === "thumb" ? copy("THUMBNAIL") : undefined) ?? copy("WEB_IMAGE");
+    const find = (kind: "WEB_IMAGE" | "THUMBNAIL") => media.derivatives.find((d) => d.kind === kind);
+    const thumbnail = variant === "thumb" ? find("THUMBNAIL") : undefined;
+    const chosen = thumbnail ?? find("WEB_IMAGE");
     // No sanitized copy yet (or a row that points at a browser-staged key): not servable inline.
     if (!chosen || isStagingKey(chosen.storageKey)) {
       return mediaNotFound();
     }
     pathname = chosen.storageKey;
     cost = chosen.sizeBytes ?? originalBytes;
+    copy = thumbnail ? "thumb" : "web";
   }
 
-  // One reading of the clock for the counter's day and the Retry-After it may produce.
+  // One reading of the clock for the counters' day and the Retry-After it may produce.
   const at = now();
-  const allowed = await withinAllowance(db, { caller, mediaId: media.id, approved: media.memory.status === "APPROVED", originalBytes, cost, env, day: utcDay(at) });
+  const allowed = await withinAllowance(db, { caller, mediaId: media.id, copy, viewerKey, approved: media.memory.status === "APPROVED", originalBytes, cost, env, day: utcDay(at) });
   if (!allowed) {
-    log.info({ action: "over_allowance", mediaId: media.id, cost }, "media refused: daily allowance reached");
+    log.info({ action: "over_allowance", mediaId: media.id, copy, cost }, "media refused: daily allowance reached");
     return mediaOverAllowance(at);
   }
 
   const storage = createStorageService();
   if (download && originalBytes <= env.MEDIA_PROXY_DOWNLOAD_MAX_BYTES) {
-    // Streaming through the function is billed on both legs (Blob transfer in, Fast Data Transfer out);
-    // only small files keep the sanitized attachment filename this way. The cap is env-driven.
+    // Streaming through the function is billed on both legs (Blob transfer in, Fast Data Transfer out); the
+    // allowance bounds it. It is what gives "Download" a sanitized filename, so photo-sized files take it.
     const file = await storage.get(media.storageKey);
     if (!file) {
       return mediaNotFound();
@@ -150,31 +170,58 @@ export async function serveMedia({ id, variant, download, caller, allowDeletedMe
   }
 
   const { url } = await storage.presignGet({ pathname, validUntil: Date.now() + PRESIGN_TTL_MS });
-  return new Response(null, { status: 302, headers: { ...PROTECTIVE_HEADERS, "Cache-Control": REDIRECT_CACHE_CONTROL, Location: url } });
+  return new Response(null, { status: 302, headers: { ...PROTECTIVE_HEADERS, "Cache-Control": REDIRECT_CACHE_CONTROL, Location: download ? withDownloadSwitch(url) : url } });
 }
 
 /**
- * Charge `cost` to the file's counter, then the site's. The file's ceiling is
- * a multiple of the original's size (so a short clip and a long video get
- * proportionate room); the site's is an absolute number of bytes per day.
- * A refusal by the second counter gives the first its reservation back.
+ * The blob host's own "save, don't display" switch, the same one the SDK's
+ * `getDownloadUrl` adds. It is outside the signed part of a presigned URL
+ * (like `cache`), so it rides along without disturbing the signature.
+ */
+function withDownloadSwitch(presignedUrl: string): string {
+  const url = new URL(presignedUrl);
+  url.searchParams.set("download", "1");
+  return url.toString();
+}
+
+/**
+ * Charge the first request of a viewer's day for this copy to the file's
+ * counter, then the site's; count every request against the viewer's cap.
+ * A refusal further down gives every earlier reservation back, so the next
+ * try is judged afresh. Fails open on a counter error: the family's files
+ * are served and the error is reported.
  */
 async function withinAllowance(
   db: ReturnType<typeof getDb>,
-  { caller, mediaId, approved, originalBytes, cost, env, day }: { caller: MediaCaller; mediaId: string; approved: boolean; originalBytes: number; cost: number; env: MediaServingEnv; day: string }
+  { caller, mediaId, copy, viewerKey, approved, originalBytes, cost, env, day }: { caller: MediaCaller; mediaId: string; copy: string; viewerKey: string; approved: boolean; originalBytes: number; cost: number; env: MediaServingEnv; day: string }
 ): Promise<boolean> {
-  if (caller === "admin") {
-    await recordEgress(db, { scope: GLOBAL_EGRESS_SCOPE, day, bytes: cost });
+  try {
+    if (caller === "admin") {
+      await recordEgress(db, { scope: GLOBAL_EGRESS_SCOPE, day, bytes: cost });
+      return true;
+    }
+    const viewerScope = mediaViewerScope(mediaId, copy, viewerKey);
+    const nth = await countRequest(db, { scope: viewerScope, day, limit: env.MEDIA_VIEWER_DAILY_REQUESTS });
+    if (nth === null) {
+      return false;
+    }
+    if (nth > 1) {
+      return true;
+    }
+    const fileScope = mediaEgressScope(mediaId);
+    const multiple = approved ? env.MEDIA_FILE_DAILY_MULTIPLE : env.MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED;
+    if (!(await reserveEgress(db, { scope: fileScope, day, bytes: cost, limit: multiple * originalBytes }))) {
+      await releaseEgress(db, { scope: viewerScope, day, bytes: 1 });
+      return false;
+    }
+    if (!(await reserveEgress(db, { scope: GLOBAL_EGRESS_SCOPE, day, bytes: cost, limit: env.MEDIA_DAILY_EGRESS_BYTES }))) {
+      await releaseEgress(db, { scope: fileScope, day, bytes: cost });
+      await releaseEgress(db, { scope: viewerScope, day, bytes: 1 });
+      return false;
+    }
+    return true;
+  } catch (error) {
+    logError("media allowance could not be checked; serving", error, { category: "media", mediaId });
     return true;
   }
-  const multiple = approved ? env.MEDIA_FILE_DAILY_MULTIPLE : env.MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED;
-  const fileScope = mediaEgressScope(mediaId);
-  if (!(await reserveEgress(db, { scope: fileScope, day, bytes: cost, limit: multiple * originalBytes }))) {
-    return false;
-  }
-  if (!(await reserveEgress(db, { scope: GLOBAL_EGRESS_SCOPE, day, bytes: cost, limit: env.MEDIA_DAILY_EGRESS_BYTES }))) {
-    await releaseEgress(db, { scope: fileScope, day, bytes: cost });
-    return false;
-  }
-  return true;
 }

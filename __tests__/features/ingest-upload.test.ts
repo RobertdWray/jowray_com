@@ -89,7 +89,7 @@ vi.mock("@/features/memories/notify-admins", () => ({ notifyAdminsOfMemory: (arg
 import { finalizeUpload, recordMedia } from "@/features/memories/ingest-upload";
 import { SIGNATURE_PREFIX_BYTES } from "@/lib/media-types";
 
-import { NOT_MEDIA, SIGNATURE_SAMPLES } from "../fixtures/signatures";
+import { NOT_MEDIA, REAL_BUT_NOT_ALLOWED, SIGNATURE_SAMPLES } from "../fixtures/signatures";
 
 function row(over: Partial<MediaRow> = {}): MediaRow {
   return {
@@ -281,20 +281,39 @@ describe("recordMedia byte check (issue #45): the declared type is a claim, the 
     expect(delMock).not.toHaveBeenCalled();
   });
 
-  it("rejects bytes of another kind as wrong_type: FAILED, blob deleted, reason unchanged for callers", async () => {
+  it("bytes of another kind: FAILED as unrecognized_bytes, never READY, but the bytes are KEPT (a byte-check verdict alone deletes nothing)", async () => {
     readPrefixMock.mockResolvedValueOnce(SIGNATURE_SAMPLES["audio/wav"]!);
     const outcome = await recordMedia({ mediaId: "med_1" });
-    expect(outcome).toMatchObject({ status: "FAILED", reason: "wrong_type" });
-    expect(delMock).toHaveBeenCalledWith("originals/mem_1/abc.jpg");
-    expect(media[0]!.status).toBe("FAILED");
+    expect(outcome).toMatchObject({ status: "FAILED", reason: "unrecognized_bytes" });
+    expect(delMock).not.toHaveBeenCalled();
+    // The row says the bytes exist, so a later purge can find them.
+    expect(media[0]).toMatchObject({ status: "FAILED", blobUrl: "https://blob.test/originals/mem_1/abc.jpg" });
   });
 
-  it("rejects non-media bytes under a video label (arbitrary files never become servable)", async () => {
+  it("non-media bytes under a video label never become servable, and are kept likewise", async () => {
     headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 10, contentType: "video/mp4", uploadedAt: new Date() });
     media = [row({ mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 })];
     readPrefixMock.mockResolvedValueOnce(NOT_MEDIA.zip!);
+    expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "unrecognized_bytes" });
+    expect(delMock).not.toHaveBeenCalled();
+    expect(media[0]!.status).toBe("FAILED");
+  });
+
+  it("a real file the allowlist does not carry (AIFF named .wav, TIFF named .jpg) is FAILED and kept, never deleted", async () => {
+    for (const [mime, sample] of [["audio/wav", REAL_BUT_NOT_ALLOWED.aiff!], ["image/jpeg", REAL_BUT_NOT_ALLOWED.tiff!], ["image/jpeg", REAL_BUT_NOT_ALLOWED.bmp!]] as const) {
+      media = [row({ mimeType: mime, maxBytes: 100 * 1024 * 1024 })];
+      headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 10, contentType: mime, uploadedAt: new Date() });
+      readPrefixMock.mockResolvedValueOnce(sample);
+      expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "unrecognized_bytes" });
+    }
+    expect(delMock).not.toHaveBeenCalled();
+  });
+
+  it("still deletes on the checks main already had: over the ticketed size, or a declared type that is not the ticket's", async () => {
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 10, contentType: "text/html", uploadedAt: new Date() });
     expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "wrong_type" });
     expect(delMock).toHaveBeenCalledTimes(1);
+    expect(readPrefixMock).not.toHaveBeenCalled();
   });
 
   it("leaves the row PENDING, deleting nothing, when the blob vanished between head() and the prefix read", async () => {
@@ -317,11 +336,11 @@ describe("recordMedia byte check (issue #45): the declared type is a claim, the 
     expect(headMock).not.toHaveBeenCalled();
   });
 
-  it("rejects an empty file before asking for a byte range (a range on nothing is a 416, not a prefix)", async () => {
+  it("refuses an empty file before asking for a byte range (a range on nothing is a 416, not a prefix)", async () => {
     headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 0, contentType: "image/jpeg", uploadedAt: new Date() });
-    expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "wrong_type" });
+    expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "unrecognized_bytes" });
     expect(readPrefixMock).not.toHaveBeenCalled();
-    expect(delMock).toHaveBeenCalledWith("originals/mem_1/abc.jpg");
+    expect(delMock).not.toHaveBeenCalled();
   });
 
   it("relabels a file whose bytes are another allowed type of the same kind instead of destroying it (JPEG saved as .heic)", async () => {
@@ -344,10 +363,10 @@ describe("recordMedia byte check (issue #45): the declared type is a claim, the 
     expect(media[0]!.mimeType).toBe("audio/mp4");
   });
 
-  it("still rejects bytes of a different kind (a video labelled as a photo)", async () => {
+  it("still refuses bytes of a different kind (a video labelled as a photo), keeping them", async () => {
     readPrefixMock.mockResolvedValueOnce(SIGNATURE_SAMPLES["video/mp4"]!);
-    expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "wrong_type" });
-    expect(delMock).toHaveBeenCalledTimes(1);
+    expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "unrecognized_bytes" });
+    expect(delMock).not.toHaveBeenCalled();
   });
 });
 

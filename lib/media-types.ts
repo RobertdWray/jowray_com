@@ -109,6 +109,11 @@ export const SIGNATURE_PREFIX_BYTES = 128;
 const HEIF_BRANDS = new Set(["heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs", "mif1", "msf1", "miaf"]);
 
 const EBML_MAGIC = [0x1a, 0x45, 0xdf, 0xa3];
+
+/** An MPEG audio frame header: 11 sync bits, a version that is not reserved (01), a layer that is not reserved (00). */
+function isMpegAudioFrameHeader(b1: number, b2: number): boolean {
+  return b1 === 0xff && (b2 & 0xe0) === 0xe0 && (b2 & 0x18) !== 0x08 && (b2 & 0x06) !== 0x00;
+}
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 function bytesAt(bytes: Uint8Array, at: number, expected: number[]): boolean {
@@ -209,16 +214,22 @@ export function matchesSignature(mime: string, bytes: Uint8Array): boolean {
     case "audio/mp4":
     case "audio/x-m4a":
       return firstAtom(bytes) !== null;
-    case "audio/mpeg":
-      // An ID3v2 tag, or straight into the first frame (sync word: 11 set bits).
-      return asciiAt(bytes, 0, "ID3") || (bytes.length >= 2 && bytes[0] === 0xff && (bytes[1]! & 0xe0) === 0xe0);
+    case "audio/mpeg": {
+      // Some encoders pad the start with zeros; then an ID3v2 tag, an APEv2 tag, or straight into the first frame.
+      let at = 0;
+      while (at < bytes.length && bytes[at] === 0) {
+        at += 1;
+      }
+      return asciiAt(bytes, at, "ID3") || asciiAt(bytes, at, "APETAGEX") || (at + 1 < bytes.length && isMpegAudioFrameHeader(bytes[at]!, bytes[at + 1]!));
+    }
     case "audio/webm":
     case "video/webm":
       return bytesAt(bytes, 0, EBML_MAGIC);
     case "audio/ogg":
       return asciiAt(bytes, 0, "OggS");
     case "audio/wav":
-      return asciiAt(bytes, 0, "RIFF") && asciiAt(bytes, 8, "WAVE");
+      // RIFF, and the 64-bit forms (RF64, BW64) long recordings and broadcast tools write.
+      return (asciiAt(bytes, 0, "RIFF") || asciiAt(bytes, 0, "RF64") || asciiAt(bytes, 0, "BW64")) && asciiAt(bytes, 8, "WAVE");
     default:
       return false;
   }

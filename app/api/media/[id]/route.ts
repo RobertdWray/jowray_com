@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 
-import { mediaNotFound, mediaVariantFrom, serveMedia } from "@/features/media/serve-media";
+import { mediaNotFound, mediaVariantFrom, serveMedia, viewerKeyFrom } from "@/features/media/serve-media";
 import { hashClaimToken, safeEqualHex } from "@/lib/claim-token";
 
 // Streaming a download must finish within this; inline views are redirected
@@ -13,10 +13,11 @@ export async function GET(request: NextRequest, context: RouteContext<"/api/medi
   const token = request.nextUrl.searchParams.get("t");
   const download = request.nextUrl.searchParams.get("download") === "1";
   const variant = mediaVariantFrom(request.nextUrl.searchParams.get("v"));
+  const viewerKey = viewerKeyFrom(request.headers);
   const { id } = await context.params;
   if (!token) {
     return mediaNotFound();
   }
   const tokenHash = hashClaimToken(token);
-  return serveMedia({ id, variant, download, caller: "claim", allowDeletedMemory: false, authorize: (memory) => safeEqualHex(tokenHash, memory.claimTokenHash) });
+  return serveMedia({ id, variant, download, caller: "claim", viewerKey, allowDeletedMemory: false, authorize: (memory) => safeEqualHex(tokenHash, memory.claimTokenHash) });
 }

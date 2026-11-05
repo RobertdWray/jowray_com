@@ -136,19 +136,23 @@ const adminPageSchema = z.object({
 /**
  * Egress allowances behind `/api/media` and `/admin/media` (issue #45). Every
  * value has a default, so a deployment works with none of them set. Sizes are
- * bytes; the multiples are "times the original's size per UTC day".
+ * bytes; the multiples are "distinct viewers per UTC day, each charged once
+ * at the file's size" (a viewer's later requests that day are free up to the
+ * request cap), so ordinary playback, seeking and reloading never reach them.
  */
 /** `KEY=` (blank) means unset, like `ADMIN_PAGE_SECRET`: the default applies. `z.coerce` alone would turn "" into 0. */
 const blankIsUnset = <T extends z.ZodTypeAny>(schema: T) => z.preprocess((value) => (value === "" ? undefined : value), schema);
 const mediaServingSchema = z.object({
-  /** A file whose memory is APPROVED may be served this many times its own size per day. */
-  MEDIA_FILE_DAILY_MULTIPLE: blankIsUnset(z.coerce.number().int().positive().default(20)),
-  /** Before approval (the contributor reviewing their own upload): a smaller multiple. */
-  MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED: blankIsUnset(z.coerce.number().int().positive().default(10)),
+  /** Viewer-days a file whose memory is APPROVED may be served to per day, each at the file's size. */
+  MEDIA_FILE_DAILY_MULTIPLE: blankIsUnset(z.coerce.number().int().positive().default(100)),
+  /** Before approval (the contributor and whoever they forwarded the link to): fewer viewer-days. */
+  MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED: blankIsUnset(z.coerce.number().int().positive().default(50)),
   /** Bytes the whole site may serve to claim-link holders per day (default 50 GiB). */
   MEDIA_DAILY_EGRESS_BYTES: blankIsUnset(z.coerce.number().int().positive().default(50 * 1024 ** 3)),
-  /** Downloads up to this size stream through the function (sanitized filename); larger ones redirect (default 2 MiB). */
-  MEDIA_PROXY_DOWNLOAD_MAX_BYTES: blankIsUnset(z.coerce.number().int().nonnegative().default(2 * 1024 ** 2)),
+  /** Requests one viewer may make for one copy of one file per day; a long day of seeking and reloading is well under it. */
+  MEDIA_VIEWER_DAILY_REQUESTS: blankIsUnset(z.coerce.number().int().positive().default(300)),
+  /** Downloads up to this size stream through the function (sanitized filename, as on main); larger ones redirect (default 25 MiB). */
+  MEDIA_PROXY_DOWNLOAD_MAX_BYTES: blankIsUnset(z.coerce.number().int().nonnegative().default(25 * 1024 ** 2)),
 });
 
 export type DbEnv = z.infer<typeof dbSchema>;

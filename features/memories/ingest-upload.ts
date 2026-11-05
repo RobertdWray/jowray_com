@@ -30,7 +30,7 @@ export const DERIVE_DEADLINE_FINALIZE_MS = 20_000;
 export type RecordMediaResult =
   | { status: "READY"; mediaId: string; memoryId: string; sizeBytes: number }
   | { status: "PENDING"; mediaId: string; memoryId: string }
-  | { status: "FAILED"; mediaId: string; memoryId: string; reason: "too_large" | "wrong_type" | "retired" }
+  | { status: "FAILED"; mediaId: string; memoryId: string; reason: "too_large" | "wrong_type" | "unrecognized_bytes" | "retired" }
   | { status: "NOT_FOUND"; mediaId: string };
 
 function isPrismaCode(error: unknown, code: string): boolean {
@@ -80,21 +80,28 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
   if (tooLarge || wrongType) {
     return reject(tooLarge ? "too_large" : "wrong_type", tooLarge ? "size" : "label");
   }
-  if (head.size === 0) {
-    // Nothing to look at, and a byte range on an empty object is a 416, not a prefix.
-    return reject("wrong_type", "bytes");
-  }
   // The declared type is a claim made by the uploading client (the Blob token only pins it to the
   // ticket); the first bytes are the evidence (issue #45). Bounded read, never the file. Bytes of
-  // another allowed type of the same kind relabel the row (a JPEG saved as .heic is still a photo);
-  // only bytes of another kind, or of no allowed type, are refused.
+  // another allowed type of the same kind relabel the row (a JPEG saved as .heic is still a photo).
+  // Bytes nobody recognises make the row FAILED, never READY and never served, but the bytes are
+  // KEPT: a verdict read from 128 bytes must not destroy a family's file (an AIFF named .wav, a
+  // TIFF named .jpg). `blobUrl` records that they exist, so a later purge can find them.
+  const keepUnrecognised = async (): Promise<RecordMediaResult> => {
+    await transition(row, { status: "FAILED", blobUrl: head.url });
+    log.warn({ action: "reject", mediaId, memoryId: row.memoryId, reason: "unrecognized_bytes", check: "bytes", size: head.size }, "upload not recognised; bytes kept");
+    return { status: "FAILED", mediaId, memoryId: row.memoryId, reason: "unrecognized_bytes" };
+  };
+  if (head.size === 0) {
+    // Nothing to look at, and a byte range on an empty object is a 416, not a prefix.
+    return keepUnrecognised();
+  }
   const prefix = await storage.readPrefix(row.storageKey, SIGNATURE_PREFIX_BYTES);
   if (!prefix) {
     return { status: "PENDING", mediaId, memoryId: row.memoryId };
   }
   const actualType = detectMediaType(row.mimeType, prefix);
   if (actualType === null) {
-    return reject("wrong_type", "bytes");
+    return keepUnrecognised();
   }
   if (actualType !== row.mimeType) {
     log.info({ action: "relabel", mediaId, memoryId: row.memoryId, declared: row.mimeType, actual: actualType }, "upload relabelled from its bytes");
@@ -128,7 +135,7 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
  */
 async function transition(
   row: { id: string; memoryId: string; replacesMediaId: string | null },
-  data: { status: "READY"; sizeBytes: number; blobUrl: string; mimeType: string } | { status: "FAILED" }
+  data: { status: "READY"; sizeBytes: number; blobUrl: string; mimeType: string } | { status: "FAILED"; blobUrl?: string }
 ): Promise<"done" | "lost_race" | "retired"> {
   try {
     return await getDb().$transaction(async (tx) => {

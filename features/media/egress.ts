@@ -1,21 +1,55 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
+
 import type { PrismaClient } from "@/generated/prisma/client";
 
 /**
- * Bytes-served counters behind the media routes (issue #45). One row per
- * scope per UTC day in `EgressCounter`; a scope is `global` or one file.
- * Every write is a single conditional upsert, so two requests arriving
- * together cannot both squeeze under a ceiling the way a read-then-write
- * would let them. Counting happens when a response is issued (the size of
- * the copy about to be served), which over-counts a partial fetch and never
- * under-counts: the conservative side for a shared bill.
+ * Counters behind the media routes (issue #45). One row per scope per UTC
+ * day in `EgressCounter`; every write is a single conditional statement, so
+ * two requests arriving together cannot both squeeze under a ceiling the
+ * way a read-then-write would let them. Three scope families share the
+ * table:
+ *
+ * - `global`: bytes served to claim-link holders site-wide today.
+ * - `media:<id>`: bytes served from one file today.
+ * - `media:<id>:<copy>:<viewer>`: requests one viewer made for one copy of
+ *   one file today (the `bytes` column holds a request count here). The
+ *   first request of the day is what charges the two byte counters; the
+ *   rest of that viewer's day is free, because a media element asks for a
+ *   file many times (a probe, the first range, seeks, reloads) and we can
+ *   only see the request, never how much the blob host then sent.
+ *
+ * So the byte counters say "viewers × size", a fair stand-in for what a
+ * day of real viewing costs, and the per-viewer request cap is what stops
+ * one address looping on a file.
  */
 
 export const GLOBAL_EGRESS_SCOPE = "global";
 
 export function mediaEgressScope(mediaId: string): string {
   return `media:${mediaId}`;
+}
+
+/** One viewer's day with one copy of one file. The viewer key is hashed so the row never carries an address. */
+export function mediaViewerScope(mediaId: string, copy: string, viewerKey: string): string {
+  const viewer = createHash("sha256").update(viewerKey).digest("hex").slice(0, 16);
+  return `media:${mediaId}:${copy}:${viewer}`;
+}
+
+/**
+ * Who is asking, as far as a Vercel function can tell: the client address
+ * Vercel puts on the request. Shared NATs look like one viewer (fine: they
+ * share one charge); a phone that changes address looks like a new viewer
+ * (fine: one more charge). Without either header, every viewer is `unknown`.
+ */
+export function viewerKeyFrom(headers: Headers): string {
+  const real = headers.get("x-real-ip")?.trim();
+  if (real) {
+    return real;
+  }
+  const forwarded = headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  return forwarded && forwarded.length > 0 ? forwarded : "unknown";
 }
 
 /** The counters' window: a UTC calendar day as `YYYY-MM-DD`. */
@@ -29,7 +63,7 @@ export function secondsUntilNextUtcDay(now: Date = new Date()): number {
   return Math.max(1, Math.ceil((next - now.getTime()) / 1000));
 }
 
-type Db = Pick<PrismaClient, "$executeRaw">;
+type Db = Pick<PrismaClient, "$executeRaw" | "$queryRaw">;
 
 interface CounterKey {
   scope: string;
@@ -71,4 +105,22 @@ export async function releaseEgress(db: Db, { scope, day, bytes }: CounterKey): 
     UPDATE "EgressCounter"
       SET "bytes" = GREATEST("EgressCounter"."bytes" - ${asBigInt(bytes)}, 0), "updatedAt" = now()
       WHERE "scope" = ${scope} AND "day" = ${day}::date`;
+}
+
+/**
+ * Count one more request under `scope` unless that would pass `limit`.
+ * Answers the request's ordinal for the day (1 for the first), or null when
+ * the cap held. One statement, so concurrent first requests (a media
+ * element's probe and its first range arrive together) get 1 and 2, never
+ * 1 and 1.
+ */
+export async function countRequest(db: Db, { scope, day, limit }: { scope: string; day: string; limit: number }): Promise<number | null> {
+  const rows = await db.$queryRaw<Array<{ bytes: bigint | number }>>`
+    INSERT INTO "EgressCounter" ("scope", "day", "bytes") VALUES (${scope}, ${day}::date, 1)
+    ON CONFLICT ("scope", "day") DO UPDATE
+      SET "bytes" = "EgressCounter"."bytes" + 1, "updatedAt" = now()
+      WHERE "EgressCounter"."bytes" + 1 <= ${asBigInt(limit)}
+    RETURNING "bytes"`;
+  const first = rows[0];
+  return first === undefined ? null : Number(first.bytes);
 }

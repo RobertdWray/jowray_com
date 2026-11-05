@@ -16,7 +16,7 @@ import {
   summarizeMemoryType,
 } from "@/lib/media-types";
 
-import { atom, ftyp, ftypLarge, MP3_FRAME_SYNC, NOT_MEDIA, SIGNATURE_SAMPLES } from "../fixtures/signatures";
+import { ALSO_VALID, atom, ftyp, ftypLarge, MP3_FRAME_SYNC, NOT_MEDIA, REAL_BUT_NOT_ALLOWED, SIGNATURE_SAMPLES } from "../fixtures/signatures";
 
 describe("normalizeMime", () => {
   it("strips parameters and lower-cases", () => {
@@ -156,9 +156,31 @@ describe("matchesSignature (issue #45: bytes, not labels, decide what becomes RE
     expect(matchesSignature("image/heif", ftyp("msf1", ["hevc"]))).toBe(true);
   });
 
-  it("accepts an MP3 that starts with a frame sync instead of an ID3 tag", () => {
+  it("accepts an MP3 that starts with a frame sync instead of an ID3 tag, after zero padding, or behind an APEv2 tag", () => {
     expect(matchesSignature("audio/mpeg", MP3_FRAME_SYNC)).toBe(true);
+    expect(matchesSignature("audio/mpeg", ALSO_VALID.mp3_zero_padded!)).toBe(true);
+    expect(matchesSignature("audio/mpeg", ALSO_VALID.mp3_ape_tag!)).toBe(true);
+    expect(matchesSignature("audio/mpeg", ALSO_VALID.mp3_mpeg2_layer3!)).toBe(true);
+    // Eleven sync bits are not enough on their own: a reserved version or layer is no frame.
     expect(matchesSignature("audio/mpeg", Uint8Array.from([0xff, 0x00, 0x90]))).toBe(false);
+    expect(matchesSignature("audio/mpeg", Uint8Array.from([0xff, 0xe8, 0x90]))).toBe(false); // version bits 01 (reserved)
+    expect(matchesSignature("audio/mpeg", Uint8Array.from([0xff, 0xf9, 0x90]))).toBe(false); // layer bits 00 (reserved)
+    expect(matchesSignature("audio/mpeg", NOT_MEDIA.zeros!)).toBe(false);
+  });
+
+  it("accepts RF64 and BW64 WAV files", () => {
+    expect(matchesSignature("audio/wav", ALSO_VALID.wav_rf64!)).toBe(true);
+    expect(matchesSignature("audio/wav", ALSO_VALID.wav_bw64!)).toBe(true);
+  });
+
+  it("does not recognise real formats outside the allowlist under any label (they are kept, not served)", () => {
+    for (const [name, sample] of Object.entries(REAL_BUT_NOT_ALLOWED)) {
+      for (const mime of ALLOWED_MIME_TYPES) {
+        expect(matchesSignature(mime, sample), `${name} as ${mime}`).toBe(false);
+      }
+      expect(detectMediaType("audio/wav", sample), name).toBeNull();
+      expect(detectMediaType("image/jpeg", sample), name).toBeNull();
+    }
   });
 
   it("never throws on short input and needs no more than the documented prefix", () => {
