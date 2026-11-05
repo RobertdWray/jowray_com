@@ -5,6 +5,7 @@ import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 
 import { ImageDeriveError } from "@/lib/image-derive-error";
+import { SharpHeicImageService } from "@/integrations/images/sharp-heic";
 import { createImageService, DERIVE_DEFAULTS, type DeriveOptions } from "@/services/images";
 
 const fixture = (name: string) => readFile(resolve(__dirname, "../fixtures", name));
@@ -128,5 +129,60 @@ describe("ImageService.derive", () => {
     await Promise.all([a, b]);
     expect(order).toEqual(["a", "b"]);
     expect(service.inFlight()).toBe(0);
+  });
+
+  it("refuses an animation with more frames than the cap before decoding any frame (terminal error)", async () => {
+    const long = await fixture("anim-400.gif");
+    await expect(service.derive(long, opts("image/gif", { maxFrames: 300 }))).rejects.toMatchObject({ code: "too_many_frames", limit: 300 });
+    // Under the cap the same file is fine (the encoder may merge identical frames; the point is that it is accepted).
+    expect((await service.derive(long, opts("image/gif", { maxFrames: 400 }))).web.mimeType).toBe("image/gif");
+  });
+
+  it("applies the pixel ceiling to the whole frame strip of an animation, not to one frame", async () => {
+    // 10×10 frames × 400 = 40,000 pixels of strip; each frame alone is far under the ceiling.
+    const strip = await fixture("anim-400x10.gif");
+    await expect(service.derive(strip, opts("image/gif", { maxPixels: 30_000, maxFrames: 1000 }))).rejects.toMatchObject({ code: "too_many_pixels", limit: 30_000 });
+    expect((await service.derive(strip, opts("image/gif", { maxPixels: 50_000, maxFrames: 1000 }))).web.mimeType).toBe("image/gif");
+  });
+});
+
+describe("ImageService.acquire (issue #45: the slot is taken before anything is downloaded)", () => {
+  it("serves waiters in order and answers busy at once beyond the waiting line, without consuming the deadline", async () => {
+    const own = new SharpHeicImageService(2);
+    const first = await own.acquire(1_000);
+    expect(own.inFlight()).toBe(1);
+    const second = own.acquire(5_000);
+    const third = own.acquire(5_000);
+    expect(own.waiting()).toBe(2);
+    const started = Date.now();
+    await expect(own.acquire(5_000)).rejects.toMatchObject({ code: "busy" });
+    expect(Date.now() - started).toBeLessThan(100);
+    first.release();
+    first.release(); // idempotent: releasing twice hands the slot over once
+    const s2 = await second;
+    expect(own.inFlight()).toBe(1);
+    expect(own.waiting()).toBe(1);
+    s2.release();
+    const s3 = await third;
+    s3.release();
+    expect(own.inFlight()).toBe(0);
+    expect(own.waiting()).toBe(0);
+  });
+
+  it("times out a waiter whose deadline passes and removes it from the line", async () => {
+    const own = new SharpHeicImageService(2);
+    const held = await own.acquire(1_000);
+    await expect(own.acquire(5)).rejects.toMatchObject({ code: "timeout" });
+    expect(own.waiting()).toBe(0);
+    held.release();
+    const next = await own.acquire(10);
+    next.release();
+  });
+
+  it("a released slot cannot decode any more", async () => {
+    const own = new SharpHeicImageService(2);
+    const slot = await own.acquire(1_000);
+    slot.release();
+    await expect(slot.derive(Buffer.alloc(0), opts("image/jpeg"))).rejects.toThrow(/released/);
   });
 });

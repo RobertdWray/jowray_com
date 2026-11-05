@@ -70,6 +70,8 @@ sequenceDiagram
 
 `deriveMedia` claims before it works: a `PENDING` `DerivedMedia` row with its candidate key is created per kind (`@@unique([mediaId, kind])` makes a racing worker lose at once), the original is decoded once, both copies are written, and each row is published under the memory row lock with a conditional update only that claim can satisfy. Failures are recorded as `too_many_pixels:<limit>`, `decode_failed`, `timeout`, `too_large` or `unsupported_type`; retryable ones get 3 attempts via cron step (g). The claim page calls `router.refresh()` every 3 s, ten times, while a copy is pending. Remove, cancel, replace and the swap on `READY` run inside `lockMemory` (`SELECT … FOR UPDATE`), recompute `Memory.type` and append a `MemoryRevision`. Limits: `MAX_BYTES` 25 MB photo, 100 MB voice, 500 MB video; `MAX_FILES_PER_MEMORY` 10; ticket 15 min; Blob token 1 h; lease 80 min; presign 60 s.
 
+**Public-repo audit C (issue #45, 2026-11-05).** Three guards sit on top of the flow above. (1) Before a row becomes `READY`, `recordMedia` reads the blob's first 128 bytes (`StorageService.readPrefix`, a `Range` request) and checks them against the declared type with `matchesSignature` in `lib/media-types.ts`; a mismatch is rejected like `wrong_type` (blob deleted, row `FAILED`). Rows already `READY` are never re-read. An image the decoder later refuses as `unsupported_type` is retired: `purgedAt` set, `READY` → `FAILED`, type recomputed, blob deleted after the lock (cron step (f) finishes it if that delete fails). (2) `serveMedia` charges every response with the size of the copy it serves against two daily counters in `EgressCounter` (`features/media/egress.ts`, one conditional upsert each): the file's own (`MEDIA_FILE_DAILY_MULTIPLE` × size once the memory is `APPROVED`, `MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED` × size before) and the site's (`MEDIA_DAILY_EGRESS_BYTES`). A claim-link holder over either gets `429` + `Retry-After`; the admin route is counted, never refused. Downloads stream through the function only up to `MEDIA_PROXY_DOWNLOAD_MAX_BYTES` (2 MiB); larger ones redirect. (3) `deriveMedia` takes the one decode slot *before* it downloads the original; a full waiting line (`MAX_WAITING_DERIVATIONS`) answers `deferred` with nothing claimed, so cron step (g) comes back to it, and one deadline from entry covers the wait, the download (aborted if it stalls) and the decode. Animated GIFs are capped at `maxFrames` (300) and their whole frame strip counts against `maxPixels`.
+
 ## Key files
 
 | Path | Role |
@@ -120,6 +122,7 @@ Not run or not recorded: the iPhone and Android pass (HEIC, `.mov`, recording, f
 - M-B-12 (§4.4): accepted lease-renewal race.
 - M-C-09, M-B-16 (§3.6): per-file words on the share form await Rob; a replacement cannot clear inherited words.
 - M-C-20: the claim page shows the web copy, never `v=thumb`.
+- Issue #45: the allowance numbers are first guesses (Rob to adjust by env); `EgressCounter` rows are never pruned (one per served file per day; a cron prune step is B's file); the device matrix for the byte check (iPhone HEIC/.mov, Safari and Chrome recordings, Android mp4) has not been run on a preview; downloads over 2 MiB lose the sanitized attachment filename on the redirect.
 
 ## Related
 

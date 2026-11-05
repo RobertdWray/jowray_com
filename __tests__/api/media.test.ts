@@ -3,29 +3,37 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { hashClaimToken } from "@/lib/claim-token";
 import { attachmentDisposition } from "@/lib/media-types";
+import { resetEnvCache } from "@/server/config/env";
 
 const TOKEN = "AbCdEf0123456789_-AbCdEf0123456789_-AbCdEf0";
 
 interface MediaRow {
   id: string;
   sizeBytes: number | null;
+  maxBytes?: number;
   status: "PENDING" | "READY" | "FAILED";
   mimeType: string;
   storageKey: string;
   originalFilename: string | null;
   deletedAt: Date | null;
   purgedAt?: Date | null;
-  derivatives?: Array<{ kind: "WEB_IMAGE" | "THUMBNAIL" | "POSTER"; status: "PENDING" | "READY" | "FAILED"; storageKey: string; mimeType: string | null }>;
-  memory: { claimTokenHash: string; deletedAt: Date | null };
+  derivatives?: Array<{ kind: "WEB_IMAGE" | "THUMBNAIL" | "POSTER"; status: "PENDING" | "READY" | "FAILED"; storageKey: string; mimeType: string | null; sizeBytes?: number | null }>;
+  memory: { claimTokenHash: string; deletedAt: Date | null; status?: "DRAFT" | "PENDING" | "APPROVED" | "HIDDEN" };
 }
 let media: MediaRow[] = [];
+/** Every counter statement; the SQL text and its bound values, so tests can see scope, bytes and ceiling. */
+const counterCalls: Array<{ sql: string; values: unknown[] }> = [];
+/** A counter statement that records itself and answers `changed` rows (1 = reserved, 0 = ceiling held). */
+const counter = (changed: number) => async (strings: TemplateStringsArray, ...values: unknown[]) => { counterCalls.push({ sql: strings.join("?"), values }); return changed; };
+const executeRawMock = vi.fn(counter(1));
 const dbStub = {
+  $executeRaw: executeRawMock,
   media: {
     findUnique: vi.fn(async ({ where, include }: { where: { id: string }; include?: { derivatives?: { where?: { status?: string } } } }) => {
       const row = media.find((m) => m.id === where.id);
       if (!row) { return null; }
       const wanted = include?.derivatives?.where?.status;
-      return { purgedAt: null, ...row, derivatives: (row.derivatives ?? []).filter((d) => !wanted || d.status === wanted) };
+      return { purgedAt: null, maxBytes: 25 * 1024 * 1024, ...row, memory: { status: "PENDING", ...row.memory }, derivatives: (row.derivatives ?? []).filter((d) => !wanted || d.status === wanted) };
     }),
   },
 };
@@ -73,6 +81,11 @@ beforeEach(() => {
   ];
   presignMock.mockClear();
   getMock.mockClear();
+  executeRawMock.mockClear();
+  executeRawMock.mockImplementation(counter(1));
+  counterCalls.length = 0;
+  for (const key of ["MEDIA_FILE_DAILY_MULTIPLE", "MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED", "MEDIA_DAILY_EGRESS_BYTES", "MEDIA_PROXY_DOWNLOAD_MAX_BYTES"]) { delete process.env[key]; }
+  resetEnvCache();
 });
 
 describe("GET /api/media/[id]", () => {
@@ -172,5 +185,96 @@ describe("variants", () => {
   it("keeps serving audio and video originals inline", async () => {
     media.push({ ...media[0]!, id: "med_audio", mimeType: "audio/mp4", storageKey: "originals/mem_1/v.m4a", derivatives: [] });
     expect((await request("med_audio", `?t=${TOKEN}`)).headers.get("location")).toBe("https://blob.test/originals/mem_1/v.m4a?signed=1");
+  });
+
+});
+
+describe("egress allowance (issue #45)", () => {
+  const ready = () => media[0]!;
+
+  it("charges the served copy's size to the file's counter, then the site's, before anything is presigned", async () => {
+    ready().derivatives![0]!.sizeBytes = 4;
+    const res = await request("med_ready", `?t=${TOKEN}`);
+    expect(res.status).toBe(302);
+    expect(counterCalls).toHaveLength(2);
+    const [file, site] = counterCalls;
+    expect(file!.sql).toMatch(/INSERT INTO "EgressCounter"[\s\S]*ON CONFLICT[\s\S]*<= /);
+    expect(file!.values).toEqual(["media:med_ready", expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), BigInt(4), BigInt(10 * 9)]);
+    expect(site!.values).toEqual(["global", expect.any(String), BigInt(4), BigInt(50 * 1024 ** 3)]);
+    expect(executeRawMock.mock.invocationCallOrder[1]!).toBeLessThan(presignMock.mock.invocationCallOrder[0]!);
+  });
+
+  it("uses the original's size for downloads and v=original, and the larger multiple once the memory is APPROVED", async () => {
+    ready().memory.status = "APPROVED";
+    await request("med_ready", `?t=${TOKEN}&v=original`);
+    expect(counterCalls[0]!.values).toEqual(["media:med_ready", expect.any(String), BigInt(9), BigInt(20 * 9)]);
+    counterCalls.length = 0;
+    await request("med_ready", `?t=${TOKEN}&download=1`);
+    expect(counterCalls[0]!.values[2]).toBe(BigInt(9));
+  });
+
+  it("answers 429 with Retry-After when the file's allowance is spent; nothing is streamed or presigned", async () => {
+    executeRawMock.mockImplementationOnce(counter(0));
+    const res = await request("med_ready", `?t=${TOKEN}&download=1`);
+    expect(res.status).toBe(429);
+    expect(Number(res.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(Number(res.headers.get("retry-after"))).toBeLessThanOrEqual(86_400);
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(getMock).not.toHaveBeenCalled();
+    expect(presignMock).not.toHaveBeenCalled();
+    expect(counterCalls).toHaveLength(1);
+  });
+
+  it("gives the file's reservation back when the site's allowance refuses", async () => {
+    executeRawMock.mockImplementationOnce(counter(1)).mockImplementationOnce(counter(0));
+    const res = await request("med_ready", `?t=${TOKEN}`);
+    expect(res.status).toBe(429);
+    expect(counterCalls).toHaveLength(3);
+    expect(counterCalls[2]!.sql).toMatch(/UPDATE "EgressCounter"[\s\S]*GREATEST/);
+    expect(counterCalls[2]!.values).toContain("media:med_ready");
+  });
+
+  it("never charges anything before the token, status and visibility checks pass (no counter row for refused requests)", async () => {
+    await request("med_ready", "");
+    await request("med_ready", `?t=${"A".repeat(TOKEN.length)}`);
+    await request("med_pending", `?t=${TOKEN}`);
+    await request("med_deleted", `?t=${TOKEN}`);
+    expect(counterCalls).toHaveLength(0);
+  });
+
+  it("reads the ceilings from the environment", async () => {
+    process.env.MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED = "3";
+    process.env.MEDIA_DAILY_EGRESS_BYTES = "1000";
+    resetEnvCache();
+    await request("med_ready", `?t=${TOKEN}&v=original`);
+    expect(counterCalls[0]!.values[3]).toBe(BigInt(3 * 9));
+    expect(counterCalls[1]!.values[3]).toBe(BigInt(1000));
+  });
+
+  it("refuses without a statement when one response alone would exceed the ceiling", async () => {
+    process.env.MEDIA_DAILY_EGRESS_BYTES = "5";
+    resetEnvCache();
+    const res = await request("med_ready", `?t=${TOKEN}&v=original`);
+    expect(res.status).toBe(429);
+    // file counter reserved, site refused without a round trip, file released
+    expect(counterCalls.map((c) => c.sql.includes("GREATEST"))).toEqual([false, true]);
+  });
+});
+
+describe("proxy download cap (issue #45: the double-billed path is small and env-driven)", () => {
+  it("redirects a 3 MB photo download instead of streaming it, and still streams a small one", async () => {
+    media.push({ ...media[0]!, id: "med_3mb", sizeBytes: 3 * 1024 * 1024 });
+    const res = await request("med_3mb", `?t=${TOKEN}&download=1`);
+    expect(res.status).toBe(302);
+    expect(getMock).not.toHaveBeenCalled();
+    expect((await request("med_ready", `?t=${TOKEN}&download=1`)).status).toBe(200);
+  });
+
+  it("honours MEDIA_PROXY_DOWNLOAD_MAX_BYTES", async () => {
+    process.env.MEDIA_PROXY_DOWNLOAD_MAX_BYTES = "4";
+    resetEnvCache();
+    expect((await request("med_ready", `?t=${TOKEN}&download=1`)).status).toBe(302);
+    expect(getMock).not.toHaveBeenCalled();
   });
 });

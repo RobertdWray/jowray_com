@@ -2,15 +2,20 @@ import { describe, expect, it } from "vitest";
 
 import {
   ACCEPT_ATTRIBUTE,
+  ALLOWED_MIME_TYPES,
   extensionFor,
   isAllowedMime,
   isRenderableIn,
+  matchesSignature,
   MAX_FILES_PER_MEMORY,
   maxBytesFor,
   memoryTypeFor,
   normalizeMime,
+  SIGNATURE_PREFIX_BYTES,
   summarizeMemoryType,
 } from "@/lib/media-types";
+
+import { ftyp, MP3_FRAME_SYNC, NOT_MEDIA, SIGNATURE_SAMPLES } from "../fixtures/signatures";
 
 describe("normalizeMime", () => {
   it("strips parameters and lower-cases", () => {
@@ -108,5 +113,58 @@ describe("summarizeMemoryType", () => {
 
   it("ignores media whose type is not on the allowlist", () => {
     expect(summarizeMemoryType([{ mimeType: "text/html" }], true)).toBe("TEXT");
+  });
+});
+
+describe("matchesSignature (issue #45: bytes, not labels, decide what becomes READY)", () => {
+  it("has a sample for every allowed type and accepts each one under its own label", () => {
+    for (const mime of ALLOWED_MIME_TYPES) {
+      expect(SIGNATURE_SAMPLES[mime], mime).toBeDefined();
+      expect(matchesSignature(mime, SIGNATURE_SAMPLES[mime]!), mime).toBe(true);
+    }
+  });
+
+  it("rejects things that are not media under every label", () => {
+    for (const mime of ALLOWED_MIME_TYPES) {
+      for (const [name, sample] of Object.entries(NOT_MEDIA)) {
+        expect(matchesSignature(mime, sample), `${name} as ${mime}`).toBe(false);
+      }
+    }
+  });
+
+  it("rejects a file of one family labelled as another (PNG as JPEG, JPEG as MP4, MP4 as HEIC, WAV as MP3, OGG as WebM)", () => {
+    expect(matchesSignature("image/jpeg", SIGNATURE_SAMPLES["image/png"]!)).toBe(false);
+    expect(matchesSignature("video/mp4", SIGNATURE_SAMPLES["image/jpeg"]!)).toBe(false);
+    expect(matchesSignature("image/heic", SIGNATURE_SAMPLES["video/mp4"]!)).toBe(false);
+    expect(matchesSignature("audio/mpeg", SIGNATURE_SAMPLES["audio/wav"]!)).toBe(false);
+    expect(matchesSignature("audio/webm", SIGNATURE_SAMPLES["audio/ogg"]!)).toBe(false);
+    expect(matchesSignature("image/webp", SIGNATURE_SAMPLES["audio/wav"]!)).toBe(false);
+  });
+
+  it("keeps the ISO BMFF families broad on purpose: any ftyp brand passes for mp4/mov/m4a, HEIF needs a HEIF brand", () => {
+    // Real device files carry brands we cannot enumerate (Safari recordings, Voice Memos, Android exports); a
+    // false rejection costs the family a memory, so the container is what we check for these.
+    for (const mime of ["video/mp4", "video/quicktime", "audio/mp4", "audio/x-m4a"]) {
+      expect(matchesSignature(mime, ftyp("mp42", ["isom"])), mime).toBe(true);
+      expect(matchesSignature(mime, ftyp("qt  ")), mime).toBe(true);
+      expect(matchesSignature(mime, ftyp("M4A ", ["mp42", "isom"])), mime).toBe(true);
+      expect(matchesSignature(mime, ftyp("3gp5")), mime).toBe(true);
+    }
+    expect(matchesSignature("image/heic", ftyp("mif1", ["heic"]))).toBe(true);
+    expect(matchesSignature("image/heic", ftyp("isom", ["mp42"]))).toBe(false);
+    expect(matchesSignature("image/heif", ftyp("msf1", ["hevc"]))).toBe(true);
+  });
+
+  it("accepts an MP3 that starts with a frame sync instead of an ID3 tag", () => {
+    expect(matchesSignature("audio/mpeg", MP3_FRAME_SYNC)).toBe(true);
+    expect(matchesSignature("audio/mpeg", Uint8Array.from([0xff, 0x00, 0x90]))).toBe(false);
+  });
+
+  it("never throws on short input and needs no more than the documented prefix", () => {
+    for (const mime of ALLOWED_MIME_TYPES) {
+      expect(matchesSignature(mime, new Uint8Array(3))).toBe(false);
+      expect(matchesSignature(mime, SIGNATURE_SAMPLES[mime]!.slice(0, SIGNATURE_PREFIX_BYTES))).toBe(true);
+    }
+    expect(matchesSignature("application/pdf", NOT_MEDIA.pdf!)).toBe(false);
   });
 });

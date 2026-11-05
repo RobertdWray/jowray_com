@@ -66,6 +66,10 @@ These are used by the agent running the Phase 1 plan and by GitHub Actions, neve
 | `DAILY_MEMORY_BUDGET` | Maximum memories created per rolling 24 h (default 200); beyond it the form answers "try again later". Production + Preview. Cost ceiling; launch value set in Task 10. |
 | `CRON_SECRET` | Bearer secret Vercel Cron sends to `/api/cron/reconcile-uploads`; the route fails closed when it is unset. Production + Preview (and local `.env` for manual runs). Generate with `openssl rand -hex 32`. |
 | `DAILY_BYTE_BUDGET` | Maximum ticketed upload bytes per rolling 24 h (default 21474836480 = 20 GB), counted from `Media.maxBytes`. Production + Preview. |
+| `MEDIA_FILE_DAILY_MULTIPLE` | Egress allowance (issue #45): a file whose memory is APPROVED may be served to claim-link holders this many times its own size per UTC day (default 20). Optional; counted in `EgressCounter`. |
+| `MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED` | Same, before a family admin approves the memory (default 10): enough for the contributor to review their own upload. Optional. |
+| `MEDIA_DAILY_EGRESS_BYTES` | Bytes the whole site may serve to claim-link holders per UTC day (default 53687091200 = 50 GiB). Over it, `/api/media` answers 429 with `Retry-After`; the admin page is counted but never refused. Optional. |
+| `MEDIA_PROXY_DOWNLOAD_MAX_BYTES` | Downloads up to this size stream through the function with the sanitized attachment filename (default 2097152 = 2 MiB; billed on both legs); larger ones redirect to a 60-second presigned Blob URL. Optional. |
 
 ## Phase 1: storage and email keys (Task 5)
 

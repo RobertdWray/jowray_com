@@ -73,8 +73,10 @@ vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
 const headMock = vi.fn();
 const delMock = vi.fn();
+/** By default the blob's first bytes match the row's declared type (the honest case); tests override it. */
+const readPrefixMock = vi.fn(async (pathname: string): Promise<Uint8Array | null> => SIGNATURE_SAMPLES[media.find((m) => m.storageKey === pathname)?.mimeType ?? ""] ?? null);
 vi.mock("@/services/storage", () => ({
-  createStorageService: () => ({ head: headMock, del: delMock, get: vi.fn(), put: vi.fn(), presignGet: vi.fn() }),
+  createStorageService: () => ({ head: headMock, del: delMock, readPrefix: readPrefixMock, get: vi.fn(), put: vi.fn(), presignGet: vi.fn() }),
 }));
 
 const confirmMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m1" }));
@@ -85,6 +87,9 @@ const notifyMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m2"
 vi.mock("@/features/memories/notify-admins", () => ({ notifyAdminsOfMemory: (arg: unknown) => notifyMock(arg) }));
 
 import { finalizeUpload, recordMedia } from "@/features/memories/ingest-upload";
+import { SIGNATURE_PREFIX_BYTES } from "@/lib/media-types";
+
+import { NOT_MEDIA, SIGNATURE_SAMPLES } from "../fixtures/signatures";
 
 function row(over: Partial<MediaRow> = {}): MediaRow {
   return {
@@ -117,6 +122,7 @@ beforeEach(() => {
   p2002Once = false;
   headMock.mockReset();
   delMock.mockReset();
+  readPrefixMock.mockClear();
   deriveMock.mockClear();
   headMock.mockResolvedValue({
     pathname: "originals/mem_1/abc.jpg",
@@ -264,6 +270,57 @@ describe("recordMedia", () => {
     const results = await Promise.all([recordMedia({ mediaId: "med_1" }), recordMedia({ mediaId: "med_1" })]);
     expect(results.map((r) => r.status).sort()).toEqual(["READY", "READY"]);
     expect(media).toHaveLength(1);
+  });
+});
+
+describe("recordMedia byte check (issue #45): the declared type is a claim, the first bytes are the evidence", () => {
+  it("reads only a bounded prefix and makes the row READY when the bytes match the declared type", async () => {
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("READY");
+    expect(readPrefixMock).toHaveBeenCalledTimes(1);
+    expect(readPrefixMock).toHaveBeenCalledWith("originals/mem_1/abc.jpg", SIGNATURE_PREFIX_BYTES);
+    expect(delMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects bytes that are not the declared type as wrong_type: FAILED, blob deleted, reason unchanged for callers", async () => {
+    readPrefixMock.mockResolvedValueOnce(SIGNATURE_SAMPLES["image/png"]!);
+    const outcome = await recordMedia({ mediaId: "med_1" });
+    expect(outcome).toMatchObject({ status: "FAILED", reason: "wrong_type" });
+    expect(delMock).toHaveBeenCalledWith("originals/mem_1/abc.jpg");
+    expect(media[0]!.status).toBe("FAILED");
+  });
+
+  it("rejects non-media bytes under a video label (arbitrary files never become servable)", async () => {
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 10, contentType: "video/mp4", uploadedAt: new Date() });
+    media = [row({ mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 })];
+    readPrefixMock.mockResolvedValueOnce(NOT_MEDIA.zip!);
+    expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "wrong_type" });
+    expect(delMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the row PENDING, deleting nothing, when the blob vanished between head() and the prefix read", async () => {
+    readPrefixMock.mockResolvedValueOnce(null);
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("PENDING");
+    expect(delMock).not.toHaveBeenCalled();
+    expect(media[0]!.status).toBe("PENDING");
+  });
+
+  it("does not read any bytes of a file that already failed the size or label check", async () => {
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 26 * 1024 * 1024, contentType: "image/jpeg", uploadedAt: new Date() });
+    expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "too_large" });
+    expect(readPrefixMock).not.toHaveBeenCalled();
+  });
+
+  it("never re-reads a row that is already READY: files recorded before the byte check keep working", async () => {
+    media = [row({ status: "READY", sizeBytes: 5, blobUrl: "u" })];
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("READY");
+    expect(readPrefixMock).not.toHaveBeenCalled();
+    expect(headMock).not.toHaveBeenCalled();
+  });
+
+  it("treats an empty file as not matching any type", async () => {
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 0, contentType: "image/jpeg", uploadedAt: new Date() });
+    readPrefixMock.mockResolvedValueOnce(new Uint8Array(0));
+    expect(await recordMedia({ mediaId: "med_1" })).toMatchObject({ status: "FAILED", reason: "wrong_type" });
   });
 });
 

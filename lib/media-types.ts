@@ -98,6 +98,97 @@ export function isAllowedMime(mime: string): boolean {
   return Object.hasOwn(ALLOWED, mime);
 }
 
+/**
+ * Bytes `recordMedia` reads from the start of a blob before it becomes READY
+ * (issue #45). Enough for every signature below, including an ISO BMFF `ftyp`
+ * box with a long list of compatible brands.
+ */
+export const SIGNATURE_PREFIX_BYTES = 128;
+
+/** HEIF container brands (ISO/IEC 23008-12); what iPhones write as HEIC/HEIF. */
+const HEIF_BRANDS = new Set(["heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs", "mif1", "msf1", "miaf"]);
+
+const EBML_MAGIC = [0x1a, 0x45, 0xdf, 0xa3];
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+function bytesAt(bytes: Uint8Array, at: number, expected: number[]): boolean {
+  if (bytes.length < at + expected.length) {
+    return false;
+  }
+  return expected.every((b, i) => bytes[at + i] === b);
+}
+
+function asciiAt(bytes: Uint8Array, at: number, text: string): boolean {
+  return bytesAt(bytes, at, Array.from(text, (c) => c.charCodeAt(0)));
+}
+
+/**
+ * The brands of an ISO BMFF file (size + `ftyp` + major brand + minor version
+ * + compatible brands), or null when the prefix is not an `ftyp` box at all.
+ * Only the brands inside the prefix are read; a truncated list is fine.
+ */
+function isoBmffBrands(bytes: Uint8Array): Set<string> | null {
+  if (bytes.length < 12 || !asciiAt(bytes, 4, "ftyp")) {
+    return null;
+  }
+  const boxSize = ((bytes[0]! << 24) | (bytes[1]! << 16) | (bytes[2]! << 8) | bytes[3]!) >>> 0;
+  if (boxSize < 12) {
+    return null;
+  }
+  const end = Math.min(boxSize, bytes.length);
+  const brands = new Set<string>();
+  const brandAt = (at: number) => String.fromCharCode(bytes[at]!, bytes[at + 1]!, bytes[at + 2]!, bytes[at + 3]!);
+  brands.add(brandAt(8));
+  for (let at = 16; at + 4 <= end; at += 4) {
+    brands.add(brandAt(at));
+  }
+  return brands;
+}
+
+/**
+ * Whether the first bytes of a file are consistent with `mime`. This is the
+ * byte check behind READY: the Blob token and `head()` only ever see the type
+ * the uploading client declared. Checks are per container, not per codec,
+ * and the ISO BMFF families (mp4, mov, m4a) accept any `ftyp` brand on
+ * purpose: real device files carry brands no list could enumerate, and a
+ * false rejection costs the family a memory. The egress allowance, not this
+ * check, is what bounds abuse by someone who forges a header.
+ */
+export function matchesSignature(mime: string, bytes: Uint8Array): boolean {
+  switch (mime) {
+    case "image/jpeg":
+      return bytesAt(bytes, 0, [0xff, 0xd8, 0xff]);
+    case "image/png":
+      return bytesAt(bytes, 0, PNG_MAGIC);
+    case "image/gif":
+      return asciiAt(bytes, 0, "GIF87a") || asciiAt(bytes, 0, "GIF89a");
+    case "image/webp":
+      return asciiAt(bytes, 0, "RIFF") && asciiAt(bytes, 8, "WEBP");
+    case "image/heic":
+    case "image/heif": {
+      const brands = isoBmffBrands(bytes);
+      return brands !== null && [...brands].some((b) => HEIF_BRANDS.has(b));
+    }
+    case "video/mp4":
+    case "video/quicktime":
+    case "audio/mp4":
+    case "audio/x-m4a":
+      return isoBmffBrands(bytes) !== null;
+    case "audio/mpeg":
+      // An ID3v2 tag, or straight into the first frame (sync word: 11 set bits).
+      return asciiAt(bytes, 0, "ID3") || (bytes.length >= 2 && bytes[0] === 0xff && (bytes[1]! & 0xe0) === 0xe0);
+    case "audio/webm":
+    case "video/webm":
+      return bytesAt(bytes, 0, EBML_MAGIC);
+    case "audio/ogg":
+      return asciiAt(bytes, 0, "OggS");
+    case "audio/wav":
+      return asciiAt(bytes, 0, "RIFF") && asciiAt(bytes, 8, "WAVE");
+    default:
+      return false;
+  }
+}
+
 function spec(mime: string): MediaTypeSpec {
   if (!Object.hasOwn(ALLOWED, mime)) {
     throw new Error(`Unsupported media type: ${mime}`);

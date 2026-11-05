@@ -9,7 +9,7 @@ import { notifyAdminsOfMemory } from "@/features/memories/notify-admins";
 import { appendClaimRevision, recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger, logError, logErrorAndFlush } from "@/lib/logger";
-import { isAllowedMime } from "@/lib/media-types";
+import { isAllowedMime, matchesSignature, SIGNATURE_PREFIX_BYTES } from "@/lib/media-types";
 import { afterWithFlush } from "@/lib/sentry/after-flush";
 import { uploadFinalized } from "@/lib/sentry/metrics";
 import { tagIds } from "@/lib/sentry/user";
@@ -41,8 +41,11 @@ function isPrismaCode(error: unknown, code: string): boolean {
  * Move a Media row from PENDING to READY (or FAILED) from what is actually
  * in the store. The row's own `storageKey`, `mimeType` and `maxBytes` are
  * the expectations; the blob is looked up by that pathname, never by a URL
- * from the client. Idempotent: READY rows return as they are, a lost race
- * against a concurrent writer re-reads the row instead of throwing.
+ * from the client, and its first bytes must match the declared type.
+ * Idempotent: READY rows return as they are (rows recorded before the byte
+ * check are never re-read), FAILED rows return early (the cron's orphan
+ * handling relies on that), a lost race against a concurrent writer re-reads
+ * the row instead of throwing.
  */
 export async function recordMedia({ mediaId }: { mediaId: string }): Promise<RecordMediaResult> {
   const db = getDb();
@@ -68,12 +71,23 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
 
   const tooLarge = head.size > row.maxBytes;
   const wrongType = head.contentType !== row.mimeType || !isAllowedMime(head.contentType);
-  if (tooLarge || wrongType) {
-    const reason = tooLarge ? "too_large" : "wrong_type";
+  const reject = async (reason: "too_large" | "wrong_type", check: "size" | "label" | "bytes"): Promise<RecordMediaResult> => {
     await storage.del(row.storageKey);
     await transition(row, { status: "FAILED" });
-    log.warn({ action: "reject", mediaId, memoryId: row.memoryId, reason, size: head.size }, "upload rejected");
+    log.warn({ action: "reject", mediaId, memoryId: row.memoryId, reason, check, size: head.size }, "upload rejected");
     return { status: "FAILED", mediaId, memoryId: row.memoryId, reason };
+  };
+  if (tooLarge || wrongType) {
+    return reject(tooLarge ? "too_large" : "wrong_type", tooLarge ? "size" : "label");
+  }
+  // The declared type is a claim made by the uploading client (the Blob token only pins it to the
+  // ticket); the first bytes are the evidence (issue #45). Bounded read, never the file.
+  const prefix = await storage.readPrefix(row.storageKey, SIGNATURE_PREFIX_BYTES);
+  if (!prefix) {
+    return { status: "PENDING", mediaId, memoryId: row.memoryId };
+  }
+  if (!matchesSignature(row.mimeType, prefix)) {
+    return reject("wrong_type", "bytes");
   }
 
   const updated = await transition(row, { status: "READY", sizeBytes: head.size, blobUrl: head.url });

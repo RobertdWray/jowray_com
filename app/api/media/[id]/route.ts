@@ -18,5 +18,5 @@ export async function GET(request: NextRequest, context: RouteContext<"/api/medi
     return mediaNotFound();
   }
   const tokenHash = hashClaimToken(token);
-  return serveMedia({ id, variant, download, allowDeletedMemory: false, authorize: (memory) => safeEqualHex(tokenHash, memory.claimTokenHash) });
+  return serveMedia({ id, variant, download, caller: "claim", allowDeletedMemory: false, authorize: (memory) => safeEqualHex(tokenHash, memory.claimTokenHash) });
 }
