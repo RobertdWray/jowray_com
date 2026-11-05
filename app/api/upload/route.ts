@@ -33,9 +33,11 @@ class UploadRefused extends Error {
  * the signed callback is the backstop for a tab closed before finalizeUpload().
  */
 export async function POST(request: NextRequest): Promise<Response> {
-  // Request-time read first (Cache Components), then env and data.
-  const body = (await request.json()) as HandleUploadBody;
   try {
+    // Request-time read first (Cache Components), then env and data. Inside the
+    // `try` so a body that is not JSON is a 400 below, not an unhandled error
+    // that `onRequestError` would report to Sentry once per request (issue #43).
+    const body = (await request.json()) as HandleUploadBody;
     const result = await handleUpload({
       body,
       request,

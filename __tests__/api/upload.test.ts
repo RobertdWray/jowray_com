@@ -85,6 +85,15 @@ describe("POST /api/upload (token exchange)", () => {
     media[0]!.status = "READY";
     expect((await tokenRequest()).status).toBe(403);
   });
+
+  it("answers 400, not an unhandled error, when the body is not JSON (issue #43: a 500 here became a Sentry error event per request)", async () => {
+    for (const raw of ["not json", "", "{"]) {
+      const req = new NextRequest("http://localhost:3000/api/upload", { method: "POST", body: raw, headers: { "content-type": "application/json" } });
+      const res = await POST(req);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: { code: "upload_error", message: "Upload request could not be processed" } });
+    }
+  });
 });
 
 describe("POST /api/upload (upload completed callback)", () => {
