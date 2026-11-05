@@ -11,10 +11,13 @@ import { identifyContributor, tagIds } from "@/lib/sentry/user";
 import { summarizeMemoryType } from "@/lib/media-types";
 import { UPLOAD_LEASE_MS } from "@/lib/upload-ticket";
 import { createSubmissionInputSchema, type SubmissionIssueField, submissionIssueLocation, type SubmissionMemoryInput } from "@/lib/validations/memory";
-import { getMemorialEnv } from "@/server/config/env";
+import { getMemorialEnv, getUploadEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 
 const log = createLogger({ category: "upload" });
+
+/** Shown when one send declares more than MAX_DECLARED_BYTES_PER_SUBMISSION; the form shows `message` as it is. */
+export const SEND_TOO_LARGE_MESSAGE = "That is more than we can take in one go. Please send the biggest files in a separate send.";
 
 /** One file's place in a send; its ticket is minted later by `issueUploadTicket`, right before its upload. */
 export interface SubmissionFile {
@@ -94,6 +97,13 @@ export async function createSubmission(raw: unknown): Promise<CreateSubmissionRe
   }
   const declaredTotal = resolved.reduce((sum, m) => sum + m.files.reduce((s, f) => s + f.maxBytes, 0), 0);
   const hasFiles = declaredTotal > 0 || resolved.some((m) => m.files.length > 0);
+  // One request may not reserve the whole day: a reservation costs its sender nothing
+  // until bytes arrive, so the per-send cap bounds what a single send can hold (issue #44, T10).
+  const { MAX_DECLARED_BYTES_PER_SUBMISSION } = getUploadEnv();
+  if (declaredTotal > MAX_DECLARED_BYTES_PER_SUBMISSION) {
+    log.warn({ action: "send_cap_refusal", declaredBytes: declaredTotal, memories: resolved.length }, "send declares more than the per-send cap");
+    return { ok: false, code: "budget_exceeded", message: SEND_TOO_LARGE_MESSAGE, memoryIndex: null, fileIndex: null, field: null };
+  }
 
   const { MEMORIAL_SLUG, CONSENT_VERSION } = getMemorialEnv();
   const submissionId = randomUUID();

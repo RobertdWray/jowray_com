@@ -56,8 +56,24 @@ const CONFIRM_MIN_AGE_MS = 30 * MINUTE_MS;
 const SUBMISSION_BATCH = 10;
 const EMAIL_MAX_ATTEMPTS = 5;
 const EVENT_MAX_ATTEMPTS = 3;
-/** A cancelled reservation may still receive bytes until its ticket (15 min) and Blob client token (1 h) have both expired. */
+/**
+ * A reservation may still receive bytes until its ticket (15 min) and Blob client
+ * token (1 h) have both expired. Rows record that moment as `reservedUntil` at
+ * every mint (issue #44); this grace from `createdAt` is the fallback for rows
+ * the old code wrote before the column existed.
+ */
 const CANCELLED_RESERVATION_GRACE_MS = UPLOAD_WINDOW_MS;
+/** Step (a) gives up on a reservation this long after it was made, once its window has also closed. */
+const RESERVATION_MAX_AGE_MS = 24 * HOUR_MS;
+
+/** True once no Blob token minted for the row can still land bytes (issue #44, Oscar #18). */
+function uploadWindowClosed(row: { reservedUntil: Date | null; createdAt: Date }, now: number): boolean {
+  return row.reservedUntil !== null ? row.reservedUntil.getTime() < now : row.createdAt.getTime() < now - CANCELLED_RESERVATION_GRACE_MS;
+}
+/** The same test as a `where` fragment. */
+function uploadWindowClosedWhere(now: number): { OR: Array<{ reservedUntil: { lt: Date } } | { reservedUntil: null; createdAt: { lt: Date } }> } {
+  return { OR: [{ reservedUntil: { lt: new Date(now) } }, { reservedUntil: null, createdAt: { lt: new Date(now - CANCELLED_RESERVATION_GRACE_MS) } }] };
+}
 /** Step (f): a memory deleted from the admin page keeps its files this long, so a Restore within 30 days brings everything back. */
 const DELETED_MEMORY_GRACE_MS = 30 * 24 * HOUR_MS;
 /** Step (g): a few photos per run, each decode bounded; the shared run deadline still applies. */
@@ -113,9 +129,15 @@ export async function GET(request: NextRequest): Promise<Response> {
       errors: 0,
     };
     const db = getDb();
+    const storage = createStorageService();
     const now = Date.now();
 
-    // (a) PENDING media older than an hour: re-record; after 24 h with no blob, give up.
+    // (a) PENDING media older than an hour: re-record; after 24 h with no blob, give up,
+    // but only once the row's upload window has closed, so no token can still land bytes
+    // on a FAILED row (ingest ignores FAILED rows, and nothing would ever purge them;
+    // issue #44, Oscar #18 / George #3). The pathname is deleted first (idempotent, this
+    // environment's blobs only) and the row is failed with a conditional update: a
+    // re-ticket that moved the window meanwhile wins and the row stays PENDING.
     const outOfTime = (): boolean => Date.now() - now > RUN_DEADLINE_MS;
     const stale = await db.media.findMany({
       where: { status: "PENDING", deletedAt: null, createdAt: { lt: new Date(now - HOUR_MS) }, memory: { deletedAt: null } },
@@ -131,9 +153,14 @@ export async function GET(request: NextRequest): Promise<Response> {
         try {
           const outcome = await recordMedia({ mediaId: row.id });
           counts.pendingRechecked += 1;
-          if (outcome.status === "PENDING" && row.createdAt.getTime() < now - 24 * HOUR_MS) {
-            await db.media.update({ where: { id: row.id }, data: { status: "FAILED" } });
-            counts.orphansFailed += 1;
+          if (outcome.status === "PENDING" && row.createdAt.getTime() < now - RESERVATION_MAX_AGE_MS && uploadWindowClosed(row, now)) {
+            if (row.storageKey.startsWith(storagePrefix())) {
+              await storage.del(row.storageKey);
+            }
+            const failed = await db.media.updateMany({ where: { id: row.id, status: "PENDING", reservedUntil: row.reservedUntil }, data: { status: "FAILED" } });
+            if (failed.count === 1) {
+              counts.orphansFailed += 1;
+            }
           }
         } catch (error) {
           counts.errors += 1;
@@ -395,14 +422,13 @@ export async function GET(request: NextRequest): Promise<Response> {
     // which is why the mark is written before the first byte goes.
     const staleClaimBefore = new Date(now - STALE_CLAIM_MS);
     const deletedMemoryBefore = new Date(now - DELETED_MEMORY_GRACE_MS);
-    const cancelledBefore = new Date(now - CANCELLED_RESERVATION_GRACE_MS);
     const orphanedBlobs = await db.media.findMany({
       where: {
         OR: [
           { purgedAt: { not: null } },
           { memory: { deletedAt: { lt: deletedMemoryBefore } } },
-          // A cancelled file's Blob token may still be valid; wait for it to expire so the freed pathname cannot be refilled.
-          { deletedAt: { not: null }, createdAt: { lt: cancelledBefore } },
+          // A cancelled file's Blob token may still be valid; wait for its window to close so the freed pathname cannot be refilled.
+          { deletedAt: { not: null }, ...uploadWindowClosedWhere(now) },
         ],
         AND: [
           {
@@ -419,7 +445,6 @@ export async function GET(request: NextRequest): Promise<Response> {
       orderBy: { id: "asc" },
       take: 50,
     });
-    const storage = createStorageService();
     for (const row of orphanedBlobs) {
       if (outOfTime()) {
         break;
@@ -432,7 +457,7 @@ export async function GET(request: NextRequest): Promise<Response> {
             await lockMemory(tx, row.memoryId);
             const fresh = await tx.media.findUniqueOrThrow({
               where: { id: row.id },
-              select: { purgedAt: true, status: true, deletedAt: true, createdAt: true, memory: { select: { deletedAt: true } } },
+              select: { purgedAt: true, status: true, deletedAt: true, createdAt: true, reservedUntil: true, memory: { select: { deletedAt: true } } },
             });
             if (fresh.purgedAt !== null) {
               // Already claimed. A READY row with the mark must never serve again, whoever left it that way.
@@ -442,7 +467,7 @@ export async function GET(request: NextRequest): Promise<Response> {
               return true;
             }
             const memoryGone = fresh.memory.deletedAt !== null && fresh.memory.deletedAt < deletedMemoryBefore;
-            const fileRemoved = fresh.deletedAt !== null && fresh.createdAt < cancelledBefore;
+            const fileRemoved = fresh.deletedAt !== null && uploadWindowClosed(fresh, now);
             if (!memoryGone && !fileRemoved) {
               return false;
             }
@@ -480,13 +505,15 @@ export async function GET(request: NextRequest): Promise<Response> {
     }
 
     // (f2) Reservations cancelled on the claim page whose upload might have landed
-    // without a callback or finalize: once the Blob token has expired, delete the
-    // pathname (idempotent) and mark the row FAILED so it is never selected again.
+    // without a callback or finalize: once the row's upload window has closed (its
+    // last token has expired; issue #44), delete the pathname (idempotent) and mark
+    // the row FAILED so it is never selected again. A cancelled row cannot be
+    // re-ticketed, so its window is final.
     const cancelled = await db.media.findMany({
       where: {
         status: "PENDING",
         deletedAt: { not: null },
-        createdAt: { lt: new Date(now - CANCELLED_RESERVATION_GRACE_MS) },
+        ...uploadWindowClosedWhere(now),
         storageKey: { startsWith: storagePrefix() },
       },
       orderBy: { id: "asc" },

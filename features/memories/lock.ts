@@ -24,3 +24,23 @@ export async function lockMemory(tx: Tx, memoryId: string): Promise<void> {
 export async function lockContributor(tx: Tx, contributorId: string): Promise<void> {
   await tx.$queryRaw`SELECT "id" FROM "Contributor" WHERE "id" = ${contributorId} FOR UPDATE`;
 }
+
+/** Advisory-lock key of the global upload budget: one fixed bigint shared by every budget writer. */
+export const BUDGET_LOCK_KEY = 7_210_044;
+
+/**
+ * Serialise the global upload budget (daily memories and bytes, total ceiling;
+ * issue #44). The budget is a property of the whole table, so per-memory row
+ * locks cannot protect its check-then-insert; under READ COMMITTED every
+ * concurrent writer would see capacity and commit past it. A transaction-level
+ * advisory lock is released at commit or rollback with no unlock call, and is
+ * safe behind Neon's transaction-mode pooler (a session-level lock is not).
+ *
+ * Lock order everywhere: lease (anchor UPDATE) → memory → contributor → budget.
+ * The budget lock is always the LAST lock a transaction takes and no holder
+ * waits on a row lock afterwards, so no cycle through it is possible.
+ */
+export async function lockBudget(tx: Tx): Promise<void> {
+  // $executeRaw, not $queryRaw: the function returns `void`, which the client cannot deserialise as a column.
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${BUDGET_LOCK_KEY}::bigint)`;
+}

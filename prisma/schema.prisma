@@ -176,6 +176,7 @@ model Media {
   deletedAt        DateTime?                // soft delete: removed file, cancelled reservation or cancelled replacement; blobs purged by cron step (f)
   purgedAt         DateTime?                // set by cron step (f) before any byte is deleted; once set the removal completes even if the memory is restored; READY rows flip to FAILED at the same time
   replacesMediaId  String?                  // set on a PENDING replacement; the target is retired when this row reaches READY (one-to-many so a FAILED attempt can be retried)
+  reservedUntil    DateTime?                // while PENDING: holds the byte budget and may still receive bytes until this moment (creation or last ticket + UPLOAD_WINDOW_MS); cron (a)/(f2) and the budget read it; null only on rows the old code wrote (issue #44)
   sortOrder        Int         @default(0)  // display order chosen by the contributor; a replacement copies its target's
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
@@ -188,6 +189,7 @@ model Media {
   @@index([replacesMediaId])
   @@index([checksumSha256])
   @@index([status, createdAt])
+  @@index([status, reservedUntil])
   @@index([createdAt])
 }
 

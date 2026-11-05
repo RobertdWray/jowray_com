@@ -7,7 +7,7 @@ const SECRET = "c".repeat(40);
 const HOUR = 60 * 60 * 1000;
 
 interface DerivedRow { kind: string; status: string; error: string | null; attempts: number; claimedAt: Date | null; storageKey: string }
-interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; purgedAt?: Date | null; mimeType?: string; derivatives?: DerivedRow[]; memory: { deletedAt: Date | null } }
+interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; purgedAt?: Date | null; reservedUntil?: Date | null; mimeType?: string; derivatives?: DerivedRow[]; memory: { deletedAt: Date | null } }
 interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
 type EmailType = "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY" | "SUBMISSION_CONFIRMATION";
 interface EmailRow { id: string; memoryId: string; emailType: EmailType; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null; uploadLeaseUntil?: Date | null } }
@@ -60,7 +60,7 @@ let onLock: ((memoryId: string) => void) | null = null;
 const lockCalls: string[] = [];
 const dbStub = {
   // Prisma always returns `derivatives` as an array when it is included, and every scalar; fixtures may omit `derivatives` and `purgedAt`.
-  media: { findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => (await finder(() => media.map((m) => ({ purgedAt: null, ...m })) as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }), findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { const m = media.find((x) => x.id === where.id); if (!m) { throw new Error("not found"); } return { purgedAt: null, ...m }; }) },
+  media: { updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Partial<MediaRow> }) => { const rows = media.filter((m) => matches({ purgedAt: null, reservedUntil: null, ...m } as unknown as Record<string, unknown>, where)); for (const r of rows) { Object.assign(r, data); } return { count: rows.length }; }), findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => (await finder(() => media.map((m) => ({ purgedAt: null, reservedUntil: null, ...m })) as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }), findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { const m = media.find((x) => x.id === where.id); if (!m) { throw new Error("not found"); } return { purgedAt: null, reservedUntil: null, ...m }; }) },
   $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(String(values[0])); onLock?.(String(values[0])); return [{ id: values[0] }]; }),
   $transaction: vi.fn(async (fn: (t: typeof dbStub) => Promise<unknown>) => { inTransaction = true; try { return await fn(dbStub); } finally { inTransaction = false; } }),
   derivedMedia: { deleteMany: vi.fn(async ({ where }: { where: { mediaId: string; storageKey?: { in: string[] } } }) => { derivedDeletes.push(where); const m = media.find((x) => x.id === where.mediaId); if (m?.derivatives) { m.derivatives = m.derivatives.filter((d) => where.storageKey ? !where.storageKey.in.includes(d.storageKey) : false); } return { count: 1 }; }) },
@@ -150,6 +150,16 @@ beforeEach(() => {
     { id: "med_recent_delete", memoryId: "mem_rd", status: "READY", checksumSha256: "e".repeat(64), createdAt: old, storageKey: "dev/originals/mem_rd/r.jpg", blobUrl: "u", deletedAt: null, purgedAt: null, mimeType: "image/jpeg", derivatives: [], memory: { deletedAt: new Date(Date.now() - 24 * HOUR) } },
     // Cancelled minutes ago: its Blob token is still valid, so the pathname is left alone until the grace period passes.
     { id: "med_cancelled_fresh", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: new Date(), storageKey: "dev/originals/mem_1/i", blobUrl: "u", deletedAt: new Date(), memory: { deletedAt: null } },
+    // (issue #44) Orphans judged by their upload window, not their age. A day-old reservation of this environment with no
+    // window recorded (old code) and no blob: FAILED, pathname deleted first. One re-ticketed recently (window open): left alone.
+    // One whose window closed but is re-ticketed while the cron deletes the (empty) pathname: the conditional update must not fail it.
+    { id: "med_orphan_env", memoryId: "mem_2", status: "PENDING", checksumSha256: null, createdAt: ancient, storageKey: "dev/originals/mem_2/o", blobUrl: null, deletedAt: null, memory: { deletedAt: null } },
+    { id: "med_orphan_open", memoryId: "mem_2", status: "PENDING", checksumSha256: null, createdAt: ancient, storageKey: "dev/originals/mem_2/open", blobUrl: null, deletedAt: null, reservedUntil: new Date(Date.now() + 30 * 60 * 1000), memory: { deletedAt: null } },
+    { id: "med_orphan_raced", memoryId: "mem_2", status: "PENDING", checksumSha256: null, createdAt: ancient, storageKey: "dev/originals/mem_2/raced", blobUrl: null, deletedAt: null, reservedUntil: new Date(Date.now() - 1000), memory: { deletedAt: null } },
+    // (issue #44) Cancelled reservations are purged when their window has closed, however old the row is: a 2 h old one whose
+    // last ticket is recent waits; one created minutes ago whose window already passed goes now.
+    { id: "med_cancelled_window_open", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: old, storageKey: "dev/originals/mem_1/wo", blobUrl: null, deletedAt: old, reservedUntil: new Date(Date.now() + 30 * 60 * 1000), memory: { deletedAt: null } },
+    { id: "med_cancelled_window_closed", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: new Date(), storageKey: "dev/originals/mem_1/wc", blobUrl: null, deletedAt: new Date(), reservedUntil: new Date(Date.now() - 1000), memory: { deletedAt: null } },
   ];
   events = [{ id: "evt_1", processedAt: null, attempts: 1, error: "boom", payload: { tokenPayload: JSON.stringify({ mediaId: "med_stale" }) } }];
   emails = [
@@ -206,7 +216,12 @@ beforeEach(() => {
   emails.push({ id: "log_leased", memoryId: "mem_leased_retry", emailType: "MEMORY_CONFIRMATION", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: null, uploadLeaseUntil: new Date(Date.now() + 30 * 60 * 1000) } });
   inTransaction = false; onLock = null; lockCalls.length = 0; delMock.mockReset(); delMock.mockImplementation(async () => { if (inTransaction) { throw new Error("storage.del inside the purge transaction"); } });
     recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); confirmSubmissionMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
-  recordMediaMock.mockImplementation(async ({ mediaId }) => mediaId === "med_orphan" ? { status: "PENDING", mediaId, memoryId: "mem_2" } : { status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 });
+  recordMediaMock.mockImplementation(async ({ mediaId }) => mediaId.startsWith("med_orphan") ? { status: "PENDING", mediaId, memoryId: "mem_2" } : { status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 });
+  // A re-ticket that lands while the cron is deleting the raced row's empty pathname.
+  delMock.mockImplementation(async (key: string) => {
+    if (inTransaction) { throw new Error("storage.del inside the purge transaction"); }
+    if (key === "dev/originals/mem_2/raced") { media.find((m) => m.id === "med_orphan_raced")!.reservedUntil = new Date(Date.now() + 60 * 60 * 1000); }
+  });
 });
 
 describe("GET /api/cron/reconcile-uploads", () => {
@@ -224,9 +239,17 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(body.success).toBe(true);
     // (a) stale PENDING (>1h) re-recorded; the fresh one untouched; the >24h orphan whose blob is still missing → FAILED
     // step (a) re-records both stale rows; step (c) replays med_stale once more from the event
-    expect(new Set(recordMediaMock.mock.calls.map((c) => c[0].mediaId))).toEqual(new Set(["med_orphan", "med_stale"]));
-    expect(recordMediaMock).toHaveBeenCalledTimes(3);
+    expect(new Set(recordMediaMock.mock.calls.map((c) => c[0].mediaId))).toEqual(new Set(["med_orphan", "med_orphan_env", "med_orphan_open", "med_orphan_raced", "med_stale"]));
+    expect(recordMediaMock).toHaveBeenCalledTimes(6);
     expect(media.find((m) => m.id === "med_orphan")?.status).toBe("FAILED");
+    // (issue #44) a production copy's pathname is never touched from here; this environment's orphan loses its pathname before it is failed
+    expect(delMock).not.toHaveBeenCalledWith("originals/mem_2/c");
+    expect(media.find((m) => m.id === "med_orphan_env")?.status).toBe("FAILED");
+    expect(delMock.mock.calls.findIndex((c) => c[0] === "dev/originals/mem_2/o")).toBeLessThan(dbStub.media.updateMany.mock.calls.findIndex((c) => (c[0] as unknown as { where: { id: string } }).where.id === "med_orphan_env"));
+    // an orphan whose window is still open (a recent re-ticket) is neither failed nor deleted; a race lost to a re-ticket leaves the row PENDING
+    expect(media.find((m) => m.id === "med_orphan_open")?.status).toBe("PENDING");
+    expect(delMock).not.toHaveBeenCalledWith("dev/originals/mem_2/open");
+    expect(media.find((m) => m.id === "med_orphan_raced")?.status).toBe("PENDING");
     // (b) checksum backfill
     expect(checksumMock).toHaveBeenCalledWith({ mediaId: "med_nohash" });
     // (c) unprocessed webhook events re-run
@@ -282,13 +305,18 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(delMock).toHaveBeenCalledWith("dev/originals/mem_1/g");
     expect(delMock).not.toHaveBeenCalledWith("dev/originals/mem_1/i");
     expect(media.find((m) => m.id === "med_cancelled")?.status).toBe("FAILED");
+    // (issue #44) the window decides, not the age: a cancelled row with a recent ticket waits, one whose window passed goes now
+    expect(delMock).not.toHaveBeenCalledWith("dev/originals/mem_1/wo");
+    expect(media.find((m) => m.id === "med_cancelled_window_open")?.status).toBe("PENDING");
+    expect(delMock).toHaveBeenCalledWith("dev/originals/mem_1/wc");
+    expect(media.find((m) => m.id === "med_cancelled_window_closed")?.status).toBe("FAILED");
     // (g) derived copies: the photo without copies, the one with a stale claim and the one whose claim has no timestamp, this environment only, terminal failures left alone
     expect(deriveMediaMock.mock.calls.map((c) => c[0].mediaId).sort()).toEqual(["med_photo_new", "med_photo_nullclaim", "med_photo_stale"]);
     expect(deriveMediaMock.mock.calls[0]![0].deadlineMs).toBeLessThanOrEqual(30_000);
     expect(deriveMediaMock.mock.calls[0]![0].deadlineMs).toBeGreaterThan(25_000);
     // the staging pathname is only ever deleted for videos
     expect(delMock.mock.calls.map((c) => c[0] as string).filter((k) => k.endsWith(".upload.jpg"))).toEqual([]);
-    expect(body.data).toMatchObject({ pendingRechecked: 2, orphansFailed: 1, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 3, confirmationsSent: 2, adminAlertsSent: 8, submissionReceiptsSent: 1, deletedBlobsRemoved: 3, derived: 3 });
+    expect(body.data).toMatchObject({ pendingRechecked: 5, orphansFailed: 2, checksumsComputed: 1, eventsReplayed: 1, emailsRetried: 3, confirmationsSent: 2, adminAlertsSent: 8, submissionReceiptsSent: 1, deletedBlobsRemoved: 4, derived: 3 });
   });
 
   it("(e2) waits for a send's lease before alerting any of its memories, and (e3) emails the anchor once the lease is gone", async () => {

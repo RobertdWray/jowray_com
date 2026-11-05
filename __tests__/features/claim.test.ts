@@ -184,6 +184,34 @@ describe("cancelReservation", () => {
   });
 });
 
+describe("saves that change nothing (issue #44, Oscar #17)", () => {
+  it("an empty or identical memory edit writes no row and appends no revision, after taking the lock", async () => {
+    tx.memory.update.mockClear(); tx.contributor.update.mockClear();
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: {} })).toEqual({ ok: true, shared: false });
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { name: "Jo", relationship: "friend", approxDateText: "Summer 1998", place: null, note: "old note", visibility: "FAMILY", notifyWhenPosted: true, contactOptIn: true } })).toEqual({ ok: true, shared: false });
+    expect(tx.memory.update).not.toHaveBeenCalled();
+    expect(tx.contributor.update).not.toHaveBeenCalled();
+    expect(revisions).toHaveLength(0);
+    expect(lockCalls.filter((c) => c.includes("FOR UPDATE|mem_1"))).toHaveLength(2);
+    // The same request with one real change still writes exactly one revision.
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Broadmead" } })).toEqual({ ok: true, shared: false });
+    expect(revisions).toHaveLength(1);
+  });
+
+  it("an identical file-words edit writes no row and appends no revision", async () => {
+    const ID = "00000000-0000-4000-8000-000000000001";
+    mediaRows[0]!.id = ID; mediaRows[0]!.caption = "same words"; mediaRows[0]!.approxDateText = null; mediaRows[0]!.place = null;
+    tx.media.update.mockClear(); tx.media.updateMany.mockClear();
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: {} })).toEqual({ ok: true });
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "same words" } })).toEqual({ ok: true });
+    expect(tx.media.update).not.toHaveBeenCalled();
+    expect(tx.media.updateMany).not.toHaveBeenCalled();
+    expect(revisions).toHaveLength(0);
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "new words" } })).toEqual({ ok: true });
+    expect(revisions).toHaveLength(1);
+  });
+});
+
 describe("updateMemoryFromClaim non-empty invariant", () => {
   it("refuses to clear the note when no live READY file remains", async () => {
     mediaRows[0]!.deletedAt = new Date();

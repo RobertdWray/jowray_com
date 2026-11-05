@@ -2,13 +2,13 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import { lockMemory, type Tx } from "@/features/memories/lock";
+import { lockBudget, lockMemory, type Tx } from "@/features/memories/lock";
 import { renewUploadLease } from "@/features/memories/upload-lease";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { extensionFor, MAX_FILES_PER_MEMORY, maxBytesFor, memoryTypeFor, normalizeMime } from "@/lib/media-types";
 import { storagePrefix } from "@/lib/site-url";
-import { mintUploadTicket, type UploadTicket } from "@/lib/upload-ticket";
+import { mintUploadTicket, UPLOAD_WINDOW_MS, type UploadTicket } from "@/lib/upload-ticket";
 import { replaceRequestSchema } from "@/lib/validations/media";
 import { type MemoryFileInput, uploadTicketRequestSchema } from "@/lib/validations/memory";
 import { tagIds } from "@/lib/sentry/user";
@@ -65,10 +65,37 @@ export function resolveFile(file: MemoryFileInput): ResolvedFile | "unsupported_
   };
 }
 
-/** True when `addMemories` more memories and `addBytes` more ticketed bytes fit in today's budgets. */
+/**
+ * Rows that still hold the byte budget without having delivered bytes: live
+ * PENDING reservations whose upload window (`reservedUntil`, creation or last
+ * ticket + UPLOAD_WINDOW_MS) is still open. A row the old code wrote before the
+ * column existed (`reservedUntil` null) is treated as open for a day from its
+ * creation, which is what it always was. Expired, cancelled and FAILED
+ * reservations never got bytes and no token for them can still be valid, so
+ * they stop counting (issue #44, T10).
+ */
+function openReservation(now: Date): { status: "PENDING"; deletedAt: null; OR: Array<Record<string, unknown>> } {
+  return { status: "PENDING", deletedAt: null, OR: [{ reservedUntil: { gt: now } }, { reservedUntil: null, createdAt: { gt: new Date(now.getTime() - DAY_MS) } }] };
+}
+
+/**
+ * True when `addMemories` more memories and `addBytes` more ticketed bytes fit
+ * in today's budgets and under the total ceiling. The budget is global, so the
+ * first statement is the global advisory lock (issue #44, Oscar #13): without
+ * it, concurrent writers at READ COMMITTED each see the same capacity and all
+ * commit past it. Callers that also take row locks take them before calling
+ * this (lease → memory → budget); nothing waits on a row lock afterwards.
+ *
+ * The day's bytes are READY rows (their ticketed ceiling, `maxBytes`) plus
+ * open reservations created in the last 24 h. The stock is READY originals
+ * (`sizeBytes`) plus READY derived copies plus every open reservation, of
+ * any age, against TOTAL_BYTE_CEILING (Oscar #16).
+ */
 export async function withinBudget(tx: Tx, addBytes: number, addMemories: number): Promise<boolean> {
+  await lockBudget(tx);
   const env = getUploadEnv();
-  const since = new Date(Date.now() - DAY_MS);
+  const now = new Date();
+  const since = new Date(now.getTime() - DAY_MS);
   if (addMemories > 0) {
     const memories = await tx.memory.count({ where: { createdAt: { gt: since } } });
     if (memories + addMemories > env.DAILY_MEMORY_BUDGET) {
@@ -76,8 +103,16 @@ export async function withinBudget(tx: Tx, addBytes: number, addMemories: number
     }
   }
   if (addBytes > 0) {
-    const bytes = await tx.media.aggregate({ _sum: { maxBytes: true }, where: { createdAt: { gt: since } } });
-    if ((bytes._sum.maxBytes ?? 0) + addBytes > env.DAILY_BYTE_BUDGET) {
+    const today = await tx.media.aggregate({ _sum: { maxBytes: true }, where: { createdAt: { gt: since }, OR: [{ status: "READY" }, openReservation(now)] } });
+    if ((today._sum.maxBytes ?? 0) + addBytes > env.DAILY_BYTE_BUDGET) {
+      return false;
+    }
+    const originals = await tx.media.aggregate({ _sum: { sizeBytes: true }, where: { status: "READY" } });
+    const copies = await tx.derivedMedia.aggregate({ _sum: { sizeBytes: true }, where: { status: "READY" } });
+    const open = await tx.media.aggregate({ _sum: { maxBytes: true }, where: openReservation(now) });
+    const stock = (originals._sum.sizeBytes ?? 0) + (copies._sum.sizeBytes ?? 0) + (open._sum.maxBytes ?? 0);
+    if (stock + addBytes > env.TOTAL_BYTE_CEILING) {
+      log.warn({ action: "ceiling_refusal", stock, addBytes }, "total byte ceiling reached");
       return false;
     }
   }
@@ -89,7 +124,13 @@ async function liveFileCount(tx: Tx, memoryId: string): Promise<number> {
   return tx.media.count({ where: { memoryId, deletedAt: null, status: { in: ["PENDING", "READY"] } } });
 }
 
-/** The PENDING row alone, with a fresh write-once pathname; the caller decides whether a ticket is minted now (the claim page) or per file later (createSubmission). */
+/**
+ * The PENDING row alone, with a fresh write-once pathname; the caller decides
+ * whether a ticket is minted now (the claim page) or per file later
+ * (createSubmission). Either way the reservation opens with one full upload
+ * window: a ticket minted now can land bytes until then, and until then the
+ * row holds its bytes of the budget (issue #44).
+ */
 export async function createPendingMediaRow(
   tx: Tx,
   memoryId: string,
@@ -109,6 +150,7 @@ export async function createPendingMediaRow(
       approxDateText: file.approxDateText,
       place: file.place,
       status: "PENDING",
+      reservedUntil: new Date(Date.now() + UPLOAD_WINDOW_MS),
       sortOrder: placement.sortOrder,
       replacesMediaId: placement.replacesMediaId,
     },

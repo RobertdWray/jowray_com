@@ -56,6 +56,8 @@ function withRelations(m: MemoryRow) {
 
 const tx = {
   $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; }),
+  // The budget's advisory lock (issue #44) goes through $executeRaw; the admin draft path is one of its callers.
+  $executeRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return 1; }),
   memorial: { findUnique: vi.fn(async () => memorial) },
   memory: {
     findMany: vi.fn(async ({ where, take }: { where: Record<string, unknown>; take?: number }) => memories.map(withRelations).filter((r) => matchesScalar(r, where)).slice(0, take ?? 1000)),

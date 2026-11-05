@@ -1,12 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { hashClaimToken } from "@/lib/claim-token";
-import { verifyUploadTicket } from "@/lib/upload-ticket";
+import { UPLOAD_WINDOW_MS, verifyUploadTicket } from "@/lib/upload-ticket";
 import { resetEnvCache } from "@/server/config/env";
 
+import { aggregateMock } from "../helpers/prisma-where";
+
 interface MemoryRow { id: string; memorialId: string; contributorId: string; type: string; source: string; status: string; claimTokenHash: string; consentVersion: string; consentedAt: Date; createdAt: Date; deletedAt: Date | null; approxDateText: string | null; contributorNote: string | null; visibility: string; notifyWhenPosted: boolean; submissionId?: string | null; submissionIndex?: number | null; uploadLeaseUntil?: Date | null }
-interface MediaRow { id: string; memoryId: string; storageKey: string; mimeType: string; maxBytes: number; status: string; createdAt: Date; originalFilename: string | null; durationSeconds?: number | null; deletedAt: Date | null; sortOrder: number; replacesMediaId: string | null; caption?: string | null; approxDateText?: string | null; place?: string | null }
+interface MediaRow { id: string; memoryId: string; storageKey: string; mimeType: string; maxBytes: number; status: string; createdAt: Date; originalFilename: string | null; durationSeconds?: number | null; deletedAt: Date | null; sortOrder: number; replacesMediaId: string | null; caption?: string | null; approxDateText?: string | null; place?: string | null; reservedUntil?: Date | null; sizeBytes?: number | null }
+interface DerivedRow { mediaId: string; status: string; sizeBytes: number | null }
 const lockCalls: string[] = [];
+/** Every statement in issue order, so a test can prove the budget lock precedes the budget reads. */
+const order: string[] = [];
 function matchesMedia(row: MediaRow, where: Record<string, unknown>): boolean {
   for (const [k, v] of Object.entries(where)) {
     if (k === "status" && typeof v === "object" && v !== null && "in" in v) { if (!(v as { in: string[] }).in.includes(row.status)) { return false; } continue; }
@@ -17,10 +22,20 @@ function matchesMedia(row: MediaRow, where: Record<string, unknown>): boolean {
 }
 const memories: MemoryRow[] = [];
 const medias: MediaRow[] = [];
+const derived: DerivedRow[] = [];
 const contributors: Record<string, unknown>[] = [];
 let memorial: { id: string; slug: string } | null = { id: "memorial_1", slug: "jo" };
+const mediaAggregate = aggregateMock(() => medias as unknown as Record<string, unknown>[]);
+/** Both raw channels record the same way: row locks go through $queryRaw, the void-returning advisory lock through $executeRaw. */
+function recordLock(strings: TemplateStringsArray, values: unknown[]): void {
+  const sql = strings.join("?");
+  lockCalls.push(`${sql}|${String(values[0])}`);
+  order.push(sql.includes("pg_advisory_xact_lock") ? "lock:budget" : `lock:memory:${String(values[0])}`);
+}
 const tx = {
-  $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; }),
+  $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { recordLock(strings, values); return [{ id: values[0] }]; }),
+  $executeRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { recordLock(strings, values); return 1; }),
+  derivedMedia: { aggregate: vi.fn(aggregateMock(() => derived as unknown as Record<string, unknown>[])) },
   memorial: { findUnique: vi.fn(async () => memorial) },
   memory: {
     updateMany: vi.fn(async ({ where, data }: { where: { submissionId: string; submissionIndex: number }; data: { uploadLeaseUntil: Date } }) => {
@@ -29,13 +44,13 @@ const tx = {
       for (const r of rows) { r.uploadLeaseUntil = data.uploadLeaseUntil; }
       return { count: rows.length };
     }),
-    count: vi.fn(async ({ where }: { where?: { createdAt?: { gt: Date } } } = {}) => memories.filter((m) => !where?.createdAt || m.createdAt > where.createdAt.gt).length),
+    count: vi.fn(async ({ where }: { where?: { createdAt?: { gt: Date } } } = {}) => { order.push("memory.count"); return memories.filter((m) => !where?.createdAt || m.createdAt > where.createdAt.gt).length; }),
     create: vi.fn(async ({ data }: { data: Omit<MemoryRow, "id" | "createdAt" | "deletedAt"> }) => { const row: MemoryRow = { id: `mem_${memories.length + 1}`, createdAt: new Date(), deletedAt: null, submissionId: null, submissionIndex: null, uploadLeaseUntil: null, ...data }; memories.push(row); return row; }),
     findUnique: vi.fn(async ({ where }: { where: { claimTokenHash: string } }) => memories.find((m) => m.claimTokenHash === where.claimTokenHash) ?? null),
     update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MemoryRow> }) => { const m = memories.find((x) => x.id === where.id)!; Object.assign(m, data); return m; }),
   },
   media: {
-    aggregate: vi.fn(async ({ where }: { where?: { createdAt?: { gt: Date } } } = {}) => ({ _sum: { maxBytes: medias.filter((m) => !where?.createdAt || m.createdAt > where.createdAt.gt).reduce((s, m) => s + m.maxBytes, 0) || null } })),
+    aggregate: vi.fn(async (args: Parameters<typeof mediaAggregate>[0]) => { order.push("media.aggregate"); return mediaAggregate(args); }),
     count: vi.fn(async ({ where }: { where: Record<string, unknown> }) => medias.filter((m) => matchesMedia(m, where)).length),
     findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => medias.find((m) => matchesMedia(m, where)) ?? null),
     create: vi.fn(async ({ data }: { data: Omit<MediaRow, "id" | "createdAt" | "deletedAt"> }) => { const row: MediaRow = { deletedAt: null, ...data, id: `med_${medias.length + 1}`, createdAt: new Date() }; medias.push(row); return row; }),
@@ -68,10 +83,11 @@ async function seedMemory(): Promise<{ ok: true; claimToken: string; memoryId: s
 beforeEach(() => {
   afterCalls.length = 0;
   notifyMock.mockClear();
-  memories.length = 0; medias.length = 0; contributors.length = 0; lockCalls.length = 0; memorial = { id: "memorial_1", slug: "jo" };
+  memories.length = 0; medias.length = 0; derived.length = 0; contributors.length = 0; lockCalls.length = 0; order.length = 0; memorial = { id: "memorial_1", slug: "jo" };
   process.env.UPLOAD_TICKET_SECRET = "s".repeat(32);
   process.env.DAILY_MEMORY_BUDGET = "3";
   process.env.DAILY_BYTE_BUDGET = String(600 * 1024 * 1024);
+  delete process.env.TOTAL_BYTE_CEILING;
   process.env.MEMORIAL_SLUG = "jo";
   process.env.CONSENT_VERSION = "2026-11-v1";
   resetEnvCache();
@@ -99,7 +115,8 @@ describe("createUploadTicket cap counts live rows only", () => {
     for (let i = 0; i < 10; i += 1) {
       expect((await createUploadTicket({ claimToken: created.claimToken, file: { name: `p${i}.jpg`, type: "image/jpeg", size: 1 } })).ok).toBe(true);
     }
-    expect(lockCalls.at(-1)).toContain("FOR UPDATE|mem_1");
+    expect(lockCalls.at(-2)).toContain("FOR UPDATE|mem_1");
+    expect(lockCalls.at(-1)).toContain("pg_advisory_xact_lock");
     expect(await createUploadTicket({ claimToken: created.claimToken, file: { name: "p.jpg", type: "image/jpeg", size: 1 } })).toEqual({ ok: false, code: "too_many_files" });
     expect(memories[0]!.uploadLeaseUntil ?? null).toBeNull();
     medias[3]!.deletedAt = new Date();
@@ -125,7 +142,8 @@ describe("createReplacementTicket", () => {
     const result = await createReplacementTicket({ claimToken, mediaId: "00000000-0000-4000-8000-000000000001", file: { name: "b.heic", type: "image/heic", size: 5 } });
     expect(result.ok).toBe(true);
     if (!result.ok) { return; }
-    expect(lockCalls.at(-1)).toContain("FOR UPDATE|mem_1");
+    expect(lockCalls.at(-2)).toContain("FOR UPDATE|mem_1");
+    expect(lockCalls.at(-1)).toContain("pg_advisory_xact_lock");
     expect(medias[1]).toMatchObject({ status: "PENDING", replacesMediaId: "00000000-0000-4000-8000-000000000001", sortOrder: 4, mimeType: "image/heic", caption: "first", approxDateText: "1998", place: "the lake" });
     // Claim-page tickets do not reopen the submission lease: the memory's one email was already handled.
     expect(memories[0]!.uploadLeaseUntil ?? null).toBeNull();
@@ -173,7 +191,7 @@ describe("claim-page tickets on a memory that belongs to a send (Task 15)", () =
     seedSend();
     const result = await createUploadTicket({ claimToken: SECOND, file: { name: "p.jpg", type: "image/jpeg", size: 1 } });
     expect(result.ok).toBe(true);
-    expect(lockCalls).toEqual(["lease|sub_1/0", expect.stringContaining("FOR UPDATE|mem_2")]);
+    expect(lockCalls).toEqual(["lease|sub_1/0", expect.stringContaining("FOR UPDATE|mem_2"), expect.stringContaining("pg_advisory_xact_lock")]);
     expect(memories[0]!.uploadLeaseUntil).toBeInstanceOf(Date);
     expect(memories[1]!.uploadLeaseUntil).toBeNull();
   });
@@ -184,7 +202,7 @@ describe("claim-page tickets on a memory that belongs to a send (Task 15)", () =
     medias.push({ id: target, memoryId: "mem_2", storageKey: "k", mimeType: "image/jpeg", maxBytes: 1, status: "READY", createdAt: new Date(), originalFilename: null, deletedAt: null, sortOrder: 0, replacesMediaId: null });
     const result = await createReplacementTicket({ claimToken: SECOND, mediaId: target, file: { name: "p.jpg", type: "image/jpeg", size: 1 } });
     expect(result).toMatchObject({ ok: true });
-    expect(lockCalls).toEqual(["lease|sub_1/0", expect.stringContaining("FOR UPDATE|mem_2")]);
+    expect(lockCalls).toEqual(["lease|sub_1/0", expect.stringContaining("FOR UPDATE|mem_2"), expect.stringContaining("pg_advisory_xact_lock")]);
     expect(memories[0]!.uploadLeaseUntil).toBeInstanceOf(Date);
   });
 
@@ -193,8 +211,95 @@ describe("claim-page tickets on a memory that belongs to a send (Task 15)", () =
     if (!created.ok) { throw new Error("setup"); }
     lockCalls.length = 0;
     await createUploadTicket({ claimToken: created.claimToken, file: { name: "p.jpg", type: "image/jpeg", size: 1 } });
-    expect(lockCalls).toEqual([expect.stringContaining("FOR UPDATE|mem_1")]);
+    expect(lockCalls).toEqual([expect.stringContaining("FOR UPDATE|mem_1"), expect.stringContaining("pg_advisory_xact_lock")]);
     expect(memories[0]!.uploadLeaseUntil ?? null).toBeNull();
+  });
+});
+
+describe("daily byte budget and total ceiling (issue #44)", () => {
+  const MB = 1024 * 1024;
+  const PHOTO_MAX = 25 * MB;
+  const jpeg = (name: string) => ({ name, type: "image/jpeg", size: 1 });
+  /** A row created `ageMs` ago; the budget sees it through `status`, `deletedAt` and `reservedUntil`. */
+  function row(overrides: Partial<MediaRow> & { id: string; status: string }, ageMs = 60_000): MediaRow {
+    return { memoryId: "mem_x", storageKey: `k_${overrides.id}`, mimeType: "video/mp4", maxBytes: 500 * MB, createdAt: new Date(Date.now() - ageMs), originalFilename: null, deletedAt: null, sortOrder: 0, replacesMediaId: null, reservedUntil: null, sizeBytes: null, ...overrides };
+  }
+
+  it("takes the budget lock after the memory lock and before any budget read; the lock is the transaction's last lock", async () => {
+    const { claimToken } = await seedMemory();
+    order.length = 0;
+    expect((await createUploadTicket({ claimToken, file: jpeg("a.jpg") })).ok).toBe(true);
+    expect(order.indexOf("lock:memory:mem_1")).toBeLessThan(order.indexOf("lock:budget"));
+    expect(order.indexOf("lock:budget")).toBeLessThan(order.indexOf("media.aggregate"));
+    expect(order.filter((o) => o.startsWith("lock:")).at(-1)).toBe("lock:budget");
+  });
+
+  it("fits exactly at the boundary and refuses one byte past it", async () => {
+    const { claimToken } = await seedMemory();
+    process.env.DAILY_BYTE_BUDGET = String(2 * PHOTO_MAX); resetEnvCache();
+    medias.push(row({ id: "ready", status: "READY", maxBytes: PHOTO_MAX, sizeBytes: 3 * MB }));
+    expect((await createUploadTicket({ claimToken, file: jpeg("fits.jpg") })).ok).toBe(true);
+    expect(await createUploadTicket({ claimToken, file: jpeg("over.jpg") })).toEqual({ ok: false, code: "budget_exceeded" });
+    process.env.DAILY_BYTE_BUDGET = String(3 * PHOTO_MAX - 1); resetEnvCache();
+    expect(await createUploadTicket({ claimToken, file: jpeg("still-over.jpg") })).toEqual({ ok: false, code: "budget_exceeded" });
+    process.env.DAILY_BYTE_BUDGET = String(3 * PHOTO_MAX); resetEnvCache();
+    expect((await createUploadTicket({ claimToken, file: jpeg("exactly.jpg") })).ok).toBe(true);
+  });
+
+  it("counts READY rows and open reservations only: expired, cancelled and FAILED reservations stop holding the budget", async () => {
+    const { claimToken } = await seedMemory();
+    process.env.DAILY_BYTE_BUDGET = String(PHOTO_MAX + 1); resetEnvCache();
+    const future = new Date(Date.now() + 60_000);
+    const past = new Date(Date.now() - 1);
+    medias.push(row({ id: "expired", status: "PENDING", reservedUntil: past }));
+    medias.push(row({ id: "cancelled", status: "PENDING", reservedUntil: future, deletedAt: new Date() }));
+    medias.push(row({ id: "failed", status: "FAILED", reservedUntil: future }));
+    medias.push(row({ id: "yesterday", status: "READY", maxBytes: 500 * MB, sizeBytes: 500 * MB }, 25 * 60 * 60 * 1000));
+    expect((await createUploadTicket({ claimToken, file: jpeg("ok.jpg") })).ok).toBe(true);
+    // An open reservation (window ahead), a legacy row with no window written yet, and a READY row all count.
+    medias.push(row({ id: "open", status: "PENDING", reservedUntil: future, maxBytes: 2 }));
+    expect(await createUploadTicket({ claimToken, file: jpeg("no.jpg") })).toEqual({ ok: false, code: "budget_exceeded" });
+    medias.pop();
+    medias.push(row({ id: "legacy", status: "PENDING", reservedUntil: null, maxBytes: 2 }));
+    expect(await createUploadTicket({ claimToken, file: jpeg("no2.jpg") })).toEqual({ ok: false, code: "budget_exceeded" });
+    medias.pop();
+    medias.push(row({ id: "stored", status: "READY", maxBytes: 2, sizeBytes: 1 }));
+    expect(await createUploadTicket({ claimToken, file: jpeg("no3.jpg") })).toEqual({ ok: false, code: "budget_exceeded" });
+  });
+
+  it("stamps a new reservation with reservedUntil = now + UPLOAD_WINDOW_MS", async () => {
+    const { claimToken } = await seedMemory();
+    const before = Date.now();
+    expect((await createUploadTicket({ claimToken, file: jpeg("a.jpg") })).ok).toBe(true);
+    const reservedUntil = medias.at(-1)!.reservedUntil!.getTime();
+    expect(reservedUntil).toBeGreaterThanOrEqual(before + UPLOAD_WINDOW_MS - 50);
+    expect(reservedUntil).toBeLessThanOrEqual(Date.now() + UPLOAD_WINDOW_MS + 50);
+  });
+
+  it("refuses a reservation that would take retained originals, derived copies and open reservations past TOTAL_BYTE_CEILING, whatever the day's budget", async () => {
+    const { claimToken } = await seedMemory();
+    process.env.DAILY_BYTE_BUDGET = String(100 * 1024 ** 3);
+    process.env.TOTAL_BYTE_CEILING = String(100 * MB + PHOTO_MAX); resetEnvCache();
+    const old = 3 * 24 * 60 * 60 * 1000;
+    medias.push(row({ id: "stored_old", status: "READY", sizeBytes: 60 * MB }, old));
+    derived.push({ mediaId: "stored_old", status: "READY", sizeBytes: 30 * MB }, { mediaId: "stored_old", status: "FAILED", sizeBytes: 999 * MB });
+    medias.push(row({ id: "open_old", status: "PENDING", reservedUntil: new Date(Date.now() + 60_000), maxBytes: 10 * MB }, old));
+    // 60 + 30 + 10 = 100 MB in stock; one photo ceiling fits exactly, a second does not.
+    expect((await createUploadTicket({ claimToken, file: jpeg("fits.jpg") })).ok).toBe(true);
+    expect(await createUploadTicket({ claimToken, file: jpeg("over.jpg") })).toEqual({ ok: false, code: "budget_exceeded" });
+    process.env.TOTAL_BYTE_CEILING = String(100 * MB + 2 * PHOTO_MAX); resetEnvCache();
+    expect((await createUploadTicket({ claimToken, file: jpeg("now-fits.jpg") })).ok).toBe(true);
+  });
+
+  it("a replacement reserves the kind's full ceiling, never the declared size (George #1 sub-claim, verified not a bug)", async () => {
+    const { claimToken } = await seedMemory();
+    medias.push({ id: "00000000-0000-4000-8000-000000000001", memoryId: "mem_1", storageKey: "k", mimeType: "image/jpeg", maxBytes: 1, status: "READY", createdAt: new Date(), originalFilename: "a.jpg", deletedAt: null, sortOrder: 0, replacesMediaId: null, sizeBytes: 1 });
+    process.env.DAILY_BYTE_BUDGET = String(PHOTO_MAX); resetEnvCache();
+    expect(await createReplacementTicket({ claimToken, mediaId: "00000000-0000-4000-8000-000000000001", file: { name: "b.jpg", type: "image/jpeg", size: 5 } })).toEqual({ ok: false, code: "budget_exceeded" });
+    process.env.DAILY_BYTE_BUDGET = String(PHOTO_MAX + 1); resetEnvCache();
+    const result = await createReplacementTicket({ claimToken, mediaId: "00000000-0000-4000-8000-000000000001", file: { name: "b.jpg", type: "image/jpeg", size: 5 } });
+    expect(result.ok).toBe(true);
+    expect(medias.at(-1)!.maxBytes).toBe(PHOTO_MAX);
   });
 });
 

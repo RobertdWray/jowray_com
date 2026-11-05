@@ -14,7 +14,10 @@ let createThrows: unknown = null;
 function findMemory(where: { sourceRef?: string; id?: string }): MemoryRow | null {
   return memories.find((m) => (where.sourceRef !== undefined ? m.sourceRef === where.sourceRef : m.id === where.id)) ?? null;
 }
+const lockCalls: string[] = [];
 const tx = {
+  // The budget helper takes the global advisory lock before counting (issue #44); the admin draft path is one of its callers.
+  $executeRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return 1; }),
   memorial: { findUnique: vi.fn(async () => memorial) },
   memory: {
     count: vi.fn(async ({ where }: { where?: { createdAt?: { gt: Date } } } = {}) => memories.filter((m) => !where?.createdAt || m.createdAt > where.createdAt.gt).length),
