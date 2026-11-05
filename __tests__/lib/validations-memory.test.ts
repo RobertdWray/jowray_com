@@ -258,6 +258,14 @@ describe("draftMemoryInputSchema", () => {
     expect(draftMemoryInputSchema.safeParse({ ...valid, originalNote: null }).success).toBe(false);
   });
 
+  it("refuses an originalNote identical to note: that is a verbatim save, and the revision would record no change", () => {
+    const result = draftMemoryInputSchema.safeParse({ ...valid, originalNote: valid.note });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.path).toEqual(["originalNote"]);
+    }
+  });
+
   it("only accepts the admin sources and a sourceRef that follows the scheme", () => {
     expect(draftMemoryInputSchema.safeParse({ ...valid, source: "WEB_UPLOAD" }).success).toBe(false);
     expect(draftMemoryInputSchema.safeParse({ ...valid, source: "SMS", sourceRef: `sms:${"a".repeat(32)}` }).success).toBe(true);

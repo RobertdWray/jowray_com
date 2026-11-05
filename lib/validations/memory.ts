@@ -177,6 +177,12 @@ export const draftMemoryInputSchema = z
   .refine((value) => value.sourceRef.startsWith(SOURCE_REF_PREFIX[value.source]), {
     message: "sourceRef must match source (EMAIL ↔ gmail:, SMS ↔ sms:, OTHER ↔ other:)",
     path: ["sourceRef"],
+  })
+  // An "original" identical to the stored words is a verbatim save mislabelled as a rewrite: the revision would show
+  // no change and the sender would be told their note was trimmed. The skill omits originalNote in that case.
+  .refine((value) => value.originalNote === undefined || value.originalNote !== value.note, {
+    message: "originalNote must differ from note; omit it for a verbatim save",
+    path: ["originalNote"],
   });
 export type DraftMemoryInput = z.infer<typeof draftMemoryInputSchema>;
 

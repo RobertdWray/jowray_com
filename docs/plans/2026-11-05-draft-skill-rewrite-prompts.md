@@ -44,7 +44,7 @@ This reverses the 2026-11-03 ruling "verbatim, never rewritten" (plan §1 decisi
 | Docs amended (§5) | **yes** | commit 71959e5 | grep for "verbatim" in the five files returns only the amended sentences |
 | Original-text retrieval proof (§8 item 3) | **yes** (2026-11-05, local `next dev` :3105 against the Neon `dev` branch `ep-solitary-tree`, admin page entered with a throwaway `ADMIN_PAGE_SECRET` set on the dev process so no real secret entered a tool call) | `docs/plans/evidence/2026-11-05-draft-skill/00-03` | script printed `originalNote: recorded`; revision row `before.note` = letter, `after.note` = rewrite; History page shows the same |
 | Skill micro-tests (§9.2), ten scenarios + three re-tests after one tightening round | **yes** (2026-11-05; all pass) | `docs/plans/evidence/2026-11-05-draft-skill/README.md`, `micro-tests/01-13` | every scenario's pass criterion met; re-tests show the tightened cut and question order |
-| PR opened, `ci` green, Team Code Review bucketed | PR [#51](https://github.com/RobertdWray/jowray_com/pull/51) opened 2026-11-05; ci and review pending | PR #51 | `gh pr checks 51` |
+| PR opened, `ci` green, Team Code Review bucketed | **yes** (2026-11-05): PR [#51](https://github.com/RobertdWray/jowray_com/pull/51); `ci` pass; Team Code Review round 1 applied (§10.1) | PR #51 | `gh pr checks 51` |
 | Merged; production deployment **Ready** for the merge commit | no | `vercel ls --environment production` age/URL | the newest Production row is younger than the merge |
 | Installed skill is the merged text | no | | `diff ~/.claude/skills/jowray-draft-memory/SKILL.md <(git show origin/main:docs/skills/jowray-draft-memory/SKILL.md)` is empty (the symlink makes this automatic once the main checkout is on `origin/main`) |
 | `CONSENT_VERSION=2026-11-v2` in Vercel Production and `.env` | **no** (checked 2026-11-05: `grep -c '^CONSENT_VERSION=2026-11-v2' .env` = 0 [C42]) | | the grep = 1 and `vercel env ls` shows it |
@@ -179,7 +179,7 @@ Order that matters: merge → deployment Ready → installed skill is the merged
 | Where it stopped | What to do |
 |---|---|
 | Before the POST | Nothing was written anywhere. Start again from step 1; re-propose; re-ask. |
-| POST sent, result unknown (session died) | Run the same payload again. A 200 means the first attempt did not write (sourceRef is unique, the duplicate check runs before any write [C34]); a 409 with `status: DRAFT` means it did: continue with the existing memoryId through step 3's 409 branch (Gmail check first). |
+| POST sent, result unknown (session died) | First Rob looks on the admin page for a draft by this sender (read-only); one there means the POST landed, none means it did not. Only then, if needed, run the same payload again. A 200 means the first attempt did not write (sourceRef is unique, the duplicate check runs before any write [C34]); a 409 with `status: DRAFT` means it did: continue with the existing memoryId through step 3's 409 branch (Gmail check first), and **before any reply** Rob reads the row on the admin page: its words, visibility and whether History's first revision has a `before.note`. A rewrite stored with an empty `before` is the unrecorded-rewrite defect; fix it there first. A reissue never clears this check (Team Code Review #5/#6). |
 | 200 received, no Gmail draft yet | Step 4 as normal; `list_drafts` first in case one exists. |
 | Gmail draft exists | Follow step 4's existing rules (carries this link → show and stop; Rob's own words → `update_draft`). |
 | Rewrite sent, `originalNote: recorded` missing | Hard rule: stop and tell Rob; admin page edit or delete; no reply drafted. |
@@ -246,6 +246,20 @@ Each point was checked against source before sorting. Verdicts: six of the frien
 - **Low.** History shows only the newest 25 revisions (`features/admin/get-memory.ts:8,95`) [C32]; a memory edited more than 24 times hides its creation revision, and with it the verbatim original of a rewritten draft, from the page. Fix: always include the oldest revision (second `findMany` with `orderBy createdAt asc, take 1`, merged when not already present) or paginate History; add a test with 26 revisions asserting the first is shown. Pick-up needs: `features/admin/get-memory.ts`, `app/admin/history.tsx`, `__tests__/features/admin-memories.test.ts`.
 - **Low.** No admin control to copy a draft's `originalNote` apart from reading it in History (follows from the above; same files).
 - **Medium, pre-existing (F11 in the 2026-11-03 plan).** The skill runs from the shared main checkout and can pick up a stale or branch-switched script; the preflight guard is the interim. Fix: a detached tools worktree at `origin/main` that the skill fetches and resets before each run, and move the `~/.claude/skills` symlink there.
+
+## 10.1 Team Code Review round 1 (2026-11-05, George gemini-4-argon + Oscar codex; log `~/Downloads/team-review-20261105-085346-jowray_com-pr51-5182a1f.md`)
+
+Seven findings, all applied in the same session (Rob pre-authorised buckets 1 and 2):
+
+| # | Reviewer | Finding | Verdict | Change |
+|---|---|---|---|---|
+| 1 | George, HIGH | The tightened "verbatim cut" dropped sentences mid-paragraph, so a "Verbatim copy" could save an edited paragraph, call it verbatim, and leave the dropped sentence out of `originalNote`. | Correct; introduced by this plan's own refactor round. | Cut is whole paragraphs again (drops only standalone non-memory lines); an inline condolence sentence is removed by the light rewrite and listed in its change list (§4, SKILL.md step 2). |
+| 2 + 7 | George HIGH, Oscar | Relationship question has one option when nothing is proposed; a "stated" relationship skipped Rob. | Correct. | Ask whenever step 2 proposed one (stated or inferred); omit without asking when nothing was proposed; Name with no name at all is asked in chat. |
+| 3 | George, MEDIUM | `originalNote === note` accepted, recorded as a rewrite, reply would claim a trim. | Correct. | zod cross-field refine (400) + tests; skill sends `originalNote` only when the approved note differs from the cut. |
+| 4 | George, MEDIUM | Pronoun questions in the first call conflict with a Verbatim pick; candidates could exceed four options; "Propose a light rewrite" did not say it re-runs step 2b. | Correct. | Pronoun asked only when a rewrite was shown, answers ignored on Verbatim, at most three candidates + "Keep as written"; "Propose a light rewrite" re-runs step 2 and 2b. |
+| 5 + 6 | George LOW, Oscar MEDIUM | After a 409 (including the lost-response retry) the skill could reissue and reply without knowing what the row holds or whether its original was recorded. | Correct. | New 409 bullet: Rob reads the row on the admin page first; the reply's saved line follows the row; an empty `before` on a rewrite is the defect and blocks the reply; a reissue never clears the check (§7 updated). |
+
+Bucket 3 (declined): none. Oscar's note that the screenshot could not be inspected is answered in the evidence README (the admin detail page shows no claim link).
 
 ## 11. Non-goals (unchanged from the original plan unless listed)
 - No AI rewriting **without Rob's per-memory choice and approval**; no rewriting on the admin page's paste form or the public share form.

@@ -103,6 +103,7 @@ describe("draftMemory", () => {
     expect(await draftMemory({ ...valid, contributor: { name: "Joyce" } })).toMatchObject({ ok: false, code: "invalid" });
     expect(await draftMemory({ ...valid, note: "  " })).toMatchObject({ ok: false, code: "invalid" });
     expect(await draftMemory({ ...valid, sourceRef: "gmail:thread-f:1" })).toMatchObject({ ok: false, code: "invalid" });
+    expect(await draftMemory({ ...valid, originalNote: valid.note })).toMatchObject({ ok: false, code: "invalid" });
     expect(memories).toHaveLength(0);
     expect(contributors).toHaveLength(0);
   });
