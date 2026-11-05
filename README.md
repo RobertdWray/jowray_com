@@ -135,7 +135,7 @@ Each feature has a one-to-two page document: what we built, why, the decisions R
 
 ## 🗃️ Data model
 
-Twelve migrations, additive only. The raw claim token is never stored, only its SHA-256. Nothing is hard-deleted; every edit is a `MemoryRevision`.
+Thirteen migrations, additive only. The raw claim token is never stored, only its SHA-256. Nothing is hard-deleted; every edit is a `MemoryRevision`.
 
 ```mermaid
 erDiagram
@@ -197,7 +197,7 @@ Full schema: [`prisma/schema.prisma`](prisma/schema.prisma). `WebhookEvent` (Blo
 | Email | Receipts carry the private links; the family alert carries **no links at all**, so being told about a memory never hands anyone the power to edit it. |
 | Logs | Pino redacts `email`, `name`, `phone`, cookies and authorization headers. Logs carry ids, never rows or people. |
 | Telemetry | **An honest caveat.** For the alpha, Rob authorized 100 % traces, unmasked session replays and contributor email as user context: *"The family has approved these aggressive tracking measures since it is an alpha, vibe-coded website and only family will be using it."* Claim tokens, upload tickets and protected headers are still scrubbed from every event, span, log, breadcrumb and replay, and [`__tests__/lib/sentry-envelope.test.ts`](__tests__/lib/sentry-envelope.test.ts) proves it against the real SDK. One commit ends the alpha settings ([plan §13](docs/plans/2026-11-04-sentry-full-telemetry.md)). |
-| Abuse | Daily budgets on memories and ticketed bytes, a per-recipient email cap, and a Vercel WAF rate-limit rule on the public paths. |
+| Abuse | Daily budgets on memories and ticketed bytes (allocated under one advisory lock, so concurrent sends cannot overshoot), a per-send declared-bytes cap, a total storage ceiling, reservations that stop counting once their upload window closes, a per-recipient email cap, and a Vercel WAF rate-limit rule on the public paths. |
 | Secrets | Never in git. Names and purposes are in [`docs/environment.md`](docs/environment.md); values live in `.env` (mode 600) and Vercel. |
 
 ---

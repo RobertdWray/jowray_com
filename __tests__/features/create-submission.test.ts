@@ -1,28 +1,36 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { hashClaimToken } from "@/lib/claim-token";
-import { UPLOAD_LEASE_MS } from "@/lib/upload-ticket";
+import { UPLOAD_LEASE_MS, UPLOAD_WINDOW_MS } from "@/lib/upload-ticket";
 import { EMAIL_REQUIRED_MESSAGE, NAME_REQUIRED_MESSAGE } from "@/lib/validations/memory";
 import { resetEnvCache } from "@/server/config/env";
+
+import { budgetStats, isBudgetStatsQuery } from "../helpers/budget-stats";
 
 interface MemoryRow {
   id: string; memorialId: string; contributorId: string; type: string; source: string; status: string; claimTokenHash: string; consentVersion: string; consentedAt: Date; createdAt: Date; deletedAt: Date | null;
   approxDateText: string | null; place: string | null; contributorNote: string | null; visibility: string; notifyWhenPosted: boolean;
   submissionId: string | null; submissionIndex: number | null; uploadLeaseUntil: Date | null;
 }
-interface MediaRow { id: string; memoryId: string; storageKey: string; mimeType: string; maxBytes: number; status: string; createdAt: Date; originalFilename: string | null; durationSeconds?: number | null; deletedAt: Date | null; sortOrder: number; replacesMediaId: string | null }
+interface MediaRow { id: string; memoryId: string; storageKey: string; mimeType: string; maxBytes: number; status: string; createdAt: Date; originalFilename: string | null; durationSeconds?: number | null; deletedAt: Date | null; sortOrder: number; replacesMediaId: string | null; reservedUntil?: Date | null; sizeBytes?: number | null }
 const memories: MemoryRow[] = [];
 const medias: MediaRow[] = [];
 const contributors: Record<string, unknown>[] = [];
 let memorial: { id: string; slug: string } | null = { id: "memorial_1", slug: "jo" };
+/** Every statement in issue order, so a test can prove the budget lock precedes the budget reads. */
+const order: string[] = [];
 const tx = {
+  $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    if (isBudgetStatsQuery(strings)) { order.push("budget.read"); return [budgetStats({ memories, media: medias, derived: [] })]; }
+    order.push(`lock:${String(values[0])}`);
+    return [{ id: values[0] }];
+  }),
+  $executeRaw: vi.fn(async (strings: TemplateStringsArray) => { const sql = strings.join("?"); order.push(sql.includes("pg_advisory_xact_lock") ? "lock:budget" : sql.startsWith("SET LOCAL lock_timeout") ? "set:lock_timeout" : "execute"); return 1; }),
   memorial: { findUnique: vi.fn(async () => memorial) },
   memory: {
-    count: vi.fn(async ({ where }: { where?: { createdAt?: { gt: Date } } } = {}) => memories.filter((m) => !where?.createdAt || m.createdAt > where.createdAt.gt).length),
     create: vi.fn(async ({ data }: { data: Omit<MemoryRow, "id" | "createdAt" | "deletedAt"> }) => { const row: MemoryRow = { id: `mem_${memories.length + 1}`, createdAt: new Date(), deletedAt: null, ...data }; memories.push(row); return row; }),
   },
   media: {
-    aggregate: vi.fn(async ({ where }: { where?: { createdAt?: { gt: Date } } } = {}) => ({ _sum: { maxBytes: medias.filter((m) => !where?.createdAt || m.createdAt > where.createdAt.gt).reduce((s, m) => s + m.maxBytes, 0) || null } })),
     create: vi.fn(async ({ data }: { data: Omit<MediaRow, "id" | "createdAt" | "deletedAt"> }) => { const row: MediaRow = { deletedAt: null, ...data, id: `med_${medias.length + 1}`, createdAt: new Date() }; medias.push(row); return row; }),
   },
   contributor: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `con_${contributors.length + 1}`, ...data }; contributors.push(row); return row; }) },
@@ -56,10 +64,12 @@ const twoMemories = {
 
 beforeEach(() => {
   afterCalls.length = 0; completeMock.mockClear();
-  memories.length = 0; medias.length = 0; contributors.length = 0; memorial = { id: "memorial_1", slug: "jo" };
+  memories.length = 0; medias.length = 0; contributors.length = 0; order.length = 0; memorial = { id: "memorial_1", slug: "jo" };
   process.env.UPLOAD_TICKET_SECRET = "s".repeat(32);
   process.env.DAILY_MEMORY_BUDGET = "5";
   process.env.DAILY_BYTE_BUDGET = String(600 * MB);
+  delete process.env.MAX_DECLARED_BYTES_PER_SUBMISSION;
+  delete process.env.TOTAL_BYTE_CEILING;
   process.env.MEMORIAL_SLUG = "jo";
   process.env.CONSENT_VERSION = "2026-11-v2";
   resetEnvCache();
@@ -117,6 +127,50 @@ describe("createSubmission", () => {
     // Declared bytes, not the kind's ceiling: 5 MB of files fit a 6 MB budget although the ceilings sum to 125 MB.
     process.env.DAILY_BYTE_BUDGET = String(6 * MB); resetEnvCache();
     expect((await createSubmission(twoMemories)).ok).toBe(true);
+  });
+
+  it("takes the budget lock before the one budget read, and it is the transaction's only lock (issue #44)", async () => {
+    expect((await createSubmission(twoMemories)).ok).toBe(true);
+    expect(order.slice(0, 2)).toEqual(["set:lock_timeout", "lock:budget"]);
+    expect(order.filter((o) => o.startsWith("lock:"))).toEqual(["lock:budget"]);
+    expect(order.filter((o) => o === "budget.read")).toHaveLength(1);
+    expect(order.indexOf("budget.read")).toBeGreaterThan(0);
+  });
+
+  it("answers budget_exceeded and writes nothing when the budget lock wait runs out (TCR #4)", async () => {
+    const timeout = Object.assign(new Error("Raw query failed. Code: `55P03`. Message: `canceling statement due to lock timeout`"), { code: "P2010", meta: { driverAdapterError: { cause: { code: "55P03" } } } });
+    tx.$executeRaw.mockImplementationOnce(async () => 1).mockImplementationOnce(async () => { throw timeout; }); // SET LOCAL succeeds, the lock wait times out
+    expect(await createSubmission(twoMemories)).toMatchObject({ ok: false, code: "budget_exceeded", memoryIndex: null, fileIndex: null, field: null });
+    expect(memories).toHaveLength(0);
+    expect(contributors).toHaveLength(0);
+  });
+
+  it("stamps every reservation of the send with reservedUntil = now + UPLOAD_WINDOW_MS", async () => {
+    const before = Date.now();
+    expect((await createSubmission(twoMemories)).ok).toBe(true);
+    for (const row of medias) {
+      expect(row.reservedUntil!.getTime()).toBeGreaterThanOrEqual(before + UPLOAD_WINDOW_MS - 50);
+      expect(row.reservedUntil!.getTime()).toBeLessThanOrEqual(Date.now() + UPLOAD_WINDOW_MS + 50);
+    }
+  });
+
+  it("refuses one send that declares more than MAX_DECLARED_BYTES_PER_SUBMISSION before touching the database, with no budget lock taken (issue #44, T10)", async () => {
+    process.env.DAILY_MEMORY_BUDGET = "50"; process.env.DAILY_BYTE_BUDGET = String(100 * 1024 ** 3); resetEnvCache();
+    const video = (i: number) => ({ name: `v${i}.mp4`, type: "video/mp4", size: 500 * MB });
+    // 10 memories × 4 declared 500 MB videos = 19.5 GiB: valid input, under the 20 GiB day, over the 4 GiB per-send default.
+    const lockout = { ...contributor, memories: Array.from({ length: 10 }, () => ({ note: null, files: [video(1), video(2), video(3), video(4)] })) };
+    const refused = await createSubmission(lockout);
+    expect(refused).toMatchObject({ ok: false, code: "budget_exceeded", memoryIndex: null, fileIndex: null, field: null });
+    if (refused.ok) { return; }
+    expect(refused.message).not.toBe("We are receiving a lot of memories right now. Please try again later.");
+    expect(memories).toHaveLength(0);
+    expect(medias).toHaveLength(0);
+    expect(order).toEqual([]);
+    // Exactly the cap fits; one byte more does not.
+    process.env.MAX_DECLARED_BYTES_PER_SUBMISSION = String(2 * 500 * MB); resetEnvCache();
+    expect((await createSubmission({ ...contributor, memories: [{ note: null, files: [video(1), video(2)] }] })).ok).toBe(true);
+    process.env.MAX_DECLARED_BYTES_PER_SUBMISSION = String(2 * 500 * MB - 1); resetEnvCache();
+    expect(await createSubmission({ ...contributor, memories: [{ note: null, files: [video(1), video(2)] }] })).toMatchObject({ ok: false, code: "budget_exceeded" });
   });
 
   it("puts the lease on the anchor only, and only when the send has files", async () => {

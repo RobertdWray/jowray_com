@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hashClaimToken } from "@/lib/claim-token";
 import { resetEnvCache } from "@/server/config/env";
 
+import { budgetStats, isBudgetStatsQuery } from "../helpers/budget-stats";
+
 interface MemoryRow { id: string; memorialId: string; contributorId: string; type: string; source: string; sourceRef: string | null; status: string; claimTokenHash: string; consentVersion: string; consentedAt: Date | null; contributorNote: string | null; visibility: string; notifyWhenPosted: boolean; createdAt: Date; deletedAt: Date | null }
 interface Rev { memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown> }
 const memories: MemoryRow[] = [];
@@ -14,10 +16,13 @@ let createThrows: unknown = null;
 function findMemory(where: { sourceRef?: string; id?: string }): MemoryRow | null {
   return memories.find((m) => (where.sourceRef !== undefined ? m.sourceRef === where.sourceRef : m.id === where.id)) ?? null;
 }
+const lockCalls: string[] = [];
 const tx = {
+  // The budget helper takes the global advisory lock and reads its one statement (issue #44); the admin draft path is one of its callers.
+  $executeRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return 1; }),
+  $queryRaw: vi.fn(async (strings: TemplateStringsArray) => (isBudgetStatsQuery(strings) ? [budgetStats({ memories, media: [], derived: [] })] : [])),
   memorial: { findUnique: vi.fn(async () => memorial) },
   memory: {
-    count: vi.fn(async ({ where }: { where?: { createdAt?: { gt: Date } } } = {}) => memories.filter((m) => !where?.createdAt || m.createdAt > where.createdAt.gt).length),
     findUnique: vi.fn(async ({ where }: { where: { sourceRef?: string; id?: string } }) => findMemory(where)),
     create: vi.fn(async ({ data }: { data: Omit<MemoryRow, "id" | "createdAt" | "deletedAt"> }) => {
       if (createThrows) { throw createThrows; }
@@ -31,7 +36,6 @@ const tx = {
       return { count: rows.length };
     }),
   },
-  media: { aggregate: vi.fn(async () => ({ _sum: { maxBytes: null } })) },
   contributor: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `con_${contributors.length + 1}`, ...data }; contributors.push(row); return row; }) },
   memoryRevision: { create: vi.fn(async ({ data }: { data: Rev }) => { revisions.push(data); return { id: `rev_${revisions.length}`, ...data }; }) },
 };

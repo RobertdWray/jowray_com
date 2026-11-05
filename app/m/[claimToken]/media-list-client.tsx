@@ -141,7 +141,16 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
         }
         const ticketed = await retryUploadTicket({ claimToken, mediaId: item.id });
         if (!ticketed.ok) {
-          return ticketed.code === "not_pending" ? "This file has arrived after all; reload the page to see it." : "That file cannot be retried right now. Please reload the page.";
+          if (ticketed.code === "not_pending") {
+            return "This file has arrived after all; reload the page to see it.";
+          }
+          if (ticketed.code === "expired") {
+            return "This reservation is more than a day old. Cancel it and add the file again below.";
+          }
+          if (ticketed.code === "budget_exceeded") {
+            return "We are receiving a lot of memories right now. Please try again later.";
+          }
+          return "That file cannot be retried right now. Please reload the page.";
         }
         setMessage("Uploading…");
         try {

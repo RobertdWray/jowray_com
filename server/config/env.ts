@@ -98,6 +98,11 @@ const uploadSchema = z.object({
   UPLOAD_TICKET_SECRET: z.string().min(32, "UPLOAD_TICKET_SECRET must be at least 32 characters"),
   DAILY_MEMORY_BUDGET: z.coerce.number().int().positive().default(200),
   DAILY_BYTE_BUDGET: z.coerce.number().int().positive().default(20 * 1024 ** 3),
+  // Issue #44 (upload budgets and retention). Optional with defaults a normal family send never meets.
+  /** Declared bytes one send may reserve across all its files; the daily budget is the rate limit, this is the per-request limit. */
+  MAX_DECLARED_BYTES_PER_SUBMISSION: z.coerce.number().int().positive().default(4 * 1024 ** 3),
+  /** Stock limit: READY originals + READY derived copies + open reservations may not pass this; new reservations are refused beyond it. */
+  TOTAL_BYTE_CEILING: z.coerce.number().int().positive().default(50 * 1024 ** 3),
 });
 
 const memorialSchema = z.object({
