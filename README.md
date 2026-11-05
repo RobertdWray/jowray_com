@@ -11,7 +11,7 @@
 ![Neon Postgres](https://img.shields.io/badge/Neon-Postgres%2018-00e599)
 ![Vercel](https://img.shields.io/badge/Deployed%20on-Vercel-000000)
 ![Sentry 11](https://img.shields.io/badge/Sentry-11-362d59)
-![Tests](https://img.shields.io/badge/Vitest-~1000%20tests-6e9f18)
+![Tests](https://img.shields.io/badge/Vitest-~1200%20tests-6e9f18)
 
 **Live:** [www.jowray.com](https://www.jowray.com) · **Share a memory:** [/share](https://www.jowray.com/share) · **Obituary:** [/obituary](https://www.jowray.com/obituary)
 
@@ -135,7 +135,7 @@ Each feature has a one-to-two page document: what we built, why, the decisions R
 
 ## 🗃️ Data model
 
-Twelve migrations, additive only. The raw claim token is never stored, only its SHA-256. Nothing is hard-deleted; every edit is a `MemoryRevision`.
+Fifteen migrations, additive only. The raw claim token is never stored, only its SHA-256. Nothing is hard-deleted; every edit is a `MemoryRevision`.
 
 ```mermaid
 erDiagram
@@ -215,7 +215,7 @@ npm run validate      # next typegen + tsc --noEmit, then eslint
 ```
 
 ```bash
-npm run test:run      # Vitest, ~1000 tests, Node environment
+npm run test:run      # Vitest, ~1200 tests, Node environment
 ```
 
 ```bash

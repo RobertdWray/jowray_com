@@ -10,7 +10,7 @@ The family's private page at `/admin` on jowray.com: every memory listed, editab
 2. The entry page reads the key, drops it from the address bar with `history.replaceState` and posts it to the `enterAdmin` Server Function. A paste box covers a link whose fragment a messaging app stripped.
 3. The server compares the key in constant time and sets the cookie `jowray_admin` (httpOnly, SameSite=Lax, Path=/admin, 30 days): a timestamp plus an HMAC of the secret, never the secret. The browser lands on `/admin`.
 4. The list shows every memory newest first, 200 at a time, with status chips, a search over words, place, name and email, a Deleted toggle and "Showing 200 of N".
-5. One memory shows its facts, a view-only gallery (through `/admin/media/[id]`), the revision history and the email log.
+5. One memory shows its facts, a view-only gallery (through `/admin/media/[id]`), the revision history (newest 25) and the email log.
 6. The edit form saves name, relationship, when, where, the words and visibility. Only changed fields are sent, with two version stamps; if someone saved first, a stale banner names what moved and the typed words survive. The email and the person's preferences cannot be edited.
 7. Approve, Hide and Back to pending each write one ADMIN revision. Never from DRAFT: only the sender's Share leaves it. Approving publishes nothing yet.
 8. Delete and Restore are a two-step inline confirm. A deleted memory leaves the family's view and its claim link stops working; it stays under the Deleted toggle.
@@ -102,6 +102,7 @@ Catalog ids from the [debt catalog](../2026-11-04-debt-catalog.md); section numb
 - §2.10: M-C-18, the silent test recording is deleted on `/admin`, which means deleting its whole memory, since files are view-only here.
 - §3.3: M-E-01 public header on admin pages (A1); M-E-02 no paging past 200 (A2); M-E-03 revisions say ADMIN, never who (A3, blocked by D5); M-E-04 media changes from admin (A4); M-E-05 deferred minors (no clock-skew tolerance on the cookie, whole view passed to the client form, rail filter resets, stale banner copy); M-E-06 withdraw a draft; M-F-02 Server Functions not wrapped with `instrumentedAction`; A5 nudge email; M-E-12 draft expiry (Rob's call).
 - M-E-09: neither secret rotation has been run. M-E-14: every future lister must decide what to do with DRAFT. A8 (§3.1): the claim form can still overwrite an admin correction.
+- The revision history shows the newest 25 revisions (`REVISION_TAKE` in `features/admin/get-memory.ts`). A skill draft saved as a light rewrite keeps the sender's exact words in its first revision's `before`, so after more than 24 later edits those words leave the page; they stay in the database. Low; [draft-skill plan §10 bucket 4](../plans/2026-11-05-draft-skill-rewrite-prompts.md).
 
 ## Related
 
