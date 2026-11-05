@@ -198,6 +198,12 @@ export async function GET(request: NextRequest): Promise<Response> {
           const outcome = await recordMedia({ mediaId: row.id });
           counts.pendingRechecked += 1;
           if (outcome.status === "PENDING" && row.createdAt.getTime() < now - RESERVATION_MAX_AGE_MS && uploadWindowClosed(row, now)) {
+            // recordMedia also answers PENDING for a blob that EXISTS but whose first bytes it could not
+            // read (issue #45's prefix check), the same word as "no blob". Only the store's own answer
+            // may license a delete: a blob that is there is left alone, whatever its bytes turn out to be.
+            if (await storage.head(row.storageKey)) {
+              return;
+            }
             const claimed = await db.media.updateMany({
               where: { id: row.id, status: "PENDING", deletedAt: null, reservedUntil: row.reservedUntil },
               data: { status: "FAILED", purgedAt: new Date(now) },

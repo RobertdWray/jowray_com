@@ -110,7 +110,9 @@ const ADMIN_ALERT_SINCE = vi.hoisted(() => new Date(Date.now() - 24 * 60 * 60 * 
 const notifyMock = vi.fn(async ({ memoryId }: { memoryId: string }) => recordSent(memoryId, "ADMIN_NEW_MEMORY"));
 vi.mock("@/features/memories/notify-admins", () => ({ ADMIN_ALERT_SINCE, notifyAdminsOfMemory: (a: { memoryId: string }) => notifyMock(a) }));
 const delMock = vi.fn(async (_key: string) => { if (inTransaction) { throw new Error("storage.del inside the purge transaction"); } });
-vi.mock("@/services/storage", () => ({ createStorageService: () => ({ del: delMock, head: vi.fn(), get: vi.fn(), put: vi.fn(), presignGet: vi.fn() }) }));
+/** The store answers head() for exactly one fixture: a blob that exists although recordMedia could not read its first bytes (#48's prefix check answered null). */
+const headMock = vi.fn(async (key: string) => (key === "dev/originals/mem_2/present" ? { size: 5, contentType: "video/mp4", url: "u", uploadedAt: new Date() } : null));
+vi.mock("@/services/storage", () => ({ createStorageService: () => ({ del: delMock, head: headMock, get: vi.fn(), put: vi.fn(), presignGet: vi.fn() }) }));
 
 import { GET } from "@/app/api/cron/reconcile-uploads/route";
 
@@ -159,6 +161,9 @@ beforeEach(() => {
     // The worst case (TCR #1/#12): the family's upload finishes and finalize flips the row READY right after step (a)'s
     // head() check said "no blob yet". The cron must claim the row (status still PENDING) before it deletes anything.
     { id: "med_orphan_finalized", memoryId: "mem_2", status: "PENDING", checksumSha256: null, createdAt: ancient, storageKey: "dev/originals/mem_2/finalized", blobUrl: null, deletedAt: null, reservedUntil: new Date(Date.now() - 1000), mimeType: "video/mp4", memory: { deletedAt: null } },
+    // A blob that EXISTS but whose first bytes could not be read (#48's readPrefix answered null): recordMedia says PENDING, which is
+    // the same answer as "no blob". Step (a) must ask the store itself and never claim or delete while the bytes are there.
+    { id: "med_orphan_present", memoryId: "mem_2", status: "PENDING", checksumSha256: null, createdAt: ancient, storageKey: "dev/originals/mem_2/present", blobUrl: null, deletedAt: null, reservedUntil: new Date(Date.now() - 1000), mimeType: "video/mp4", memory: { deletedAt: null } },
     // (issue #44) Cancelled reservations are purged when their window has closed, however old the row is: a 2 h old one whose
     // last ticket is recent waits; one created minutes ago whose window already passed goes now.
     { id: "med_cancelled_window_open", memoryId: "mem_1", status: "PENDING", checksumSha256: null, createdAt: old, storageKey: "dev/originals/mem_1/wo", blobUrl: null, deletedAt: old, reservedUntil: new Date(Date.now() + 30 * 60 * 1000), memory: { deletedAt: null } },
@@ -254,8 +259,8 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(body.success).toBe(true);
     // (a) stale PENDING (>1h) re-recorded; the fresh one untouched; the >24h orphan whose blob is still missing → FAILED
     // step (a) re-records both stale rows; step (c) replays med_stale once more from the event
-    expect(new Set(recordMediaMock.mock.calls.map((c) => c[0].mediaId))).toEqual(new Set(["med_orphan", "med_orphan_env", "med_orphan_open", "med_orphan_raced", "med_orphan_finalized", "med_stale"]));
-    expect(recordMediaMock).toHaveBeenCalledTimes(7);
+    expect(new Set(recordMediaMock.mock.calls.map((c) => c[0].mediaId))).toEqual(new Set(["med_orphan", "med_orphan_env", "med_orphan_open", "med_orphan_raced", "med_orphan_finalized", "med_orphan_present", "med_stale"]));
+    expect(recordMediaMock).toHaveBeenCalledTimes(8);
     expect(media.find((m) => m.id === "med_orphan")?.status).toBe("FAILED");
     // (issue #44) a production copy's pathname is never touched from here; this environment's orphan is claimed (FAILED + purgedAt,
     // conditional on status and window) BEFORE its pathname is deleted (TCR #1/#12)
@@ -272,6 +277,11 @@ describe("GET /api/cron/reconcile-uploads", () => {
     // A file that was finalized a moment after the head() check keeps its bytes: the cron claims (status PENDING) before any delete.
     expect(media.find((m) => m.id === "med_orphan_finalized")).toMatchObject({ status: "READY", blobUrl: "u" });
     expect(delMock).not.toHaveBeenCalledWith("dev/originals/mem_2/finalized");
+    // A blob the store still has is never claimed or deleted, whatever recordMedia could make of its bytes (#48 interaction).
+    expect(headMock).toHaveBeenCalledWith("dev/originals/mem_2/present");
+    expect(media.find((m) => m.id === "med_orphan_present")?.status).toBe("PENDING");
+    expect(media.find((m) => m.id === "med_orphan_present")?.purgedAt ?? null).toBeNull();
+    expect(delMock).not.toHaveBeenCalledWith("dev/originals/mem_2/present");
     // (b) checksum backfill
     expect(checksumMock).toHaveBeenCalledWith({ mediaId: "med_nohash" });
     // (c) unprocessed webhook events re-run
@@ -346,7 +356,7 @@ describe("GET /api/cron/reconcile-uploads", () => {
     // the staging pathname is only ever deleted for videos
     expect(delMock.mock.calls.map((c) => c[0] as string).filter((k) => k.endsWith(".upload.jpg"))).toEqual([]);
     // checksumsComputed 2: med_nohash, plus the file finalized during (a), which (b) hashes in the same run.
-    expect(body.data).toMatchObject({ pendingRechecked: 6, orphansFailed: 2, checksumsComputed: 2, eventsReplayed: 1, emailsRetried: 3, confirmationsSent: 2, adminAlertsSent: 8, submissionReceiptsSent: 1, deletedBlobsRemoved: 4, derived: 3 });
+    expect(body.data).toMatchObject({ pendingRechecked: 7, orphansFailed: 2, checksumsComputed: 2, eventsReplayed: 1, emailsRetried: 3, confirmationsSent: 2, adminAlertsSent: 8, submissionReceiptsSent: 1, deletedBlobsRemoved: 4, derived: 3 });
   });
 
   it("(e2) waits for a send's lease before alerting any of its memories, and (e3) emails the anchor once the lease is gone", async () => {
