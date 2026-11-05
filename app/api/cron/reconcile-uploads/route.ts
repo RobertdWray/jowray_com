@@ -66,7 +66,7 @@ const CANCELLED_RESERVATION_GRACE_MS = UPLOAD_WINDOW_MS;
 /** Step (a) gives up on a reservation this long after it was made, once its window has also closed. */
 const RESERVATION_MAX_AGE_MS = 24 * HOUR_MS;
 /**
- * Step (f3) keeps deleting the pathname of a row the cron retired for this long
+ * Step (a0) keeps deleting the pathname of a row the cron retired for this long
  * after the claim: a Blob upload request that began before its token expired may
  * finish after it (the token is checked when each request starts), so one delete
  * at the window's end is not a guarantee. Every delete is idempotent (TCR #14).
@@ -149,7 +149,7 @@ export async function GET(request: NextRequest): Promise<Response> {
     // still PENDING with the window we read; only then is the pathname deleted (this
     // environment's blobs only). A finalize that landed after the head() check, or a
     // re-ticket that moved the window, makes the claim match nothing and nothing is
-    // deleted. Step (f3) repeats the delete for a while in case a request that began
+    // deleted. Step (a0) repeats the delete for a while in case a request that began
     // before the token expired finishes after it.
     const outOfTime = (): boolean => Date.now() - now > RUN_DEADLINE_MS;
 

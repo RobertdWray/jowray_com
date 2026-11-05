@@ -13,7 +13,8 @@ export type ImageDeriveErrorCode =
  * `too_many_pixels` carries the ceiling that was in force so a later, higher
  * ceiling can retry the row. `busy` means the decode slot's waiting line was
  * full: nothing was read or decoded, and the caller leaves the work to the
- * cron. `too_many_frames` is terminal: the animation is over the frame cap.
+ * cron. An animation over the frame cap is not an error: its copies are a
+ * still of the first frame (issue #45).
  */
 export class ImageDeriveError extends Error {
   readonly code: ImageDeriveErrorCode;
