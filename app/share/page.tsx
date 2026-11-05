@@ -1,8 +1,8 @@
 import { ShareForm } from "./share-form";
 
 // The Server Functions in ./actions.ts inherit this page's limit; it bounds
-// finalizeUpload(), completeSubmission() (its 10 s thumbnail wait included)
-// and the after() work they schedule. The page reads no request data, so it
+// finalizeUpload(), completeSubmission() (the receipt send, including its
+// bounded wait for the outbound lock) and the after() work they schedule. The page reads no request data, so it
 // stays prerendered; the phone/computer split is CSS alone (D1).
 export const maxDuration = 120;
 

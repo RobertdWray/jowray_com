@@ -7,6 +7,7 @@ import {
   getAdminEnv,
   getAdminPageEnv,
   getDbEnv,
+  getOutboundEnv,
   getSiteEnv,
   resetEnvCache,
   strictBoolean,
@@ -19,6 +20,9 @@ const KEYS = [
   "VERCEL_ENV",
   "VERCEL_BRANCH_URL",
   "ADMIN_ALERT_EMAILS",
+  "ADMIN_ALERT_HOURLY_CAP",
+  "OUTBOUND_HOURLY_CAP",
+  "OUTBOUND_DAILY_CAP",
   "ADMIN_API_SECRET",
   "ADMIN_PAGE_SECRET",
 ] as const;
@@ -208,5 +212,33 @@ describe("getAdminPageEnv", () => {
     process.env.ADMIN_PAGE_SECRET = "p".repeat(32);
     resetEnvCache();
     expect(getAdminPageEnv().ADMIN_PAGE_SECRET).toBe("p".repeat(32));
+  });
+});
+
+describe("outbound ceilings and the admin hourly cap (issue #46)", () => {
+  it("default to 60 an hour and 300 a day for contributor email, and 20 admin alerts an hour, so a deploy needs no new env", () => {
+    expect(getOutboundEnv()).toMatchObject({ OUTBOUND_HOURLY_CAP: 60, OUTBOUND_DAILY_CAP: 300 });
+    expect(getAdminAlertEnv().ADMIN_ALERT_HOURLY_CAP).toBe(20);
+  });
+
+  it("read positive integers and treat an empty value as unset (the `KEY=` convention)", () => {
+    process.env.OUTBOUND_HOURLY_CAP = "5";
+    process.env.OUTBOUND_DAILY_CAP = "";
+    process.env.ADMIN_ALERT_HOURLY_CAP = " 7 ";
+    expect(getOutboundEnv()).toMatchObject({ OUTBOUND_HOURLY_CAP: 5, OUTBOUND_DAILY_CAP: 300 });
+    expect(getAdminAlertEnv().ADMIN_ALERT_HOURLY_CAP).toBe(7);
+  });
+
+  it("fall back to the default for zero, negatives, fractions and words, never throwing: a typo in Vercel must not stop receipts", () => {
+    for (const bad of ["0", "-1", "2.5", "many", "1e400"]) {
+      process.env.OUTBOUND_HOURLY_CAP = bad;
+      process.env.OUTBOUND_DAILY_CAP = "12";
+      resetEnvCache();
+      expect(getOutboundEnv()).toMatchObject({ OUTBOUND_HOURLY_CAP: 60, OUTBOUND_DAILY_CAP: 12 });
+    }
+    delete process.env.OUTBOUND_HOURLY_CAP;
+    process.env.ADMIN_ALERT_HOURLY_CAP = "0";
+    resetEnvCache();
+    expect(getAdminAlertEnv().ADMIN_ALERT_HOURLY_CAP).toBe(20);
   });
 });

@@ -56,8 +56,31 @@ const CONFIRM_MIN_AGE_MS = 30 * MINUTE_MS;
 const SUBMISSION_BATCH = 10;
 const EMAIL_MAX_ATTEMPTS = 5;
 const EVENT_MAX_ATTEMPTS = 3;
-/** A cancelled reservation may still receive bytes until its ticket (15 min) and Blob client token (1 h) have both expired. */
+/**
+ * A reservation may still receive bytes until its ticket (15 min) and Blob client
+ * token (1 h) have both expired. Rows record that moment as `reservedUntil` at
+ * every mint (issue #44); this grace from `createdAt` is the fallback for rows
+ * the old code wrote before the column existed.
+ */
 const CANCELLED_RESERVATION_GRACE_MS = UPLOAD_WINDOW_MS;
+/** Step (a) gives up on a reservation this long after it was made, once its window has also closed. */
+const RESERVATION_MAX_AGE_MS = 24 * HOUR_MS;
+/**
+ * Step (f3) keeps deleting the pathname of a row the cron retired for this long
+ * after the claim: a Blob upload request that began before its token expired may
+ * finish after it (the token is checked when each request starts), so one delete
+ * at the window's end is not a guarantee. Every delete is idempotent (TCR #14).
+ */
+const LATE_ARRIVAL_SWEEP_MS = 2 * HOUR_MS;
+
+/** True once no Blob token minted for the row can still land bytes (issue #44, Oscar #18). */
+function uploadWindowClosed(row: { reservedUntil: Date | null; createdAt: Date }, now: number): boolean {
+  return row.reservedUntil !== null ? row.reservedUntil.getTime() < now : row.createdAt.getTime() < now - CANCELLED_RESERVATION_GRACE_MS;
+}
+/** The same test as a `where` fragment. */
+function uploadWindowClosedWhere(now: number): { OR: Array<{ reservedUntil: { lt: Date } } | { reservedUntil: null; createdAt: { lt: Date } }> } {
+  return { OR: [{ reservedUntil: { lt: new Date(now) } }, { reservedUntil: null, createdAt: { lt: new Date(now - CANCELLED_RESERVATION_GRACE_MS) } }] };
+}
 /** Step (f): a memory deleted from the admin page keeps its files this long, so a Restore within 30 days brings everything back. */
 const DELETED_MEMORY_GRACE_MS = 30 * 24 * HOUR_MS;
 /** Step (g): a few photos per run, each decode bounded; the shared run deadline still applies. */
@@ -74,6 +97,7 @@ interface Counts {
   adminAlertsSent: number;
   submissionReceiptsSent: number;
   deletedBlobsRemoved: number;
+  lateSweeps: number;
   derived: number;
   errors: number;
 }
@@ -109,14 +133,56 @@ export async function GET(request: NextRequest): Promise<Response> {
       adminAlertsSent: 0,
       submissionReceiptsSent: 0,
       deletedBlobsRemoved: 0,
+      lateSweeps: 0,
       derived: 0,
       errors: 0,
     };
     const db = getDb();
+    const storage = createStorageService();
     const now = Date.now();
 
-    // (a) PENDING media older than an hour: re-record; after 24 h with no blob, give up.
+    // (a) PENDING media older than an hour: re-record; after 24 h with no blob, give up,
+    // but only once the row's upload window has closed, so no token can still land bytes
+    // on a FAILED row (ingest ignores FAILED rows, and nothing would ever purge them;
+    // issue #44, Oscar #18 / George #3). Claim first, delete second (step (f)'s durable
+    // marker, TCR #1/#12): the conditional update to FAILED + purgedAt proves the row was
+    // still PENDING with the window we read; only then is the pathname deleted (this
+    // environment's blobs only). A finalize that landed after the head() check, or a
+    // re-ticket that moved the window, makes the claim match nothing and nothing is
+    // deleted. Step (f3) repeats the delete for a while in case a request that began
+    // before the token expired finishes after it.
     const outOfTime = (): boolean => Date.now() - now > RUN_DEADLINE_MS;
+
+    // (a0) Rows this environment retired in earlier runs ((a), (f2), or (f) with nothing
+    // left to point at): delete their pathname again. A Blob request that started before
+    // its token expired can finish after it, so a straggler may land after the first
+    // delete; repeating the idempotent delete for LATE_ARRIVAL_SWEEP_MS bounds how long
+    // such bytes can exist. A FAILED row can never serve again, so nothing of value is
+    // lost. First in the run so a row retired by this run is swept from the next one on.
+    const retired = await db.media.findMany({
+      where: {
+        status: "FAILED",
+        blobUrl: null,
+        purgedAt: { gt: new Date(now - LATE_ARRIVAL_SWEEP_MS) },
+        storageKey: { startsWith: storagePrefix() },
+      },
+      select: { id: true, storageKey: true },
+      orderBy: { id: "asc" },
+      take: 100,
+    });
+    for (const row of retired) {
+      if (outOfTime()) {
+        break;
+      }
+      try {
+        await storage.del(row.storageKey);
+        counts.lateSweeps += 1;
+      } catch (error) {
+        counts.errors += 1;
+        logError("reconcile: late-arrival sweep failed", error, { category: "cron", mediaId: row.id });
+      }
+    }
+
     const stale = await db.media.findMany({
       where: { status: "PENDING", deletedAt: null, createdAt: { lt: new Date(now - HOUR_MS) }, memory: { deletedAt: null } },
       orderBy: { createdAt: "asc" },
@@ -131,9 +197,23 @@ export async function GET(request: NextRequest): Promise<Response> {
         try {
           const outcome = await recordMedia({ mediaId: row.id });
           counts.pendingRechecked += 1;
-          if (outcome.status === "PENDING" && row.createdAt.getTime() < now - 24 * HOUR_MS) {
-            await db.media.update({ where: { id: row.id }, data: { status: "FAILED" } });
-            counts.orphansFailed += 1;
+          if (outcome.status === "PENDING" && row.createdAt.getTime() < now - RESERVATION_MAX_AGE_MS && uploadWindowClosed(row, now)) {
+            // recordMedia also answers PENDING for a blob that EXISTS but whose first bytes it could not
+            // read (issue #45's prefix check), the same word as "no blob". Only the store's own answer
+            // may license a delete: a blob that is there is left alone, whatever its bytes turn out to be.
+            if (await storage.head(row.storageKey)) {
+              return;
+            }
+            const claimed = await db.media.updateMany({
+              where: { id: row.id, status: "PENDING", deletedAt: null, reservedUntil: row.reservedUntil },
+              data: { status: "FAILED", purgedAt: new Date(now) },
+            });
+            if (claimed.count === 1) {
+              if (row.storageKey.startsWith(storagePrefix())) {
+                await storage.del(row.storageKey);
+              }
+              counts.orphansFailed += 1;
+            }
           }
         } catch (error) {
           counts.errors += 1;
@@ -395,14 +475,13 @@ export async function GET(request: NextRequest): Promise<Response> {
     // which is why the mark is written before the first byte goes.
     const staleClaimBefore = new Date(now - STALE_CLAIM_MS);
     const deletedMemoryBefore = new Date(now - DELETED_MEMORY_GRACE_MS);
-    const cancelledBefore = new Date(now - CANCELLED_RESERVATION_GRACE_MS);
     const orphanedBlobs = await db.media.findMany({
       where: {
         OR: [
           { purgedAt: { not: null } },
           { memory: { deletedAt: { lt: deletedMemoryBefore } } },
-          // A cancelled file's Blob token may still be valid; wait for it to expire so the freed pathname cannot be refilled.
-          { deletedAt: { not: null }, createdAt: { lt: cancelledBefore } },
+          // A cancelled file's Blob token may still be valid; wait for its window to close so the freed pathname cannot be refilled.
+          { deletedAt: { not: null }, ...uploadWindowClosedWhere(now) },
         ],
         AND: [
           {
@@ -419,7 +498,6 @@ export async function GET(request: NextRequest): Promise<Response> {
       orderBy: { id: "asc" },
       take: 50,
     });
-    const storage = createStorageService();
     for (const row of orphanedBlobs) {
       if (outOfTime()) {
         break;
@@ -432,7 +510,7 @@ export async function GET(request: NextRequest): Promise<Response> {
             await lockMemory(tx, row.memoryId);
             const fresh = await tx.media.findUniqueOrThrow({
               where: { id: row.id },
-              select: { purgedAt: true, status: true, deletedAt: true, createdAt: true, memory: { select: { deletedAt: true } } },
+              select: { purgedAt: true, status: true, deletedAt: true, createdAt: true, reservedUntil: true, memory: { select: { deletedAt: true } } },
             });
             if (fresh.purgedAt !== null) {
               // Already claimed. A READY row with the mark must never serve again, whoever left it that way.
@@ -442,7 +520,7 @@ export async function GET(request: NextRequest): Promise<Response> {
               return true;
             }
             const memoryGone = fresh.memory.deletedAt !== null && fresh.memory.deletedAt < deletedMemoryBefore;
-            const fileRemoved = fresh.deletedAt !== null && fresh.createdAt < cancelledBefore;
+            const fileRemoved = fresh.deletedAt !== null && uploadWindowClosed(fresh, now);
             if (!memoryGone && !fileRemoved) {
               return false;
             }
@@ -480,13 +558,16 @@ export async function GET(request: NextRequest): Promise<Response> {
     }
 
     // (f2) Reservations cancelled on the claim page whose upload might have landed
-    // without a callback or finalize: once the Blob token has expired, delete the
-    // pathname (idempotent) and mark the row FAILED so it is never selected again.
+    // without a callback or finalize: once the row's upload window has closed (its
+    // last token has expired; issue #44), claim it (FAILED + purgedAt, conditional on
+    // the state we read) and then delete the pathname (idempotent). A cancelled row
+    // cannot be re-ticketed, so its window is final; a row whose bytes were recorded
+    // meanwhile (ingest's "retired" path sets blobUrl and FAILED) belongs to step (f).
     const cancelled = await db.media.findMany({
       where: {
         status: "PENDING",
         deletedAt: { not: null },
-        createdAt: { lt: new Date(now - CANCELLED_RESERVATION_GRACE_MS) },
+        ...uploadWindowClosedWhere(now),
         storageKey: { startsWith: storagePrefix() },
       },
       orderBy: { id: "asc" },
@@ -499,9 +580,14 @@ export async function GET(request: NextRequest): Promise<Response> {
       // Each item in its own isolation scope: an identity set by a shared feature cannot leak into the next item.
       await Sentry.withIsolationScope(async () => {
         try {
-          await storage.del(row.storageKey);
-          await db.media.update({ where: { id: row.id }, data: { status: "FAILED", blobUrl: null } });
-          counts.deletedBlobsRemoved += 1;
+          const claimed = await db.media.updateMany({
+            where: { id: row.id, status: "PENDING", reservedUntil: row.reservedUntil },
+            data: { status: "FAILED", blobUrl: null, purgedAt: new Date(now) },
+          });
+          if (claimed.count === 1) {
+            await storage.del(row.storageKey);
+            counts.deletedBlobsRemoved += 1;
+          }
         } catch (error) {
           counts.errors += 1;
           logError("reconcile: cancelled reservation purge failed", error, { category: "cron", mediaId: row.id });

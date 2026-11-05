@@ -19,7 +19,9 @@ interface MediaRow {
   memory: { claimTokenHash: string; deletedAt: Date | null };
 }
 let media: MediaRow[] = [];
+const executeRawMock = vi.fn(async () => 0); // every ceiling "refuses": the admin must still be served
 const dbStub = {
+  $executeRaw: executeRawMock,
   media: {
     findUnique: vi.fn(async ({ where, include }: { where: { id: string }; include?: { derivatives?: { where?: { status?: string } } } }) => {
       const row = media.find((m) => m.id === where.id);
@@ -77,9 +79,20 @@ describe("GET /admin/media/[id] (V13)", () => {
     const res = await request("med_ready", "", cookie);
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("https://blob.test/derived/mem_1/web.jpg?signed=1");
-    expect(res.headers.get("cache-control")).toBe("private, no-store");
+    expect(res.headers.get("cache-control")).toBe("private, max-age=55");
     expect(res.headers.get("referrer-policy")).toBe("no-referrer");
     expect((await request("med_ready", "?v=thumb", cookie)).headers.get("location")).toBe("https://blob.test/derived/mem_1/thumb.jpg?signed=1");
+  });
+
+  it("is counted toward the site's egress but never refused, whatever the counters say (issue #45)", async () => {
+    executeRawMock.mockClear();
+    const res = await request("med_ready", "?v=original", mintAdminCookie());
+    expect(res.status).toBe(302);
+    expect(executeRawMock).toHaveBeenCalledTimes(1);
+    const [strings, scope] = executeRawMock.mock.calls[0] as unknown as [TemplateStringsArray, string];
+    expect(strings.join("?")).toMatch(/INSERT INTO "EgressCounter"/);
+    expect(strings.join("?")).not.toMatch(/<=/);
+    expect(scope).toBe("global");
   });
 
   it("serves a deleted memory's media (the page where Restore is decided), but never a removed or purged row", async () => {

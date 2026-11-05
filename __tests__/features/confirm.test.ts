@@ -24,8 +24,10 @@ let memory: MemoryRow | null = null;
 const emailUpdateMock = vi.fn(async (_arg: unknown) => ({ count: 1 }));
 const dbStub = {
   memory: {
-    findUnique: vi.fn(async ({ include }: { include?: { media?: { where?: { deletedAt?: null } } } } = {}) =>
-      memory && include?.media?.where && "deletedAt" in include.media.where ? { ...memory, media: memory.media.filter((m) => (m.deletedAt ?? null) === null) } : memory),
+    findUnique: vi.fn(async ({ include, select }: { include?: { media?: { where?: { deletedAt?: null } } }; select?: { media?: { where?: { deletedAt?: null } } } } = {}) => {
+      const mediaWhere = (select ?? include)?.media?.where;
+      return memory && mediaWhere && "deletedAt" in mediaWhere ? { ...memory, media: memory.media.filter((m) => (m.deletedAt ?? null) === null) } : memory;
+    }),
     update: vi.fn(async ({ data }: { data: Partial<MemoryRow> }) => { Object.assign(memory!, data); return memory; }),
   },
   emailLog: { updateMany: (arg: unknown) => emailUpdateMock(arg) },
@@ -71,23 +73,22 @@ beforeEach(() => {
 });
 
 describe("confirmMemory", () => {
-  it("sends the confirmation with the claim link, the contributor's details and what was received", async () => {
+  it("sends the fixed-content confirmation: the claim link, words-or-not and the kinds received, nothing the contributor typed (issue #46, D1)", async () => {
     memory!.contributorNote = "She once taught me to quilt.";
     const result = await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN });
     expect(result).toEqual({ sent: true, messageId: "m1" });
-    expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({
+    expect(sendMock).toHaveBeenCalledWith({
       memoryId: "mem_1",
       to: "jo@example.com",
-      name: "Jo",
-      relationship: "former student",
-      approxDateText: "Summer 1985",
-      place: "her classroom",
-      note: "She once taught me to quilt.",
-      media: [{ kind: "PHOTO", originalFilename: "IMG_0001.jpg", durationSeconds: null, preview: null }],
+      hasWords: true,
+      media: [{ kind: "PHOTO", durationSeconds: null }],
       claimLink: `https://www.jowray.com/m/${TOKEN}`,
-    }));
-    const arg = sendMock.mock.calls[0]?.[0] as unknown as { rotateToClaimTokenHash?: string };
+    });
+    const arg = sendMock.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
     expect(arg.rotateToClaimTokenHash).toBeUndefined();
+    for (const field of ["name", "relationship", "approxDateText", "place", "note"]) {
+      expect(arg).not.toHaveProperty(field);
+    }
   });
 
   it("lists only READY files, in upload order, with their kind and duration", async () => {
@@ -98,10 +99,10 @@ describe("confirmMemory", () => {
       readyPhoto({ id: "c", mimeType: "video/quicktime", originalFilename: "clip.mov" }),
     ];
     await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN });
-    const arg = sendMock.mock.calls[0]?.[0] as unknown as { media: Array<{ kind: string; originalFilename: string | null; durationSeconds: number | null }> };
+    const arg = sendMock.mock.calls[0]?.[0] as unknown as { media: Array<{ kind: string; durationSeconds: number | null }> };
     expect(arg.media).toEqual([
-      { kind: "VOICE", originalFilename: "voice.m4a", durationSeconds: 134, preview: null },
-      { kind: "VIDEO", originalFilename: "clip.mov", durationSeconds: null, preview: null },
+      { kind: "VOICE", durationSeconds: 134 },
+      { kind: "VIDEO", durationSeconds: null },
     ]);
   });
 
@@ -121,7 +122,7 @@ describe("confirmMemory", () => {
   it("a TEXT memory needs no file", async () => {
     memory!.type = "TEXT"; memory!.media = []; memory!.contributorNote = "words";
     expect((await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).sent).toBe(true);
-    expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({ media: [], note: "words" }));
+    expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({ media: [], hasWords: true }));
   });
 
   it("rejects a claim token that does not belong to the memory", async () => {
@@ -170,7 +171,7 @@ describe("rotation bookkeeping and note-only eligibility", () => {
     memory!.media = [readyPhoto({ status: "FAILED" })];
     memory!.contributorNote = "the words were saved";
     expect((await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN })).sent).toBe(true);
-    expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({ media: [], note: "the words were saved" }));
+    expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({ media: [], hasWords: true }));
   });
 });
 

@@ -377,6 +377,62 @@ describe("the depth cap fails closed", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Team Code Review of PR #47 (George #1) and the regression review after it:
+// the key's quoting and the value's quoting can disagree in malformed text.
+// The key's quoting decides, exactly as the regex scanner on main did. Two
+// "improvements" were tried and both hid a *later* member by swallowing its
+// opening quote; those inputs are pinned here. The remaining residual (text
+// after whitespace or a comma inside a mixed-quoted value is not part of the
+// value) is main's behaviour too, and our secrets contain neither.
+// ---------------------------------------------------------------------------
+describe("mixed quoting between a secret key and its value (PR #47 review, George #1)", () => {
+  it("keeps the fail-closed reading after an escaped-looking key: a plain-quoted value runs to the end of the text, exactly as on main", () => {
+    expect(scrubSecrets(`{"a":"\\"token":"${TEST_TOKEN}"}`)).toBe(`{"a":"\\"token":\\"${FILTERED}\\"`);
+    expect(scrubSecrets(`C:\\dir\\"token":"${TEST_TOKEN}" tail`)).toBe(`C:\\dir\\"token":\\"${FILTERED}\\"`);
+  });
+
+  it("never hides the member after an escaped key whose value starts with a plain quote (regression review of c648ce4)", () => {
+    // Flight-style line (not JSON): attacker text in the note sits right before the real claim token.
+    const flight = `1:{"note":"x\\"token\\":","claimToken":"${TEST_TOKEN}"}`;
+    expect(scrubSecrets(flight)).toBe(`1:{"note":"x\\"token\\":\\"${FILTERED}\\"`);
+    // The same shape as a truncated plain JSON body (no closing brace, so the scanner runs instead of JSON.parse).
+    const truncated = `{"note":"x\\"token\\":","claimToken":"${TEST_TOKEN}"`;
+    expect(scrubSecrets(truncated)).toBe(`{"note":"x\\"token\\":\\"${FILTERED}\\"`);
+  });
+
+  it("never hides the member after a plain key whose value starts with an escaped quote (the other direction; found by the differential test)", () => {
+    // Upgrading the reading to escaped here would run to the `\"` after `ticket` and swallow that key.
+    const text = `{"claimToken":\\","ticket\\":\\"${TEST_TOKEN}\\",\\"key\\":\\"${TEST_TOKEN_2}`;
+    const out = scrubSecrets(text) as string;
+    expect(out).not.toContain("SENTRYTEST_");
+    expect(out).toBe(`{"claimToken":"${FILTERED}","ticket\\":"${FILTERED}",\\"key\\":\\"${FILTERED}\\"`);
+  });
+
+  it("reads a plain key's escaped-looking value as a scalar, as on main: the secret goes, text after whitespace or a comma inside it stays", () => {
+    expect(scrubSecrets(`"token\\":\\"${TEST_TOKEN}\\"`)).toBe(`"token\\":"${FILTERED}"`);
+    expect(scrubSecrets(`"token\\":\\"${TEST_TOKEN} tail\\" rest`)).toBe(`"token\\":"${FILTERED}" tail\\" rest`);
+    expect(scrubSecrets(`"claimToken":\\"${TEST_TOKEN},x\\" rest`)).toBe(`"claimToken":"${FILTERED}",x\\" rest`);
+  });
+
+  it("never leaves the secret itself behind whatever the quoting, and stays idempotent", () => {
+    const texts = [
+      `{"a":"\\"token":"${TEST_TOKEN}"}`,
+      `"token\\":\\"${TEST_TOKEN} tail\\" rest`,
+      `"claimToken":\\"${TEST_TOKEN},x\\" rest`,
+      `\\"ticket":{"sig":"${TEST_TOKEN}"} tail`,
+      `"ticket\\":{\\"sig\\":\\"${TEST_TOKEN}\\"} tail`,
+      `\\"claimToken":"${TEST_TOKEN} with space" tail`,
+    ];
+    for (const text of texts) {
+      const once = scrubSecrets(text) as string;
+      expect(once).not.toContain(TEST_TOKEN);
+      expect(once).not.toContain("SENTRYTEST_");
+      expect(scrubSecrets(once)).toBe(once);
+    }
+  });
+});
+
 describe("the escaped-context scanner is idempotent (regression check M2)", () => {
   it("keeps the inner JSON string well formed and leaves neighbouring keys alone on repeated passes", () => {
     const flight = `1:{"p":"{\\"ticket\\":\\"${TEST_TOKEN}\\",\\"b\\":\\"keep\\"}"}`;

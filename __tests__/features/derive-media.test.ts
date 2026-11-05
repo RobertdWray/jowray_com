@@ -6,9 +6,11 @@ import type { DerivedSet } from "@/services/images";
 import type * as ImagesModule from "@/services/images";
 import type * as LoggerModule from "@/lib/logger";
 
+import { NOT_MEDIA, SIGNATURE_SAMPLES } from "../fixtures/signatures";
+
 type Kind = "WEB_IMAGE" | "THUMBNAIL";
 interface DerivedRow { id: string; mediaId: string; kind: Kind; status: "PENDING" | "READY" | "FAILED"; storageKey: string; mimeType: string | null; sizeBytes: number | null; width: number | null; height: number | null; error: string | null; attempts: number; claimedAt: Date | null }
-interface MediaRow { id: string; memoryId: string; status: string; mimeType: string; storageKey: string; deletedAt: Date | null; width: number | null; height: number | null; memory: { deletedAt: Date | null } }
+interface MediaRow { id: string; memoryId: string; status: string; mimeType: string; storageKey: string; deletedAt: Date | null; purgedAt: Date | null; width: number | null; height: number | null; memory: { deletedAt: Date | null } }
 
 let media: MediaRow[] = [];
 let derived: DerivedRow[] = [];
@@ -32,6 +34,7 @@ function matches(row: Record<string, unknown>, where: Record<string, unknown>): 
 const db = {
   $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; }),
   $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) => fn(db)),
+  memory: { findUniqueOrThrow: vi.fn(async () => ({ contributorNote: null })) },
   media: {
     findUnique: vi.fn(async ({ where, include }: { where: { id: string }; include?: { derivatives?: { where?: Record<string, unknown> } } }) => {
       const row = media.find((m) => m.id === where.id);
@@ -64,17 +67,21 @@ const db = {
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => db }));
 
-const getMock = vi.fn(async () => ({ stream: new Blob([new Uint8Array([1, 2, 3])]).stream(), contentType: "image/jpeg", contentLength: 3 }));
+/** The original's bytes: by default a HEIC header (the default photo() is image/heic), as a real file would start. */
+const ORIGINAL = SIGNATURE_SAMPLES["image/heic"]!;
+const getMock = vi.fn(async (_pathname: string, _options?: { signal?: AbortSignal }) => ({ stream: new Blob([ORIGINAL]).stream(), contentType: "image/heic", contentLength: ORIGINAL.byteLength }));
 const putMock = vi.fn(async (pathname: string) => ({ pathname, url: `https://blob.test/${pathname}`, size: 1, contentType: "image/jpeg", uploadedAt: new Date() }));
-const delMock = vi.fn(async () => undefined);
+const delMock = vi.fn(async (_key: string) => undefined);
 vi.mock("@/services/storage", () => ({ createStorageService: () => ({ get: getMock, put: putMock, del: delMock, head: vi.fn(), presignGet: vi.fn() }) }));
 
 const web = { data: Buffer.from("web"), mimeType: "image/jpeg", extension: "jpg", width: 2048, height: 1536 };
 const thumb = { data: Buffer.from("thumb"), mimeType: "image/jpeg", extension: "jpg", width: 1000, height: 750 };
 const deriveMock = vi.fn(async (_input: Buffer, _opts: unknown): Promise<DerivedSet> => ({ sourceWidth: 4000, sourceHeight: 3000, web, thumb }));
+const releaseMock = vi.fn();
+const acquireMock = vi.fn(async (_deadlineMs: number) => ({ derive: (i: Buffer, o: unknown) => deriveMock(i, o), release: releaseMock }));
 vi.mock("@/services/images", async (importOriginal) => {
   const actual = await importOriginal<typeof ImagesModule>();
-  return { ...actual, createImageService: () => ({ derive: (i: Buffer, o: unknown) => deriveMock(i, o), inFlight: () => 0 }) };
+  return { ...actual, createImageService: () => ({ acquire: (ms: number) => acquireMock(ms), derive: (i: Buffer, o: unknown) => deriveMock(i, o), inFlight: () => 0, waiting: () => 0 }) };
 });
 
 const logErrorMock = vi.fn();
@@ -86,7 +93,7 @@ vi.mock("@/lib/logger", async (importOriginal) => {
 import { deriveMedia } from "@/features/memories/derive-media";
 
 function photo(over: Partial<MediaRow> = {}): MediaRow {
-  return { id: "med_1", memoryId: "mem_1", status: "READY", mimeType: "image/heic", storageKey: "dev/originals/mem_1/0f6a1c7e-3f1a-4b5e-9c2d-1234567890ab.heic", deletedAt: null, width: null, height: null, memory: { deletedAt: null }, ...over };
+  return { id: "med_1", memoryId: "mem_1", status: "READY", mimeType: "image/heic", storageKey: "dev/originals/mem_1/0f6a1c7e-3f1a-4b5e-9c2d-1234567890ab.heic", deletedAt: null, purgedAt: null, width: null, height: null, memory: { deletedAt: null }, ...over };
 }
 const NOW = new Date("2026-11-03T12:00:00Z");
 const STALE = new Date(NOW.getTime() - 11 * 60_000);
@@ -97,8 +104,9 @@ function row(kind: Kind, over: Partial<DerivedRow> = {}): DerivedRow {
 beforeEach(() => {
   delete process.env.VERCEL_ENV; resetEnvCache();
   media = [photo()]; derived = []; lockCalls.length = 0; nextId = 1;
-  getMock.mockClear(); putMock.mockClear(); delMock.mockClear(); deriveMock.mockClear(); logErrorMock.mockClear();
+  getMock.mockClear(); putMock.mockClear(); delMock.mockClear(); deriveMock.mockClear(); logErrorMock.mockClear(); acquireMock.mockClear(); releaseMock.mockClear();
   deriveMock.mockImplementation(async () => ({ sourceWidth: 4000, sourceHeight: 3000, web, thumb }));
+  getMock.mockImplementation(async () => ({ stream: new Blob([ORIGINAL]).stream(), contentType: "image/heic", contentLength: ORIGINAL.byteLength }));
 });
 
 describe("deriveMedia", () => {
@@ -219,7 +227,7 @@ describe("deriveMedia", () => {
   });
 
   it("drops its claims and candidates, after the transaction, when the media was removed while deriving", async () => {
-    getMock.mockImplementationOnce(async () => { media[0]!.deletedAt = new Date(); return { stream: new Blob([new Uint8Array([1])]).stream(), contentType: "image/jpeg", contentLength: 1 }; });
+    getMock.mockImplementationOnce(async () => { media[0]!.deletedAt = new Date(); return { stream: new Blob([ORIGINAL]).stream(), contentType: "image/heic", contentLength: ORIGINAL.byteLength }; });
     expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "claimed_elsewhere", THUMBNAIL: "claimed_elsewhere" });
     expect(derived).toHaveLength(0);
     expect(delMock).toHaveBeenCalledTimes(2);
@@ -228,5 +236,104 @@ describe("deriveMedia", () => {
     const txEnd = db.$transaction.mock.results[0]!;
     expect(txEnd).toBeDefined();
     expect(delMock.mock.invocationCallOrder.every((o) => o > lockOrder)).toBe(true);
+  });
+
+  describe("issue #45: slot before download, one deadline, mislabelled originals relabelled, never destroyed", () => {
+    it("takes the decode slot before claiming or downloading, and releases it once the pixels are done", async () => {
+      await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW });
+      expect(acquireMock).toHaveBeenCalledTimes(1);
+      expect(acquireMock.mock.invocationCallOrder[0]!).toBeLessThan(db.derivedMedia.create.mock.invocationCallOrder[0]!);
+      expect(acquireMock.mock.invocationCallOrder[0]!).toBeLessThan(getMock.mock.invocationCallOrder[0]!);
+      expect(releaseMock).toHaveBeenCalled();
+      // Released before the publish transaction, not after it.
+      expect(releaseMock.mock.invocationCallOrder[0]!).toBeLessThan(db.$transaction.mock.invocationCallOrder[0]!);
+    });
+
+    it("defers to the cron when the waiting line is full: nothing claimed, nothing read, no attempt spent", async () => {
+      acquireMock.mockRejectedValueOnce(new ImageDeriveError("busy"));
+      const result = await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW });
+      expect(result).toEqual({ WEB_IMAGE: "deferred", THUMBNAIL: "deferred" });
+      expect(derived).toHaveLength(0);
+      expect(getMock).not.toHaveBeenCalled();
+      expect(deriveMock).not.toHaveBeenCalled();
+      expect(logErrorMock).not.toHaveBeenCalled();
+    });
+
+    it("defers likewise when the wait for the slot runs out the deadline", async () => {
+      acquireMock.mockRejectedValueOnce(new ImageDeriveError("timeout"));
+      expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW })).toEqual({ WEB_IMAGE: "deferred", THUMBNAIL: "deferred" });
+      expect(derived).toHaveLength(0);
+    });
+
+    it("passes the remaining budget, not a fresh one, to the slot and the decoder", async () => {
+      await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW });
+      expect(acquireMock.mock.calls[0]![0]).toBeLessThanOrEqual(20_000);
+      const options = deriveMock.mock.calls[0]![1] as { deadlineMs: number };
+      expect(options.deadlineMs).toBeLessThanOrEqual(20_000);
+      expect(options.deadlineMs).toBeGreaterThan(19_000);
+    });
+
+    it("hands the download an abort signal and records a timeout, not a decode failure, when the deadline passes mid-download", async () => {
+      getMock.mockImplementationOnce(async (_p: string, options?: { signal?: AbortSignal }) => {
+        const stream = new ReadableStream<Uint8Array<ArrayBuffer>>({
+          pull() {
+            return new Promise<void>((_resolve, reject) => {
+              options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            });
+          },
+        });
+        return { stream, contentType: "image/jpeg", contentLength: 3 };
+      });
+      const result = await deriveMedia({ mediaId: "med_1", deadlineMs: 30, now: NOW });
+      expect(result).toEqual({ WEB_IMAGE: "failed", THUMBNAIL: "failed" });
+      expect(derived.every((d) => d.status === "FAILED" && d.error === "timeout")).toBe(true);
+      expect(deriveMock).not.toHaveBeenCalled();
+      expect(releaseMock).toHaveBeenCalled();
+    });
+
+    it("relabels a row whose bytes are another allowed photo type and decodes with the corrected type (JPEG stored as .heic, from before the byte check)", async () => {
+      getMock.mockImplementationOnce(async () => ({ stream: new Blob([SIGNATURE_SAMPLES["image/jpeg"]!]).stream(), contentType: "image/heic", contentLength: 8 }));
+      const result = await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW });
+      expect(result).toEqual({ WEB_IMAGE: "derived", THUMBNAIL: "derived" });
+      expect(media[0]).toMatchObject({ status: "READY", mimeType: "image/jpeg", purgedAt: null });
+      expect((deriveMock.mock.calls[0]![1] as { sourceMime: string }).sourceMime).toBe("image/jpeg");
+      expect(delMock).not.toHaveBeenCalledWith(photo().storageKey);
+    });
+
+    it("bytes that are no photo at all: the copies fail unsupported_type (terminal) and the original is left exactly as it was", async () => {
+      getMock.mockImplementationOnce(async () => ({ stream: new Blob([NOT_MEDIA.zip!]).stream(), contentType: "image/heic", contentLength: 6 }));
+      const result = await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW });
+      expect(result).toEqual({ WEB_IMAGE: "failed", THUMBNAIL: "failed" });
+      expect(derived.every((d) => d.status === "FAILED" && d.error === "unsupported_type")).toBe(true);
+      expect(deriveMock).not.toHaveBeenCalled();
+      expect(media[0]).toMatchObject({ status: "READY", mimeType: "image/heic", purgedAt: null });
+      expect(delMock).not.toHaveBeenCalledWith(photo().storageKey);
+      expect(db.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("a decoder verdict never deletes an original either", async () => {
+      deriveMock.mockRejectedValueOnce(new ImageDeriveError("unsupported_type"));
+      await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW });
+      expect(media[0]).toMatchObject({ status: "READY", purgedAt: null });
+      expect(delMock).not.toHaveBeenCalledWith(photo().storageKey);
+    });
+
+    it("defers without claiming when the slot arrives with no time left", async () => {
+      acquireMock.mockImplementationOnce(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return { derive: (i: Buffer, o: unknown) => deriveMock(i, o), release: releaseMock };
+      });
+      expect(await deriveMedia({ mediaId: "med_1", deadlineMs: 20, now: NOW })).toEqual({ WEB_IMAGE: "deferred", THUMBNAIL: "deferred" });
+      expect(derived).toHaveLength(0);
+      expect(getMock).not.toHaveBeenCalled();
+      expect(releaseMock).toHaveBeenCalled();
+    });
+
+    it("leaves a retryable decode failure's original alone (it may be our fault, not the file's)", async () => {
+      deriveMock.mockRejectedValueOnce(new ImageDeriveError("decode_failed"));
+      await deriveMedia({ mediaId: "med_1", deadlineMs: 20_000, now: NOW });
+      expect(media[0]).toMatchObject({ status: "READY", purgedAt: null });
+      expect(delMock).not.toHaveBeenCalledWith(photo().storageKey);
+    });
   });
 });

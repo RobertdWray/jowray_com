@@ -6,10 +6,10 @@ The site's two transactional emails (the contributor's receipt and the family-ad
 
 ## What we built
 
-1. A person sends one or more memories from `/share`. On completion, `completeSubmission` emails one receipt (`SUBMISSION_CONFIRMATION`) with every memory's private link, inline thumbnails for up to four photos, and the names of files that never arrived. Subject: "Thank you for sharing a memory" or "… N memories".
+1. A person sends one or more memories from `/share`. On completion, `completeSubmission` emails one receipt (`SUBMISSION_CONFIRMATION`) with every memory's private link, a "what you sent" line from counts, a badge card per file (kind and length) and a count of files that never arrived. Fixed content since issue #46 (2026-11-05): no name, note, date, place, filename or uploaded picture; the words and pictures are on the private page. Subject: "Thank you for sharing a memory" or "… N memories".
 2. A legacy single memory gets `MEMORY_CONFIRMATION` through `confirmMemory`. Admin-drafted memories never get a site email.
 3. After the response, `notifyAdminsOfMemory` sends one `ADMIN_NEW_MEMORY` alert per memory to every address in `ADMIN_ALERT_EMAILS`, one message they all see. Order: Who, Date, Memory, Media, other details. No links of any kind.
-4. Every email goes through `deliver()`: render, claim one `EmailLog` row per `(memoryId, emailType)`, apply the outbound guard and the receipt cap, send through SendGrid, record SENT or FAILED.
+4. Every email goes through `deliver()`: render, then under one advisory lock (bounded wait) create or load the `EmailLog` row per `(memoryId, emailType)`, apply the outbound guard and the caps, claim the row; send through SendGrid outside the lock; record SENT or FAILED. Caps (issue #46): 15 receipts a day per inbox (`recipientKey` folds `+tag`, Gmail dots and googlemail), `OUTBOUND_HOURLY_CAP`/`OUTBOUND_DAILY_CAP` across all contributor email (held as retryable FAILED rows), and `ADMIN_ALERT_HOURLY_CAP` for alerts (one "arriving quickly" notice per hour, then skips).
 5. Every 10 minutes Vercel Cron calls `GET /api/cron/reconcile-uploads` with the `CRON_SECRET` bearer: stuck uploads, webhook replay, email retries and backfill, checksums, the 30-day purge, derived copies.
 6. On the admin page, Delete hides a memory at once; Restore within 30 days brings everything back. After 30 days the cron removes the files, never the words.
 
@@ -21,7 +21,7 @@ Phase 1 needed a receipt carrying the only copy of the private link, and a sweep
 
 | Decision | Source |
 |---|---|
-| R1 echo the full note and details (reverses Phase 1 S2); R2 inline CID images, no tokenized URLs, tracking off; R5 originals never degraded; R6 compatibility over style. Rob, 2026-11-03: stop at Cut point A. | [confirmation plan §1, §2](../plans/2026-11-03-confirmation-email-preview.md) |
+| R1 echo the full note and details (reverses Phase 1 S2; **superseded 2026-11-05 by issue #46 D1: receipts are fixed content**); R2 inline CID images, no tokenized URLs, tracking off; R5 originals never degraded; R6 compatibility over style. Rob, 2026-11-03: stop at Cut point A. | [confirmation plan §1, §2](../plans/2026-11-03-confirmation-email-preview.md) |
 | Alert "approved for implementation (Rob, 2026-11-03 ~21:10 ET)". Order Who, Date, Memory, Media, other details. R2 no links: "the edit links are for users only." | [admin-alert plan §1, §2](../plans/2026-11-03-admin-new-memory-alert.md) |
 | R3 one message both admins see; R4 no cap; R5 a duplicate after a crash is accepted; R6 backfill only since `ADMIN_ALERT_SINCE`; R7 an empty list writes no row. Premortem findings, folded in under Rob's approval. | [admin-alert plan §2](../plans/2026-11-03-admin-new-memory-alert.md) |
 | Agent rulings, accepted: the transport sends `content_id` (SendGrid had refused every inline image); `ADMIN_ALERT_SINCE` is `2026-11-03T22:00:00Z`, the PR #26 body's 00:00Z is superseded. | [admin-alert plan §9](../plans/2026-11-03-admin-new-memory-alert.md) |
@@ -49,7 +49,7 @@ flowchart TD
   I --> K[Restore later returns words only<br/>page names the gone files]
 ```
 
-The lock covers only the database write. Because `purgedAt` is committed before the first byte goes, a crash or a Restore in the middle can never leave a READY row pointing at missing bytes; `serveMedia` refuses any file with `purgedAt` set. The email lane has the same shape: `deliver()` renders, claims `PENDING|FAILED|SKIPPED` to `SENDING` atomically, drops recipients the outbound guard forbids (`OUTBOUND_ENABLED` or `OUTBOUND_ALLOWLIST`), applies the 15-a-day cap to receipts only, sends with three SendGrid attempts (10 s each; of the 4xx family only 408 and 429 retry), then writes SENT with any rotated claim hashes in one transaction. Failures leave FAILED with `nextAttemptAt` = 15 min × attempts; a SENDING row older than 15 minutes is reclaimed. Cron order: (a) stale PENDING files, (c) webhook replay, (d) email retries by type, (e) legacy confirmations, (e2) admin alerts, (e3) send receipts, (b) checksums, (f) purge, (f2) cancelled reservations, (g) derived copies, all inside a 50 s deadline.
+The lock covers only the database write. Because `purgedAt` is committed before the first byte goes, a crash or a Restore in the middle can never leave a READY row pointing at missing bytes; `serveMedia` refuses any file with `purgedAt` set. The email lane has the same shape: `deliver()` renders, then in one short transaction under `pg_advisory_xact_lock` (3 s `lock_timeout`; a timeout answers `busy` with no row, and the cron's catch-up finds the memory) drops recipients the outbound guard forbids (`OUTBOUND_ENABLED` or `OUTBOUND_ALLOWLIST`), applies the per-inbox, global and admin caps, and claims `PENDING|FAILED|SKIPPED` (or a SENDING claim older than 15 minutes) to `SENDING`; it then sends with three SendGrid attempts (10 s each; of the 4xx family only 408 and 429 retry), then writes SENT with any rotated claim hashes in one transaction. Failures leave FAILED with `nextAttemptAt` = 15 min × attempts; a SENDING row older than 15 minutes is reclaimed. Cron order: (a) stale PENDING files, (c) webhook replay, (d) email retries by type, (e) legacy confirmations, (e2) admin alerts, (e3) send receipts, (b) checksums, (f) purge, (f2) cancelled reservations, (g) derived copies, all inside a 50 s deadline. Since issue #44, (a) gives up on a day-old PENDING row only once its `reservedUntil` has passed (no Blob token for it can still land bytes) and the store's own `head()` finds no blob (`recordMedia` also answers PENDING for a blob whose first bytes it could not read), and it claims before it deletes: a conditional `updateMany` (`status: PENDING`, `deletedAt` null, the same window) sets FAILED + `purgedAt`, and only when that matched one row is the pathname deleted (this environment's blobs only). A finalize that landed after the head() check, or a re-ticket that moved the window, makes the claim match nothing and nothing is deleted. (f2) claims the same way; (f) and (f2) judge cancelled rows by `reservedUntil` rather than by age. A new first step (a0) deletes again, for two hours, the pathname of every row retired recently: a Blob request that began before its token expired may finish after it.
 
 ## Key files
 
@@ -60,7 +60,7 @@ The lock covers only the database write. Because `purgedAt` is committed before 
 | `vercel.json` | `*/10 * * * *` schedule |
 | **features** | |
 | `features/memories/confirm.ts` | Legacy receipt; token rotation on the cron path |
-| `features/memories/complete-submission.ts` | One receipt per send, thumbnails, `confirmSubmission` |
+| `features/memories/complete-submission.ts` | One receipt per send, `confirmSubmission` |
 | `features/memories/notify-admins.ts` | Admin alert, `ADMIN_ALERT_SINCE` |
 | `features/memories/site-email.ts`, `features/memories/media-summary.ts` | Which memories get email; the READY file list |
 | `features/memories/lock.ts` | `lockMemory` used by the purge claim |
@@ -97,8 +97,8 @@ The lock covers only the database write. Because `purgedAt` is committed before 
 ## Known gaps and follow-ups
 
 - M-H-09 Hotmail deliverability of the alert, M-H-08 the receipt in a real inbox, M-D-02 per-recipient delivery state via the SendGrid event webhook (issue #38 §2.1).
-- M-D-01 legacy `confirmMemory` and the alert carry no thumbnails; no 30 MB transport guard. M-D-03 later edits send nothing; M-D-04 daily digest; M-D-05 one alert per send (Rob); M-D-06 no "posted" email (§1.4); M-D-07 nudge for unshared drafts; M-D-08 plus-tag variants bypass the cap; M-D-09 a stale ledger checkbox.
-- M-B-06 PENDING blobs on deleted memories are never purged, no per-row retry bound; M-B-07 step (a) marks FAILED without `status: PENDING` in the `where`; M-B-08 a finalize replay can resend a FAILED email without backoff.
+- M-D-01 legacy `confirmMemory` and the alert carry no thumbnails; no 30 MB transport guard. M-D-03 later edits send nothing; M-D-04 daily digest; M-D-05 one alert per send (Rob); M-D-06 no "posted" email (§1.4); M-D-07 nudge for unshared drafts; M-D-08 plus-tag variants bypass the cap (fixed by issue #46, `recipientKey`); M-D-09 a stale ledger checkbox.
+- M-B-06 PENDING blobs on deleted memories are never purged, no per-row retry bound; M-B-07 (closed by issue #44: step (a) fails with a conditional `updateMany` on `status: PENDING` and the row's window); M-B-08 a finalize replay can resend a FAILED email without backoff.
 - M-A-09 rollback floors; the SHA blank in admin-page plan §7 should be `9ffdb8e` (§2.6). M-A-06 cutoff settled (§1.1). M-F-10 alerting on one failed cron run (§2.3).
 
 ## Related

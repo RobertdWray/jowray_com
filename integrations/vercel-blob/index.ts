@@ -7,12 +7,43 @@ import { getBlobEnv } from "@/server/config/env";
 import type {
   PresignGetOptions,
   PresignGetResult,
+  StorageGetOptions,
   StorageGetResult,
   StorageHeadResult,
   StorageService,
 } from "@/services/storage/types";
 
 const log = createLogger({ category: "upload" });
+
+/** Read at most `maxBytes` from a stream, then cancel it; what was read is returned as one array. */
+async function readUpTo(stream: ReadableStream<Uint8Array>, maxBytes: number): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (total < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      chunks.push(value);
+      total += value.byteLength;
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  const out = new Uint8Array(Math.min(total, maxBytes));
+  let offset = 0;
+  for (const chunk of chunks) {
+    const take = Math.min(chunk.byteLength, out.byteLength - offset);
+    out.set(chunk.subarray(0, take), offset);
+    offset += take;
+    if (offset >= out.byteLength) {
+      break;
+    }
+  }
+  return out;
+}
 
 export class VercelBlobStorageService implements StorageService {
   private token(): string {
@@ -57,8 +88,8 @@ export class VercelBlobStorageService implements StorageService {
     }
   }
 
-  async get(pathname: string): Promise<StorageGetResult | null> {
-    const result = await get(pathname, { access: "private", token: this.token() });
+  async get(pathname: string, options: StorageGetOptions = {}): Promise<StorageGetResult | null> {
+    const result = await get(pathname, { access: "private", token: this.token(), abortSignal: options.signal });
     if (!result || result.statusCode !== 200) {
       return null;
     }
@@ -67,6 +98,26 @@ export class VercelBlobStorageService implements StorageService {
       contentType: result.blob.contentType,
       contentLength: result.blob.size,
     };
+  }
+
+  /**
+   * A `Range` request for the first bytes. The blob host answers 206 with just
+   * the prefix (the SDK reports every 2xx as `statusCode: 200`, so the stream
+   * is what tells us there is a body); should the host ever send the whole
+   * file, only `maxBytes` are read before the stream is cancelled, so the
+   * transfer stays bounded either way. Nothing after the prefix is buffered.
+   * Callers never ask for a range of an empty blob (that would be a 416).
+   */
+  async readPrefix(pathname: string, maxBytes: number): Promise<Uint8Array | null> {
+    const result = await get(pathname, {
+      access: "private",
+      token: this.token(),
+      headers: { Range: `bytes=0-${Math.max(0, maxBytes - 1)}` },
+    });
+    if (!result || result.stream === null) {
+      return null;
+    }
+    return readUpTo(result.stream, maxBytes);
   }
 
   async del(pathname: string): Promise<void> {

@@ -23,5 +23,6 @@ export async function GET(request: NextRequest, context: RouteContext<"/admin/me
   if (!isAdminCookie(cookie)) {
     return mediaNotFound();
   }
-  return serveMedia({ id, variant, download, allowDeletedMemory: true, authorize: () => true });
+  // The admin's own views are counted toward the site's daily egress but never refused (issue #45).
+  return serveMedia({ id, variant, download, caller: "admin", allowDeletedMemory: true, authorize: () => true });
 }

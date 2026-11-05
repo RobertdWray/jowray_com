@@ -33,8 +33,18 @@ class UploadRefused extends Error {
  * the signed callback is the backstop for a tab closed before finalizeUpload().
  */
 export async function POST(request: NextRequest): Promise<Response> {
-  // Request-time read first (Cache Components), then env and data.
-  const body = (await request.json()) as HandleUploadBody;
+  // Request-time read first (Cache Components), then env and data. A body that
+  // is not JSON is a 400 here, not an unhandled error that `onRequestError`
+  // would report to Sentry once per request (issue #43). Only the error's name
+  // is logged: V8's SyntaxError message quotes the raw body, which could carry
+  // a ticket, and that must never reach the logs (PR #47 review).
+  let body: HandleUploadBody;
+  try {
+    body = (await request.json()) as HandleUploadBody;
+  } catch (error) {
+    log.warn({ action: "invalid_json", reason: error instanceof Error ? error.name : typeof error }, "upload body is not JSON");
+    return NextResponse.json({ error: { code: "invalid_json", message: "The body must be JSON" } }, { status: 400 });
+  }
   try {
     const result = await handleUpload({
       body,

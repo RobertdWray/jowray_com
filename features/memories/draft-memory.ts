@@ -1,6 +1,7 @@
 import "server-only";
 
 import { TX_OPTIONS, withinBudget } from "@/features/memories/create-memory";
+import { BudgetBusyError } from "@/features/memories/lock";
 import type { Prisma } from "@/generated/prisma/client";
 import { hashClaimToken, newClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
@@ -119,6 +120,11 @@ export async function draftMemory(raw: unknown): Promise<DraftMemoryResult> {
       return { memoryId: memory.id };
     }, TX_OPTIONS);
   } catch (error) {
+    // The budget lock did not come in time: the same answer as a spent budget (issue #44, TCR #4).
+    if (error instanceof BudgetBusyError) {
+      log.warn({ action: "budget_busy", source: "admin_draft" }, "budget lock wait timed out; answered budget_exceeded");
+      return { ok: false, code: "budget_exceeded" };
+    }
     // Two drafts of the same message at once: the loser's insert fails on the
     // unique index. Postgres has aborted that transaction, so the re-read must
     // happen out here, on a fresh connection.

@@ -45,6 +45,8 @@ The `jowray.com` zone (`dad5b9fdb1ece5afc4a4224f61a51770`) uses the `beth`/`koa.
 - It can list and edit DNS records in every zone in the account, not just `jowray.com`.
 - It can't read zone settings such as the SSL mode. Grey-cloud records don't need that.
 
+The account-wide scope was reviewed before the repository went public and accepted as-is (Rob, 2026-11-05, issue #43: existing keys are not rotated or re-scoped).
+
 The Cloudflare API MCP server (`https://mcp.cloudflare.com/mcp`, [docs](https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/)) accepts the same token as a bearer header. This setup called the REST API directly instead, so no MCP server is configured for this repo.
 
 ## Re-check

@@ -1,6 +1,8 @@
-// A representative confirmation (note, details, one photo preview, one video
-// poster with the composited play badge, one voice recording) for the
-// send-test and render-preview scripts. Pure except for sharp.
+// A representative confirmation (words, a photo, a video, a voice recording)
+// for the send-test and render-preview scripts. Fixed content since issue #46
+// (D1, review #6): no name, note, filenames or uploaded pictures in the
+// receipt. `samplePreviews` stays for the admin-alert sample, which may show
+// uploaded images. Pure except for sharp.
 import sharp from "sharp";
 
 import { PLAY_BADGE_COMPOSITE } from "../lib/email-assets";
@@ -31,18 +33,13 @@ export async function samplePreviews(): Promise<{ photo: string; poster: string 
   return { photo, poster };
 }
 
-export async function buildSampleConfirmation(claimLink: string): Promise<RenderedMemoryConfirmation> {
-  const { photo, poster } = await samplePreviews();
+export function buildSampleConfirmation(claimLink: string): RenderedMemoryConfirmation {
   return buildMemoryConfirmation({
-    name: "Kay Bartholomew",
-    relationship: "former student",
-    approxDateText: "Summer 1985",
-    place: "her classroom",
-    note: "She once caught me reading under the desk during a spelling test.\n\nInstead of taking the book away she asked what it was, said \"good choice\", and let me finish the chapter at lunch. Spelling, she said, didn't count that day.\n\nI still have the book.",
+    hasWords: true,
     media: [
-      { kind: "PHOTO", originalFilename: "IMG_0412.jpg", durationSeconds: null, preview: { contentId: "preview-sample-photo", contentBase64: photo, width: 1000, height: 750 } },
-      { kind: "VIDEO", originalFilename: "lake-george-1998.mov", durationSeconds: 47, preview: { contentId: "preview-sample-video", contentBase64: poster, width: 1000, height: 562 } },
-      { kind: "VOICE", originalFilename: "voice-memo.m4a", durationSeconds: 134, preview: null },
+      { kind: "PHOTO", durationSeconds: null },
+      { kind: "VIDEO", durationSeconds: 47 },
+      { kind: "VOICE", durationSeconds: 134 },
     ],
     claimLink,
   });

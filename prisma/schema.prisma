@@ -176,6 +176,7 @@ model Media {
   deletedAt        DateTime?                // soft delete: removed file, cancelled reservation or cancelled replacement; blobs purged by cron step (f)
   purgedAt         DateTime?                // set by cron step (f) before any byte is deleted; once set the removal completes even if the memory is restored; READY rows flip to FAILED at the same time
   replacesMediaId  String?                  // set on a PENDING replacement; the target is retired when this row reaches READY (one-to-many so a FAILED attempt can be retried)
+  reservedUntil    DateTime?                // while PENDING: holds the byte budget and may still receive bytes until this moment (creation or last ticket + UPLOAD_WINDOW_MS); cron (a)/(f2) and the budget read it; null only on rows the old code wrote (issue #44)
   sortOrder        Int         @default(0)  // display order chosen by the contributor; a replacement copies its target's
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
@@ -188,6 +189,7 @@ model Media {
   @@index([replacesMediaId])
   @@index([checksumSha256])
   @@index([status, createdAt])
+  @@index([status, reservedUntil])
   @@index([createdAt])
 }
 
@@ -213,6 +215,18 @@ model DerivedMedia {
   media      Media         @relation(fields: [mediaId], references: [id])
   @@unique([mediaId, kind])
   @@index([status, updatedAt])
+}
+
+/// Bytes served per UTC day, per scope (`global` or `media:<id>`): the egress
+/// allowance behind /api/media (issue #45, features/media/egress.ts). Rows are
+/// counters written by one conditional upsert each; nothing else reads them.
+model EgressCounter {
+  scope     String
+  day       DateTime @db.Date
+  bytes     BigInt   @default(0)
+  updatedAt DateTime @default(now())
+  @@id([scope, day])
+  @@index([day])
 }
 
 model Person {
@@ -255,6 +269,7 @@ model EmailLog {                            // mirrors EmpathIQ, keyed per memor
   id                String      @id @default(uuid())
   memoryId          String
   recipientEmail    String                   // one address, or the attempted admin recipients joined with ", " (ADMIN_NEW_MEMORY)
+  recipientKey      String?                  // canonical form of recipientEmail for the per-recipient cap (+tag and Gmail dots folded; issue #46); null only on rows older than the column
   emailType         EmailType
   status            EmailStatus @default(PENDING)
   sendgridMessageId String?     @unique
@@ -267,5 +282,7 @@ model EmailLog {                            // mirrors EmpathIQ, keyed per memor
   memory            Memory      @relation(fields: [memoryId], references: [id])
   @@unique([memoryId, emailType])          // confirmation idempotency by constraint
   @@index([status, nextAttemptAt])
-  @@index([recipientEmail, createdAt])     // per-recipient cap
+  @@index([recipientEmail, createdAt])     // per-recipient cap (pre-#46 key; kept for the audit view)
+  @@index([recipientKey, updatedAt])       // per-recipient cap, counted by the canonical key and the last state change
+  @@index([emailType, status, updatedAt])  // global outbound ceilings and the admin hourly cap
 }

@@ -2,6 +2,8 @@ import "server-only";
 
 import { z } from "zod";
 
+import { logError } from "@/lib/logger";
+
 /**
  * Per-feature environment sub-schemas.
  *
@@ -51,10 +53,40 @@ const blobSchema = z.object({
   BLOB_READ_WRITE_TOKEN: z.string().min(1, "BLOB_READ_WRITE_TOKEN is required"),
 });
 
-/** The outbound guard only; readable even when SendGrid is not configured. */
+/**
+ * A positive-integer ceiling with a default. `KEY=` (empty) means unset, like
+ * the admin secrets. A malformed value (`0`, `-1`, `2.5`, `abc`) is reported
+ * once per process (the sub-schema is memoized) and the default is used: these
+ * keys gate the family's receipts, so a typo in Vercel must never stop them
+ * (#49 regression review). The value itself is not logged.
+ */
+const lenientPositiveInt = (key: string, fallback: number) =>
+  z.preprocess((value) => {
+    if (value === undefined || value === "") {
+      return undefined;
+    }
+    const n = typeof value === "string" ? Number(value.trim()) : Number(value);
+    if (Number.isInteger(n) && n > 0) {
+      return n;
+    }
+    logError(`${key} is not a positive integer; using the default`, new Error(`invalid ${key}`), { category: "email", key, fallback });
+    return undefined;
+  }, z.number().int().positive().default(fallback));
+
+/**
+ * The outbound guard and the global ceilings for contributor email (issue #46,
+ * D2). The ceilings count every confirmation and send receipt across all
+ * recipients in a rolling hour and a rolling day; a send past either is left
+ * as a retryable row the reconcile cron sends once the window has moved on,
+ * with rotated links, so the defaults are sized for a memorial afternoon (30
+ * relatives, one to three memories each, one send apiece) never to hold one.
+ * Readable even when SendGrid is not configured.
+ */
 const outboundSchema = z.object({
   OUTBOUND_ENABLED: strictBoolean.default(false),
   OUTBOUND_ALLOWLIST: csvList.default([]),
+  OUTBOUND_HOURLY_CAP: lenientPositiveInt("OUTBOUND_HOURLY_CAP", 60),
+  OUTBOUND_DAILY_CAP: lenientPositiveInt("OUTBOUND_DAILY_CAP", 300),
 });
 
 const emailSchema = z.object({
@@ -66,6 +98,11 @@ const uploadSchema = z.object({
   UPLOAD_TICKET_SECRET: z.string().min(32, "UPLOAD_TICKET_SECRET must be at least 32 characters"),
   DAILY_MEMORY_BUDGET: z.coerce.number().int().positive().default(200),
   DAILY_BYTE_BUDGET: z.coerce.number().int().positive().default(20 * 1024 ** 3),
+  // Issue #44 (upload budgets and retention). Optional with defaults a normal family send never meets.
+  /** Declared bytes one send may reserve across all its files; the daily budget is the rate limit, this is the per-request limit. */
+  MAX_DECLARED_BYTES_PER_SUBMISSION: z.coerce.number().int().positive().default(4 * 1024 ** 3),
+  /** Stock limit: READY originals + READY derived copies + open reservations may not pass this; new reservations are refused beyond it. */
+  TOTAL_BYTE_CEILING: z.coerce.number().int().positive().default(50 * 1024 ** 3),
 });
 
 const memorialSchema = z.object({
@@ -77,9 +114,16 @@ const cronSchema = z.object({
   CRON_SECRET: z.string().min(16).optional(),
 });
 
-/** Family admins who get the "new memory" alert; empty means the alert is off (the cron catches up once set). */
+/**
+ * Family admins who get the "new memory" alert; empty means the alert is off
+ * (the cron catches up once set). `ADMIN_ALERT_HOURLY_CAP` (issue #46, D4):
+ * after this many alerts in a rolling hour the admins get one "arriving
+ * quickly" notice and further alerts that hour are skipped (the memories are
+ * still on the admin page).
+ */
 const adminAlertSchema = z.object({
   ADMIN_ALERT_EMAILS: csvList.pipe(z.array(z.email())).default([]),
+  ADMIN_ALERT_HOURLY_CAP: lenientPositiveInt("ADMIN_ALERT_HOURLY_CAP", 20),
 });
 
 /** Bearer secret for the admin API (/api/admin/*); unset means the routes answer 401 to everything. */
@@ -94,7 +138,30 @@ const adminPageSchema = z.object({
   ADMIN_PAGE_SECRET: z.preprocess((value) => (value === "" ? undefined : value), z.string().min(32, "ADMIN_PAGE_SECRET must be at least 32 characters").optional()),
 });
 
+/**
+ * Egress allowances behind `/api/media` and `/admin/media` (issue #45). Every
+ * value has a default, so a deployment works with none of them set. Sizes are
+ * bytes; the multiples are "distinct viewers per UTC day, each charged once
+ * at the file's size" (a viewer's later requests that day are free up to the
+ * request cap), so ordinary playback, seeking and reloading never reach them.
+ */
+/** `KEY=` (blank) means unset, like `ADMIN_PAGE_SECRET`: the default applies. `z.coerce` alone would turn "" into 0. */
+const blankIsUnset = <T extends z.ZodTypeAny>(schema: T) => z.preprocess((value) => (value === "" ? undefined : value), schema);
+const mediaServingSchema = z.object({
+  /** Viewer-days a file whose memory is APPROVED may be served to per day, each at the file's size. */
+  MEDIA_FILE_DAILY_MULTIPLE: blankIsUnset(z.coerce.number().int().positive().default(100)),
+  /** Before approval (the contributor and whoever they forwarded the link to): fewer viewer-days. */
+  MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED: blankIsUnset(z.coerce.number().int().positive().default(50)),
+  /** Bytes the whole site may serve to claim-link holders per day (default 50 GiB). */
+  MEDIA_DAILY_EGRESS_BYTES: blankIsUnset(z.coerce.number().int().positive().default(50 * 1024 ** 3)),
+  /** Requests one viewer may make for one copy of one file per day; a long day of seeking and reloading is well under it. */
+  MEDIA_VIEWER_DAILY_REQUESTS: blankIsUnset(z.coerce.number().int().positive().default(300)),
+  /** Downloads up to this size stream through the function (sanitized filename, as on main); larger ones redirect (default 25 MiB). */
+  MEDIA_PROXY_DOWNLOAD_MAX_BYTES: blankIsUnset(z.coerce.number().int().nonnegative().default(25 * 1024 ** 2)),
+});
+
 export type DbEnv = z.infer<typeof dbSchema>;
+export type MediaServingEnv = z.infer<typeof mediaServingSchema>;
 export type AdminPageEnv = z.infer<typeof adminPageSchema>;
 export type AdminEnv = z.infer<typeof adminSchema>;
 export type CronEnv = z.infer<typeof cronSchema>;
@@ -139,6 +206,7 @@ export const getCronEnv = memoized("cron", cronSchema);
 export const getAdminAlertEnv = memoized("adminAlert", adminAlertSchema);
 export const getAdminEnv = memoized("admin", adminSchema);
 export const getAdminPageEnv = memoized("adminPage", adminPageSchema);
+export const getMediaServingEnv = memoized("mediaServing", mediaServingSchema);
 
 /** Test helper: forget every parsed sub-schema so the next call re-reads `process.env`. */
 export function resetEnvCache(): void {

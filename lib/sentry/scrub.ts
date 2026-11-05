@@ -70,8 +70,27 @@ export function isSecretKey(key: string): boolean {
 // scanner: every JSON member whose key is a secret (quotes escaped or not) has
 // its whole value replaced, however deeply nested, and a value cut off by
 // truncation is replaced to the end of the text (fail closed).
-const JSON_SECRET_KEY = `(?:${SECRET_FIELD_KEYS.join("|")}|[^"\\\\]*(?:${SECRET_KEY_FRAGMENTS.join("|")})[^"\\\\]*)`;
-const SECRET_MEMBER_KEY = new RegExp(`(\\\\?")(${JSON_SECRET_KEY})(\\\\?")\\s*:\\s*`, "gi");
+//
+// The scanner is hand-written and linear (public-repo audit, issue #43 T3).
+// Its predecessor was a backtracking regex, `(\\?")(…|[^"\\]*(?:token|ticket)[^"\\]*)(\\?")\s*:\s*`,
+// whose two unbounded runs around the alternation made it quadratic on text
+// like `"tokentoken…`: 9 ms at 10,001 characters, 1,908 ms at 160,001
+// (2026-11-05). `scrubSecrets` runs on the raw input of every public Server
+// Function before validation, so that was a one-request CPU exhaustion.
+
+/**
+ * Longest single string the scrubber inspects; a longer one is replaced whole
+ * by `OVERSIZED` (fail closed: an uninspected string never leaves). The cap sits
+ * above everything legitimate: a 10,000-character note (lib/validations/memory.ts),
+ * a whole 10 × 10,000-character submission body (about 100 KB of JSON), and the
+ * 150,000-character cap Sentry Replay puts on captured network bodies.
+ */
+export const MAX_SCRUB_TEXT_LENGTH = 256 * 1024;
+export const OVERSIZED = "[Filtered: oversized]";
+
+// Sticky, so each `exec` reads one run forward from `lastIndex` and never backtracks.
+const KEY_RUN = /[^"\\]*/y; // a key has no quote and no backslash in it
+const MEMBER_COLON = /\s*:\s*/y; // what separates a member's key from its value
 
 /** Index just past a JSON string starting at `i` (after its opening quote). `escaped`: the string lives inside an outer JSON string, so its quotes are `\"`. */
 function stringEnd(text: string, i: number, escaped: boolean): number {
@@ -133,27 +152,58 @@ function valueEnd(text: string, i: number, escaped: boolean): number {
   return i + (scalar.exec(text)?.[0].length ?? 0);
 }
 
+/**
+ * One left-to-right pass. Every `"` is a candidate opening quote (`\"` when a
+ * backslash precedes it: the member lives inside an outer JSON string). The key
+ * is the run up to the next quote or backslash, the close is `"` or `\"`, then
+ * `\s*:\s*`. A candidate that fails is abandoned at the point it failed and the
+ * search resumes at the next quote, so each character is read a bounded number
+ * of times whatever the text looks like. The matching rule is the same as the
+ * old regex: a whole field key or any key containing a fragment, case-insensitive.
+ */
 function scrubMembers(text: string): string {
   let out = "";
-  let last = 0;
-  SECRET_MEMBER_KEY.lastIndex = 0;
-  for (let match = SECRET_MEMBER_KEY.exec(text); match !== null; match = SECRET_MEMBER_KEY.exec(text)) {
-    if (match.index < last) {
-      continue; // inside a value already replaced
+  let last = 0; // start of the text not yet copied to `out`
+  let i = text.indexOf('"');
+  while (i !== -1) {
+    // A backslash before the quote, and not part of a value already replaced, makes this an escaped member.
+    const escaped = i > last && text[i - 1] === "\\";
+    const openStart = escaped ? i - 1 : i;
+    const keyStart = i + 1;
+    KEY_RUN.lastIndex = keyStart;
+    const key = KEY_RUN.exec(text)?.[0] ?? "";
+    const keyEnd = keyStart + key.length;
+    const closeLength = text[keyEnd] === '"' ? 1 : text[keyEnd] === "\\" && text[keyEnd + 1] === '"' ? 2 : 0;
+    if (closeLength === 0 || !isSecretKey(key)) {
+      i = text.indexOf('"', keyEnd); // the closing quote (if any) is the next candidate
+      continue;
     }
-    const [whole, open, key, close] = match;
-    const escaped = open === '\\"';
-    const end = valueEnd(text, match.index + whole.length, escaped);
+    MEMBER_COLON.lastIndex = keyEnd + closeLength;
+    const separator = MEMBER_COLON.exec(text)?.[0];
+    if (separator === undefined) {
+      i = text.indexOf('"', keyEnd);
+      continue;
+    }
+    // The key's quoting decides how far the value runs, exactly as the regex scanner did. In malformed text the
+    // key's quoting and the value's can disagree (`\"token":"x"`, `"token\":\"x y\"`); do not try to be cleverer
+    // here. Reading the value another way moves where the scan resumes, and both directions have been shown to
+    // swallow the opening quote of the *next* member and hide it (PR #47 regression review: an escaped key before
+    // a plain `"` hid `"claimToken"`; a plain key before `\"` hid `"ticket\"`). `__tests__/lib/sentry-scrub-differential.test.ts`
+    // pins byte-for-byte equality with the regex scanner over a seeded corpus of such text.
+    const end = valueEnd(text, keyEnd + closeLength + separator.length, escaped);
     // The marker is written in the member's own quoting, so a double-encoded string stays well formed (and a second pass is a no-op).
     const quote = escaped ? '\\"' : '"';
-    out += `${text.slice(last, match.index)}${open}${key}${close}:${quote}${FILTERED}${quote}`;
+    out += `${text.slice(last, openStart)}${quote}${key}${text.slice(keyEnd, keyEnd + closeLength)}:${quote}${FILTERED}${quote}`;
     last = end;
-    SECRET_MEMBER_KEY.lastIndex = end;
+    i = text.indexOf('"', end);
   }
   return out + text.slice(last);
 }
 
 function scrubText(text: string, depth: number): string {
+  if (text.length > MAX_SCRUB_TEXT_LENGTH) {
+    return OVERSIZED; // bounded before any parse or scan; nothing uninspected leaves
+  }
   if (text.length > 1 && (text[0] === "{" || text[0] === "[") && depth <= MAX_DEPTH) {
     let parsed: unknown;
     try {

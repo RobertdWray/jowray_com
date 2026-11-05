@@ -40,15 +40,66 @@ export async function recomputeMemoryType(tx: Tx, memoryId: string, note: string
 export type RevisionVia = "WEB" | "SMS" | "CLAIM_LINK" | "ADMIN";
 
 /**
+ * Revisions kept per memory (issue #44, Oscar #17): the first one (it records
+ * the consent version) and the latest MAX_REVISIONS_PER_MEMORY − 1. When a new
+ * revision would pass the cap, the oldest of the rest are dropped first, so a
+ * claim link replayed in a loop can hold at most this many snapshots.
+ */
+export const MAX_REVISIONS_PER_MEMORY = 200;
+
+/**
+ * True when an edit changes nothing: the same keys with the same values
+ * (Dates by instant, arrays of ids element by element). A save that changes
+ * nothing writes no row and no revision (issue #44, Oscar #17).
+ */
+export function snapshotsEqual(before: Record<string, unknown>, after: Record<string, unknown>): boolean {
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of keys) {
+    const a = before[key];
+    const b = after[key];
+    if (a instanceof Date && b instanceof Date) {
+      if (a.getTime() !== b.getTime()) {
+        return false;
+      }
+      continue;
+    }
+    if (Array.isArray(a) && Array.isArray(b)) {
+      if (a.length !== b.length || a.some((value, i) => value !== b[i])) {
+        return false;
+      }
+      continue;
+    }
+    if (a !== b) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Append a revision. The first revision of a memory, whatever kind of edit it
  * is, also records the consent version in force; every writer goes through
- * here so a removal or a swap can never hide that record.
+ * here so a removal or a swap can never hide that record. Must run inside a
+ * transaction that already holds `lockMemory`, which serialises the count,
+ * the trim and the insert per memory.
  */
 export async function appendRevision(
   tx: Tx,
   { memoryId, changedVia, before, after, consentVersion }: { memoryId: string; changedVia: RevisionVia; before: Record<string, unknown>; after: Record<string, unknown>; consentVersion: string }
 ): Promise<void> {
-  const isFirst = (await tx.memoryRevision.count({ where: { memoryId } })) === 0;
+  const existing = await tx.memoryRevision.count({ where: { memoryId } });
+  const isFirst = existing === 0;
+  if (existing >= MAX_REVISIONS_PER_MEMORY) {
+    // Keep the first row and make room for this one: drop the oldest of the rest.
+    const surplus = await tx.memoryRevision.findMany({
+      where: { memoryId },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      skip: 1,
+      take: existing - MAX_REVISIONS_PER_MEMORY + 1,
+      select: { id: true },
+    });
+    await tx.memoryRevision.deleteMany({ where: { id: { in: surplus.map((r) => r.id) } } });
+  }
   await tx.memoryRevision.create({
     data: {
       memoryId,

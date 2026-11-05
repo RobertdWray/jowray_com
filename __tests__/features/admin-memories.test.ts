@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { resetEnvCache } from "@/server/config/env";
 
+import { budgetStats, isBudgetStatsQuery } from "../helpers/budget-stats";
+
 /**
  * In-memory Prisma stub for the admin features (plan §6 V6–V11). Enough of
  * `findMany`/`count`/`groupBy` for the list, a lockable memory + contributor
@@ -55,7 +57,16 @@ function withRelations(m: MemoryRow) {
 }
 
 const tx = {
-  $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return [{ id: values[0] }]; }),
+  $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    // The budget's one read (issue #44) is answered from the memories table; every other raw query is a row lock.
+    if (isBudgetStatsQuery(strings)) {
+      return [budgetStats({ memories: memories.filter((m): m is typeof m & { createdAt: Date } => (m as { createdAt?: unknown }).createdAt instanceof Date), media: [], derived: [] })];
+    }
+    lockCalls.push(`${strings.join("?")}|${String(values[0])}`);
+    return [{ id: values[0] }];
+  }),
+  // The budget's advisory lock (issue #44) goes through $executeRaw after a SET LOCAL; the admin draft path is one of its callers.
+  $executeRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(`${strings.join("?")}|${String(values[0])}`); return 1; }),
   memorial: { findUnique: vi.fn(async () => memorial) },
   memory: {
     findMany: vi.fn(async ({ where, take }: { where: Record<string, unknown>; take?: number }) => memories.map(withRelations).filter((r) => matchesScalar(r, where)).slice(0, take ?? 1000)),
@@ -394,6 +405,8 @@ describe("createDraftAsAdmin (V11)", () => {
     expect(await createDraftAsAdmin({ ...form, note: " " })).toEqual({ ok: false, code: "invalid" });
     expect(await createDraftAsAdmin({ ...form, source: "EMAIL" })).toEqual({ ok: false, code: "invalid" });
     expect(tx.memory.create).not.toHaveBeenCalled();
+    // The budget counts the last 24 h (issue #44); the seeded memory must be today's to spend the one slot.
+    for (const row of memories) { row.createdAt = new Date(); }
     process.env.DAILY_MEMORY_BUDGET = "1";
     resetEnvCache();
     expect(await createDraftAsAdmin(form)).toEqual({ ok: false, code: "budget_exceeded" });

@@ -3,7 +3,7 @@ import "server-only";
 import { z } from "zod";
 
 import { lockMemory } from "@/features/memories/lock";
-import { appendClaimRevision, hasWords, LIVE_MEDIA_ORDER, recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
+import { appendClaimRevision, hasWords, LIVE_MEDIA_ORDER, recomputeMemoryType, snapshotsEqual, visibleMediaIds } from "@/features/memories/media-state";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { claimMediaRefSchema, mediaWordsRequestSchema } from "@/lib/validations/media";
@@ -241,6 +241,10 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
       contactOptIn: preferencesEditable ? (input.contactOptIn ?? before.contactOptIn) : before.contactOptIn,
       ...(consent && { status: "PENDING" as const, ...consent }),
     };
+    // A save that changes nothing (a double-click, a replayed request) writes no row and no revision (issue #44, Oscar #17).
+    if (snapshotsEqual(before, after)) {
+      return "ok" as const;
+    }
     if (hasWords(before.contributorNote) && !hasWords(after.contributorNote)) {
       const readyFiles = await tx.media.count({ where: { memoryId: memory.id, deletedAt: null, status: "READY" } });
       if (readyFiles === 0) {
@@ -384,6 +388,10 @@ export async function updateMediaFromClaim(raw: unknown): Promise<ClaimMediaResu
       approxDateText: input.approxDateText === undefined ? before.approxDateText : input.approxDateText,
       place: input.place === undefined ? before.place : input.place,
     };
+    // Nothing changed: no write, no revision (issue #44, Oscar #17).
+    if (snapshotsEqual(before, after)) {
+      return "ok" as const;
+    }
     const words = { caption: after.caption, approxDateText: after.approxDateText, place: after.place };
     await tx.media.update({ where: { id: target.id }, data: words });
     // A replacement still on its way copied the target's words when it was ticketed; keep it current so the swap cannot restore stale words.
