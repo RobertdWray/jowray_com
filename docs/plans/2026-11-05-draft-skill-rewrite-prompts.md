@@ -38,10 +38,11 @@ This reverses the 2026-11-03 ruling "verbatim, never rewritten" (plan §1 decisi
 | Rob approved the §10 bucket sort | **yes** (2026-11-05, "Yes, proceed as sorted") | chat | recorded in §10 |
 | Plan copied to `docs/plans/2026-11-05-draft-skill-rewrite-prompts.md` | **yes** | first commit on the branch | file on the branch |
 | Worktree + branch from `origin/main` (base SHA: 73609cf) | **yes** (2026-11-05) | | `git -C ../jowray_wt_draft-skill branch --show-current` = `feat/draft-skill-rewrite-prompts` |
-| Tests written RED (§3.1, §9.1) | no | | `npm run test:run` fails on exactly the new cases |
-| Code GREEN | no | | the three checks pass with no `.env*` |
-| SKILL.md rewritten (§4) | no | | `wc -l` under 500; §9.2 micro-tests pass |
-| Docs amended (§5) | no | | grep for "verbatim" in the five files returns only the amended sentences |
+| Tests written RED (§3.1, §9.1) | **yes** (2026-11-05: 5 failed, 77 passed across the four files before any code change) | commit 71959e5 | `npm run test:run` fails on exactly the new cases |
+| Code GREEN | **yes** (2026-11-05: `npm run validate` clean; `test:run` 62 files / 1090 tests; `build:offline` exit 0, run with no `.env*`) | commit 71959e5 | the three checks pass with no `.env*` |
+| SKILL.md rewritten (§4) | **yes** (158 lines) | commit 71959e5 | `wc -l` under 500; §9.2 micro-tests pass |
+| Docs amended (§5) | **yes** | commit 71959e5 | grep for "verbatim" in the five files returns only the amended sentences |
+| Original-text retrieval proof (§8 item 3) | **yes** (2026-11-05, local `next dev` :3105 against the Neon `dev` branch `ep-solitary-tree`, admin page entered with a throwaway `ADMIN_PAGE_SECRET` set on the dev process so no real secret entered a tool call) | `docs/plans/evidence/2026-11-05-draft-skill/00-03` | script printed `originalNote: recorded`; revision row `before.note` = letter, `after.note` = rewrite; History page shows the same |
 | PR opened, `ci` green, Team Code Review bucketed | no | PR # | `gh pr checks` |
 | Merged; production deployment **Ready** for the merge commit | no | `vercel ls --environment production` age/URL | the newest Production row is younger than the merge |
 | Installed skill is the merged text | no | | `diff ~/.claude/skills/jowray-draft-memory/SKILL.md <(git show origin/main:docs/skills/jowray-draft-memory/SKILL.md)` is empty (the symlink makes this automatic once the main checkout is on `origin/main`) |

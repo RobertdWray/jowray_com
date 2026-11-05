@@ -1,0 +1,7 @@
+{
+  "contributor": { "name": "Pat Example", "email": "pat.example.synthetic@example.org", "relationship": "Neighbor" },
+  "note": "Jo always stopped to watch the birds at my feeder when she walked past, and she knew every one of them by name. One spring she brought me a bag of seed because she said my cardinals looked thin!",
+  "originalNote": "Dear Rob,\n\nI was so sorry to hear about your mom. Your mom always stopped to watch the birds at my feeder when she walked past, and she knew every one of them by name. One spring she brought me a bag of seed because she said my cardinals looked thin!\n\nThinking of you both at this hard time.",
+  "visibility": "FAMILY",
+  "sourceInput": { "kind": "other", "originalText": "SYNTHETIC 2026-11-05 proof run: Dear Rob, I was so sorry to hear about your mom. Your mom always stopped to watch the birds at my feeder..." }
+}

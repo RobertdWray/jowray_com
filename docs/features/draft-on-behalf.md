@@ -87,6 +87,7 @@ The raw token lives only in the link; the row holds its hash, so the site cannot
 - PR #30 records `npm run validate`, `npm run test:run` (898 tests) and `npm run build:offline` green with no `.env*` present.
 - Plan §2 records the migrations applied to a Neon verification branch and a local walk: 401, 200, 409, DRAFT page rendered, photo added with no `EmailLog` row, Share to PENDING, reissue refused on a shared row, old link dead after reissue, cron leaving both tokens unchanged.
 - Admin-page evidence ([README](../plans/evidence/2026-11-admin-page/README.md)): B7, B10 and B17 pass (no Approve on a DRAFT, New link kills the old link, Share moves it to PENDING, "Already drafted"), with `b7-new-link-1440.jpg`. PR #30 has no evidence directory of its own.
+- Rewrite evidence ([README](../plans/evidence/2026-11-05-draft-skill/README.md)): a synthetic rewrite posted through the script to a local `next dev` on the Neon dev branch printed `originalNote: recorded`; the revision row and the admin History page show the sender's letter → the saved rewrite under `note`; ten role-played skill scenarios (verbatim, rewrite, replacement text, instruction, already-about-Jo, ask-the-sender, unclear pronoun, timed-out question, 409 with new choices, missing echo).
 - NOT RUN: the first two real drafts (ledger unticked); `CONSENT_VERSION=2026-11-v2` in Production and `.env` (unticked); a real Gmail reply carrying a production link; `ADMIN_API_SECRET` rotation.
 
 ## Known gaps and follow-ups
