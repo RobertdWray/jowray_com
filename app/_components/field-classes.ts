@@ -12,6 +12,9 @@ export const fileInputClass =
 // `font-normal`: an error line sits inside the field's bold wrapper and must not inherit its weight (DESIGN.md § 5.4).
 export const errorClass = "text-small font-normal text-jo-red-deep";
 export const linkClass = "text-jo-red-deep underline hover:text-walnut break-words";
+// The footer's row of links, and the Privacy button styled like them: 44px tall for touch (DESIGN.md § 6), so the row
+// keeps one height wherever it wraps.
+export const footerLinkClass = `${linkClass} inline-flex min-h-[44px] items-center`;
 // Links to a person's own website (Rob, Tracy): noticeable but quiet, because the site is about Jo, not them. The text
 // keeps the sentence's color (Preflight gives links `color: inherit`), so red stays for actions and links into the
 // site; the 1px `wood` underline is the non-color cue SC 1.4.1 asks for (at least 3.3:1 against muslin, the darkest

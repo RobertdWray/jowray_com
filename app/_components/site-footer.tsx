@@ -3,7 +3,7 @@ import Link from "next/link";
 import { FAMILY_CONTACT_EMAIL } from "@/lib/contact";
 
 import { ROB_URL, TRACY_URL } from "./external-links";
-import { linkClass, quietLinkClass } from "./field-classes";
+import { footerLinkClass, linkClass, quietLinkClass } from "./field-classes";
 import { StitchedHeart } from "./hearts";
 import { PrivacyNote } from "./privacy-note-client";
 
@@ -35,12 +35,12 @@ export function SiteFooter() {
           separator. The closed dialog is display:none and the open one sits in the top layer, so neither takes a
           place in the row. */}
       <div className="flex flex-wrap items-center justify-center gap-x-2 text-[18px] text-walnut-soft">
-        <Link href="/obituary" className={linkClass}>
+        <Link href="/obituary" className={footerLinkClass}>
           Jo&apos;s obituary
         </Link>
         <div className="flex items-center gap-x-2">
           <span aria-hidden="true">·</span>
-          <Link href="/how-it-was-built" className={linkClass}>
+          <Link href="/how-it-was-built" className={footerLinkClass}>
             How this site was built
           </Link>
         </div>

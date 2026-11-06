@@ -10,11 +10,12 @@ import { SecondaryButton } from "../_components/buttons";
 // copies the TrayVerify investors slide [C16]). Plan: docs/plans/2026-11-06-privacy-note-and-diagram-viewer.md.
 //
 // Inline, scale 1 is "fits the card": the page is never wider than the screen. The inline view never takes the page
-// away from the reader: the wheel zooms only with Ctrl or ⌘ held, and dragging pans only once zoomed in, so at fit
+// away from the reader: the wheel zooms only with Ctrl or ⌘ held, dragging pans only once zoomed in, and a double-tap
+// does nothing (one by accident while scrolling would zoom the card and turn the next swipes into panning), so at fit
 // size a swipe or a wheel scrolls the page as usual [C18]. "Full screen" is a full-window <dialog>, not the
-// Fullscreen API, which iPhones lack [C22]; there every gesture and the keyboard work, and arrow buttons give a way
-// to pan without dragging (WCAG 2.5.7) [C21]. react-zoom-pan-pinch ships without "use client", so it is imported
-// only here [C19].
+// Fullscreen API, which iPhones lack [C22]; there every gesture and the keyboard work. Both views have arrow buttons,
+// a way to pan without dragging (WCAG 2.5.7) [C21]. react-zoom-pan-pinch ships without "use client", so it is
+// imported only here [C19].
 
 // Inline cap. The narrowest card is 282px (a 320px phone), and the widest diagram (2174px) needs 7.7× there to reach
 // its natural size, where the generator guarantees 17px+ text. Full screen works its cap out from the window instead.
@@ -40,9 +41,20 @@ const centreContent = {
 } as const;
 
 // aria-disabled rather than disabled: a disabled button drops keyboard focus to <body> the moment it disables itself
-// (Zoom out at fit size), and a screen-reader user loses their place.
-const toolButtonClass =
-  "inline-flex min-h-tap cursor-pointer items-center justify-center gap-2 rounded-input border-[3px] border-dashed border-wood bg-paper px-4 py-2 text-label font-bold text-walnut aria-disabled:cursor-not-allowed aria-disabled:opacity-50";
+// (Zoom out or Fit reaching fit size), and a screen-reader user loses their place.
+const toolButtonBase =
+  "inline-flex min-h-tap cursor-pointer items-center justify-center gap-2 rounded-input border-[3px] border-dashed border-wood bg-paper py-2 text-label font-bold text-walnut aria-disabled:cursor-not-allowed aria-disabled:opacity-50";
+const toolButtonClass = `${toolButtonBase} px-4`;
+// Icon only: a 20px icon, 9px padding and 3px borders make 44px, DESIGN.md's touch minimum.
+const iconButtonClass = `${toolButtonBase} px-[9px]`;
+
+// panBy moves the content: a positive x shifts it right, which shows more of its left side [C18].
+const ARROWS = [
+  { direction: "left", dx: PAN_STEP, dy: 0 },
+  { direction: "up", dx: 0, dy: PAN_STEP },
+  { direction: "down", dx: 0, dy: -PAN_STEP },
+  { direction: "right", dx: -PAN_STEP, dy: 0 },
+] as const;
 
 const isZoomed = (scale: number) => scale > 1.001;
 
@@ -78,6 +90,7 @@ export function DiagramViewer({ heading, src, width, height, alt, descriptionId 
         maxScale={INLINE_MAX_SCALE}
         wheel={{ activationKeys: withCtrlOrCmd }}
         panning={{ disabled: !zoomed }}
+        doubleClick={{ disabled: true }}
         onTransform={(_ref, state) => setZoomed(isZoomed(state.scale))}
       >
         <Toolbar heading={heading} zoomed={zoomed}>
@@ -109,12 +122,15 @@ export function DiagramViewer({ heading, src, width, height, alt, descriptionId 
         </div>
       </TransformWrapper>
 
-      {/* Full-window: Preflight zeroes the margin and the UA max sizes are dropped, so it fills the screen [C9]. */}
+      {/* Full-window: Preflight zeroes the margin and the UA max sizes are dropped, so it fills the screen [C9].
+          w-full, not w-screen: a modal dialog is position: fixed, so 100% is the window without a scrollbar, while
+          100vw in Safari and Firefox includes the classic scrollbar gutter the open dialog keeps (globals.css) and
+          would push Close about 15px past the right edge. */}
       <dialog
         ref={dialogRef}
         aria-labelledby={titleId}
         onClose={() => setFullOpen(false)}
-        className="m-0 h-dvh max-h-none w-screen max-w-none bg-paper p-0 text-left text-walnut backdrop:bg-walnut/50"
+        className="m-0 h-dvh max-h-none w-full max-w-none bg-paper p-0 text-left text-walnut backdrop:bg-walnut/50"
       >
         {fullOpen && (
           <FullScreenView
@@ -190,7 +206,7 @@ function FullScreenView({
             {heading}
           </h2>
           <div className="[grid-area:tools]">
-            <Toolbar heading={heading} zoomed={zoomed} compact withArrows />
+            <Toolbar heading={heading} zoomed={zoomed} compact />
           </div>
           <SecondaryButton onClick={onClose} className="min-h-tap py-2 [grid-area:close]">
             Close
@@ -227,36 +243,34 @@ function Toolbar({
   heading,
   zoomed,
   compact = false,
-  withArrows = false,
   children,
 }: {
   heading: string;
   zoomed: boolean;
-  /** Icon-only buttons on narrow or short screens (the `narrow` variant), to leave room for the diagram. */
+  /** Icon-only zoom buttons on narrow or short screens (the `narrow` variant), to leave room for the diagram. */
   compact?: boolean;
-  withArrows?: boolean;
   children?: ReactNode;
 }) {
   const { zoomIn, zoomOut, resetTransform, panBy } = useControls();
-  // Compact icon buttons are 44px wide (20px icon, 9px padding, 3px borders), DESIGN.md's touch minimum, so all seven
-  // fit one row on a 390px phone.
+  // Compact, every control is a 44px icon button, so all seven fit one row on a 390px phone.
   const buttonClass = compact ? `${toolButtonClass} narrow:px-[9px]` : toolButtonClass;
   const labelClass = compact ? "narrow:sr-only" : undefined;
-  // panBy moves the content: a positive x shifts it right, which shows more of its left side [C18].
-  const arrows = [
-    { label: "Left", icon: "left", dx: PAN_STEP, dy: 0 },
-    { label: "Up", icon: "up", dx: 0, dy: PAN_STEP },
-    { label: "Down", icon: "down", dx: 0, dy: -PAN_STEP },
-    { label: "Right", icon: "right", dx: -PAN_STEP, dy: 0 },
-  ] as const;
+  const gapClass = compact ? "gap-2 narrow:gap-1.5" : "gap-2";
+  // Zoom out, Fit and the arrows have nothing to do at fit size: they say so and ignore the press.
+  const whenZoomed = (action: () => Promise<void>) => () => {
+    if (zoomed) {
+      void action();
+    }
+  };
   // A labelled group, not role="toolbar": a toolbar promises arrow-key movement between its buttons.
   return (
-    <div
-      role="group"
-      aria-label={`${heading} diagram controls`}
-      className={compact ? "flex flex-wrap gap-2 narrow:gap-1.5" : "flex flex-wrap gap-2"}
-    >
-      <button type="button" aria-label={`Zoom in on ${heading}`} onClick={() => zoomIn()} className={buttonClass}>
+    <div role="group" aria-label={`${heading} diagram controls`} className={`flex flex-wrap ${gapClass}`}>
+      <button
+        type="button"
+        aria-label={`Zoom in on ${heading}`}
+        onClick={() => void zoomIn()}
+        className={buttonClass}
+      >
         <Icon name="plus" />
         <span className={labelClass}>Zoom in</span>
       </button>
@@ -264,11 +278,7 @@ function Toolbar({
         type="button"
         aria-label={`Zoom out of ${heading}`}
         aria-disabled={!zoomed}
-        onClick={() => {
-          if (zoomed) {
-            void zoomOut();
-          }
-        }}
+        onClick={whenZoomed(() => zoomOut())}
         className={buttonClass}
       >
         <Icon name="minus" />
@@ -277,25 +287,28 @@ function Toolbar({
       <button
         type="button"
         aria-label={`Fit ${heading} to the screen`}
-        onClick={() => resetTransform()}
+        aria-disabled={!zoomed}
+        onClick={whenZoomed(() => resetTransform())}
         className={buttonClass}
       >
         <Icon name="fit" />
         <span className={labelClass}>Fit</span>
       </button>
-      {withArrows &&
-        arrows.map((arrow) => (
+      {/* The four arrows stay together when the row wraps. */}
+      <div className={`flex ${gapClass}`}>
+        {ARROWS.map((arrow) => (
           <button
-            key={arrow.label}
+            key={arrow.direction}
             type="button"
-            aria-label={`Move the view ${arrow.label.toLowerCase()}`}
-            onClick={() => panBy(arrow.dx, arrow.dy)}
-            className={buttonClass}
+            aria-label={`Move the view ${arrow.direction}`}
+            aria-disabled={!zoomed}
+            onClick={whenZoomed(() => panBy(arrow.dx, arrow.dy))}
+            className={iconButtonClass}
           >
-            <Icon name={arrow.icon} />
-            <span className={labelClass}>{arrow.label}</span>
+            <Icon name={arrow.direction} />
           </button>
         ))}
+      </div>
       {children}
     </div>
   );

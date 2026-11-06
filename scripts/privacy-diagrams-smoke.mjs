@@ -471,6 +471,212 @@ const settle = (page, ms = 450) => page.waitForTimeout(ms);
   }
 }
 
+// ---------------------------------------------------------------- Team Code Review round
+// Each check here failed on the code before the round (2000e13) and passes after it.
+{
+  // The inline controls: arrows and Fit wait for a zoom, the arrows pan, a double-click does not zoom.
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await ctx.newPage();
+  await page.goto(`${base}/how-it-was-built`, { waitUntil: "networkidle" });
+  const arch = page.getByRole("figure", { name: "Architecture" });
+  await arch.scrollIntoViewIfNeeded();
+  await settle(page);
+
+  // Read straight from the DOM: a locator would wait its full timeout for buttons the old code never rendered.
+  const inlineControls = () =>
+    page.evaluate(() => {
+      const group = document.querySelector('main [role=group][aria-label="Architecture diagram controls"]');
+      const buttons = [...group.querySelectorAll("button")];
+      const fit = buttons.find((b) => b.getAttribute("aria-label") === "Fit Architecture to the screen");
+      const arrows = buttons
+        .filter((b) => b.getAttribute("aria-label")?.startsWith("Move the view "))
+        .map((b) => ({
+          label: b.getAttribute("aria-label"),
+          disabled: b.getAttribute("aria-disabled"),
+          width: Math.round(b.getBoundingClientRect().width),
+          text: b.textContent.trim(),
+        }));
+      return { fit: fit.getAttribute("aria-disabled"), arrows };
+    });
+  const clickInlineArrow = (direction) =>
+    page.evaluate((label) => {
+      const group = document.querySelector('main [role=group][aria-label="Architecture diagram controls"]');
+      [...group.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === label)?.click();
+    }, `Move the view ${direction}`);
+
+  const atFit = await inlineControls();
+  await clickInlineArrow("right");
+  await settle(page);
+  const afterFitArrow = await transformOf(page, 1);
+  check(
+    "inline: four icon-only 44px arrow buttons, aria-disabled and inert at fit size",
+    atFit.arrows.length === 4 &&
+      atFit.arrows.every((a) => a.disabled === "true" && a.width === 44 && a.text === "") &&
+      Math.abs(afterFitArrow.x) < 1 &&
+      Math.abs(afterFitArrow.scale - 1) < 0.001,
+    JSON.stringify({ arrows: atFit.arrows, after: afterFitArrow }),
+  );
+  check("inline: Fit is aria-disabled at fit size", atFit.fit === "true", String(atFit.fit));
+
+  await page.getByRole("button", { name: "Zoom in on Architecture" }).click();
+  await settle(page);
+  const zoomed = await inlineControls();
+  const beforePan = await transformOf(page, 1);
+  await clickInlineArrow("right");
+  await settle(page);
+  const afterPan = await transformOf(page, 1);
+  check(
+    "inline: after Zoom in, Fit and the arrows are enabled and the arrows pan",
+    zoomed.fit === "false" && zoomed.arrows.length === 4 && zoomed.arrows.every((a) => a.disabled === "false") && afterPan.x < beforePan.x - 20,
+    JSON.stringify({ fit: zoomed.fit, arrows: zoomed.arrows.map((a) => a.disabled), x: [beforePan.x, afterPan.x] }),
+  );
+  await arch.screenshot({ path: join(evidence, "12-desktop-architecture-panned.jpg"), quality: 80, type: "jpeg" });
+
+  await page.getByRole("button", { name: "Fit Architecture to the screen" }).click();
+  await settle(page);
+  const box = await arch.locator(".react-transform-wrapper").boundingBox();
+  await page.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2);
+  await settle(page, 600);
+  const afterDouble = await transformOf(page, 1);
+  check("inline: a double-click on a fitted diagram does not zoom it", Math.abs(afterDouble.scale - 1) < 0.001, JSON.stringify(afterDouble));
+
+  // Footer links share the Privacy button's 44px touch height (DESIGN.md § 6).
+  await page.goto(`${base}/obituary`, { waitUntil: "networkidle" });
+  const footerLinks = await page.evaluate(() =>
+    // Not the link inside the closed Privacy note, which also reads "How this site was built".
+    [...document.querySelectorAll("footer a:not(dialog a)")]
+      .filter((a) => ["Jo's obituary", "How this site was built"].includes(a.textContent.trim()))
+      .map((a) => ({ text: a.textContent.trim(), height: Math.round(a.getBoundingClientRect().height) })),
+  );
+  check("footer: the obituary and how-it-was-built links are ≥44px tall", footerLinks.length === 2 && footerLinks.every((l) => l.height >= 44), JSON.stringify(footerLinks));
+
+  // A press and release on the note's own 3px border keeps it open; the backdrop still closes it.
+  const privacy = page.getByRole("button", { name: "Privacy" });
+  await privacy.scrollIntoViewIfNeeded();
+  await privacy.click();
+  await settle(page);
+  const border = await page.evaluate(() => {
+    const d = document.querySelector("dialog[open]");
+    const r = d.getBoundingClientRect();
+    const x = Math.round(r.left + 1);
+    const y = Math.round(r.top + r.height / 2);
+    return { x, y, onDialog: document.elementFromPoint(x, y) === d, borderLeft: getComputedStyle(d).borderLeftWidth };
+  });
+  await page.mouse.click(border.x, border.y);
+  await settle(page);
+  const openAfterBorder = await page.evaluate(() => Boolean(document.querySelector("dialog[open]")));
+  await page.mouse.click(8, 8);
+  await settle(page);
+  const openAfterBackdrop = await page.evaluate(() => Boolean(document.querySelector("dialog[open]")));
+  check(
+    "Privacy note: a click on its border keeps it open; a backdrop click closes it",
+    border.onDialog && openAfterBorder && !openAfterBackdrop,
+    JSON.stringify({ ...border, openAfterBorder, openAfterBackdrop }),
+  );
+  await ctx.close();
+}
+
+{
+  // Phone: a quick double-tap while scrolling past a diagram must not zoom it (and so cannot trap one-finger scrolling).
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  const page = await ctx.newPage();
+  await page.goto(`${base}/how-it-was-built`, { waitUntil: "networkidle" });
+  const arch = page.getByRole("figure", { name: "Architecture" });
+  await arch.scrollIntoViewIfNeeded();
+  await settle(page);
+  const box = await arch.locator(".react-transform-wrapper").boundingBox();
+  await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+  await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+  await settle(page, 600);
+  const t = await transformOf(page, 1);
+  check("phone: a double-tap on a fitted diagram does not zoom it", Math.abs(t.scale - 1) < 0.001, JSON.stringify(t));
+  await ctx.close();
+}
+
+// Short screens: the focused "How this site was built" link sits inside the note's scrolling text, clear of the
+// Close row, which no longer overlaps the scrolling area at all.
+for (const [width, height, shot] of [
+  [375, 480, "13-short-phone-privacy-note-link-focused.jpg"],
+  [844, 390, "14-landscape-privacy-note-link-focused.jpg"],
+]) {
+  const ctx = await browser.newContext({ viewport: { width, height }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+  const page = await ctx.newPage();
+  await page.goto(`${base}/obituary`, { waitUntil: "networkidle" });
+  const privacy = page.getByRole("button", { name: "Privacy" });
+  await privacy.scrollIntoViewIfNeeded();
+  await privacy.tap();
+  await settle(page);
+  await page.keyboard.press("Tab");
+  await settle(page);
+  const geo = await page.evaluate(() => {
+    const d = document.querySelector("dialog[open]");
+    const link = d.querySelector("a");
+    let region = link.parentElement;
+    while (region && !["auto", "scroll"].includes(getComputedStyle(region).overflowY)) {
+      region = region.parentElement;
+    }
+    const closeRow = [...d.querySelectorAll("button")].find((b) => b.textContent === "Close").parentElement;
+    const round = (r) => ({ top: Math.round(r.top), bottom: Math.round(r.bottom) });
+    return {
+      focused: document.activeElement === link,
+      scrolls: region.scrollHeight > region.clientHeight,
+      link: round(link.getBoundingClientRect()),
+      region: round(region.getBoundingClientRect()),
+      closeRow: round(closeRow.getBoundingClientRect()),
+    };
+  });
+  const inside = geo.link.top >= geo.region.top && geo.link.bottom <= geo.region.bottom;
+  const clear = geo.closeRow.top >= geo.region.bottom && geo.link.bottom <= geo.closeRow.top;
+  check(`short screen ${width}×${height}: the focused link is inside the note's scrolling text, clear of the Close row`, geo.focused && geo.scrolls && inside && clear, JSON.stringify(geo));
+  await page.screenshot({ path: join(evidence, shot), quality: 80, type: "jpeg" });
+  await ctx.close();
+}
+
+// Full screen with a scrollbar that takes space. Chrome 145+ subtracts a reserved gutter from 100vw; WebKit and Firefox
+// do not, so this runs in Playwright's WebKit. Headless browsers on macOS draw overlay scrollbars, so the page gets a
+// 15px classic scrollbar that stays while the dialog is open, the same width the open dialog's scrollbar-gutter:
+// stable reserves on Windows or with "Always show scroll bars".
+{
+  const { webkit } = require("playwright-core");
+  let wk = null;
+  try {
+    wk = await webkit.launch();
+  } catch (error) {
+    check("WebKit, classic scrollbar: full screen stays inside the usable width", false, `Playwright WebKit did not start (npx playwright-core install webkit): ${String(error).split("\n")[0]}`);
+  }
+  if (wk) {
+    const page = await wk.newPage({ viewport: { width: 1280, height: 900 } });
+    // WebKit ignores a scrollbar style added after load (the root scrollbar already exists), and React's hydration
+    // removes one placed directly in <html>, so it goes into <head> as soon as the document is parsed.
+    await page.addInitScript((css) => {
+      document.addEventListener("DOMContentLoaded", () => {
+        const style = document.createElement("style");
+        style.textContent = css;
+        document.head.append(style);
+      });
+    }, "::-webkit-scrollbar { width: 15px; } ::-webkit-scrollbar-thumb { background: #888; } html:root:has(dialog:modal) { overflow-y: scroll; }");
+    await page.goto(`${base}/how-it-was-built`, { waitUntil: "networkidle" });
+    await page.getByRole("button", { name: "Full screen: Architecture" }).click();
+    await settle(page, 700);
+    const fit = await page.evaluate(() => {
+      const d = document.querySelector("dialog[open]");
+      const close = [...d.querySelectorAll("button")].find((b) => b.textContent === "Close");
+      return {
+        dialog: Math.round(d.getBoundingClientRect().width),
+        closeRight: Math.round(close.getBoundingClientRect().right),
+        usable: document.documentElement.clientWidth,
+        window: innerWidth,
+      };
+    });
+    check(
+      "WebKit, classic scrollbar: full screen stays inside the usable width",
+      fit.usable < fit.window && fit.dialog <= fit.usable && fit.closeRight <= fit.usable,
+      JSON.stringify(fit),
+    );
+    await wk.close();
+  }
+}
+
 await browser.close();
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);

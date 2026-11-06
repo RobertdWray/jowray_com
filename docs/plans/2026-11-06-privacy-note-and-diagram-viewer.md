@@ -1,4 +1,4 @@
-<!-- Approved by Rob on 2026-11-06 in Claude Code plan mode; copied here unchanged except the C16 source link (private repo path removed). -->
+<!-- Approved by Rob on 2026-11-06 in Claude Code plan mode; copied here unchanged except the C16 source link (private repo path removed). The three sections after Citations were added after the Team Code Review round on PR #61; where they differ from the approved text, they win. -->
 
 # Footer Privacy note + fit-to-window diagrams with zoom, pan and full screen
 
@@ -342,3 +342,32 @@ Two small visitor-facing changes to jowray.com, requested by Rob on 2026-11-06. 
 - **Verbatim Quote:**
   > "They are wide: swipe or scroll sideways inside each one, or open it full"
 - **Justification:** After commit B the diagrams no longer scroll sideways, so this sentence would be wrong. It is replaced with zoom, drag-when-zoomed and full-screen wording.
+
+## Team Code Review round: amendments
+
+George (Gemini) and Oscar (Codex) reviewed PR #61 at 2000e13 (finding numbers are each reviewer's own). The orchestrator checked every claim in a browser and sorted them. These changes supersede the approved text above where they differ; each has a browser check that failed on 2000e13 and passes now (`docs/plans/evidence/2026-11-06-privacy-and-diagrams/README.md`, "Team Code Review round").
+
+| Finding | Change | Supersedes |
+| --- | --- | --- |
+| A press and release on the note's 3px border closed it (George 4, Oscar 4) | Position decides: the press and the click must both be outside the dialog's border box. A keyboard click targets Close or the link, never the `<dialog>`, so it never counts | Commit A, "Backdrop clicks close it too" |
+| `w-screen` (100vw) includes a classic scrollbar in Safari and Firefox, which the open dialog's `scrollbar-gutter: stable` keeps, so Close could be clipped by about 15px (George 2, Oscar 3) | `w-full` on the full-screen dialog: it is `position: fixed`, so 100% is the window without the scrollbar | Commit B, full-screen dialog classes |
+| Zoomed inline, dragging was the only way to pan (George 5a) | ← ↑ ↓ → inline too, always shown, 44px icon-only buttons in both views, `aria-disabled` with a no-op press at fit size `[C21]` | My call 6; Commit B, Toolbar and full-screen header |
+| The sticky Close row could cover the focused link on a short screen (George 3, Oscar 2) | The dialog is a flex column only while open (`open:flex open:flex-col`; a plain display utility would override the closed dialog's `display: none`). The text scrolls in its own area and Close sits in a row below it | Commit A, Styling ("a max height with `overflow-y-auto`") |
+| Fit looked active at fit size, where it does nothing (George 6) | `aria-disabled` and a no-op press at fit size, like Zoom out | Commit B, Toolbar |
+| An accidental double-tap while scrolling zoomed the card and turned the next swipes into panning (George 5b) | Inline `doubleClick={{ disabled: true }}`; full screen keeps double-click | Commit B, "`doubleClick` zooms in" |
+| The footer's other two links were 27px tall beside the 44px Privacy button (George 7) | A shared `footerLinkClass` (`linkClass` plus `inline-flex min-h-[44px] items-center`) for all three `[C14]` | Commit A, Trigger |
+
+## Non-goals (Team Code Review round)
+
+What the round raised that we are not doing, and why, so later reviews need not raise it again.
+
+- **The inline diagram wrapper as a tab stop** (George 1, Oscar 1): not a defect. react-zoom-pan-pinch 4.2.0 sets `tabIndex: keyboardEnabled ? 0 : undefined` on the wrapper (`dist/index.esm.js`, `TransformComponent`), and inline keyboard navigation is off (the library default). A browser check on the PR branch found no `tabindex` on the three inline wrappers, and Tab moves from "Full screen" straight to the "Open … full size" link. Adding `tabIndex={-1}` would be dead code.
+- **Disabling pinch at fit size inline** (George 5b, its optional part): a pinch on a diagram is a deliberate request to zoom that diagram. Fit restores page scrolling, and the page still scrolls from anywhere outside the card. Double-tap, the gesture people make by accident, is the one disabled.
+- **Showing the inline arrows only once zoomed** (George 5a, `withArrows={zoomed}`): buttons that appear on zoom would shift the toolbar under the finger. The arrows are always present and `aria-disabled` at fit size instead.
+- **`scroll-padding-bottom` for the sticky Close row** (George 3's fix): superseded. Close now sits outside the scrolling text, so nothing can cover a focused element.
+
+## Follow-ups (out of scope)
+
+- **[Low] Other links under DESIGN.md's 44px touch minimum.** For example the footer's email link and the inline links on `/obituary` and `/how-it-was-built`. Needs a site-wide touch-target pass (DESIGN.md § 6); this PR only evened out the footer's link row.
+- **[Medium] No real-device coverage yet.** iPhone and iPad Safari: focus return after either dialog closes, `h-dvh` in full screen, pinch in full screen, and the note's scrolling text. Windows Firefox with classic scrollbars: the `w-full` fix was observed only in Playwright's WebKit with an injected 15px scrollbar, because headless browsers on macOS draw overlay scrollbars.
+- **[Low] Rapid taps on Zoom in grow slowly.** Each tap inside the 200ms zoom animation restarts from the mid-animation scale (the landscape check clicks at a human pace for this reason). Consider a shorter `animationTime` for button zooms (`zoomIn(step, animationTime)` in `diagram-viewer-client.tsx`).

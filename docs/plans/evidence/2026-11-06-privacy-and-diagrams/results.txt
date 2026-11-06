@@ -27,7 +27,7 @@ PASS  desktop: Close shuts the note
 PASS  desktop: the note's link navigates and the note is closed  — {"path":"/how-it-was-built","open":false,"htmlOverflow":"visible"}
 PASS  desktop: no console errors
 PASS  phone: no horizontal page overflow  — {"scroll":390,"client":390}
-PASS  phone: one-finger swipe over a fitted diagram scrolls the page  — scrollY 9021 → 9222, scale 1
+PASS  phone: one-finger swipe over a fitted diagram scrolls the page  — scrollY 9117 → 9318, scale 1
 PASS  phone: full screen fills the window and the diagram fits  — {"w":390,"h":844,"vw":390,"vh":844,"imgW":390}
 PASS  phone: Privacy note fits with 16px gutters  — {"left":21,"right":369,"vw":390}
 PASS  phone: no console errors
@@ -44,5 +44,15 @@ PASS  Privacy note: selecting text and releasing on the backdrop keeps it open
 PASS  open dialog keeps a stable scrollbar gutter  — stable
 PASS  full screen: the diagram area's focus ring is inset  — {"offset":"-4px","style":"solid","label":"Architecture diagram"}
 PASS  no role=toolbar without arrow-key movement  — 0
+PASS  inline: four icon-only 44px arrow buttons, aria-disabled and inert at fit size  — {"arrows":[{"label":"Move the view left","disabled":"true","width":44,"text":""},{"label":"Move the view up","disabled":"true","width":44,"text":""},{"label":"Move the view down","disabled":"true","width":44,"text":""},{"label":"Move the view right","disabled":"true","width":44,"text":""}],"after":{"scale":1,"x":0,"y":0}}
+PASS  inline: Fit is aria-disabled at fit size  — true
+PASS  inline: after Zoom in, Fit and the arrows are enabled and the arrows pan  — {"fit":"false","arrows":["false","false","false","false"],"x":[-286.5,-406.5]}
+PASS  inline: a double-click on a fitted diagram does not zoom it  — {"scale":1,"x":0,"y":0}
+PASS  footer: the obituary and how-it-was-built links are ≥44px tall  — [{"text":"Jo's obituary","height":44},{"text":"How this site was built","height":44}]
+PASS  Privacy note: a click on its border keeps it open; a backdrop click closes it  — {"x":361,"y":450,"onDialog":true,"borderLeft":"3px","openAfterBorder":true,"openAfterBackdrop":false}
+PASS  phone: a double-tap on a fitted diagram does not zoom it  — {"scale":1,"x":0,"y":0}
+PASS  short screen 375×480: the focused link is inside the note's scrolling text, clear of the Close row  — {"focused":true,"scrolls":true,"link":{"top":320,"bottom":345},"region":{"top":19,"bottom":365},"closeRow":{"top":365,"bottom":461}}
+PASS  short screen 844×390: the focused link is inside the note's scrolling text, clear of the Close row  — {"focused":true,"scrolls":true,"link":{"top":222,"bottom":247},"region":{"top":19,"bottom":267},"closeRow":{"top":267,"bottom":371}}
+PASS  WebKit, classic scrollbar: full screen stays inside the usable width  — {"dialog":1265,"closeRight":1241,"usable":1265,"window":1280}
 
-46/46 checks passed
+56/56 checks passed

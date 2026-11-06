@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useId, useRef, type MouseEvent, type PointerEvent } from "react";
 
 import { SecondaryButton } from "./buttons";
-import { linkClass } from "./field-classes";
+import { footerLinkClass, linkClass } from "./field-classes";
 
 // The footer's "Privacy" button and Rob's short note (Rob, 2026-11-06). The note describes the alpha telemetry in
 // AGENTS.md § Sentry: when the alpha settings end, update it in the same commit as the "One honest note" bullet on
@@ -13,6 +13,17 @@ import { linkClass } from "./field-classes";
 // A native <dialog> opened with showModal(): the browser supplies the top layer, the inert page behind it, Esc to
 // close and focus return to this button [C6, C7]. The note is several paragraphs, so focus starts on the title
 // (tabIndex -1) and the dialog has no aria-describedby (WAI-ARIA APG dialog pattern) [C8].
+
+// A press or click on the backdrop targets the <dialog> itself, and so does one on the dialog's own 3px border, so
+// the pointer's position tells them apart: the backdrop is everything outside the dialog's border box. A click made
+// with the keyboard (Enter or Space on Close or the link) targets that control, so it is never a backdrop click.
+function isOnBackdrop(event: MouseEvent<HTMLDialogElement>) {
+  const box = event.currentTarget.getBoundingClientRect();
+  const outside =
+    event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom;
+  return event.target === event.currentTarget && outside;
+}
+
 export function PrivacyNote() {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
@@ -32,41 +43,39 @@ export function PrivacyNote() {
     dialogRef.current?.close();
   }
 
-  // The padding lives on the inner wrapper and the dialog itself is p-0, so an event whose target is the <dialog>
-  // can only be on the backdrop around it. Both the press and the click must be there: selecting text inside the
-  // note and letting go over the backdrop also fires a click on the <dialog>, and must not close it.
+  // Both the press and the click must be on the backdrop: selecting text inside the note and letting go over the
+  // backdrop also fires a click on the <dialog>, and must not close it.
   function notePressed(event: PointerEvent<HTMLDialogElement>) {
-    pressedOnBackdrop.current = event.target === event.currentTarget;
+    pressedOnBackdrop.current = isOnBackdrop(event);
   }
 
   function closeOnBackdrop(event: MouseEvent<HTMLDialogElement>) {
-    if (pressedOnBackdrop.current && event.target === event.currentTarget) {
+    const pressed = pressedOnBackdrop.current;
+    pressedOnBackdrop.current = false;
+    if (pressed && isOnBackdrop(event)) {
       close();
     }
-    pressedOnBackdrop.current = false;
   }
 
   return (
     <>
-      {/* Looks like its neighbouring footer links; 44px tall for touch (DESIGN.md § 6). Tailwind v4 buttons
-          default to the arrow cursor, hence cursor-pointer [C10]. */}
-      <button
-        type="button"
-        aria-haspopup="dialog"
-        onClick={open}
-        className={`${linkClass} inline-flex min-h-[44px] cursor-pointer items-center`}
-      >
+      {/* Looks like its neighbouring footer links. Tailwind v4 buttons default to the arrow cursor, hence
+          cursor-pointer [C10]. */}
+      <button type="button" aria-haspopup="dialog" onClick={open} className={`${footerLinkClass} cursor-pointer`}>
         Privacy
       </button>
-      {/* m-auto: Preflight zeroes every margin, which would undo the browser's centring of a modal dialog [C9]. */}
+      {/* m-auto: Preflight zeroes every margin, which would undo the browser's centring of a modal dialog [C9].
+          open:flex, not flex: a display utility would override the browser's display:none for a closed dialog and
+          show the note on the page. Inside, the text scrolls on its own above the Close row, so on a short screen
+          Close stays in reach and nothing ever scrolls underneath it. */}
       <dialog
         ref={dialogRef}
         aria-labelledby={titleId}
         onPointerDown={notePressed}
         onClick={closeOnBackdrop}
-        className="m-auto max-h-[calc(100%-32px)] w-[min(560px,calc(100%-32px))] overflow-y-auto rounded-card border-[3px] border-dashed border-wood bg-paper p-0 text-left text-walnut shadow-card backdrop:bg-walnut/50"
+        className="m-auto max-h-[calc(100%-32px)] w-[min(560px,calc(100%-32px))] overflow-hidden rounded-card border-[3px] border-dashed border-wood bg-paper p-0 text-left text-walnut shadow-card backdrop:bg-walnut/50 open:flex open:flex-col"
       >
-        <div className="flex flex-col gap-4 p-6 sm:p-8">
+        <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-6 pb-4 pt-6 sm:px-8 sm:pt-8">
           <h2
             id={titleId}
             ref={titleRef}
@@ -91,11 +100,9 @@ export function PrivacyNote() {
             </Link>
             .
           </p>
-          {/* Sticky: on a short phone screen the note scrolls inside the dialog, and Close stays in reach at the
-              bottom. The negative margins let its paper background run edge to edge over the scrolled text. */}
-          <div className="sticky bottom-0 -mx-6 -mb-6 flex justify-end bg-paper px-6 pb-6 pt-2 sm:-mx-8 sm:-mb-8 sm:px-8 sm:pb-8">
-            <SecondaryButton onClick={close}>Close</SecondaryButton>
-          </div>
+        </div>
+        <div className="flex shrink-0 justify-end px-6 pb-6 pt-2 sm:px-8 sm:pb-8">
+          <SecondaryButton onClick={close}>Close</SecondaryButton>
         </div>
       </dialog>
     </>
