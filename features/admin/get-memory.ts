@@ -2,6 +2,7 @@ import "server-only";
 
 import { LIVE_MEDIA_ORDER } from "@/features/memories/media-state";
 import type { AdminMemoryStatus } from "@/lib/validations/admin";
+import { coordinatesOf, type Coordinates } from "@/lib/validations/memory";
 import { getDb } from "@/server/db/client";
 
 /** Revisions shown on the detail page, newest first. */
@@ -59,16 +60,72 @@ export interface AdminMemoryView {
   memoryVersion: string;
   contributor: AdminContributorView | null;
   media: AdminMediaView[];
-  revisions: Array<{ id: string; changedVia: "WEB" | "SMS" | "CLAIM_LINK" | "ADMIN"; before: unknown; after: unknown; createdAt: Date }>;
+  revisions: AdminRevisionView[];
   emails: Array<{ emailType: string; status: string; sentAt: Date | null; attempts: number; createdAt: Date }>;
+  /** Present only when asked for (`includeCoordinates`, the MCP tools); the admin page never sees it. */
+  coordinates?: Coordinates | null;
+}
+
+export interface AdminRevisionView {
+  id: string;
+  changedVia: "WEB" | "SMS" | "CLAIM_LINK" | "ADMIN";
+  before: unknown;
+  after: unknown;
+  createdAt: Date;
+}
+
+export interface AdminViewOptions {
+  /** Add the memory's coordinates to the view and keep them in revision snapshots. Off for the admin page. */
+  includeCoordinates?: boolean;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A revision snapshot without its `coordinates` key; `stripped` says whether there was one. */
+function withoutCoordinates(snapshot: unknown): { value: unknown; stripped: boolean } {
+  if (!isPlainObject(snapshot) || !Object.hasOwn(snapshot, "coordinates")) {
+    return { value: snapshot, stripped: false };
+  }
+  const { coordinates: _coordinates, ...rest } = snapshot;
+  return { value: rest, stripped: true };
+}
+
+function isEmptyObject(value: unknown): boolean {
+  return isPlainObject(value) && Object.keys(value).length === 0;
+}
+
+/**
+ * Coordinates are set through /api/mcp and the admin draft API and read only
+ * through /api/mcp (plan 2026-11-06 §4.2), so
+ * the admin page's History must not show them: `app/admin/history.tsx` renders
+ * every key a revision touched. Remove the key from both snapshots, and drop a
+ * revision that held nothing else (a `set_coordinates` write). A revision that
+ * was empty before stripping is left as it was. Stripping runs after the
+ * `take`, so the History may show fewer rows (accepted, plan §5.6 and §8.3).
+ */
+function revisionsWithoutCoordinates(revisions: AdminRevisionView[]): AdminRevisionView[] {
+  const kept: AdminRevisionView[] = [];
+  for (const revision of revisions) {
+    const before = withoutCoordinates(revision.before);
+    const after = withoutCoordinates(revision.after);
+    if ((before.stripped || after.stripped) && isEmptyObject(before.value) && isEmptyObject(after.value)) {
+      continue;
+    }
+    kept.push({ ...revision, before: before.value, after: after.value });
+  }
+  return kept;
 }
 
 /**
  * One memory for the admin detail page, deleted or not (the page decides what
  * to offer). Never includes `claimTokenHash`, `blobUrl`, `storageKey` or `exif`
- * (plan §4.1): the view is serialised to the browser.
+ * (plan §4.1): the view is serialised to the browser. The MCP `get_memory` tool
+ * passes `includeCoordinates`; without it the view carries no coordinates at
+ * all, not even inside revisions.
  */
-export async function getMemoryForAdmin(id: string): Promise<AdminMemoryView | null> {
+export async function getMemoryForAdmin(id: string, options: AdminViewOptions = {}): Promise<AdminMemoryView | null> {
   const memory = await getDb().memory.findUnique({
     where: { id },
     include: {
@@ -99,6 +156,7 @@ export async function getMemoryForAdmin(id: string): Promise<AdminMemoryView | n
   if (!memory) {
     return null;
   }
+  const revisions: AdminRevisionView[] = memory.revisions.map((r) => ({ id: r.id, changedVia: r.changedVia, before: r.before, after: r.after, createdAt: r.createdAt }));
   return {
     id: memory.id,
     status: memory.status,
@@ -146,7 +204,8 @@ export async function getMemoryForAdmin(id: string): Promise<AdminMemoryView | n
       thumbReady: m.derivatives.some((d) => d.kind === "THUMBNAIL"),
       purged: m.purgedAt !== null,
     })),
-    revisions: memory.revisions.map((r) => ({ id: r.id, changedVia: r.changedVia, before: r.before, after: r.after, createdAt: r.createdAt })),
+    revisions: options.includeCoordinates ? revisions : revisionsWithoutCoordinates(revisions),
     emails: memory.emails.map((e) => ({ emailType: e.emailType, status: e.status, sentAt: e.sentAt, attempts: e.attempts, createdAt: e.createdAt })),
+    ...(options.includeCoordinates && { coordinates: coordinatesOf(memory) }),
   };
 }

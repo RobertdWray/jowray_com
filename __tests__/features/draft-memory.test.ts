@@ -5,7 +5,7 @@ import { resetEnvCache } from "@/server/config/env";
 
 import { budgetStats, isBudgetStatsQuery } from "../helpers/budget-stats";
 
-interface MemoryRow { id: string; memorialId: string; contributorId: string; type: string; source: string; sourceRef: string | null; status: string; claimTokenHash: string; consentVersion: string; consentedAt: Date | null; contributorNote: string | null; visibility: string; notifyWhenPosted: boolean; createdAt: Date; deletedAt: Date | null }
+interface MemoryRow { id: string; memorialId: string; contributorId: string; type: string; source: string; sourceRef: string | null; status: string; claimTokenHash: string; consentVersion: string; consentedAt: Date | null; contributorNote: string | null; visibility: string; notifyWhenPosted: boolean; createdAt: Date; deletedAt: Date | null; latitude?: number | null; longitude?: number | null }
 interface Rev { memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown> }
 const memories: MemoryRow[] = [];
 const contributors: Record<string, unknown>[] = [];
@@ -101,6 +101,31 @@ describe("draftMemory", () => {
     // The verbatim excerpt lives only in `before`; the row and `after` carry the words the sender will see.
     expect(revisions[0]!.after).not.toHaveProperty("originalNote");
     expect(memories[0]).not.toHaveProperty("originalNote");
+  });
+
+  it("stores no coordinates when none are given, and the creation revision says so (coordinates: null)", async () => {
+    const result = await draftMemory(valid);
+    expect(result.ok).toBe(true);
+    expect(memories[0]).toMatchObject({ latitude: null, longitude: null });
+    expect(revisions[0]!.after).toHaveProperty("coordinates", null);
+  });
+
+  it("stores the named place's coordinates in both columns and in the creation revision (plan 2026-11-06 §4.2)", async () => {
+    const result = await draftMemory({ ...valid, place: "Broadmead, Cockeysville", coordinates: { latitude: 39.4815, longitude: -76.6447 } });
+    expect(result.ok).toBe(true);
+    expect(memories[0]).toMatchObject({ place: "Broadmead, Cockeysville", latitude: 39.4815, longitude: -76.6447 });
+    expect(revisions[0]!.after).toMatchObject({ place: "Broadmead, Cockeysville", coordinates: { latitude: 39.4815, longitude: -76.6447 } });
+    // An explicit null is the same as none.
+    memories.length = 0; revisions.length = 0;
+    expect((await draftMemory({ ...valid, sourceRef: "gmail:2b2b2317fba34eec", coordinates: null })).ok).toBe(true);
+    expect(memories[0]).toMatchObject({ latitude: null, longitude: null });
+    expect(revisions[0]!.after).toHaveProperty("coordinates", null);
+  });
+
+  it("refuses out-of-range coordinates without writing", async () => {
+    expect(await draftMemory({ ...valid, coordinates: { latitude: 91, longitude: 0 } })).toMatchObject({ ok: false, code: "invalid" });
+    expect(memories).toHaveLength(0);
+    expect(contributors).toHaveLength(0);
   });
 
   it("rejects a missing email, an empty note and a bad sourceRef without writing", async () => {

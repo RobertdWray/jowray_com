@@ -7,6 +7,7 @@ import {
   getAdminEnv,
   getAdminPageEnv,
   getDbEnv,
+  getMcpEnv,
   getOutboundEnv,
   getSiteEnv,
   resetEnvCache,
@@ -25,6 +26,7 @@ const KEYS = [
   "OUTBOUND_DAILY_CAP",
   "ADMIN_API_SECRET",
   "ADMIN_PAGE_SECRET",
+  "MCP_API_SECRET",
 ] as const;
 const saved: Partial<Record<(typeof KEYS)[number], string | undefined>> = {};
 
@@ -191,6 +193,37 @@ describe("getAdminEnv", () => {
     process.env.ADMIN_API_SECRET = "a".repeat(32);
     resetEnvCache();
     expect(getAdminEnv().ADMIN_API_SECRET).toBe("a".repeat(32));
+  });
+});
+
+describe("getMcpEnv (plan 2026-11-06 §4.4)", () => {
+  it("is optional: unset means /api/mcp answers 401 to everything", () => {
+    expect(getMcpEnv().MCP_API_SECRET).toBeUndefined();
+  });
+
+  it("treats an empty value as unset (the `KEY=` convention), so the route fails closed with 401 rather than 500", () => {
+    process.env.MCP_API_SECRET = "";
+    resetEnvCache();
+    expect(getMcpEnv().MCP_API_SECRET).toBeUndefined();
+  });
+
+  it("requires at least 32 characters when set", () => {
+    process.env.MCP_API_SECRET = "short";
+    resetEnvCache();
+    expect(() => getMcpEnv()).toThrow(/MCP_API_SECRET/);
+    process.env.MCP_API_SECRET = "m".repeat(32);
+    resetEnvCache();
+    expect(getMcpEnv().MCP_API_SECRET).toBe("m".repeat(32));
+  });
+
+  it("is separate from ADMIN_API_SECRET: neither one configures the other", () => {
+    process.env.ADMIN_API_SECRET = "a".repeat(32);
+    resetEnvCache();
+    expect(getMcpEnv().MCP_API_SECRET).toBeUndefined();
+    process.env.MCP_API_SECRET = "m".repeat(32);
+    delete process.env.ADMIN_API_SECRET;
+    resetEnvCache();
+    expect(getAdminEnv().ADMIN_API_SECRET).toBeUndefined();
   });
 });
 

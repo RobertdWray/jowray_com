@@ -2,22 +2,32 @@ import { type NextRequest, NextResponse } from "next/server";
 
 import { safeEqualHex } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
-import { getAdminEnv } from "@/server/config/env";
+import { getAdminEnv, getMcpEnv } from "@/server/config/env";
 
 const log = createLogger({ category: "api" });
 
+/** Which bearer secret a route checks: the admin API's or the MCP endpoint's (each rotates on its own). */
+export type AuthRealm = "admin" | "mcp";
+
+function secretFor(realm: AuthRealm): string | undefined {
+  return realm === "mcp" ? getMcpEnv().MCP_API_SECRET : getAdminEnv().ADMIN_API_SECRET;
+}
+
 /**
- * Bearer check for the admin API, the same fail-closed, constant-time shape as
- * the cron route: no secret configured, or a wrong one, answers 401. Callers
- * read `request.headers` here as their first request-time read (Cache
- * Components rule) before touching Prisma or env.
+ * Bearer check for the admin API and the MCP endpoint, the same fail-closed,
+ * constant-time shape as the cron route: no secret configured, or a wrong one,
+ * answers 401. The `authorization` header is read first, before any env, so
+ * callers satisfy the Cache Components rule by calling this before touching
+ * Prisma or env. The 401 carries no `WWW-Authenticate` challenge: the MCP
+ * connector is configured with a static header and "No sign-in", and a
+ * challenge would send Claude into an OAuth flow with nothing behind it.
  */
-export function unauthorized(request: NextRequest): NextResponse | null {
+export function unauthorized(request: NextRequest, realm: AuthRealm = "admin"): NextResponse | null {
   const authorization = request.headers.get("authorization") ?? "";
-  const secret = getAdminEnv().ADMIN_API_SECRET;
+  const secret = secretFor(realm);
   if (!secret || !safeEqualHex(authorization, `Bearer ${secret}`)) {
     // Failed attempts are logged (never the header) so a guessing run is visible in the logs.
-    log.warn({ action: "admin_unauthorized", path: request.nextUrl.pathname, configured: Boolean(secret) }, "admin API request refused");
+    log.warn({ action: `${realm}_unauthorized`, path: request.nextUrl.pathname, configured: Boolean(secret) }, `${realm} API request refused`);
     return NextResponse.json({ error: { code: "unauthorized", message: "Unauthorized" } }, { status: 401 });
   }
   return null;

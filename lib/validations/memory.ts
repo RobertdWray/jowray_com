@@ -153,9 +153,33 @@ export const SOURCE_REF_PATTERN = /^(?:gmail:[0-9a-f]{8,32}|sms:[0-9a-f]{32}|oth
 
 const SOURCE_REF_PREFIX = { EMAIL: "gmail:", SMS: "sms:", OTHER: "other:" } as const;
 
-/** What the family admin sends to draft a memory on a sender's behalf (features/memories/draft-memory.ts). */
-export const draftMemoryInputSchema = z
+/**
+ * A memory's map position: WGS 84 decimal degrees (RFC 7946 §4), named fields so
+ * latitude and longitude are never swapped. For the named place (a town, a
+ * facility or community campus, a church, a park), never a residence or unit.
+ * Set through /api/mcp and the admin draft API (POST /api/admin/memories), read
+ * only through /api/mcp; the database CHECKs repeat both ranges
+ * and keep the two columns together (migration 20261106120000_memory_coordinates).
+ */
+export const coordinatesSchema = z
   .object({
+    latitude: z.number().min(-90).max(90).describe("WGS 84 decimal degrees, -90 to 90"),
+    longitude: z.number().min(-180).max(180).describe("WGS 84 decimal degrees, -180 to 180"),
+  })
+  .strict();
+export type Coordinates = z.infer<typeof coordinatesSchema>;
+
+/** A row's pair as the API shows it: null unless both columns are set (the CHECK keeps them together). */
+export function coordinatesOf(row: { latitude: number | null; longitude: number | null }): Coordinates | null {
+  return row.latitude === null || row.longitude === null ? null : { latitude: row.latitude, longitude: row.longitude };
+}
+
+/**
+ * The fields of an admin draft, without the cross-field refines below. Exported
+ * so the MCP tool's input schema derives from the same fields
+ * (lib/validations/mcp.ts); `draftMemoryInputSchema` is what `draftMemory` parses.
+ */
+export const draftMemoryObjectSchema = z.object({
   contributor: z.object({
     name: optionalText(120),
     // Trim and lower-case first, then check the format: zod 4's `z.email().trim()` would check the padded string.
@@ -173,7 +197,12 @@ export const draftMemoryInputSchema = z
   source: z.enum(["EMAIL", "SMS", "OTHER"]),
   sourceRef: z.string().regex(SOURCE_REF_PATTERN, "sourceRef must follow the gmail:/sms:/other: scheme"),
   visibility: z.enum(["PUBLIC", "FAMILY", "PRIVATE"]).default("PUBLIC"),
-  })
+  // Optional: the named place's position (coordinatesSchema); absent or null stores none.
+  coordinates: coordinatesSchema.nullable().optional(),
+});
+
+/** What the family admin sends to draft a memory on a sender's behalf (features/memories/draft-memory.ts). */
+export const draftMemoryInputSchema = draftMemoryObjectSchema
   .refine((value) => value.sourceRef.startsWith(SOURCE_REF_PREFIX[value.source]), {
     message: "sourceRef must match source (EMAIL ↔ gmail:, SMS ↔ sms:, OTHER ↔ other:)",
     path: ["sourceRef"],
