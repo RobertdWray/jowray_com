@@ -27,7 +27,7 @@ PASS  desktop: Close shuts the note
 PASS  desktop: the note's link navigates and the note is closed  — {"path":"/how-it-was-built","open":false,"htmlOverflow":"visible"}
 PASS  desktop: no console errors
 PASS  phone: no horizontal page overflow  — {"scroll":390,"client":390}
-PASS  phone: one-finger swipe over a fitted diagram scrolls the page  — scrollY 9021 → 9220, scale 1
+PASS  phone: one-finger swipe over a fitted diagram scrolls the page  — scrollY 9021 → 9222, scale 1
 PASS  phone: full screen fills the window and the diagram fits  — {"w":390,"h":844,"vw":390,"vh":844,"imgW":390}
 PASS  phone: Privacy note fits with 16px gutters  — {"left":21,"right":369,"vw":390}
 PASS  phone: no console errors

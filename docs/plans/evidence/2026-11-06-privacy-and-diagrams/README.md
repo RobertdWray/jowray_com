@@ -2,12 +2,12 @@
 
 Plan: `docs/plans/2026-11-06-privacy-note-and-diagram-viewer.md`, verification step 2.
 
-`verify.mjs` drives the installed Google Chrome (headless) through the repo's `playwright-core` against `next dev`, at
+`scripts/privacy-diagrams-smoke.mjs` drives the installed Google Chrome (headless) through the repo's `playwright-core` against `next dev`, at
 1280×900 and at 390×844 with touch. `results.txt` is its output on the final code: **33/33 checks passed**.
 
 ```sh
 npx next dev -p 3107   # in the worktree
-node docs/plans/evidence/2026-11-06-privacy-and-diagrams/verify.mjs "$PWD" http://localhost:3107 "$PWD/docs/plans/evidence/2026-11-06-privacy-and-diagrams"
+node scripts/privacy-diagrams-smoke.mjs "$PWD" http://localhost:3107 "$PWD/docs/plans/evidence/2026-11-06-privacy-and-diagrams"
 ```
 
 | File | What it shows |

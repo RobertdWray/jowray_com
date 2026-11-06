@@ -1,5 +1,8 @@
-// Browser checks for the Privacy note and the diagram viewer (plan verification step 2).
-// Usage: node verify.mjs <worktree> <baseUrl> <evidenceDir>
+// Browser checks for the footer Privacy note and the /how-it-was-built diagram viewer (plan
+// docs/plans/2026-11-06-privacy-note-and-diagram-viewer.md, verification step 2). Drives the installed Google Chrome
+// headless through playwright-core against a running `next dev`, at 1280×900 and at 390×844 with touch, and writes
+// screenshots to <evidenceDir>. Exits 1 if any check fails.
+// Usage: node scripts/privacy-diagrams-smoke.mjs <repoDir> <baseUrl> <evidenceDir>
 import { createRequire } from "node:module";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -23,7 +26,9 @@ const browser = await chromium.launch({
 function collectErrors(page) {
   const errors = [];
   page.on("console", (m) => {
-    if (m.type() === "error") errors.push(m.text());
+    if (m.type() === "error") {
+      errors.push(m.text());
+    }
   });
   page.on("pageerror", (e) => errors.push(String(e)));
   return errors;
