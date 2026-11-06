@@ -1,6 +1,6 @@
 PASS  desktop: no horizontal page overflow  — {"scroll":1280,"client":1280}
 PASS  desktop: all three diagrams fit their cards  — [{"w":1146,"card":1152,"ok":true},{"w":1146,"card":1152,"ok":true},{"w":1146,"card":1152,"ok":true}]
-PASS  desktop: Zoom out starts disabled at fit size
+PASS  desktop: Zoom out starts aria-disabled at fit size
 PASS  desktop: Zoom in scales the diagram up  — {"scale":1.5,"x":-286.5,"y":-82}
 PASS  desktop: Zoom out enabled once zoomed in
 PASS  desktop: drag pans once zoomed in  — -286.5 → -573
@@ -31,5 +31,18 @@ PASS  phone: one-finger swipe over a fitted diagram scrolls the page  — scroll
 PASS  phone: full screen fills the window and the diagram fits  — {"w":390,"h":844,"vw":390,"vh":844,"imgW":390}
 PASS  phone: Privacy note fits with 16px gutters  — {"left":21,"right":369,"vw":390}
 PASS  phone: no console errors
+PASS  footer 320px: every later link carries its own dot, none dangles  — [["Jo's obituary"],["·How this site was built","·Privacy"]]
+PASS  footer 412px: every later link carries its own dot, none dangles  — [["Jo's obituary","·How this site was built"],["·Privacy"]]
+PASS  footer 640px: every later link carries its own dot, none dangles  — [["Jo's obituary","·How this site was built","·Privacy"]]
+PASS  footer 1280px: every later link carries its own dot, none dangles  — [["Jo's obituary","·How this site was built","·Privacy"]]
+PASS  Zoom out keeps focus when it reaches fit size  — {"focus":"Zoom out of Architecture","disabled":"true","scale":1}
+PASS  landscape phone: full-screen canvas is at least 280px tall  — 307px of 390
+PASS  landscape phone: Zoom in reaches natural size (1804px) or more  — 3608px at scale 10.0456
+PASS  landscape phone: the full-screen cap is worked out from the window (above the inline 8×)  — max scale 10.0456
+PASS  short phone (375×553): Close is visible without scrolling  — {"top":446,"bottom":510,"vh":553}
+PASS  Privacy note: selecting text and releasing on the backdrop keeps it open
+PASS  open dialog keeps a stable scrollbar gutter  — stable
+PASS  full screen: the diagram area's focus ring is inset  — {"offset":"-4px","style":"solid","label":"Architecture diagram"}
+PASS  no role=toolbar without arrow-key movement  — 0
 
-33/33 checks passed
+46/46 checks passed

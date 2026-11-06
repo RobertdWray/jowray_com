@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { TransformComponent, TransformWrapper, useControls } from "react-zoom-pan-pinch";
 
 import { SecondaryButton } from "../_components/buttons";
@@ -16,7 +16,11 @@ import { SecondaryButton } from "../_components/buttons";
 // to pan without dragging (WCAG 2.5.7) [C21]. react-zoom-pan-pinch ships without "use client", so it is imported
 // only here [C19].
 
-const MAX_SCALE = 8; // The library's default; enough to reach natural size (17px+ text) from a 358px phone card.
+// Inline cap. The narrowest card is 282px (a 320px phone), and the widest diagram (2174px) needs 7.7× there to reach
+// its natural size, where the generator guarantees 17px+ text. Full screen works its cap out from the window instead.
+const INLINE_MAX_SCALE = 8;
+// Full screen may zoom to twice the natural size.
+const NATURAL_HEADROOM = 2;
 const PAN_STEP = 120;
 
 // Inline, the wheel zooms only while Ctrl or ⌘ is held. A plain list of activation keys means "all of them at
@@ -35,8 +39,12 @@ const centreContent = {
   justifyContent: "center",
 } as const;
 
+// aria-disabled rather than disabled: a disabled button drops keyboard focus to <body> the moment it disables itself
+// (Zoom out at fit size), and a screen-reader user loses their place.
 const toolButtonClass =
-  "inline-flex min-h-tap cursor-pointer items-center justify-center gap-2 rounded-input border-[3px] border-dashed border-wood bg-paper px-4 py-2 text-label font-bold text-walnut disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex min-h-tap cursor-pointer items-center justify-center gap-2 rounded-input border-[3px] border-dashed border-wood bg-paper px-4 py-2 text-label font-bold text-walnut aria-disabled:cursor-not-allowed aria-disabled:opacity-50";
+
+const isZoomed = (scale: number) => scale > 1.001;
 
 interface DiagramViewerProps {
   heading: string;
@@ -52,7 +60,6 @@ export function DiagramViewer({ heading, src, width, height, alt, descriptionId 
   const [zoomed, setZoomed] = useState(false);
   const [fullOpen, setFullOpen] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const titleRef = useRef<HTMLHeadingElement>(null);
   const titleId = useId();
 
   function openFullScreen() {
@@ -61,19 +68,17 @@ export function DiagramViewer({ heading, src, width, height, alt, descriptionId 
       return;
     }
     dialog.showModal();
-    // The title takes focus first (WAI-ARIA APG dialog pattern) [C8]; the viewer mounts on this render, while the
-    // dialog is visible, so it measures the real window.
-    titleRef.current?.focus();
+    // The view mounts on this render, inside the now-visible dialog, so it measures the real window.
     setFullOpen(true);
   }
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
       <TransformWrapper
-        maxScale={MAX_SCALE}
+        maxScale={INLINE_MAX_SCALE}
         wheel={{ activationKeys: withCtrlOrCmd }}
         panning={{ disabled: !zoomed }}
-        onTransform={(_ref, state) => setZoomed(state.scale > 1.001)}
+        onTransform={(_ref, state) => setZoomed(isZoomed(state.scale))}
       >
         <Toolbar heading={heading} zoomed={zoomed}>
           <button
@@ -111,65 +116,132 @@ export function DiagramViewer({ heading, src, width, height, alt, descriptionId 
         onClose={() => setFullOpen(false)}
         className="m-0 h-dvh max-h-none w-screen max-w-none bg-paper p-0 text-left text-walnut backdrop:bg-walnut/50"
       >
-        <div className="flex h-full flex-col">
-          <div className="flex items-center gap-3 border-b-[3px] border-wood-light px-4 py-3 sm:px-6">
-            <h2
-              id={titleId}
-              ref={titleRef}
-              tabIndex={-1}
-              className="mr-auto font-display text-[24px] font-bold leading-[1.2] focus:outline-none"
-            >
-              {heading}
-            </h2>
-            <SecondaryButton onClick={() => dialogRef.current?.close()} className="min-h-tap py-2">
-              Close
-            </SecondaryButton>
-          </div>
-          {fullOpen && (
-            <TransformWrapper maxScale={MAX_SCALE} centerOnInit keyboard={{ disabled: false }}>
-              <div className="px-4 py-3 sm:px-6">
-                <Toolbar heading={heading} zoomed withArrows />
-              </div>
-              <div className="relative min-h-0 flex-1">
-                <TransformComponent
-                  wrapperStyle={fillBox}
-                  contentStyle={centreContent}
-                  wrapperProps={{
-                    role: "group",
-                    "aria-label": `${heading} diagram. Arrow keys move it; plus and minus zoom.`,
-                  }}
-                >
-                  <Image
-                    src={src}
-                    width={width}
-                    height={height}
-                    alt={alt}
-                    unoptimized
-                    draggable={false}
-                    className="block h-auto max-h-full w-auto max-w-full"
-                  />
-                </TransformComponent>
-              </div>
-            </TransformWrapper>
-          )}
-        </div>
+        {fullOpen && (
+          <FullScreenView
+            heading={heading}
+            src={src}
+            width={width}
+            height={height}
+            alt={alt}
+            titleId={titleId}
+            onClose={() => dialogRef.current?.close()}
+          />
+        )}
       </dialog>
     </div>
+  );
+}
+
+function FullScreenView({
+  heading,
+  src,
+  width,
+  height,
+  alt,
+  titleId,
+  onClose,
+}: Omit<DiagramViewerProps, "descriptionId"> & { titleId: string; onClose: () => void }) {
+  const [zoomed, setZoomed] = useState(false);
+  const [maxScale, setMaxScale] = useState(INLINE_MAX_SCALE);
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const hintId = useId();
+
+  // The title takes focus first (WAI-ARIA APG dialog pattern) [C8].
+  useEffect(() => {
+    titleRef.current?.focus();
+  }, []);
+
+  // At scale 1 the image is fitted into the canvas by CSS, so reaching its natural size takes 1 / (fitted share).
+  // On a landscape phone that is more than 10×; recomputed whenever the canvas changes size (rotation, resizing).
+  // ResizeObserver reports once as soon as it starts observing, which gives the first measurement.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    const observer = new ResizeObserver(([entry]) => {
+      const fitted = Math.min(1, entry.contentRect.width / width, entry.contentRect.height / height);
+      if (fitted > 0) {
+        setMaxScale(Math.max(INLINE_MAX_SCALE, NATURAL_HEADROOM / fitted));
+      }
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [width, height]);
+
+  return (
+    <TransformWrapper
+      maxScale={maxScale}
+      centerOnInit
+      keyboard={{ disabled: false }}
+      onTransform={(_ref, state) => setZoomed(isZoomed(state.scale))}
+    >
+      <div className="flex h-full flex-col">
+        {/* One row from 640px up (a landscape phone included), so a short screen keeps its height for the diagram;
+            on a portrait phone the controls take a second row under the title and Close. */}
+        <div className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-2 border-b-[3px] border-wood-light px-4 py-2 [grid-template-areas:'title_close'_'tools_tools'] sm:grid-cols-[1fr_auto_auto] sm:px-6 sm:[grid-template-areas:'title_tools_close']">
+          <h2
+            id={titleId}
+            ref={titleRef}
+            tabIndex={-1}
+            className="font-display text-[22px] font-bold leading-[1.2] [grid-area:title] focus:outline-none"
+          >
+            {heading}
+          </h2>
+          <div className="[grid-area:tools]">
+            <Toolbar heading={heading} zoomed={zoomed} compact withArrows />
+          </div>
+          <SecondaryButton onClick={onClose} className="min-h-tap py-2 [grid-area:close]">
+            Close
+          </SecondaryButton>
+        </div>
+        <span id={hintId} className="sr-only">
+          Arrow keys move the diagram; plus and minus zoom.
+        </span>
+        <div ref={canvasRef} className="relative min-h-0 flex-1">
+          {/* The wrapper fills the canvas, so its focus ring is drawn inside it, where nothing clips it. */}
+          <TransformComponent
+            wrapperStyle={fillBox}
+            contentStyle={centreContent}
+            wrapperClass="focus-visible:-outline-offset-4"
+            wrapperProps={{ role: "group", "aria-label": `${heading} diagram`, "aria-describedby": hintId }}
+          >
+            <Image
+              src={src}
+              width={width}
+              height={height}
+              alt={alt}
+              unoptimized
+              draggable={false}
+              className="block h-auto max-h-full w-auto max-w-full"
+            />
+          </TransformComponent>
+        </div>
+      </div>
+    </TransformWrapper>
   );
 }
 
 function Toolbar({
   heading,
   zoomed,
+  compact = false,
   withArrows = false,
   children,
 }: {
   heading: string;
   zoomed: boolean;
+  /** Icon-only buttons on narrow or short screens (the `narrow` variant), to leave room for the diagram. */
+  compact?: boolean;
   withArrows?: boolean;
   children?: ReactNode;
 }) {
   const { zoomIn, zoomOut, resetTransform, panBy } = useControls();
+  // Compact icon buttons are 44px wide (20px icon, 9px padding, 3px borders), DESIGN.md's touch minimum, so all seven
+  // fit one row on a 390px phone.
+  const buttonClass = compact ? `${toolButtonClass} narrow:px-[9px]` : toolButtonClass;
+  const labelClass = compact ? "narrow:sr-only" : undefined;
   // panBy moves the content: a positive x shifts it right, which shows more of its left side [C18].
   const arrows = [
     { label: "Left", icon: "left", dx: PAN_STEP, dy: 0 },
@@ -177,30 +249,39 @@ function Toolbar({
     { label: "Down", icon: "down", dx: 0, dy: -PAN_STEP },
     { label: "Right", icon: "right", dx: -PAN_STEP, dy: 0 },
   ] as const;
+  // A labelled group, not role="toolbar": a toolbar promises arrow-key movement between its buttons.
   return (
-    <div role="toolbar" aria-label={`${heading} diagram controls`} className="flex flex-wrap gap-2">
-      <button type="button" aria-label={`Zoom in on ${heading}`} onClick={() => zoomIn()} className={toolButtonClass}>
+    <div
+      role="group"
+      aria-label={`${heading} diagram controls`}
+      className={compact ? "flex flex-wrap gap-2 narrow:gap-1.5" : "flex flex-wrap gap-2"}
+    >
+      <button type="button" aria-label={`Zoom in on ${heading}`} onClick={() => zoomIn()} className={buttonClass}>
         <Icon name="plus" />
-        Zoom in
+        <span className={labelClass}>Zoom in</span>
       </button>
       <button
         type="button"
         aria-label={`Zoom out of ${heading}`}
-        onClick={() => zoomOut()}
-        disabled={!zoomed}
-        className={toolButtonClass}
+        aria-disabled={!zoomed}
+        onClick={() => {
+          if (zoomed) {
+            void zoomOut();
+          }
+        }}
+        className={buttonClass}
       >
         <Icon name="minus" />
-        Zoom out
+        <span className={labelClass}>Zoom out</span>
       </button>
       <button
         type="button"
         aria-label={`Fit ${heading} to the screen`}
         onClick={() => resetTransform()}
-        className={toolButtonClass}
+        className={buttonClass}
       >
         <Icon name="fit" />
-        Fit
+        <span className={labelClass}>Fit</span>
       </button>
       {withArrows &&
         arrows.map((arrow) => (
@@ -209,10 +290,10 @@ function Toolbar({
             type="button"
             aria-label={`Move the view ${arrow.label.toLowerCase()}`}
             onClick={() => panBy(arrow.dx, arrow.dy)}
-            className={toolButtonClass}
+            className={buttonClass}
           >
             <Icon name={arrow.icon} />
-            <span className="sr-only sm:not-sr-only">{arrow.label}</span>
+            <span className={labelClass}>{arrow.label}</span>
           </button>
         ))}
       {children}

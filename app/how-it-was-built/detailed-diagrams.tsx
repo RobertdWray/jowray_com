@@ -53,7 +53,7 @@ export function DetailedDiagrams() {
         const titleId = `diagram-${slug}-title`;
         const descriptionId = `diagram-${slug}-description`;
         return (
-          // figcaption first (title + description), then the scroller, then the full-size and README links.
+          // figcaption first (title + description), then the viewer (controls and fitted image), then the links.
           <figure key={slug} aria-labelledby={titleId} className="flex min-w-0 flex-col gap-4">
             <figcaption className="flex max-w-[40em] flex-col gap-2">
               <h3 id={titleId} className="font-display text-[24px] font-bold leading-[1.2]">

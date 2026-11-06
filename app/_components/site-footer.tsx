@@ -29,22 +29,25 @@ export function SiteFooter() {
         </a>
         .
       </p>
-      {/* A <div>, not a <p>: the Privacy note's <dialog> and its headings and paragraphs are flow content, which a
-          <p> cannot contain (React reports that nesting as a hydration error). A wrapping flex row: on a phone
-          "Privacy" drops to its own line, so the dot before it only shows from sm up and never dangles. The closed
-          dialog is display:none and the open one sits in the top layer, so neither takes a place in the row. */}
+      {/* <div>s, not a <p>: the Privacy note's <dialog> and its headings and paragraphs are flow content, which a
+          <p> cannot contain (React reports that nesting as a hydration error). A wrapping flex row in which each dot
+          belongs to the link after it, so wherever the row breaks a dot never ends a line and every link keeps its
+          separator. The closed dialog is display:none and the open one sits in the top layer, so neither takes a
+          place in the row. */}
       <div className="flex flex-wrap items-center justify-center gap-x-2 text-[18px] text-walnut-soft">
         <Link href="/obituary" className={linkClass}>
           Jo&apos;s obituary
         </Link>
-        <span aria-hidden="true">·</span>
-        <Link href="/how-it-was-built" className={linkClass}>
-          How this site was built
-        </Link>
-        <span aria-hidden="true" className="hidden sm:inline">
-          ·
-        </span>
-        <PrivacyNote />
+        <div className="flex items-center gap-x-2">
+          <span aria-hidden="true">·</span>
+          <Link href="/how-it-was-built" className={linkClass}>
+            How this site was built
+          </Link>
+        </div>
+        <div className="flex items-center gap-x-2">
+          <span aria-hidden="true">·</span>
+          <PrivacyNote />
+        </div>
       </div>
     </footer>
   );

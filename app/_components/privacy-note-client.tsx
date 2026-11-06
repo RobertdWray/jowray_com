@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useId, useRef, type MouseEvent } from "react";
+import { useId, useRef, type MouseEvent, type PointerEvent } from "react";
 
 import { SecondaryButton } from "./buttons";
 import { linkClass } from "./field-classes";
@@ -16,6 +16,7 @@ import { linkClass } from "./field-classes";
 export function PrivacyNote() {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
+  const pressedOnBackdrop = useRef(false);
   const titleId = useId();
 
   function open() {
@@ -31,12 +32,18 @@ export function PrivacyNote() {
     dialogRef.current?.close();
   }
 
-  // The padding lives on the inner wrapper and the dialog itself is p-0, so a click whose target is the <dialog>
-  // can only have landed on the backdrop around it.
+  // The padding lives on the inner wrapper and the dialog itself is p-0, so an event whose target is the <dialog>
+  // can only be on the backdrop around it. Both the press and the click must be there: selecting text inside the
+  // note and letting go over the backdrop also fires a click on the <dialog>, and must not close it.
+  function notePressed(event: PointerEvent<HTMLDialogElement>) {
+    pressedOnBackdrop.current = event.target === event.currentTarget;
+  }
+
   function closeOnBackdrop(event: MouseEvent<HTMLDialogElement>) {
-    if (event.target === event.currentTarget) {
+    if (pressedOnBackdrop.current && event.target === event.currentTarget) {
       close();
     }
+    pressedOnBackdrop.current = false;
   }
 
   return (
@@ -55,6 +62,7 @@ export function PrivacyNote() {
       <dialog
         ref={dialogRef}
         aria-labelledby={titleId}
+        onPointerDown={notePressed}
         onClick={closeOnBackdrop}
         className="m-auto max-h-[calc(100%-32px)] w-[min(560px,calc(100%-32px))] overflow-y-auto rounded-card border-[3px] border-dashed border-wood bg-paper p-0 text-left text-walnut shadow-card backdrop:bg-walnut/50"
       >
@@ -83,9 +91,11 @@ export function PrivacyNote() {
             </Link>
             .
           </p>
-          <SecondaryButton onClick={close} className="self-end">
-            Close
-          </SecondaryButton>
+          {/* Sticky: on a short phone screen the note scrolls inside the dialog, and Close stays in reach at the
+              bottom. The negative margins let its paper background run edge to edge over the scrolled text. */}
+          <div className="sticky bottom-0 -mx-6 -mb-6 flex justify-end bg-paper px-6 pb-6 pt-2 sm:-mx-8 sm:-mb-8 sm:px-8 sm:pb-8">
+            <SecondaryButton onClick={close}>Close</SecondaryButton>
+          </div>
         </div>
       </dialog>
     </>

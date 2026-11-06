@@ -79,12 +79,12 @@ const settle = (page, ms = 450) => page.waitForTimeout(ms);
 
   // Zoom in / Zoom out / Fit buttons (Architecture is the second figure).
   const zoomOutBtn = page.getByRole("button", { name: "Zoom out of Architecture" });
-  check("desktop: Zoom out starts disabled at fit size", await zoomOutBtn.isDisabled());
+  check("desktop: Zoom out starts aria-disabled at fit size", (await zoomOutBtn.getAttribute("aria-disabled")) === "true");
   await page.getByRole("button", { name: "Zoom in on Architecture" }).click();
   await settle(page);
   const zoomedIn = await transformOf(page, 1);
   check("desktop: Zoom in scales the diagram up", zoomedIn.scale > 1.05, JSON.stringify(zoomedIn));
-  check("desktop: Zoom out enabled once zoomed in", await zoomOutBtn.isEnabled());
+  check("desktop: Zoom out enabled once zoomed in", (await zoomOutBtn.getAttribute("aria-disabled")) === "false");
   await arch.screenshot({ path: join(evidence, "02-desktop-architecture-zoomed.jpg"), quality: 80, type: "jpeg" });
 
   // Drag pans when zoomed in.
@@ -164,7 +164,7 @@ const settle = (page, ms = 450) => page.waitForTimeout(ms);
   const fsRight = await transformOf(page, 0, "dialog");
   check("desktop: full-screen arrow button pans", fsRight.x < fsZoom.x - 20, `${fsZoom.x} → ${fsRight.x}`);
 
-  await dlg.getByRole("group", { name: /Arrow keys move it/ }).focus();
+  await dlg.getByRole("group", { name: "Architecture diagram", exact: true }).focus();
   await page.keyboard.press("ArrowLeft");
   await settle(page);
   const fsKey = await transformOf(page, 0, "dialog");
@@ -328,6 +328,147 @@ const settle = (page, ms = 450) => page.waitForTimeout(ms);
 
   check("phone: no console errors", errors.length === 0, errors.join(" | ").slice(0, 600));
   await ctx.close();
+}
+
+
+// ---------------------------------------------------------------- Review round 1 regressions
+{
+  // Footer: at any width, no line ends with a dot and every dot sits on the line of the link after it.
+  for (const width of [320, 412, 640, 1280]) {
+    const ctx = await browser.newContext({ viewport: { width, height: 800 } });
+    const page = await ctx.newPage();
+    await page.goto(`${base}/obituary`, { waitUntil: "networkidle" });
+    const rows = await page.evaluate(() => {
+      const row = document.querySelector("footer > div");
+      const items = [...row.children].map((el) => {
+        const r = el.getBoundingClientRect();
+        // The Privacy item also holds the closed dialog's text; its first few characters are the visible part.
+        const text = el.textContent.trim().slice(0, el.textContent.trim().startsWith("·Privacy") ? 8 : 40);
+        return { text, top: Math.round(r.top + r.height / 2), dot: text.startsWith("·") };
+      });
+      return items;
+    });
+    const linksWithDot = rows.slice(1).every((r) => r.dot);
+    const lines = new Map();
+    for (const r of rows) {
+      lines.set(r.top, [...(lines.get(r.top) ?? []), r.text]);
+    }
+    const dangling = [...lines.values()].some((texts) => texts[texts.length - 1].endsWith("·"));
+    check(`footer ${width}px: every later link carries its own dot, none dangles`, linksWithDot && !dangling, JSON.stringify([...lines.values()]));
+    await ctx.close();
+  }
+
+  // Zoom out keeps keyboard focus when it reaches fit size.
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const page = await ctx.newPage();
+    await page.goto(`${base}/how-it-was-built`, { waitUntil: "networkidle" });
+    await page.getByRole("button", { name: "Zoom in on Architecture" }).click();
+    await settle(page);
+    const zoomOut = page.getByRole("button", { name: "Zoom out of Architecture" });
+    await zoomOut.focus();
+    for (let i = 0; i < 6; i++) {
+      await page.keyboard.press("Enter");
+      await settle(page, 300);
+    }
+    const state = await page.evaluate(() => ({
+      focus: document.activeElement?.getAttribute("aria-label"),
+      disabled: document.activeElement?.getAttribute("aria-disabled"),
+    }));
+    const t = await transformOf(page, 1);
+    check("Zoom out keeps focus when it reaches fit size", state.focus === "Zoom out of Architecture" && state.disabled === "true" && Math.abs(t.scale - 1) < 0.001, JSON.stringify({ ...state, scale: t.scale }));
+    await ctx.close();
+  }
+
+  // Landscape phone: the full-screen canvas keeps most of the height, and natural size is reachable.
+  {
+    const ctx = await browser.newContext({ viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+    const page = await ctx.newPage();
+    await page.goto(`${base}/how-it-was-built`, { waitUntil: "networkidle" });
+    await page.getByRole("button", { name: "Full screen: Data model" }).click();
+    await settle(page, 700);
+    const dlg = page.locator("dialog[open]");
+    const canvas = await page.evaluate(() => {
+      const g = document.querySelector("dialog[open] [role=group][aria-describedby]");
+      return Math.round(g.getBoundingClientRect().height);
+    });
+    check("landscape phone: full-screen canvas is at least 280px tall", canvas >= 280, `${canvas}px of 390`);
+    await page.screenshot({ path: join(evidence, "10-landscape-fullscreen.jpg"), quality: 80, type: "jpeg" });
+    // Click at a human pace: a click during the 200ms zoom animation restarts from the mid-animation scale.
+    let last = 0;
+    let scale = 1;
+    for (let i = 0; i < 30 && scale > last; i++) {
+      last = scale;
+      await dlg.getByRole("button", { name: "Zoom in on Data model" }).click();
+      await settle(page, 320);
+      scale = (await transformOf(page, 0, "dialog")).scale;
+    }
+    const shown = await page.evaluate(() => Math.round(document.querySelector("dialog[open] img").getBoundingClientRect().width));
+    check("landscape phone: Zoom in reaches natural size (1804px) or more", shown >= 1804, `${shown}px at scale ${scale}`);
+    check("landscape phone: the full-screen cap is worked out from the window (above the inline 8×)", scale > 8, `max scale ${scale}`);
+    await ctx.close();
+  }
+
+  // Privacy note: selecting text and releasing over the backdrop keeps it open; Close stays in reach on a short phone.
+  {
+    const ctx = await browser.newContext({ viewport: { width: 375, height: 553 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+    const page = await ctx.newPage();
+    await page.goto(`${base}/obituary`, { waitUntil: "networkidle" });
+    const privacy = page.getByRole("button", { name: "Privacy" });
+    await privacy.scrollIntoViewIfNeeded();
+    await privacy.tap();
+    await settle(page);
+    const close = await page.evaluate(() => {
+      const r = [...document.querySelectorAll("dialog[open] button")].find((b) => b.textContent === "Close").getBoundingClientRect();
+      return { top: Math.round(r.top), bottom: Math.round(r.bottom), vh: innerHeight };
+    });
+    check("short phone (375×553): Close is visible without scrolling", close.bottom <= close.vh && close.top >= 0, JSON.stringify(close));
+    await page.screenshot({ path: join(evidence, "11-short-phone-privacy-note.jpg"), quality: 80, type: "jpeg" });
+    await ctx.close();
+  }
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const page = await ctx.newPage();
+    await page.goto(`${base}/obituary`, { waitUntil: "networkidle" });
+    const privacy = page.getByRole("button", { name: "Privacy" });
+    await privacy.scrollIntoViewIfNeeded();
+    await privacy.click();
+    await settle(page);
+    const p = await page.locator("dialog[open] p").first().boundingBox();
+    await page.mouse.move(p.x + 20, p.y + 10);
+    await page.mouse.down();
+    await page.mouse.move(8, 8, { steps: 10 });
+    await page.mouse.up();
+    await settle(page);
+    const stillOpen = await page.evaluate(() => Boolean(document.querySelector("dialog[open]")));
+    check("Privacy note: selecting text and releasing on the backdrop keeps it open", stillOpen);
+    const gutter = await page.evaluate(() => getComputedStyle(document.documentElement).scrollbarGutter);
+    check("open dialog keeps a stable scrollbar gutter", gutter.startsWith("stable"), gutter);
+    await ctx.close();
+  }
+
+  // Full-screen focus ring is drawn inside the canvas; the controls are a labelled group, not a toolbar.
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const page = await ctx.newPage();
+    await page.goto(`${base}/how-it-was-built`, { waitUntil: "networkidle" });
+    await page.getByRole("button", { name: "Full screen: Architecture" }).click();
+    await settle(page, 600);
+    let ring = null;
+    for (let i = 0; i < 15 && !ring; i++) {
+      await page.keyboard.press("Tab");
+      ring = await page.evaluate(() => {
+        const a = document.activeElement;
+        return a?.getAttribute("role") === "group" && a.getAttribute("aria-describedby")
+          ? { offset: getComputedStyle(a).outlineOffset, style: getComputedStyle(a).outlineStyle, label: a.getAttribute("aria-label") }
+          : null;
+      });
+    }
+    check("full screen: the diagram area's focus ring is inset", ring && ring.offset === "-4px" && ring.style === "solid", JSON.stringify(ring));
+    const toolbars = await page.evaluate(() => document.querySelectorAll("[role=toolbar]").length);
+    check("no role=toolbar without arrow-key movement", toolbars === 0, String(toolbars));
+    await ctx.close();
+  }
 }
 
 await browser.close();
