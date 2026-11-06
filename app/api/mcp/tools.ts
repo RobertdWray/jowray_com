@@ -8,6 +8,7 @@ import { setMemoryDeletedAsAdmin } from "@/features/admin/set-deleted";
 import { setMemoryStatusAsAdmin } from "@/features/admin/set-status";
 import { updateMemoryAsAdmin } from "@/features/admin/update-memory";
 import { draftMemory, reissueDraftClaimLink } from "@/features/memories/draft-memory";
+import { suggestPlacesForMemory } from "@/features/places/suggest-for-memory";
 import { createLogger } from "@/lib/logger";
 import { tagIds } from "@/lib/sentry/user";
 import { prepareInput } from "@/lib/source-input";
@@ -22,8 +23,8 @@ import {
 } from "@/lib/validations/mcp";
 
 /**
- * The eight MCP tools (plan 2026-11-06 §4.5), each a thin adapter over an
- * admin feature. `registerTools` runs once per request (mcp-handler builds a
+ * The nine MCP tools (plan 2026-11-06 §4.5, and `suggest_places` from plan
+ * 2026-11-06-photo-gps-places B7), each a thin adapter over an admin feature. `registerTools` runs once per request (mcp-handler builds a
  * fresh McpServer for every request), so it only registers: the schemas and
  * the tool definitions below are module constants, and nothing here reads env
  * or touches Prisma until a tool runs.
@@ -36,7 +37,7 @@ import {
 
 const log = createLogger({ category: "api" });
 
-/** The privacy rule for coordinates, repeated in both tools that take them. */
+/** The privacy rule for coordinates, repeated in every tool that takes or proposes them. */
 const PLACE_RULE =
   "`coordinates` are WGS 84 decimal degrees for the named place (a town, a facility or community campus such as Broadmead, a church, a park, a lake), never a residence or a unit inside a place. Ask Rob before saving them.";
 
@@ -51,7 +52,7 @@ const TOOLS = {
   get_memory: {
     title: "Get a memory",
     description:
-      "One memory with its contributor, files, coordinates, revision history and emails. `memoryVersion` and `contributor.contributorVersion` are what update_memory and set_coordinates need.",
+      "One memory with its contributor, files, coordinates, revision history and emails. `memoryVersion` and `contributor.contributorVersion` are what update_memory and set_coordinates need. Each file's `coordinates` is where the camera was (often a home); never propose it for set_coordinates.",
     inputSchema: mcpMemoryIdSchema,
     annotations: { readOnlyHint: true },
   },
@@ -92,6 +93,13 @@ const TOOLS = {
     inputSchema: mcpMemoryIdSchema,
     annotations: { destructiveHint: true, idempotentHint: false },
   },
+  suggest_places: {
+    title: "Suggest places from photos",
+    description: `Place names near where each photo was taken, from the GPS saved with the photo (OpenStreetMap). Read-only. Landmark labels carry the place's own point; the photo's point (each photo's \`coordinates\`) is where the camera was. If \`pending\` is non-empty, call again at most twice (results are cached), then tell Rob which photos are still pending. ${PLACE_RULE}`,
+    inputSchema: mcpMemoryIdSchema,
+    // It changes no memory (only the lookup cache) and asks OpenStreetMap (C27).
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
 } as const;
 
 /** The same JSON as structured content and as text (MCP structured-content rule); the round trip turns Dates into ISO strings in both. */
@@ -125,7 +133,7 @@ async function runTool(tool: keyof typeof TOOLS, memoryId: string | undefined, r
   }
 }
 
-/** Registers the eight tools on a fresh server. Called by mcp-handler once per request; registration only. */
+/** Registers the nine tools on a fresh server. Called by mcp-handler once per request; registration only. */
 export function registerTools(server: McpServer): void {
   // Sentry MCP spans for this server (idempotent; @sentry/nextjs does not wrap McpServer on its own).
   Sentry.wrapMcpServerWithSentry(server);
@@ -197,6 +205,13 @@ export function registerTools(server: McpServer): void {
     runTool("reissue_claim_link", memoryId, async () => {
       const result = await reissueDraftClaimLink({ memoryId });
       return result.ok ? toolResult({ memoryId: result.memoryId, claimLink: result.claimLink }) : refusal(result);
+    })
+  );
+
+  server.registerTool("suggest_places", TOOLS.suggest_places, ({ memoryId }) =>
+    runTool("suggest_places", memoryId, async () => {
+      const result = await suggestPlacesForMemory(memoryId);
+      return result.ok ? toolResult({ photos: result.photos, pending: result.pending, attribution: result.attribution }) : refusal(result);
     })
   );
 }

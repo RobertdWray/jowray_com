@@ -108,3 +108,40 @@ describe("contributor content never reaches a log line", () => {
     expect((out.nested as Record<string, unknown>).note).toBe("[Redacted]");
   });
 });
+
+describe("where a photo was taken never reaches a log line (plan 2026-11-06-photo-gps-places B8, C44)", () => {
+  // Statue of Liberty fixture; a real photo's point is contributor content, like `place`.
+  const LAT = 40.689247;
+  const LON = -74.044502;
+
+  it("Pino redacts latitude and longitude at the top level and up to three levels down", () => {
+    const { sink, lines } = capture();
+    const log = buildLogger({ destination: sink, level: "info" });
+    log.info(
+      {
+        latitude: LAT,
+        longitude: LON,
+        coordinates: { latitude: LAT, longitude: LON },
+        media: { gps: { latitude: LAT, longitude: LON } },
+        a: { b: { point: { latitude: LAT, longitude: LON } } },
+        mediaId: "med_1",
+      },
+      "gps"
+    );
+    const out = lines().join("\n");
+    expect(out).not.toContain("40.689247");
+    expect(out).not.toContain("74.044502");
+    expect(out).toContain("med_1");
+    const parsed = JSON.parse(lines()[0]!) as Record<string, Record<string, unknown>>;
+    expect(parsed.latitude).toBe("[Redacted]");
+    expect(parsed.coordinates!.longitude).toBe("[Redacted]");
+  });
+
+  it("redactPii (Sentry extra) redacts them at any depth", () => {
+    const out = redactPii({ mediaId: "med_1", latitude: LAT, longitude: LON, deep: { er: { still: { point: { latitude: LAT, longitude: LON } } } } });
+    expect(JSON.stringify(out)).not.toContain("40.689247");
+    expect(JSON.stringify(out)).not.toContain("74.044502");
+    expect((out as Record<string, unknown>).latitude).toBe("[Redacted]");
+    expect((out as Record<string, unknown>).mediaId).toBe("med_1");
+  });
+});

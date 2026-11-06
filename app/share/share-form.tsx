@@ -16,6 +16,7 @@ import {
   labelFor,
   MAX_CARDS,
   type SendIssue,
+  toDraftCards,
   validateContributor,
   validateForSend,
 } from "@/lib/memory-cards";
@@ -41,6 +42,7 @@ import { cardIds, headingFor, MemoryCardSection, MemoryPlaceholder } from "./mem
 import { pickRecordingType, type Recording } from "./recorder";
 import { type SentMemory, ThankYou } from "./thank-you-client";
 import { useMemoryCards } from "./use-memory-cards";
+import { usePlaceSuggestions } from "./use-place-suggestions";
 import { useRecorder } from "./use-recorder";
 import { useShareDraft } from "./use-share-draft";
 
@@ -114,7 +116,8 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
   const getCurrentDraft = useCallback(
     (): ShareDraft => ({
       contributor: { name: readContributor(formRef.current).name, relationship: readContributor(formRef.current).relationship },
-      cards: cardsRef.current.filter((card) => card.open).map((card) => ({ approxDateText: card.approxDateText, place: card.place, note: card.note })),
+      // Typed words only: never media, a photo's GPS or its place labels (B6).
+      cards: toDraftCards(cardsRef.current),
     }),
     [],
   );
@@ -123,6 +126,8 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
   useEffect(() => {
     cardsRef.current = state.cards;
   }, [state.cards]);
+  // Place buttons from the photos' GPS (B6): read in this browser only to suggest, looked up through our server.
+  usePlaceSuggestions(state.cards, dispatch);
 
   /** Dispatch, then carry out the reducer's announcement and focus request and clear them (C46, C48). */
   function apply(action: CardsAction) {

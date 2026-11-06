@@ -22,8 +22,12 @@ const recordMediaMock = vi.fn(async (_arg: { mediaId: string }) => ({ status: "R
 vi.mock("@/features/memories/ingest-upload", () => ({ recordMedia: (arg: { mediaId: string }) => recordMediaMock(arg) }));
 const deriveMock = vi.fn(async (_arg: unknown) => ({ WEB_IMAGE: "derived", THUMBNAIL: "derived" }));
 vi.mock("@/features/memories/derive-media", () => ({ deriveMedia: (arg: unknown) => deriveMock(arg) }));
+const extractGpsMock = vi.fn(async (_arg: unknown) => "found");
+vi.mock("@/features/media/extract-photo-gps", () => ({ extractPhotoGps: (arg: unknown) => extractGpsMock(arg) }));
 const afterCalls: Array<() => Promise<void>> = [];
-vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (_name: string, cb: () => Promise<void>) => { afterCalls.push(cb); } }));
+/** The task name of each scheduled callback, index for index with afterCalls. */
+const afterNames: string[] = [];
+vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (name: string, cb: () => Promise<void>) => { afterNames.push(name); afterCalls.push(cb); } }));
 const identifyMock = vi.fn();
 const tagIdsMock = vi.fn();
 vi.mock("@/lib/sentry/user", () => ({ identifyContributor: (...a: unknown[]) => identifyMock(...a), tagIds: (...a: unknown[]) => tagIdsMock(...a) }));
@@ -59,7 +63,7 @@ function tokenRequest(ticketOverride?: Record<string, unknown>, pathname = claim
 
 beforeEach(() => {
   media = [{ id: "med_1", status: "PENDING", deletedAt: null, memory: { deletedAt: null } }];
-  events.length = 0; afterCalls.length = 0; recordMediaMock.mockClear(); deriveMock.mockClear();
+  events.length = 0; afterCalls.length = 0; afterNames.length = 0; recordMediaMock.mockClear(); deriveMock.mockClear(); extractGpsMock.mockClear();
   process.env.BLOB_READ_WRITE_TOKEN = RW_TOKEN;
   process.env.UPLOAD_TICKET_SECRET = "s".repeat(32);
   process.env.NEXT_PUBLIC_SITE_URL = "https://www.jowray.com";
@@ -134,6 +138,47 @@ describe("POST /api/upload (upload completed callback)", () => {
     await afterCalls[0]!();
     expect(recordMediaMock).toHaveBeenCalledWith({ mediaId: "med_1" });
     expect(deriveMock).toHaveBeenCalledWith({ mediaId: "med_1", deadlineMs: 15_000 });
+  });
+
+  /** A signed upload-completed callback for a blob of `contentType`. */
+  async function completed(contentType: string): Promise<void> {
+    const body = JSON.stringify({ type: "blob.upload-completed", payload: { blob: { url: "u", downloadUrl: "d", pathname: claims.pathname, contentType, contentDisposition: "inline" }, tokenPayload: JSON.stringify({ mediaId: "med_1" }) } });
+    const signature = createHmac("sha256", RW_TOKEN).update(body).digest("hex");
+    await POST(new NextRequest("http://localhost:3000/api/upload", { method: "POST", body, headers: { "content-type": "application/json", "x-vercel-signature": signature } }));
+  }
+
+  it("schedules the photo GPS step as its own after() task once the photo is recorded, never waited on ahead of the copies (final review, item 3)", async () => {
+    deriveMock.mockRejectedValueOnce(new Error("decoder crashed"));
+    await completed("image/jpeg");
+    expect(extractGpsMock).not.toHaveBeenCalled(); // nothing runs before the response
+    await afterCalls[0]!();
+    // The callback task records the file and makes the copies; it only schedules the GPS step.
+    expect(recordMediaMock).toHaveBeenCalledWith({ mediaId: "med_1" });
+    expect(deriveMock).toHaveBeenCalledTimes(1);
+    expect(extractGpsMock).not.toHaveBeenCalled();
+    expect(afterNames).toEqual(["upload.callback", "upload.callback.photo_gps"]);
+    const update = dbStub.webhookEvent.update.mock.calls.at(-1)?.[0] as unknown as { data: { processedAt?: Date; error?: string | null } };
+    expect(update.data.processedAt).toBeInstanceOf(Date);
+    // Its own task runs it, whatever the copies did.
+    await afterCalls[1]!();
+    expect(extractGpsMock).toHaveBeenCalledTimes(1);
+    expect(extractGpsMock).toHaveBeenCalledWith({ mediaId: "med_1" });
+  });
+
+  it.each(["audio/mp4", "video/mp4"])("schedules no photo GPS step for a blob of type %s (final review, item 4)", async (contentType) => {
+    await completed(contentType);
+    await afterCalls[0]!();
+    expect(afterNames).toEqual(["upload.callback"]);
+    expect(extractGpsMock).not.toHaveBeenCalled();
+    expect(deriveMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not schedule the photo GPS step while the photo is not recorded yet", async () => {
+    recordMediaMock.mockResolvedValueOnce({ status: "PENDING", mediaId: "med_1", memoryId: "mem_1" } as never);
+    await completed("image/jpeg");
+    await afterCalls[0]!();
+    expect(afterNames).toEqual(["upload.callback"]);
+    expect(extractGpsMock).not.toHaveBeenCalled();
   });
 
   it("keeps the event processed when the derived copies fail after a successful record", async () => {

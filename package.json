@@ -30,6 +30,7 @@
     "@sentry/nextjs": "^11.10.0",
     "@vercel/analytics": "^2.0.1",
     "@vercel/blob": "^2.8.2",
+    "exifreader": "4.54.0",
     "fix-webm-duration": "1.0.6",
     "heic-decode": "^2.1.0",
     "mcp-handler": "2.3.1",

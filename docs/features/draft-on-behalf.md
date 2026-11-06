@@ -73,7 +73,7 @@ The raw token lives only in the link; the row holds its hash, so the site cannot
 | `app/api/cron/reconcile-uploads/route.ts` | Step (e2) alerts shared drafts without the 30-minute wait |
 | **lib + scripts** | |
 | `lib/source-ref.ts`, `lib/validations/memory.ts` | `sourceRef` builders; draft schema and the source to prefix refine |
-| `lib/source-input.ts`, `app/api/mcp/route.ts`, `app/api/mcp/tools.ts` | The shared `sourceInput` derivation; the MCP connector's route and its eight tools (PR #60) |
+| `lib/source-input.ts`, `app/api/mcp/route.ts`, `app/api/mcp/tools.ts` | The shared `sourceInput` derivation; the MCP connector's route and its tools (eight from PR #60, plus `suggest_places`) |
 | `scripts/draft-memory.ts`, `docs/skills/jowray-draft-memory/SKILL.md` | The script and the skill |
 | **tests** | |
 | `__tests__/features/draft-memory.test.ts`, `__tests__/api/admin-memories.test.ts` | Draft, duplicate, P2002 race, budget, reissue, a rewrite's `before.note` and `originalNoteRecorded`; route codes and the echo |

@@ -1,0 +1,220 @@
+{
+  "note": "Final-code end-to-end before merge (PR #66 at ce32c7a), 2026-11-06. next dev -p 3107, PLACES_PROVIDER=stub, Neon branch gps-e2e-20261106 (endpoint ep-delicate-tooth-bbjln6ux) after prisma migrate deploy applied 20261106210000_photo_gps_claim_lease, throwaway MCP_API_SECRET in the dev process only. Generated files: b6-liberty-gps.jpg, b6-no-gps.jpg, b12pre-tone.wav (1 s 440 Hz, 8 kHz). Points at 2 dp. No secrets, no claim link.",
+  "share": {
+    "contributor": "Runtime check PR B final",
+    "files": [
+      "Photo · b6-liberty-gps.jpg",
+      "Photo · b6-no-gps.jpg",
+      "Voice recording · b12pre-tone.wav"
+    ],
+    "placeButtonBeforeSend": "Photo location found near 40.69, -74.04 (test)",
+    "result": "thank-you screen; receipt skipped (outbound off)"
+  },
+  "rowsAfterSend": [
+    {
+      "memoryId": "52796666-c149-400e-b0ab-df6c6fdd8c76",
+      "memoryStatus": "PENDING",
+      "memoryCoordinates": null,
+      "mediaId": "1d0f7d68-c60b-4030-b643-454312c7452e",
+      "status": "READY",
+      "mimeType": "image/jpeg",
+      "file": "b6-liberty-gps.jpg",
+      "gpsCheckedAt": "2026-11-07T02:14:12.288Z",
+      "gpsAttempts": 1,
+      "gpsClaimedAt": null,
+      "coordinates2dp": [
+        "40.69",
+        "-74.04"
+      ],
+      "updatedAt": "2026-11-07T02:14:12.751Z"
+    },
+    {
+      "memoryId": "52796666-c149-400e-b0ab-df6c6fdd8c76",
+      "memoryStatus": "PENDING",
+      "memoryCoordinates": null,
+      "mediaId": "532f0c5d-5d3d-46c2-99ed-b03b0133998d",
+      "status": "READY",
+      "mimeType": "image/jpeg",
+      "file": "b6-no-gps.jpg",
+      "gpsCheckedAt": "2026-11-07T02:14:13.048Z",
+      "gpsAttempts": 1,
+      "gpsClaimedAt": null,
+      "coordinates2dp": null,
+      "updatedAt": "2026-11-07T02:14:13.411Z"
+    },
+    {
+      "memoryId": "52796666-c149-400e-b0ab-df6c6fdd8c76",
+      "memoryStatus": "PENDING",
+      "memoryCoordinates": null,
+      "mediaId": "30827583-df23-42f0-8925-23bb63638f40",
+      "status": "READY",
+      "mimeType": "audio/wav",
+      "file": "b12pre-tone.wav",
+      "gpsCheckedAt": null,
+      "gpsAttempts": 0,
+      "gpsClaimedAt": null,
+      "coordinates2dp": null,
+      "updatedAt": "2026-11-07T02:14:13.721Z"
+    }
+  ],
+  "serverLog": {
+    "photoGpsLines": [
+      {
+        "mediaId": "1d0f7d68-c60b-4030-b643-454312c7452e",
+        "outcome": "found",
+        "attempt": 1
+      },
+      {
+        "mediaId": "532f0c5d-5d3d-46c2-99ed-b03b0133998d",
+        "outcome": "absent",
+        "attempt": 1
+      }
+    ],
+    "wavLines": [
+      "upload ticket issued",
+      "upload recorded"
+    ],
+    "wavPhotoGpsLines": 0,
+    "note": "The dev logger runs at debug (NODE_ENV=development; the log is pretty-printed by the same flag; LOG_LEVEL unset). Before item 4 every file got a finalize.photo_gps task and the step logged a debug \"photo GPS skipped\" (not_eligible) line for a non-image; here the WAV has none. Pino does not log after-task names; the photo_gps lines are the step that only finalize.photo_gps runs locally (Blob cannot call back to localhost).",
+    "coordinatesInLog": 0,
+    "requests": {
+      "GET /share": 2,
+      "POST /share": 8,
+      "POST /api/upload": 3,
+      "POST /api/places/suggest": 1,
+      "GET /api/cron/reconcile-uploads": 1,
+      "POST /api/mcp 200": 7,
+      "POST /api/mcp 401": 1
+    },
+    "errors": 0,
+    "warnings": [
+      "mcp API request refused (the deliberate wrong bearer)"
+    ]
+  },
+  "cron": {
+    "status": 200,
+    "data": {
+      "pendingRechecked": 0,
+      "orphansFailed": 0,
+      "checksumsComputed": 0,
+      "eventsReplayed": 0,
+      "emailsRetried": 0,
+      "confirmationsSent": 0,
+      "adminAlertsSent": 0,
+      "submissionReceiptsSent": 0,
+      "deletedBlobsRemoved": 0,
+      "lateSweeps": 0,
+      "derived": 0,
+      "gpsFound": 0,
+      "gpsAbsent": 0,
+      "gpsFailed": 0,
+      "gpsSkipped": 0,
+      "errors": 0
+    },
+    "rowsUnchangedByCron": true
+  },
+  "mcp": {
+    "initialize": {
+      "status": 200,
+      "serverInfo": {
+        "name": "jowray",
+        "version": "1"
+      },
+      "tools": {
+        "listChanged": false
+      }
+    },
+    "toolsList2025": {
+      "status": 200,
+      "count": 9,
+      "names": [
+        "draft_memory",
+        "get_memory",
+        "list_memories",
+        "reissue_claim_link",
+        "set_coordinates",
+        "set_deleted",
+        "set_status",
+        "suggest_places",
+        "update_memory"
+      ]
+    },
+    "toolsList2026": {
+      "status": 200,
+      "count": 9
+    },
+    "suggestPlacesAnnotations": {
+      "readOnlyHint": true,
+      "openWorldHint": true
+    },
+    "getMemory": {
+      "status": 200,
+      "isError": false,
+      "id": "52796666-c149-400e-b0ab-df6c6fdd8c76",
+      "memoryStatus": "PENDING",
+      "memoryCoordinates": null,
+      "media": [
+        {
+          "id": "1d0f7d68-c60b-4030-b643-454312c7452e",
+          "status": "READY",
+          "mimeType": "image/jpeg",
+          "file": "b6-liberty-gps.jpg",
+          "hasCoordinatesKey": true,
+          "coordinates": {
+            "latitude": "40.69",
+            "longitude": "-74.04"
+          }
+        },
+        {
+          "id": "532f0c5d-5d3d-46c2-99ed-b03b0133998d",
+          "status": "READY",
+          "mimeType": "image/jpeg",
+          "file": "b6-no-gps.jpg",
+          "hasCoordinatesKey": true,
+          "coordinates": null
+        },
+        {
+          "id": "30827583-df23-42f0-8925-23bb63638f40",
+          "status": "READY",
+          "mimeType": "audio/wav",
+          "file": "b12pre-tone.wav",
+          "hasCoordinatesKey": true,
+          "coordinates": null
+        }
+      ],
+      "textEqualsStructured": true
+    },
+    "suggestPlaces": {
+      "status": 200,
+      "isError": false,
+      "photos": [
+        {
+          "mediaId": "1d0f7d68-c60b-4030-b643-454312c7452e",
+          "file": "b6-liberty-gps.jpg",
+          "coordinates": {
+            "latitude": "40.69",
+            "longitude": "-74.04"
+          },
+          "labels": [
+            {
+              "text": "Photo location found near 40.69, -74.04 (test)",
+              "kind": "town"
+            }
+          ]
+        }
+      ],
+      "pending": [],
+      "attribution": "© OpenStreetMap contributors",
+      "textEqualsStructured": true
+    },
+    "suggestPlaces2026": {
+      "status": 200,
+      "photos": 1
+    },
+    "wrongBearer": {
+      "status": 401,
+      "wwwAuthenticate": null
+    },
+    "getMemoryDescriptionHasCameraSentence": true
+  }
+}

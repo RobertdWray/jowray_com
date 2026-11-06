@@ -8,14 +8,20 @@ import {
   initialCardsState,
   isEmpty,
   issuesFromSendFailure,
+  gpsReadsDue,
   labelFor,
+  lookupsDue,
   MAX_CARDS,
+  MAX_PLACE_SUGGESTIONS,
   type MemoryCard,
   NEEDS_CONTENT_HELPER,
   type CardMediaItem,
+  placeSuggestionsFor,
+  toDraftCards,
   validateContributor,
   validateForSend,
 } from "@/lib/memory-cards";
+import { serializeShareDraft } from "@/lib/share-draft";
 import { EMAIL_INVALID_MESSAGE, EMAIL_REQUIRED_MESSAGE, NAME_REQUIRED_MESSAGE, NEEDS_CONTENT_ITEMS } from "@/lib/validations/memory";
 
 const MB = 1024 * 1024;
@@ -219,5 +225,101 @@ describe("cardsReducer", () => {
     expect(state.notice).toBeNull();
     expect(state.focusId).toBeNull();
     expect(state.lastAddedId).toBeNull();
+  });
+});
+
+describe("photo place suggestions (plan 2026-11-06-photo-gps-places B6)", () => {
+  const LIBERTY = { latitude: 40.689247, longitude: -74.044502 };
+  const photo = (id: string, over: Partial<CardMediaItem> = {}) => item({ id, name: `${id}.jpg`, ...over });
+  const stateWith = (media: CardMediaItem[]) => ({ ...initialCardsState(), cards: [card({ media }), card({ id: "c2", open: false })] });
+
+  it("setMediaGps records the photo's point (found) or null (none or failed) on that item only", () => {
+    const state = stateWith([photo("m1"), photo("m2")]);
+    const found = cardsReducer(state, { type: "setMediaGps", id: "c1", mediaId: "m1", gps: LIBERTY });
+    expect(found.cards[0]!.media.map((m) => m.gps)).toEqual([LIBERTY, undefined]);
+    const none = cardsReducer(found, { type: "setMediaGps", id: "c1", mediaId: "m2", gps: null });
+    expect(none.cards[0]!.media.map((m) => m.gps)).toEqual([LIBERTY, null]);
+  });
+
+  it("setMediaPlaces records the labels, [] for looked up with nothing usable, or null for none or failed", () => {
+    let state = stateWith([photo("m1", { gps: LIBERTY }), photo("m2", { gps: LIBERTY }), photo("m3", { gps: LIBERTY })]);
+    state = cardsReducer(state, { type: "setMediaPlaces", id: "c1", mediaId: "m1", labels: ["New York, New York"] });
+    state = cardsReducer(state, { type: "setMediaPlaces", id: "c1", mediaId: "m2", labels: [] });
+    state = cardsReducer(state, { type: "setMediaPlaces", id: "c1", mediaId: "m3", labels: null });
+    expect(state.cards[0]!.media.map((m) => m.placeLabels)).toEqual([["New York, New York"], [], null]);
+  });
+
+  it("drops a result for a photo that was removed meanwhile, or a card that is gone: the state is returned unchanged", () => {
+    const state = stateWith([photo("m1")]);
+    expect(cardsReducer(state, { type: "setMediaGps", id: "c1", mediaId: "gone", gps: LIBERTY })).toBe(state);
+    expect(cardsReducer(state, { type: "setMediaPlaces", id: "c1", mediaId: "gone", labels: ["X"] })).toBe(state);
+    expect(cardsReducer(state, { type: "setMediaGps", id: "c9", mediaId: "m1", gps: LIBERTY })).toBe(state);
+    const removed = cardsReducer(state, { type: "removeMedia", id: "c1", mediaId: "m1" });
+    expect(cardsReducer(removed, { type: "setMediaPlaces", id: "c1", mediaId: "m1", labels: ["X"] })).toBe(removed);
+  });
+
+  it("gpsReadsDue: picked photos not read yet, on any card; never videos, voice notes or recordings, never twice", () => {
+    const state = {
+      ...initialCardsState(),
+      cards: [
+        card({ media: [photo("p1"), item({ id: "v1", kind: "VIDEO", mimeType: "video/mp4", name: "v.mp4" }), photo("p2", { gps: null }), photo("p3", { gps: LIBERTY })] }),
+        card({ id: "c2", media: [photo("p4"), item({ id: "a1", kind: "VOICE", mimeType: "audio/webm", source: "recording", name: "r.webm" })] }),
+      ],
+    };
+    expect(gpsReadsDue(state.cards).map((due) => [due.cardId, due.item.id])).toEqual([["c1", "p1"], ["c2", "p4"]]);
+  });
+
+  it("lookupsDue: photos with a point and no labels yet; never a photo without GPS or already looked up", () => {
+    const cards = [card({ media: [photo("p1", { gps: LIBERTY }), photo("p2", { gps: null }), photo("p3", { gps: LIBERTY, placeLabels: [] }), photo("p4"), photo("p5", { gps: LIBERTY, placeLabels: null })] })];
+    expect(lookupsDue(cards).map((due) => [due.cardId, due.item.id, due.point])).toEqual([["c1", "p1", LIBERTY]]);
+  });
+
+  it("placeSuggestionsFor: nothing without GPS (none found, or still being read)", () => {
+    expect(placeSuggestionsFor(card({ media: [] }))).toEqual({ hasGps: false, pending: false, labels: [] });
+    expect(placeSuggestionsFor(card({ media: [photo("p1"), photo("p2", { gps: null })] }))).toEqual({ hasGps: false, pending: false, labels: [] });
+  });
+
+  it("placeSuggestionsFor: pending while a photo with GPS waits for its labels; settled with none usable", () => {
+    expect(placeSuggestionsFor(card({ media: [photo("p1", { gps: LIBERTY })] }))).toEqual({ hasGps: true, pending: true, labels: [] });
+    expect(placeSuggestionsFor(card({ media: [photo("p1", { gps: LIBERTY, placeLabels: [] })] }))).toEqual({ hasGps: true, pending: false, labels: [] });
+    expect(placeSuggestionsFor(card({ media: [photo("p1", { gps: LIBERTY, placeLabels: null })] }))).toEqual({ hasGps: true, pending: false, labels: [] });
+  });
+
+  it("placeSuggestionsFor: unique labels card-wide, in photo order, at most six", () => {
+    const media = [
+      photo("p1", { gps: LIBERTY, placeLabels: ["Statue of Liberty, New York, New York", "New York, New York"] }),
+      item({ id: "v1", kind: "VIDEO", mimeType: "video/mp4", name: "v.mp4", placeLabels: ["Not A Photo"] }),
+      photo("p2", { gps: LIBERTY, placeLabels: ["New York, New York", "Ellis Island, Jersey City, New Jersey"] }),
+      photo("p3", { gps: LIBERTY, placeLabels: ["A, B", "C, D"] }),
+      photo("p4", { gps: LIBERTY, placeLabels: ["E, F", "G, H"] }),
+      photo("p5", { gps: LIBERTY }),
+    ];
+    const suggestions = placeSuggestionsFor(card({ media }));
+    expect(MAX_PLACE_SUGGESTIONS).toBe(6);
+    expect(suggestions).toEqual({
+      hasGps: true,
+      pending: true,
+      labels: ["Statue of Liberty, New York, New York", "New York, New York", "Ellis Island, Jersey City, New Jersey", "A, B", "C, D", "E, F"],
+    });
+  });
+
+  it("never reaches the saved draft: toDraftCards keeps the three typed fields of open cards, and the stored draft has no GPS or labels", () => {
+    const cards = [
+      card({ place: "Liberty Island", note: "We took the ferry.", media: [photo("p1", { gps: LIBERTY, placeLabels: ["Statue of Liberty, New York, New York"] })] }),
+      card({ id: "c2", open: false, media: [photo("p2", { gps: LIBERTY })] }),
+    ];
+    const draftCards = toDraftCards(cards);
+    expect(draftCards).toEqual([{ approxDateText: "", place: "Liberty Island", note: "We took the ferry." }]);
+    const stored = serializeShareDraft({ contributor: { name: "A", relationship: "" }, cards: draftCards }, 0);
+    expect(stored).not.toMatch(/gps|placeLabels|latitude|longitude|40\.68|74\.04|Statue of Liberty/);
+    // Even a card object passed straight to the serializer loses everything but its three fields.
+    const leaky = serializeShareDraft({ contributor: { name: "A", relationship: "" }, cards: cards as unknown as typeof draftCards }, 0);
+    expect(leaky).not.toMatch(/gps|placeLabels|latitude|40\.68|media/);
+  });
+
+  it("a restored draft holds no files, so no GPS read or lookup is due", () => {
+    const restored = cardsReducer(initialCardsState(), { type: "restore", cards: [{ approxDateText: "1985", place: "Lake George", note: "words" }] });
+    expect(gpsReadsDue(restored.cards)).toEqual([]);
+    expect(lookupsDue(restored.cards)).toEqual([]);
   });
 });

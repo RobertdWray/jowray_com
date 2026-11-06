@@ -7,7 +7,7 @@ const SECRET = "c".repeat(40);
 const HOUR = 60 * 60 * 1000;
 
 interface DerivedRow { kind: string; status: string; error: string | null; attempts: number; claimedAt: Date | null; storageKey: string }
-interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; purgedAt?: Date | null; reservedUntil?: Date | null; mimeType?: string; derivatives?: DerivedRow[]; memory: { deletedAt: Date | null } }
+interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; purgedAt?: Date | null; reservedUntil?: Date | null; mimeType?: string; derivatives?: DerivedRow[]; gpsCheckedAt?: Date | null; gpsAttempts?: number; gpsClaimedAt?: Date | null; latitude?: number | null; longitude?: number | null; memory: { deletedAt: Date | null } }
 interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
 type EmailType = "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY" | "SUBMISSION_CONFIRMATION";
 interface EmailRow { id: string; memoryId: string; emailType: EmailType; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null; uploadLeaseUntil?: Date | null } }
@@ -45,8 +45,18 @@ function matches(row: Record<string, unknown>, where: Record<string, unknown>): 
     return actual === v;
   });
 }
+/** Prisma's `orderBy` for one column (Dates or strings), stable for ties like the database's index order is for these fixtures. */
+function ordered<T extends Record<string, unknown>>(rows: T[], orderBy?: Record<string, "asc" | "desc">): T[] {
+  const [column, direction] = Object.entries(orderBy ?? {})[0] ?? [];
+  if (column === undefined) {
+    return rows;
+  }
+  const key = (row: T) => { const v = row[column]; return v instanceof Date ? v.getTime() : String(v); };
+  const sign = direction === "desc" ? -1 : 1;
+  return [...rows].sort((a, b) => (key(a) < key(b) ? -sign : key(a) > key(b) ? sign : 0));
+}
 function finder<T extends Record<string, unknown>>(rows: () => T[]) {
-  return vi.fn(async ({ where, take }: { where: Record<string, unknown>; take?: number }) => rows().filter((r) => matches(r, where)).slice(0, take ?? 1000));
+  return vi.fn(async ({ where, orderBy, take }: { where: Record<string, unknown>; orderBy?: Record<string, "asc" | "desc">; take?: number }) => ordered(rows().filter((r) => matches(r, where)), orderBy).slice(0, take ?? 1000));
 }
 const derivedDeletes: Array<Record<string, unknown>> = [];
 /** Fixture rows are /share memories unless a row says otherwise (the real columns are NOT NULL). */
@@ -60,14 +70,14 @@ let onLock: ((memoryId: string) => void) | null = null;
 const lockCalls: string[] = [];
 const dbStub = {
   // Prisma always returns `derivatives` as an array when it is included, and every scalar; fixtures may omit `derivatives` and `purgedAt`.
-  media: { updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Partial<MediaRow> }) => { const rows = media.filter((m) => matches({ purgedAt: null, reservedUntil: null, ...m } as unknown as Record<string, unknown>, where)); for (const r of rows) { Object.assign(r, data); } return { count: rows.length }; }), findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => (await finder(() => media.map((m) => ({ purgedAt: null, reservedUntil: null, ...m })) as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }), findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { const m = media.find((x) => x.id === where.id); if (!m) { throw new Error("not found"); } return { purgedAt: null, reservedUntil: null, ...m }; }) },
+  media: { updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Partial<MediaRow> }) => { const rows = media.filter((m) => matches({ purgedAt: null, reservedUntil: null, ...m } as unknown as Record<string, unknown>, where)); for (const r of rows) { Object.assign(r, data); } return { count: rows.length }; }), findMany: vi.fn(async (args: { where: Record<string, unknown>; orderBy?: Record<string, "asc" | "desc">; take?: number }) => (await finder(() => media.map((m) => ({ purgedAt: null, reservedUntil: null, gpsCheckedAt: null, gpsAttempts: 0, gpsClaimedAt: null, ...m })) as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }), findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { const m = media.find((x) => x.id === where.id); if (!m) { throw new Error("not found"); } return { purgedAt: null, reservedUntil: null, latitude: null, longitude: null, gpsClaimedAt: null, ...m }; }) },
   $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(String(values[0])); onLock?.(String(values[0])); return [{ id: values[0] }]; }),
   $transaction: vi.fn(async (fn: (t: typeof dbStub) => Promise<unknown>) => { inTransaction = true; try { return await fn(dbStub); } finally { inTransaction = false; } }),
   derivedMedia: { deleteMany: vi.fn(async ({ where }: { where: { mediaId: string; storageKey?: { in: string[] } } }) => { derivedDeletes.push(where); const m = media.find((x) => x.id === where.mediaId); if (m?.derivatives) { m.derivatives = m.derivatives.filter((d) => where.storageKey ? !where.storageKey.in.includes(d.storageKey) : false); } return { count: 1 }; }) },
   webhookEvent: { findMany: finder(() => events as unknown as Record<string, unknown>[]), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<EventRow> }) => { Object.assign(events.find((e) => e.id === where.id)!, data); }) },
   // Prisma returns every scalar; fixtures may omit the submission columns and the lease (null = legacy row / no open submission)
   // and status/source (a /share memory unless the row says otherwise).
-  emailLog: { findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => finder(() => emails.map((e) => ({ ...e, memory: e.memory ? { uploadLeaseUntil: null, ...e.memory } : e.memory })) as unknown as Record<string, unknown>[])(args)) },
+  emailLog: { findMany: vi.fn(async (args: { where: Record<string, unknown>; orderBy?: Record<string, "asc" | "desc">; take?: number }) => finder(() => emails.map((e) => ({ ...e, memory: e.memory ? { uploadLeaseUntil: null, ...e.memory } : e.memory })) as unknown as Record<string, unknown>[])(args)) },
   memory: { findMany: finder(() => memories.map((m) => shareMemory({ submissionId: null, submissionIndex: null, uploadLeaseUntil: null, ...m })) as unknown as Record<string, unknown>[]) },
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
@@ -105,6 +115,14 @@ const confirmSubmissionMock = vi.fn(async ({ anchorId }: { anchorId: string }) =
 vi.mock("@/features/memories/complete-submission", () => ({ confirmSubmission: (a: { anchorId: string }) => confirmSubmissionMock(a) }));
 const deriveMediaMock = vi.fn(async ({ mediaId }: { mediaId: string; deadlineMs: number }) => { const m = media.find((x) => x.id === mediaId)!; m.derivatives = [{ kind: "WEB_IMAGE", status: "READY", error: null, attempts: 1, claimedAt: new Date(), storageKey: "dev/derived/x/a.jpg" }, { kind: "THUMBNAIL", status: "READY", error: null, attempts: 1, claimedAt: new Date(), storageKey: "dev/derived/x/b.jpg" }]; return { WEB_IMAGE: "derived", THUMBNAIL: "derived" }; });
 vi.mock("@/features/memories/derive-media", async (importOriginal) => { const actual = await importOriginal<Record<string, unknown>>(); return { ...actual, deriveMedia: (a: { mediaId: string; deadlineMs: number }) => deriveMediaMock(a) }; });
+type GpsOutcome = "found" | "absent" | "failed" | "skipped";
+/** Like the real step: a decided outcome stamps the row (so the next run leaves it alone); failed/skipped leave it undecided. */
+function decideGps(mediaId: string, outcome: GpsOutcome): GpsOutcome {
+  if (outcome === "found" || outcome === "absent") { media.find((m) => m.id === mediaId)!.gpsCheckedAt = new Date(); }
+  return outcome;
+}
+const extractGpsMock = vi.fn(async ({ mediaId }: { mediaId: string; deadlineMs?: number }): Promise<GpsOutcome> => decideGps(mediaId, "absent"));
+vi.mock("@/features/media/extract-photo-gps", async (importOriginal) => { const actual = await importOriginal<Record<string, unknown>>(); return { ...actual, extractPhotoGps: (a: { mediaId: string; deadlineMs?: number }) => extractGpsMock(a) }; });
 // The activation cutoff is a day in the past here so the fixtures (created 2 h ago) fall after it; the real constant is the merge day.
 const ADMIN_ALERT_SINCE = vi.hoisted(() => new Date(Date.now() - 24 * 60 * 60 * 1000));
 const notifyMock = vi.fn(async ({ memoryId }: { memoryId: string }) => recordSent(memoryId, "ADMIN_NEW_MEMORY"));
@@ -228,7 +246,9 @@ beforeEach(() => {
   ];
   emails.push({ id: "log_leased", memoryId: "mem_leased_retry", emailType: "MEMORY_CONFIRMATION", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: null, uploadLeaseUntil: new Date(Date.now() + 30 * 60 * 1000) } });
   inTransaction = false; onLock = null; lockCalls.length = 0; delMock.mockReset(); delMock.mockImplementation(async () => { if (inTransaction) { throw new Error("storage.del inside the purge transaction"); } });
-    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); confirmSubmissionMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
+    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); confirmSubmissionMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); derivedDeletes.length = 0;
+  // Reset, not clear: a test that swaps in its own implementation (the step (g) budget test advances the clock) must not leak it into the next test.
+  deriveMediaMock.mockReset(); extractGpsMock.mockReset();
   recordMediaMock.mockImplementation(async ({ mediaId }) => {
     if (mediaId === "med_orphan_finalized") {
       // head() saw nothing; a finalize from the browser lands the moment after and records the file.
@@ -355,8 +375,11 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(deriveMediaMock.mock.calls[0]![0].deadlineMs).toBeGreaterThan(25_000);
     // the staging pathname is only ever deleted for videos
     expect(delMock.mock.calls.map((c) => c[0] as string).filter((k) => k.endsWith(".upload.jpg"))).toEqual([]);
+    // (h) photo GPS: every live READY photo of this environment whose GPS is undecided, whatever state its copies are in
+    // (the done and the terminal ones included); not the deleted memories' photos, removed files, videos or production copies
+    expect(extractGpsMock.mock.calls.map((c) => c[0].mediaId).sort()).toEqual(["med_photo_done", "med_photo_new", "med_photo_nullclaim", "med_photo_stale", "med_photo_terminal"]);
     // checksumsComputed 2: med_nohash, plus the file finalized during (a), which (b) hashes in the same run.
-    expect(body.data).toMatchObject({ pendingRechecked: 7, orphansFailed: 2, checksumsComputed: 2, eventsReplayed: 1, emailsRetried: 3, confirmationsSent: 2, adminAlertsSent: 8, submissionReceiptsSent: 1, deletedBlobsRemoved: 4, derived: 3 });
+    expect(body.data).toMatchObject({ pendingRechecked: 7, orphansFailed: 2, checksumsComputed: 2, eventsReplayed: 1, emailsRetried: 3, confirmationsSent: 2, adminAlertsSent: 8, submissionReceiptsSent: 1, deletedBlobsRemoved: 4, derived: 3, gpsFound: 0, gpsAbsent: 5, gpsFailed: 0, gpsSkipped: 0, errors: 0 });
   });
 
   it("(e2) waits for a send's lease before alerting any of its memories, and (e3) emails the anchor once the lease is gone", async () => {
@@ -421,7 +444,7 @@ describe("GET /api/cron/reconcile-uploads", () => {
   it("is a no-op on a second run", async () => {
     await run(`Bearer ${SECRET}`);
   inTransaction = false; onLock = null; lockCalls.length = 0; delMock.mockReset(); delMock.mockImplementation(async () => { if (inTransaction) { throw new Error("storage.del inside the purge transaction"); } });
-    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); confirmSubmissionMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
+    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); confirmSubmissionMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0; extractGpsMock.mockClear();
     const res = await run(`Bearer ${SECRET}`);
     const body = (await res.json()) as { data: Record<string, number> };
     expect(checksumMock).not.toHaveBeenCalled();
@@ -434,6 +457,7 @@ describe("GET /api/cron/reconcile-uploads", () => {
       expect(media.find((m) => m.storageKey === key)).toMatchObject({ status: "FAILED", purgedAt: expect.any(Date) });
     }
     expect(deriveMediaMock).not.toHaveBeenCalled();
+    expect(extractGpsMock).not.toHaveBeenCalled();
     // Only the still-leased receipt row is retried again (and answers `leased` again).
     expect(confirmSubmissionMock.mock.calls.map((c) => c[0].anchorId)).toEqual(["mem_live0"]);
     expect(body.data.checksumsComputed).toBe(0);
@@ -481,6 +505,102 @@ describe("step (g) budget", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("step (h): photo GPS (B3)", () => {
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000);
+  const copies = (): DerivedRow[] => [
+    { kind: "WEB_IMAGE", status: "READY", error: null, attempts: 1, claimedAt: minutesAgo(120), storageKey: "dev/derived/mem_1/w.jpg" },
+    { kind: "THUMBNAIL", status: "READY", error: null, attempts: 1, claimedAt: minutesAgo(120), storageKey: "dev/derived/mem_1/t.jpg" },
+  ];
+  /** A live READY photo of this environment with its copies made, GPS undecided: (g) has nothing to do for it, (h) does. */
+  function photo(id: string, createdAt: Date, over: Partial<MediaRow> = {}): MediaRow {
+    return { id, memoryId: "mem_1", status: "READY", checksumSha256: "d".repeat(64), createdAt, storageKey: `dev/originals/mem_1/${id}.jpg`, blobUrl: "u", deletedAt: null, mimeType: "image/jpeg", derivatives: copies(), gpsCheckedAt: null, gpsAttempts: 0, memory: { deletedAt: null }, ...over };
+  }
+  beforeEach(() => {
+    events = []; emails = []; memories = [];
+    // Twelve eligible photos, oldest first (one a HEIC, one at two attempts), and every kind of row step (h) must leave alone.
+    media = [
+      ...Array.from({ length: 12 }, (_, i) => photo(`med_gps_${String(i).padStart(2, "0")}`, minutesAgo(200 - i), i === 3 ? { mimeType: "image/heic", storageKey: "dev/originals/mem_1/h.heic" } : i === 5 ? { gpsAttempts: 2 } : {})),
+      photo("med_decided", minutesAgo(500), { gpsCheckedAt: minutesAgo(400) }),
+      photo("med_capped", minutesAgo(500), { gpsAttempts: 3 }),
+      photo("med_video", minutesAgo(500), { mimeType: "video/mp4", storageKey: "dev/originals/mem_1/v.mp4" }),
+      photo("med_pending", minutesAgo(500), { status: "PENDING", derivatives: [] }),
+      photo("med_removed_gps", minutesAgo(500), { deletedAt: minutesAgo(30), reservedUntil: new Date(Date.now() + HOUR) }),
+      photo("med_memory_deleted", minutesAgo(500), { memory: { deletedAt: minutesAgo(30) } }),
+      photo("med_prod_gps", minutesAgo(500), { storageKey: "originals/mem_9/p.jpg" }),
+      // GPS decided, copies missing: step (g)'s work only. The two steps never look at each other's state.
+      photo("med_copies_only", minutesAgo(500), { gpsCheckedAt: minutesAgo(400), derivatives: [] }),
+    ];
+  });
+
+  it("takes at most 10 eligible photos per run, oldest first, counts each outcome, and the next run takes the rest", async () => {
+    const outcomes: Record<string, GpsOutcome> = { med_gps_00: "found", med_gps_01: "failed", med_gps_02: "skipped" };
+    extractGpsMock.mockImplementation(async ({ mediaId }) => decideGps(mediaId, outcomes[mediaId] ?? "absent"));
+    const first = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
+    expect(extractGpsMock.mock.calls.map((c) => c[0].mediaId)).toEqual(Array.from({ length: 10 }, (_, i) => `med_gps_${String(i).padStart(2, "0")}`));
+    expect(first.data).toMatchObject({ gpsFound: 1, gpsAbsent: 7, gpsFailed: 1, gpsSkipped: 1, errors: 0 });
+    // (g) is unchanged by GPS state: it makes the copies of the photo that lacks them, and only that one.
+    expect(deriveMediaMock.mock.calls.map((c) => c[0].mediaId)).toEqual(["med_copies_only"]);
+
+    extractGpsMock.mockClear();
+    const second = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
+    // The failed and skipped photos are still undecided (their attempts are the feature's business), then the two left over.
+    expect(extractGpsMock.mock.calls.map((c) => c[0].mediaId)).toEqual(["med_gps_01", "med_gps_02", "med_gps_10", "med_gps_11"]);
+    expect(second.data).toMatchObject({ gpsAbsent: 2, gpsFailed: 1, gpsSkipped: 1 });
+  });
+
+  // B3 fix round 1: a photo starts only with the full read deadline (15 s) left, so a run running out of time never
+  // costs a photo one of its three attempts. Team Code Review #7: plus a 5 s margin for the row read, the claim and the
+  // decision write around the read, which the read's own deadline does not cover. The two steps put the second start
+  // exactly on the 20 s floor and just under it.
+  it("the floor is the 15 s read deadline plus the 5 s database margin", async () => {
+    const { GPS_DB_MARGIN_MS, GPS_READ_DEADLINE_MS } = await import("@/features/media/extract-photo-gps");
+    expect({ GPS_READ_DEADLINE_MS, GPS_DB_MARGIN_MS }).toEqual({ GPS_READ_DEADLINE_MS: 15_000, GPS_DB_MARGIN_MS: 5_000 });
+  });
+
+  it.each([
+    { stepMs: 30_000, starts: 2, why: "the second start has exactly 20 s left: it runs" },
+    { stepMs: 30_001, starts: 1, why: "the second start would have 19.999 s left: it waits for the next run" },
+  ])("starts a photo only with the full 15 s read deadline and the 5 s database margin left ($why)", async ({ stepMs, starts }) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      extractGpsMock.mockImplementation(async ({ mediaId }) => { vi.setSystemTime(Date.now() + stepMs); return decideGps(mediaId, "absent"); });
+      const res = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
+      expect(extractGpsMock).toHaveBeenCalledTimes(starts);
+      // Every photo that starts gets the whole read deadline, never a remainder.
+      expect(extractGpsMock.mock.calls.map((c) => c[0].deadlineMs)).toEqual(Array.from({ length: starts }, () => 15_000));
+      expect(res.data).toMatchObject({ gpsAbsent: starts, errors: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("takes the oldest first: it asks for createdAt ascending, and the store's order decides, whatever order the rows were written in", async () => {
+    const shuffled = [photo("med_mid", minutesAgo(100)), photo("med_newest", minutesAgo(10)), photo("med_oldest", minutesAgo(1_000)), photo("med_old", minutesAgo(500))];
+    media = shuffled;
+    await run(`Bearer ${SECRET}`);
+    expect(extractGpsMock.mock.calls.map((c) => c[0].mediaId)).toEqual(["med_oldest", "med_old", "med_mid", "med_newest"]);
+    const gpsQuery = dbStub.media.findMany.mock.calls.map((c) => c[0] as { where: Record<string, unknown>; orderBy?: unknown; take?: number }).find((args) => "gpsCheckedAt" in args.where);
+    expect(gpsQuery).toMatchObject({ orderBy: { createdAt: "asc" }, take: 10 });
+  });
+
+  it("leaves a photo under a live GPS claim alone and takes one whose claim is stale (final review, item 2)", async () => {
+    media = [
+      photo("med_claim_live", minutesAgo(300), { gpsAttempts: 1, gpsClaimedAt: new Date(Date.now() - 5_000) }),
+      photo("med_claim_stale", minutesAgo(200), { gpsAttempts: 1, gpsClaimedAt: minutesAgo(30) }),
+      photo("med_unclaimed", minutesAgo(100)),
+    ];
+    await run(`Bearer ${SECRET}`);
+    expect(extractGpsMock.mock.calls.map((c) => c[0].mediaId)).toEqual(["med_claim_stale", "med_unclaimed"]);
+  });
+
+  it("counts a throw (which the step should never do) as a run error and moves on to the next photo", async () => {
+    extractGpsMock.mockImplementationOnce(async () => { throw new Error("unexpected"); });
+    const res = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
+    expect(extractGpsMock).toHaveBeenCalledTimes(10);
+    expect(res.data).toMatchObject({ errors: 1, gpsAbsent: 9 });
   });
 });
 
@@ -562,7 +682,7 @@ describe("purge (f): durable intent under the memory lock (C1, C3, C5, C5b, C5c)
   it("C1: claims under lockMemory (purgedAt set, READY → FAILED, no storage call inside the transaction), then deletes the original, the copies and the poster key, drops the derived rows and nulls blobUrl", async () => {
     const res = await run(`Bearer ${SECRET}`);
     expect(lockCalls).toEqual(["mem_x"]);
-    expect(dbStub.media.update.mock.calls[0]![0]).toEqual({ where: { id: "med_x" }, data: { purgedAt: expect.any(Date), status: "FAILED" } });
+    expect(dbStub.media.update.mock.calls[0]![0]).toEqual({ where: { id: "med_x" }, data: { purgedAt: expect.any(Date), status: "FAILED", latitude: null, longitude: null, gpsClaimedAt: null } });
     expect(delMock.mock.calls.map((c) => c[0])).toEqual(["dev/originals/mem_x/o.jpg", "dev/derived/mem_x/w.jpg", "dev/derived/mem_x/o.upload.jpg"]);
     expect(derivedDeletes).toEqual([{ mediaId: "med_x", storageKey: { in: ["dev/derived/mem_x/w.jpg"] } }]);
     expect(media[0]).toMatchObject({ status: "FAILED", purgedAt: expect.any(Date), blobUrl: null, derivatives: [] });
@@ -598,6 +718,19 @@ describe("purge (f): durable intent under the memory lock (C1, C3, C5, C5b, C5c)
     expect(media[0]).toMatchObject({ blobUrl: null, derivatives: [] });
     const third = await run(`Bearer ${SECRET}`);
     expect(((await third.json()) as { data: Record<string, number> }).data).toMatchObject({ deletedBlobsRemoved: 0 });
+  });
+
+  it("a purged photo keeps no point: the claim phase clears latitude, longitude and the GPS claim with the mark (final review, item 5)", async () => {
+    Object.assign(media[0]!, { mimeType: "image/jpeg", latitude: 40.689247, longitude: -74.044502, gpsCheckedAt: old, gpsClaimedAt: null });
+    await run(`Bearer ${SECRET}`);
+    expect(media[0]).toMatchObject({ status: "FAILED", purgedAt: expect.any(Date), latitude: null, longitude: null, gpsClaimedAt: null });
+  });
+
+  it("a row marked purged earlier that still holds a point (or a GPS claim) loses it on the next pass, with no other change (final review, item 5)", async () => {
+    Object.assign(media[0]!, { status: "FAILED", purgedAt: new Date(Date.now() - HOUR), mimeType: "image/jpeg", latitude: 40.689247, longitude: -74.044502, gpsCheckedAt: old, gpsClaimedAt: old });
+    await run(`Bearer ${SECRET}`);
+    expect(dbStub.media.update.mock.calls[0]![0]).toEqual({ where: { id: "med_x" }, data: { latitude: null, longitude: null, gpsClaimedAt: null } });
+    expect(media[0]).toMatchObject({ status: "FAILED", latitude: null, longitude: null, gpsClaimedAt: null });
   });
 
   it("C7: a row already marked purgedAt but still READY is flipped to FAILED by the claim phase, whoever left it that way", async () => {

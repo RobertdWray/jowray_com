@@ -1,0 +1,195 @@
+{
+  "note": "B9 local end-to-end, 2026-11-06. next dev -p 3107, PLACES_PROVIDER=stub, Neon branch gps-e2e-20261106 (br-winter-lab-bbd4405m, endpoint ep-delicate-tooth-bbjln6ux), throwaway MCP_API_SECRET in the dev process only. Generated fixtures (b6-liberty-gps.jpg at the Statue of Liberty, b6-no-gps.jpg without EXIF). Points at 2 dp. No secrets, no claim link.",
+  "share": {
+    "noGpsPhoto": {
+      "placeSuggestRequests": 0,
+      "placeButtons": 0,
+      "liveRegionText": "",
+      "liveRegionHeightPx": 0
+    },
+    "libertyPhoto": {
+      "placeSuggestRequests": [
+        200
+      ],
+      "button": {
+        "text": "Photo location found near 40.69, -74.04 (test)",
+        "type": "button",
+        "ariaPressedBefore": "false",
+        "ariaPressedAfterTap": "true"
+      },
+      "credit": {
+        "text": "Place names © OpenStreetMap contributors",
+        "href": "https://www.openstreetmap.org/copyright"
+      },
+      "whereAfterTap": "Photo location found near 40.69, -74.04 (test)"
+    },
+    "duringSend": [
+      {
+        "why": "before send",
+        "placeButtonDisabled": false,
+        "send": {
+          "text": "Send this to Jo's family",
+          "disabled": false
+        }
+      },
+      {
+        "why": "first mutation after the click (27 ms)",
+        "placeButtonDisabled": true,
+        "send": {
+          "text": "Sending…",
+          "disabled": true
+        }
+      }
+    ],
+    "result": "thank-you screen (Jo would have loved this.); receipt skipped: outbound_disabled"
+  },
+  "rowsAfterSend": [
+    {
+      "memoryId": "5bc10319-57fa-479a-81ba-719beee88669",
+      "memoryStatus": "PENDING",
+      "memoryCoordinates": null,
+      "mediaId": "cb822ddd-6ac2-4b27-a029-7aeaf229fb21",
+      "status": "READY",
+      "mimeType": "image/jpeg",
+      "file": "b6-no-gps.jpg",
+      "gpsCheckedAt": "2026-11-07T01:00:39.877Z",
+      "gpsAttempts": 1,
+      "coordinates2dp": null,
+      "updatedAt": "2026-11-07T01:00:40.343Z"
+    },
+    {
+      "memoryId": "5bc10319-57fa-479a-81ba-719beee88669",
+      "memoryStatus": "PENDING",
+      "memoryCoordinates": null,
+      "mediaId": "270e4e5f-57ab-4162-abb2-ac59871383a0",
+      "status": "READY",
+      "mimeType": "image/jpeg",
+      "file": "b6-liberty-gps.jpg",
+      "gpsCheckedAt": "2026-11-07T01:00:40.662Z",
+      "gpsAttempts": 1,
+      "coordinates2dp": [
+        "40.69",
+        "-74.04"
+      ],
+      "updatedAt": "2026-11-07T01:00:41.087Z"
+    }
+  ],
+  "cron": {
+    "request": "GET /api/cron/reconcile-uploads with Authorization: Bearer $CRON_SECRET",
+    "status": 200,
+    "data": {
+      "pendingRechecked": 0,
+      "orphansFailed": 0,
+      "checksumsComputed": 0,
+      "eventsReplayed": 0,
+      "emailsRetried": 0,
+      "confirmationsSent": 0,
+      "adminAlertsSent": 0,
+      "submissionReceiptsSent": 0,
+      "deletedBlobsRemoved": 0,
+      "lateSweeps": 0,
+      "derived": 0,
+      "gpsFound": 0,
+      "gpsAbsent": 0,
+      "gpsFailed": 0,
+      "gpsSkipped": 0,
+      "errors": 0
+    },
+    "rowsUnchangedByCron": true
+  },
+  "mcp": {
+    "initialize": {
+      "status": 200,
+      "serverInfo": {
+        "name": "jowray",
+        "version": "1"
+      },
+      "tools": {
+        "listChanged": false
+      }
+    },
+    "toolsList2025": {
+      "status": 200,
+      "count": 9,
+      "names": [
+        "draft_memory",
+        "get_memory",
+        "list_memories",
+        "reissue_claim_link",
+        "set_coordinates",
+        "set_deleted",
+        "set_status",
+        "suggest_places",
+        "update_memory"
+      ]
+    },
+    "toolsList2026": {
+      "status": 200,
+      "count": 9
+    },
+    "suggestPlacesAnnotations": {
+      "readOnlyHint": true,
+      "openWorldHint": true
+    },
+    "getMemory": {
+      "status": 200,
+      "isError": false,
+      "id": "5bc10319-57fa-479a-81ba-719beee88669",
+      "memoryStatus": "PENDING",
+      "memoryCoordinates": null,
+      "media": [
+        {
+          "id": "cb822ddd-6ac2-4b27-a029-7aeaf229fb21",
+          "status": "READY",
+          "mimeType": "image/jpeg",
+          "file": "b6-no-gps.jpg",
+          "hasCoordinatesKey": true,
+          "coordinates": null
+        },
+        {
+          "id": "270e4e5f-57ab-4162-abb2-ac59871383a0",
+          "status": "READY",
+          "mimeType": "image/jpeg",
+          "file": "b6-liberty-gps.jpg",
+          "hasCoordinatesKey": true,
+          "coordinates": {
+            "latitude": "40.69",
+            "longitude": "-74.04"
+          }
+        }
+      ],
+      "textEqualsStructured": true
+    },
+    "suggestPlaces": {
+      "status": 200,
+      "isError": false,
+      "photos": [
+        {
+          "mediaId": "270e4e5f-57ab-4162-abb2-ac59871383a0",
+          "file": "b6-liberty-gps.jpg",
+          "coordinates": {
+            "latitude": "40.69",
+            "longitude": "-74.04"
+          },
+          "labels": [
+            {
+              "text": "Photo location found near 40.69, -74.04 (test)",
+              "kind": "town"
+            }
+          ]
+        }
+      ],
+      "pending": [],
+      "attribution": "© OpenStreetMap contributors",
+      "textEqualsStructured": true
+    },
+    "suggestPlaces2026": {
+      "status": 200,
+      "photos": 1
+    },
+    "wrongBearer": {
+      "status": 401,
+      "wwwAuthenticate": null
+    }
+  }
+}

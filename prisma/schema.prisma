@@ -175,6 +175,11 @@ model Media {
   caption          String?                  // per-file words from the contributor (max 2000); the memory's contributorNote stays the shared story
   approxDateText   String?                  // per-file "roughly when" (max 120), independent of the memory's
   place            String?                  // per-file "where" (max 200), independent of the memory's
+  latitude         Float?                   // WGS 84 from the original's EXIF; never shown on the site; read through /api/mcp (CHECKs Media_coordinates_pair, Media_latitude_range)
+  longitude        Float?                   // WGS 84 from the original's EXIF; never shown on the site; read through /api/mcp (CHECKs Media_coordinates_pair, Media_longitude_range)
+  gpsCheckedAt     DateTime?                // found or absent decided; null = not yet (CHECK Media_coordinates_checked: coordinates only with this stamp)
+  gpsAttempts      Int         @default(0)  // GPS reads claimed; extraction stops after 3 while gpsCheckedAt is still null
+  gpsClaimedAt     DateTime?                // the GPS read's lease: set with each claimed attempt, cleared by the decision (and by purge); older than GPS_STALE_CLAIM_MS = abandoned
   deletedAt        DateTime?                // soft delete: removed file, cancelled reservation or cancelled replacement; blobs purged by cron step (f)
   purgedAt         DateTime?                // set by cron step (f) before any byte is deleted; once set the removal completes even if the memory is restored; READY rows flip to FAILED at the same time
   replacesMediaId  String?                  // set on a PENDING replacement; the target is retired when this row reaches READY (one-to-many so a FAILED attempt can be retried)
@@ -229,6 +234,31 @@ model EgressCounter {
   updatedAt DateTime @default(now())
   @@id([scope, day])
   @@index([day])
+}
+
+/// Reverse-geocode cache: one row per provider and point, keyed in degrees × 1e6
+/// (rounded). `result` is the trimmed response only (name, category, type,
+/// addresstype, the matched place's own lat/lon, and address city, town,
+/// village, hamlet, county, state, country, country_code); never house_number,
+/// road or postcode. SQL NULL (`Prisma.DbNull`) means the provider had no
+/// result; no row means not looked up yet.
+model PlaceLookup {
+  provider  String
+  latE6     Int
+  lonE6     Int
+  result    Json?
+  fetchedAt DateTime @default(now())
+  @@id([provider, latE6, lonE6])
+}
+
+/// Site-wide lease and fence per provider: a caller claims the lease, sends at
+/// once, then fences `nextAllowedAt` = DB now() + 1.1 s and clears the lease. A
+/// lease left by a dead holder expires at `leaseUntil` (claim + 10 s).
+model PlaceLookupThrottle {
+  provider      String    @id
+  nextAllowedAt DateTime  @db.Timestamptz(3) // compared with the database's now() by the claim and fence SQL, so time-zone aware
+  leaseToken    String?
+  leaseUntil    DateTime? @db.Timestamptz(3)
 }
 
 model Person {

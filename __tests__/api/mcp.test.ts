@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetEnvCache } from "@/server/config/env";
 
 /**
- * /api/mcp (plan 2026-11-06 §4.5, §4.6): the bearer gate, the eight tools as
+ * /api/mcp (plan 2026-11-06 §4.5, §4.6): the bearer gate, the nine tools as
  * thin adapters over the admin features, and the single error boundary. The
  * features are mocked; the route, `_auth.ts`, the env accessor, mcp-handler
  * and the MCP SDK are real.
@@ -28,6 +28,7 @@ const features = vi.hoisted(() => ({
   setMemoryDeletedAsAdmin: vi.fn(),
   draftMemory: vi.fn(),
   reissueDraftClaimLink: vi.fn(),
+  suggestPlacesForMemory: vi.fn(),
 }));
 vi.mock("@/features/admin/list-memories", () => ({ listMemoriesForAdmin: features.listMemoriesForAdmin, adminStatusCounts: features.adminStatusCounts }));
 vi.mock("@/features/admin/get-memory", () => ({ getMemoryForAdmin: features.getMemoryForAdmin }));
@@ -36,6 +37,7 @@ vi.mock("@/features/admin/update-memory", () => ({ updateMemoryAsAdmin: features
 vi.mock("@/features/admin/set-status", () => ({ setMemoryStatusAsAdmin: features.setMemoryStatusAsAdmin }));
 vi.mock("@/features/admin/set-deleted", () => ({ setMemoryDeletedAsAdmin: features.setMemoryDeletedAsAdmin }));
 vi.mock("@/features/memories/draft-memory", () => ({ draftMemory: features.draftMemory, reissueDraftClaimLink: features.reissueDraftClaimLink }));
+vi.mock("@/features/places/suggest-for-memory", () => ({ suggestPlacesForMemory: features.suggestPlacesForMemory }));
 
 import { GET, POST } from "@/app/api/mcp/route";
 
@@ -121,12 +123,12 @@ describe("the bearer gate", () => {
 });
 
 describe("tools/list", () => {
-  it("lists the eight tools", async () => {
+  it("lists the nine tools", async () => {
     const response = await authed({ jsonrpc: "2.0", id: 1, method: "tools/list" });
     expect(response.status).toBe(200);
     const body = await rpcBody(response);
     const tools = (body.result?.tools ?? []) as Array<{ name: string }>;
-    expect(tools.map((t) => t.name).sort()).toEqual(["draft_memory", "get_memory", "list_memories", "reissue_claim_link", "set_coordinates", "set_deleted", "set_status", "update_memory"]);
+    expect(tools.map((t) => t.name).sort()).toEqual(["draft_memory", "get_memory", "list_memories", "reissue_claim_link", "set_coordinates", "set_deleted", "set_status", "suggest_places", "update_memory"]);
   });
 });
 
@@ -195,7 +197,7 @@ describe("tools/list contract (case 2)", () => {
           "annotations": {
             "readOnlyHint": true,
           },
-          "description": "One memory with its contributor, files, coordinates, revision history and emails. \`memoryVersion\` and \`contributor.contributorVersion\` are what update_memory and set_coordinates need.",
+          "description": "One memory with its contributor, files, coordinates, revision history and emails. \`memoryVersion\` and \`contributor.contributorVersion\` are what update_memory and set_coordinates need. Each file's \`coordinates\` is where the camera was (often a home); never propose it for set_coordinates.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
@@ -685,6 +687,30 @@ describe("tools/list contract (case 2)", () => {
           "name": "reissue_claim_link",
           "title": "Reissue a draft's claim link",
         },
+        {
+          "annotations": {
+            "openWorldHint": true,
+            "readOnlyHint": true,
+          },
+          "description": "Place names near where each photo was taken, from the GPS saved with the photo (OpenStreetMap). Read-only. Landmark labels carry the place's own point; the photo's point (each photo's \`coordinates\`) is where the camera was. If \`pending\` is non-empty, call again at most twice (results are cached), then tell Rob which photos are still pending. \`coordinates\` are WGS 84 decimal degrees for the named place (a town, a facility or community campus such as Broadmead, a church, a park, a lake), never a residence or a unit inside a place. Ask Rob before saving them.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "memoryId": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+            },
+            "required": [
+              "memoryId",
+            ],
+            "type": "object",
+          },
+          "name": "suggest_places",
+          "title": "Suggest places from photos",
+        },
       ]
     `);
   });
@@ -712,6 +738,24 @@ const draftArgs = {
   sourceInput: { kind: "gmail", messageId: "1a1a2317fba34eec" },
 };
 const editable = { name: "Joyce", relationship: "friend", approxDateText: null, place: "Broadmead", note: "words", visibility: "FAMILY", memoryVersion: VERSION, contributorVersion: VERSION };
+/** suggest_places (plan 2026-11-06-photo-gps-places B7): a photo's point, its labels (a landmark carries the place's own point), the pending ids and the credit. */
+const PHOTO_ID = "00000000-0000-4000-8000-0000000000a1";
+const OSM = "© OpenStreetMap contributors";
+const suggestion = {
+  photos: [
+    {
+      mediaId: PHOTO_ID,
+      originalFilename: "IMG_1.jpg",
+      coordinates: { latitude: 40.689247, longitude: -74.044502 },
+      labels: [
+        { text: "Statue of Liberty, New York, New York", kind: "landmark", point: { latitude: 40.6892532, longitude: -74.0445482 } },
+        { text: "New York, New York", kind: "town" },
+      ],
+    },
+  ],
+  pending: [],
+  attribution: OSM,
+};
 
 const CONTRACT: ContractRow[] = [
   { tool: "list_memories", args: {}, feature: "listMemoriesForAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
@@ -749,6 +793,12 @@ const CONTRACT: ContractRow[] = [
   { tool: "reissue_claim_link", args: memoryArgs, feature: "reissueDraftClaimLink", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
   { tool: "reissue_claim_link", args: memoryArgs, feature: "reissueDraftClaimLink", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
   { tool: "reissue_claim_link", args: memoryArgs, feature: "reissueDraftClaimLink", answer: { ok: false, code: "not_draft" }, expected: { code: "not_draft" }, isError: true },
+  { tool: "suggest_places", args: memoryArgs, feature: "suggestPlacesForMemory", answer: { ok: true, ...suggestion }, expected: suggestion },
+  { tool: "suggest_places", args: memoryArgs, feature: "suggestPlacesForMemory", answer: { ok: true, photos: [], pending: [PHOTO_ID], attribution: OSM }, expected: { photos: [], pending: [PHOTO_ID], attribution: OSM } },
+  { tool: "suggest_places", args: memoryArgs, feature: "suggestPlacesForMemory", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
+  { tool: "suggest_places", args: memoryArgs, feature: "suggestPlacesForMemory", answer: { ok: false, code: "disabled" }, expected: { code: "disabled" }, isError: true },
+  { tool: "suggest_places", args: memoryArgs, feature: "suggestPlacesForMemory", answer: { ok: false, code: "daily_limit" }, expected: { code: "daily_limit" }, isError: true },
+  { tool: "suggest_places", args: memoryArgs, feature: "suggestPlacesForMemory", answer: { ok: false, code: "provider_refused" }, expected: { code: "provider_refused" }, isError: true },
 ];
 
 describe("the result contract (case 3: every row of plan §4.5)", () => {
@@ -803,6 +853,9 @@ describe("the result contract (case 3: every row of plan §4.5)", () => {
     features.reissueDraftClaimLink.mockResolvedValueOnce({ ok: true, memoryId: ID, claimLink: CLAIM_LINK });
     await callTool("reissue_claim_link", memoryArgs);
     expect(features.reissueDraftClaimLink).toHaveBeenCalledWith(memoryArgs);
+    features.suggestPlacesForMemory.mockResolvedValueOnce({ ok: true, ...suggestion });
+    await callTool("suggest_places", memoryArgs);
+    expect(features.suggestPlacesForMemory).toHaveBeenCalledWith(ID);
   });
 });
 
@@ -816,6 +869,7 @@ describe("the error boundary on every tool (case 4)", () => {
     ["set_status", { memoryId: ID, status: "PENDING" }, "setMemoryStatusAsAdmin"],
     ["set_deleted", { memoryId: ID, deleted: true }, "setMemoryDeletedAsAdmin"],
     ["reissue_claim_link", memoryArgs, "reissueDraftClaimLink"],
+    ["suggest_places", memoryArgs, "suggestPlacesForMemory"],
   ];
 
   it.each(VALID_ARGS)("%s answers internal with an event id when its feature throws", async (tool, args, feature) => {
@@ -860,6 +914,7 @@ describe("schema refusals and prepareInput refusals (case 5)", () => {
       ["set_coordinates", { ...coordinateArgs, coordinates: { latitude: 91, longitude: 0 } }],
       ["get_memory", { memoryId: "mem_1" }],
       ["set_status", { memoryId: ID, status: "DRAFT" }],
+      ["suggest_places", { memoryId: "mem_1" }],
     ] as const) {
       const { status, result } = await callTool(tool, args);
       expect(status, tool).toBe(200);
@@ -881,6 +936,7 @@ describe("schema refusals and prepareInput refusals (case 5)", () => {
       ["set_status", { memoryId: ID, status: "APPROVED", reason: "family asked" }, "reason"],
       ["set_deleted", { memoryId: ID, deleted: true, purge: true }, "purge"],
       ["reissue_claim_link", { ...memoryArgs, confirmed: true }, "confirmed"],
+      ["suggest_places", { ...memoryArgs, coordinates: { latitude: 40.689247, longitude: -74.044502 } }, "coordinates"],
     ] as const) {
       const { status, result } = await callTool(tool, args);
       expect(status, tool).toBe(200);
@@ -935,11 +991,11 @@ describe("the modern protocol era (case 7)", () => {
     return authed({ jsonrpc: "2.0", id: 7, method, params: { ...params, _meta: envelope } }, { "mcp-protocol-version": MODERN, "mcp-method": method, ...extraHeaders });
   }
 
-  it("lists the eight tools", async () => {
+  it("lists the nine tools", async () => {
     const response = await modern("tools/list", {});
     expect(response.status).toBe(200);
     const tools = ((await rpcBody(response)).result?.tools ?? []) as Array<{ name: string }>;
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(9);
   });
 
   it("calls a tool with the Mcp-Name header", async () => {

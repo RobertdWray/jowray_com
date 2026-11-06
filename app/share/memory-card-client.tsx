@@ -7,6 +7,7 @@ import { type CardIssue, hasContent, type CardTextField, type MemoryCard, NEEDS_
 import { SecondaryButton, TertiaryButton } from "../_components/buttons";
 import { errorClass, helperClass, inputClass, labelClass, textareaClass } from "../_components/field-classes";
 import { CardMedia, type CardMediaRecording } from "./card-media-client";
+import { PlaceSuggestions } from "./place-suggestions-client";
 
 /** Ids a card's parts share: derived from the card's deterministic id, so server and client agree (C5, C56). */
 export function cardIds(cardId: string) {
@@ -109,18 +110,23 @@ export function MemoryCardSection({
                 disabled={disabled}
               />
             </label>
-            <label htmlFor={ids.place} className={`${labelClass} flex-[1_1_220px] roomy:flex-none`}>
-              <span>Where? <span className={helperClass}>(optional)</span></span>
-              <input
-                id={ids.place}
-                value={card.place}
-                onChange={(e) => onField("place", e.target.value)}
-                maxLength={200}
-                className={inputClass}
-                placeholder="her classroom"
-                disabled={disabled}
-              />
-            </label>
+            {/* The Where field and the place buttons from the card's photos travel together (B6): the wrapper carries
+                the sizing the label had, so the row lays out as before. A tap fills the field; it stays editable. */}
+            <div className="flex min-w-0 flex-[1_1_220px] flex-col roomy:flex-none">
+              <label htmlFor={ids.place} className={labelClass}>
+                <span>Where? <span className={helperClass}>(optional)</span></span>
+                <input
+                  id={ids.place}
+                  value={card.place}
+                  onChange={(e) => onField("place", e.target.value)}
+                  maxLength={200}
+                  className={inputClass}
+                  placeholder="her classroom"
+                  disabled={disabled}
+                />
+              </label>
+              <PlaceSuggestions card={card} value={card.place} onPick={(label) => onField("place", label)} disabled={disabled} />
+            </div>
           </div>
 
           <CardMedia
