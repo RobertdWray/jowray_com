@@ -19,7 +19,7 @@ const T1 = new Date("2026-11-04T11:00:00.000Z");
 
 type ContributorRow = { id: string; name: string | null; email: string | null; relationship: string | null; phone: string | null; contactOptIn: boolean; mailingListOptIn: boolean; updatedAt: Date }
 type MemoryRow = { id: string; memorialId: string; contributorId: string | null; type: string; source: string; sourceRef: string | null; visibility: string; approxDateText: string | null; place: string | null; contributorNote: string | null; notifyWhenPosted: boolean; consentVersion: string; consentedAt: Date | null; status: string; claimTokenHash: string; submissionId: string | null; submissionIndex: number | null; createdAt: Date; updatedAt: Date; deletedAt: Date | null; latitude: number | null; longitude: number | null }
-type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; durationSeconds: number | null; width: number | null; height: number | null; caption: string | null; approxDateText: string | null; place: string | null; sortOrder: number; deletedAt: Date | null; purgedAt: Date | null; createdAt: Date; blobUrl: string | null; storageKey: string; exif: unknown; replacesMediaId: string | null; derivatives: Array<{ kind: string; status: string }> }
+type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; durationSeconds: number | null; width: number | null; height: number | null; caption: string | null; approxDateText: string | null; place: string | null; sortOrder: number; deletedAt: Date | null; purgedAt: Date | null; createdAt: Date; blobUrl: string | null; storageKey: string; exif: unknown; replacesMediaId: string | null; derivatives: Array<{ kind: string; status: string }>; latitude: number | null; longitude: number | null }
 interface Rev { memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown>; createdAt?: Date; id?: string }
 interface EmailRow { memoryId: string; emailType: string; status: string; sentAt: Date | null; attempts: number; createdAt: Date; recipientEmail: string }
 
@@ -117,7 +117,7 @@ function memoryRow(over: Partial<MemoryRow>): MemoryRow {
   return { id: MEM, memorialId: "memorial_1", contributorId: CON, type: "PHOTO", source: "WEB_UPLOAD", sourceRef: null, visibility: "FAMILY", approxDateText: "Summer 1998", place: null, contributorNote: "old note", notifyWhenPosted: true, consentVersion: "2026-11-v2", consentedAt: T0, status: "PENDING", claimTokenHash: "h".repeat(64), submissionId: null, submissionIndex: null, createdAt: T0, updatedAt: T0, deletedAt: null, latitude: null, longitude: null, ...over };
 }
 function mediaRow(over: Partial<MediaRow>): MediaRow {
-  return { id: "med_1", memoryId: MEM, status: "READY", mimeType: "image/jpeg", originalFilename: "a.jpg", durationSeconds: null, width: 10, height: 10, caption: null, approxDateText: null, place: null, sortOrder: 0, deletedAt: null, purgedAt: null, createdAt: T0, blobUrl: "https://blob/x", storageKey: "originals/x/a.jpg", exif: { gps: 1 }, replacesMediaId: null, derivatives: [{ kind: "WEB_IMAGE", status: "READY" }, { kind: "THUMBNAIL", status: "READY" }], ...over };
+  return { id: "med_1", memoryId: MEM, status: "READY", mimeType: "image/jpeg", originalFilename: "a.jpg", durationSeconds: null, width: 10, height: 10, caption: null, approxDateText: null, place: null, sortOrder: 0, deletedAt: null, purgedAt: null, createdAt: T0, blobUrl: "https://blob/x", storageKey: "originals/x/a.jpg", exif: { gps: 1 }, replacesMediaId: null, derivatives: [{ kind: "WEB_IMAGE", status: "READY" }, { kind: "THUMBNAIL", status: "READY" }], latitude: null, longitude: null, ...over };
 }
 const versions = () => ({ memoryVersion: memories.find((m) => m.id === MEM)!.updatedAt.toISOString(), contributorVersion: contributors[0]!.updatedAt.toISOString() });
 
@@ -258,6 +258,27 @@ describe("getMemoryForAdmin", () => {
     it("the opt-in view says coordinates: null for a memory without them", async () => {
       memories[0] = memoryRow({});
       expect((await getMemoryForAdmin(MEM, { includeCoordinates: true }))!.coordinates).toBeNull();
+    });
+
+    describe("per-photo coordinates (plan 2026-11-06-photo-gps-places B7, C39)", () => {
+      const LIBERTY = { latitude: 40.689247, longitude: -74.044502 };
+      beforeEach(() => {
+        media = [mediaRow({ latitude: LIBERTY.latitude, longitude: LIBERTY.longitude }), mediaRow({ id: "med_2", originalFilename: "b.jpg", sortOrder: 1 })];
+      });
+
+      it("the admin page's view: no photo carries coordinates, and the photo's point appears nowhere in it", async () => {
+        const view = await getMemoryForAdmin(MEM);
+        expect(view!.media).toHaveLength(2);
+        for (const item of view!.media) {
+          expect(item).not.toHaveProperty("coordinates");
+        }
+        expect(JSON.stringify(view)).not.toMatch(/40\.68|74\.04|latitude|longitude/);
+      });
+
+      it("the opt-in view (the MCP tools): each photo carries its pair, or null without GPS", async () => {
+        const view = await getMemoryForAdmin(MEM, { includeCoordinates: true });
+        expect(view!.media.map((item) => [item.id, item.coordinates])).toEqual([["med_1", LIBERTY], ["med_2", null]]);
+      });
     });
 
     it("does not change the revisions it was given (stripping works on copies)", async () => {

@@ -24,6 +24,11 @@ export interface AdminMediaView {
   thumbReady: boolean;
   /** `purgedAt` is set: the bytes are gone or being removed (cron step (f)); the row never serves again. */
   purged: boolean;
+  /**
+   * The photo's GPS from its original (plan 2026-11-06-photo-gps-places B7), present only when asked for
+   * (`includeCoordinates`, the MCP tools); the admin page never sees it. null: none saved (yet).
+   */
+  coordinates?: Coordinates | null;
 }
 
 export interface AdminContributorView {
@@ -123,7 +128,7 @@ function revisionsWithoutCoordinates(revisions: AdminRevisionView[]): AdminRevis
  * to offer). Never includes `claimTokenHash`, `blobUrl`, `storageKey` or `exif`
  * (plan §4.1): the view is serialised to the browser. The MCP `get_memory` tool
  * passes `includeCoordinates`; without it the view carries no coordinates at
- * all, not even inside revisions.
+ * all: not the memory's, not a photo's, not inside revisions.
  */
 export async function getMemoryForAdmin(id: string, options: AdminViewOptions = {}): Promise<AdminMemoryView | null> {
   const memory = await getDb().memory.findUnique({
@@ -145,6 +150,8 @@ export async function getMemoryForAdmin(id: string, options: AdminViewOptions = 
           place: true,
           sortOrder: true,
           purgedAt: true,
+          latitude: true,
+          longitude: true,
           derivatives: { where: { status: "READY" }, select: { kind: true } },
         },
         orderBy: [...LIVE_MEDIA_ORDER],
@@ -203,6 +210,7 @@ export async function getMemoryForAdmin(id: string, options: AdminViewOptions = 
       webReady: m.derivatives.some((d) => d.kind === "WEB_IMAGE"),
       thumbReady: m.derivatives.some((d) => d.kind === "THUMBNAIL"),
       purged: m.purgedAt !== null,
+      ...(options.includeCoordinates && { coordinates: coordinatesOf(m) }),
     })),
     revisions: options.includeCoordinates ? revisions : revisionsWithoutCoordinates(revisions),
     emails: memory.emails.map((e) => ({ emailType: e.emailType, status: e.status, sentAt: e.sentAt, attempts: e.attempts, createdAt: e.createdAt })),
