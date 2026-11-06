@@ -133,3 +133,10 @@
   --font-family: var(--font-body);
   --font-size: 16px;
 }
+
+/* While a modal <dialog> is open (the footer's Privacy note, the full-screen diagram view), the page behind it
+   stays put. :modal matches only a dialog opened with showModal() (MDN :modal). Sentry's feedback form lives in a
+   shadow root, so this selector never sees it. Plan: docs/plans/2026-11-06-privacy-note-and-diagram-viewer.md [C12]. */
+html:has(dialog:modal) {
+  overflow: hidden;
+}

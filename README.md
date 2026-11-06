@@ -25,7 +25,7 @@ Velma Josephine "Jo" Wray, née Hart: in the home page's own words, "teacher, qu
 
 So Phase 1 of this site does one thing well: **it collects.** A visitor opens the share page, types or records a memory, adds photos or a video, and presses Send. They get a private link to come back and edit. The family gets an email. Nothing is shown publicly yet; showing the memories back as a gallery, timeline and tag cloud is [Phase 2](#-roadmap).
 
-The design brief is one line: *"A celebration of Jo, not a memorial of her."* Warm, bright, handmade, a little cheeky. Jo's maiden name was Hart, so **the heart is the mark**, always red and always hand-stitched. Body text is Atkinson Hyperlegible with a 17 px floor, touch targets are 56 px or larger, there are no modals and nothing hides behind hover. See [`design/DESIGN.md`](design/DESIGN.md).
+The design brief is one line: *"A celebration of Jo, not a memorial of her."* Warm, bright, handmade, a little cheeky. Jo's maiden name was Hart, so **the heart is the mark**, always red and always hand-stitched. Body text is Atkinson Hyperlegible with a 17 px floor, touch targets are 56 px or larger, there are no modals (except the footer's Privacy note and the full-screen diagram view) and nothing hides behind hover. See [`design/DESIGN.md`](design/DESIGN.md).
 
 The repository is also a record of **how it was built**: in three days, by Rob and a team of AI agents (mostly Claude), through 37 merged pull requests, each with a written plan, a premortem, a ledger of decisions and a review. See [How this was built](#-how-this-was-built).
 

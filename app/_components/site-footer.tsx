@@ -5,6 +5,7 @@ import { FAMILY_CONTACT_EMAIL } from "@/lib/contact";
 import { ROB_URL, TRACY_URL } from "./external-links";
 import { linkClass, quietLinkClass } from "./field-classes";
 import { StitchedHeart } from "./hearts";
+import { PrivacyNote } from "./privacy-note-client";
 
 export function SiteFooter() {
   return (
@@ -28,7 +29,9 @@ export function SiteFooter() {
         </a>
         .
       </p>
-      <p className="text-[18px] text-walnut-soft">
+      {/* A <div>, not a <p>: the Privacy note's <dialog> and its headings and paragraphs are flow content, which a
+          <p> cannot contain (React reports that nesting as a hydration error). */}
+      <div className="text-[18px] text-walnut-soft">
         <Link href="/obituary" className={linkClass}>
           Jo&apos;s obituary
         </Link>
@@ -36,7 +39,9 @@ export function SiteFooter() {
         <Link href="/how-it-was-built" className={linkClass}>
           How this site was built
         </Link>
-      </p>
+        <span aria-hidden="true"> · </span>
+        <PrivacyNote />
+      </div>
     </footer>
   );
 }

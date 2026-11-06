@@ -240,7 +240,9 @@ export default function HowItWasBuiltPage() {
             {/* Goes stale when the Phase 2 gallery ships (issue #37): reword it in that PR (plan §12 F4). */}
             <li>Nothing you share is public yet. The family reads every memory first.</li>
             {/* Alpha telemetry (AGENTS.md § Sentry). When the alpha settings end, UPDATE this line in the same
-                commit; do not delete it: replays continue at 10% after the alpha (telemetry plan §13, plan §12 F3). */}
+                commit; do not delete it: replays continue at 10% after the alpha (telemetry plan §13, plan §12 F3).
+                The footer's Privacy note (app/_components/privacy-note-client.tsx) says the same thing in Rob's
+                words: update both together. */}
             <li>
               One honest note: during this early version, Rob uses detailed error reports and recordings of
               visits, including what people type and the photos on screen, to find and fix problems. Reports can

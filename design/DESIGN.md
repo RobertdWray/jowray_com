@@ -306,6 +306,8 @@ below), and a closing primary "Leave a memory of Jo".
 - Every section is a wrapping flex row or a flex column; no fixed heights.
 - Touch targets ≥44px, inputs and buttons 56–64px.
 - No sticky header, no modals, no autoplay audio, no hover-only interactions.
+  Two modals are allowed, both at Rob's request (2026-11-06): the footer's
+  Privacy note and the full-screen view of a diagram on /how-it-was-built.
 - The page must look finished at 390px wide — most visitors arrive from a
   text-message link. `reference/home.html` at 390px is the phone comp.
 
