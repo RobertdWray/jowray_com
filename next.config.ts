@@ -48,6 +48,20 @@ const nextConfig: NextConfig = {
           { key: "X-Robots-Tag", value: "noindex, nofollow" },
         ],
       },
+      {
+        // The README diagrams on /how-it-was-built (public/diagrams/*.svg, made by scripts/make-readme-diagrams.ts).
+        // "Open … full size" opens one as a same-origin document, so lock it down even though every file passes
+        // findUnsafeSvg: no script, no fetches; only its own <style> and the fonts and images it carries as data:
+        // URLs. Rules add up, so the Document-Policy above still applies here.
+        source: "/diagrams/:path*",
+        headers: [
+          {
+            key: "Content-Security-Policy",
+            value: "default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:",
+          },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+        ],
+      },
     ];
   },
 };
