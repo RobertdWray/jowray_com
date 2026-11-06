@@ -1,6 +1,6 @@
 # Evidence: what a memory needs, date and words labelled optional (2026-11-06)
 
-Plan: [issue #58](https://github.com/RobertdWray/jowray_com/issues/58) and § 6 / § 9.A of `docs/plans/2026-11-06-photo-gps-places.md` (lands with the photo GPS PR). Rob's ruling R1: "we need at least on item to complete a memory. It could be a photo, audio, video, text."
+Plan: [issue #58](https://github.com/RobertdWray/jowray_com/issues/58) and § 6 / § 9.A of `docs/plans/2026-11-06-photo-gps-places.md` (lands with the photo GPS PR, [#66](https://github.com/RobertdWray/jowray_com/pull/66)). Rob's ruling R1: "we need at least on item to complete a memory. It could be a photo, audio, video, text."
 
 Runtime: `next dev -p 3108` from the worktree `jowray_wt_share_optional` (branch `fix/share-optional-labels`, base `982a141`), with `.env` and the `.env.local` Neon `dev`-branch override (host `ep-solitary-tree`) copied in for the run and deleted afterwards. `OUTBOUND_ENABLED=false`, so nothing was mailed. Chrome via the chrome-devtools MCP in an isolated context; 390×844 is device emulation (DPR 3, mobile, touch), 1280×800 is DPR 1. Values are never written here. The claim link of the test memory is not recorded; it was blanked in the DOM before the thank-you screenshot was taken. The test row is the PENDING PHOTO memory from contributor "Runtime check PR A" (`runtime-check-pr-a@example.com`), with one READY `image/jpeg` of 2068 bytes. It is safe to delete.
 

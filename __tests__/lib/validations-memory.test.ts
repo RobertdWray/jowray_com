@@ -87,7 +87,7 @@ describe("memory file validation", () => {
     expect(refused.error?.issues[0]?.message).toBe(`Add at least one: ${NEEDS_CONTENT_ITEMS}`);
   });
 
-  it("a card takes up to the per-memory cap of files and needs a file or a few words", () => {
+  it("a card takes up to the per-memory cap of files and needs at least one file (photo, video or voice recording) or a few words", () => {
     const files = Array.from({ length: MAX_FILES_PER_MEMORY }, (_, i) => ({ ...file, name: `f${i}.webm` }));
     expect(submissionMemorySchema.parse({ files }).files).toHaveLength(MAX_FILES_PER_MEMORY);
     expect(submissionMemorySchema.safeParse({ files: [...files, file] }).success).toBe(false);
