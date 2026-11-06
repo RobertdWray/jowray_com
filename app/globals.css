@@ -108,7 +108,7 @@
   textarea::placeholder {
     color: var(--color-wood);
   }
-  /* [tabindex="0"]: keyboard-focusable regions, such as the sideways-scrolling diagrams on /how-it-was-built. */
+  /* [tabindex="0"]: keyboard-focusable regions, such as the full-screen diagram view on /how-it-was-built. */
   :is(input, textarea, select, button, a, [tabindex="0"]):focus-visible {
     outline: 3px solid var(--color-walnut);
     outline-offset: 2px;
@@ -132,4 +132,15 @@
   --accent-foreground: #ffffff;
   --font-family: var(--font-body);
   --font-size: 16px;
+}
+
+/* While a modal <dialog> is open (the footer's Privacy note, the full-screen diagram view), the page behind it
+   stays put. :modal matches only a dialog opened with showModal() (MDN :modal). Sentry's feedback form lives in a
+   shadow root, so this selector never sees it. Plan: docs/plans/2026-11-06-privacy-note-and-diagram-viewer.md [C12]. */
+html:has(dialog:modal) {
+  overflow: hidden;
+  /* Where scrollbars take space (Windows, "always show scrollbars"), Chromium and Firefox keep the gap so the page
+     behind does not shift. WebKit ignores scrollbar-gutter, so Safari with always-visible scrollbars still shifts by
+     the scrollbar width while a dialog is open (PR #61 follow-up; overlay scrollbars on macOS and iOS are unaffected). */
+  scrollbar-gutter: stable;
 }

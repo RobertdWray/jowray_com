@@ -44,6 +44,7 @@ Still forbidden everywhere (§3 ruling 2): claim tokens in any form (`/m/<token>
 | Agent rulings Rob accepted: `normalizeDepth: 6` (R4), identity set in `confirmSubmission` (R6), `key` as an exact-match secret for `enterAdmin` (R8), no render tests for the browser init (R9) | [plan §16](../plans/2026-11-04-sentry-full-telemetry.md), [PR #33](https://github.com/RobertdWray/jowray_com/pull/33) |
 | Rob, 2026-11-05: sampling and Session Replay stay at 100 % "so I can check this alpha code"; existing keys are kept, no rotation or re-scoping | [phase1-ledger decisions](../plans/phase1-ledger.md), [PR #47](https://github.com/RobertdWray/jowray_com/pull/47) |
 | Issue #43 §7.1 defaults, taken in PR #47: bound input inside `scrubText` so every caller is covered; 256 KiB cap; marker `[Filtered: oversized]`; `serverActions.bodySizeLimit` left at 1 MB; no app-side ceiling on the tunnel | [PR #47](https://github.com/RobertdWray/jowray_com/pull/47) decisions table |
+| Rob, 2026-11-06: visitors are told in his words. A small "Privacy" button in the footer of every page opens a note: the site records the screen, the logs and what people click and type, and it is family-only, so there is no legal click-through. When the alpha settings end, update `app/_components/privacy-note-client.tsx` together with the "One honest note" bullet on `/how-it-was-built` | [plan](../plans/2026-11-06-privacy-note-and-diagram-viewer.md) |
 
 ## How it works
 
