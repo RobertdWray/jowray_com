@@ -222,7 +222,7 @@ The main checkout is behind `origin/main` and shared with other sessions. Never 
 | B7 | MCP: media coordinates, `suggest_places`, skill | `mcp.test.ts` updated in all three spots; tool tests GREEN | reviewed | `e6cd48c`, `8b2c9be`, `0b2ec46` | 9 tools both eras | B8 |
 | B8 | Logger keys, docs, layout sync | grep checks in §B8 | reviewed | `dd2aa6d`, `41a8598`, `d61e0d9` | both greps hit; AGENTS.md block identical | B9 |
 | B9 | Full checks plus local e2e (§9.B) | all bullets pass; Neon branch id recorded | reviewed | `ccae5ef` | Neon `gps-e2e-20261106` = `br-winter-lab-bbd4405m`; `b9-*` evidence | B10 |
-| B10 | PR B opened (base = #60 branch), `ci` green, review sorted | PR URL; review verdict | todo | | | B11 |
+| B10 | PR B opened (base `main`; #60 merged first), `ci` green, review sorted | PR URL; review verdict | reviewed | `1e4d0c8`, fix wave `cbb50b2`…`6c5e996` | [#66](https://github.com/RobertdWray/jowray_com/pull/66) (draft); per-step reviews closed; final whole-branch review + `/code-review high`: ready with fixes → one fix wave | Rob's final review process, then merge |
 | B11 | After #60 (and A) merge: transition per §10 | `git diff origin/main...HEAD --stat` lists only B files; `ci` green | implemented (early) | `7c110d2`, `b43d1db` | #60 merged 2026-11-06 18:56 UTC as merge commit `d583308`; merged `origin/main` before B6 and again after #61; only B files in the diff | after A merges: merge again |
 | B12 | Rob: Vercel env, merge, deploy, smoke, device checks (§9.C, §9.D) | deployed SHA recorded; smoke passes | todo | | | done |
 
@@ -246,6 +246,8 @@ The main checkout is behind `origin/main` and shared with other sessions. Never 
 - Ruling: B11's merge of `origin/main` ran before B6 (and again after #61) — #60 merged as a merge commit and its later commits touched files B7/B8 edit — cost if wrong: none.
 - Ruling: `suggest_places` keeps `photos[].coordinates` and its description names it as the camera point — less churn than renaming; Rob approves every save — cost if wrong: a model could conflate the points.
 - Ruling: GPS reads on /share have their own queue (cap 2), separate from lookups (cap 2) — lookups can wait seconds on the site slot — cost if wrong: up to four tasks at once on a phone.
+- Ruling: migrations are append-only once PR #66's Preview build applied `20261106200000_photo_gps_places`; the final fix wave adds `20261106210000_photo_gps_claim_lease` — cost if wrong: one extra small migration.
+- Ruling: the GPS claim became a time-limited lease (`Media.gpsClaimedAt`, deriveMedia's pattern) instead of leaving overlapping reads as a follow-up — the final review ranked it first — cost if wrong: one nullable column.
 
 ---
 
@@ -656,6 +658,12 @@ Written by a separate subagent (R8). Paste it as-is into PR B's description (and
 | F7 | iPhone hint near the photo buttons ("Options → Location to include where it was taken") | low | Only if device checks show Location off by default. Copy in `card-media-client.tsx`. |
 | F8 | Preview database branches inherit production rows, now including photo coordinates | low | Previews are protected and already hold names and emails. Consider scrubbing on branch creation. |
 | F9 | A general per-media "enrichment" status if more per-photo extractions are added | low | Generalize `gpsCheckedAt`/`gpsAttempts` and step (h) when a second extractor arrives. |
+| F10 | Server `tracePropagationTargets` so third-party calls (Nominatim, SendGrid, Blob) don't carry `sentry-trace`/`baggage` | low | Repo-wide Sentry choice under Rob's full-telemetry policy; the headers carry no personal data. |
+| F11 | IP-rotating abuse of `POST /api/places/suggest` can use up the 500/day provider budget until the next UTC day | low | The counters stop a free proxy, not this. Options: a lower per-viewer cap, or require a recent upload ticket. |
+| F12 | `recordMedia`'s `readPrefix` call has no deadline signal (pre-existing) | low | Pass the same `{ signal }` the GPS step uses. |
+| F13 | (Fixed in this PR by the `gpsClaimedAt` lease, migration `20261106210000_photo_gps_claim_lease`.) | — | — |
+| F14 | Rob: delete the throwaway Neon branch `gps-e2e-20261106` (`br-winter-lab-bbd4405m`) | — | Holds a production copy plus the B9 e2e memory. |
+| F15 | Cron step (h) runs last and starts a photo only with 15 s left, so a backlog in (a)–(g) can skip whole runs | low | Delays GPS retries and the backfill; never costs an attempt. Option: run (h) before (g) with its own slice. |
 
 ---
 
