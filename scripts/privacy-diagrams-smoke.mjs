@@ -472,15 +472,32 @@ const settle = (page, ms = 450) => page.waitForTimeout(ms);
 }
 
 // ---------------------------------------------------------------- Team Code Review round
-// Each check here failed on the code before the round (2000e13) and passes after it.
+// Each check here failed on the code before the round (2000e13) and passes after it, except the first, which pins
+// a Non-goal of the round and passes on both.
 {
-  // The inline controls: arrows and Fit wait for a zoom, the arrows pan, a double-click does not zoom.
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await ctx.newPage();
   await page.goto(`${base}/how-it-was-built`, { waitUntil: "networkidle" });
   const arch = page.getByRole("figure", { name: "Architecture" });
   await arch.scrollIntoViewIfNeeded();
   await settle(page);
+
+  // Non-goal "the inline wrapper as a tab stop": react-zoom-pan-pinch 4.2.0 gives its wrapper tabIndex 0 only when
+  // keyboard navigation is on, and inline it is off, so Tab goes from Full screen straight to the full-size link.
+  const wrapperTabindex = await page.evaluate(() =>
+    [...document.querySelectorAll("main .react-transform-wrapper")].map((w) => w.getAttribute("tabindex")),
+  );
+  await page.getByRole("button", { name: "Full screen: Architecture" }).focus();
+  await page.keyboard.press("Tab");
+  const afterFullScreen = await page.evaluate(() => document.activeElement?.textContent?.trim());
+  check(
+    "inline: the three diagram wrappers are not tab stops; Tab goes from Full screen to the full-size link",
+    wrapperTabindex.length === 3 && wrapperTabindex.every((t) => t === null) && afterFullScreen === "Open “Architecture” full size",
+    JSON.stringify({ wrapperTabindex, afterFullScreen }),
+  );
+
+  // The inline controls: arrows and Fit wait for a zoom, the arrows pan, a double-click does not zoom.
+  await arch.scrollIntoViewIfNeeded();
 
   // Read straight from the DOM: a locator would wait its full timeout for buttons the old code never rendered.
   const inlineControls = () =>

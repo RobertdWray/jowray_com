@@ -44,6 +44,7 @@ PASS  Privacy note: selecting text and releasing on the backdrop keeps it open
 PASS  open dialog keeps a stable scrollbar gutter  — stable
 PASS  full screen: the diagram area's focus ring is inset  — {"offset":"-4px","style":"solid","label":"Architecture diagram"}
 PASS  no role=toolbar without arrow-key movement  — 0
+PASS  inline: the three diagram wrappers are not tab stops; Tab goes from Full screen to the full-size link  — {"wrapperTabindex":[null,null,null],"afterFullScreen":"Open “Architecture” full size"}
 PASS  inline: four icon-only 44px arrow buttons, aria-disabled and inert at fit size  — {"arrows":[{"label":"Move the view left","disabled":"true","width":44,"text":""},{"label":"Move the view up","disabled":"true","width":44,"text":""},{"label":"Move the view down","disabled":"true","width":44,"text":""},{"label":"Move the view right","disabled":"true","width":44,"text":""}],"after":{"scale":1,"x":0,"y":0}}
 PASS  inline: Fit is aria-disabled at fit size  — true
 PASS  inline: after Zoom in, Fit and the arrows are enabled and the arrows pan  — {"fit":"false","arrows":["false","false","false","false"],"x":[-286.5,-406.5]}
@@ -55,4 +56,4 @@ PASS  short screen 375×480: the focused link is inside the note's scrolling tex
 PASS  short screen 844×390: the focused link is inside the note's scrolling text, clear of the Close row  — {"focused":true,"scrolls":true,"link":{"top":222,"bottom":247},"region":{"top":19,"bottom":267},"closeRow":{"top":267,"bottom":371}}
 PASS  WebKit, classic scrollbar: full screen stays inside the usable width  — {"dialog":1265,"closeRight":1241,"usable":1265,"window":1280}
 
-56/56 checks passed
+57/57 checks passed

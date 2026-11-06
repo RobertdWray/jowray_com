@@ -3,7 +3,7 @@
 Plan: `docs/plans/2026-11-06-privacy-note-and-diagram-viewer.md`, verification step 2.
 
 `scripts/privacy-diagrams-smoke.mjs` drives the installed Google Chrome (headless) through the repo's `playwright-core` against `next dev`, at
-1280×900, 390×844 with touch, and the review rounds' extra sizes (320/412/640px footers, an 844×390 landscape phone, 375×553 and 375×480 short phones). One check runs in Playwright's WebKit instead (`npx playwright-core install webkit` if it is missing), because Chrome 145+ subtracts a reserved scrollbar gutter from `100vw` and so cannot show that bug. `results.txt` is its output on the final code: **56/56 checks passed** (33 from the build, 13 from review round 1, 10 from the Team Code Review round).
+1280×900, 390×844 with touch, and the review rounds' extra sizes (320/412/640px footers, an 844×390 landscape phone, 375×553 and 375×480 short phones). One check runs in Playwright's WebKit instead (`npx playwright-core install webkit` if it is missing), because Chrome 145+ subtracts a reserved scrollbar gutter from `100vw` and so cannot show that bug. `results.txt` is its output on the final code: **57/57 checks passed** (33 from the build, 13 from review round 1, 11 from the Team Code Review round: ten for its fixes and one that pins a Non-goal).
 
 ```sh
 npx next dev -p 3107   # in the worktree
@@ -56,7 +56,7 @@ A fresh reviewer found no critical defects; every point was fixed at the root an
 
 ## Team Code Review round (after the PR opened)
 
-George (Gemini) and Oscar (Codex) reviewed PR #61 at 2000e13. Each of the ten new checks failed on 2000e13 and passes now. What was not changed, and why, is in the plan's "Non-goals (Team Code Review round)".
+George (Gemini) and Oscar (Codex) reviewed PR #61 at 2000e13. Each of the ten checks for its fixes failed on 2000e13 and passes now. What was not changed, and why, is in the plan's "Non-goals (Team Code Review round)"; one more check pins the first Non-goal (the three inline diagram wrappers have no `tabindex`, and Tab goes from Full screen to the full-size link), so it passes on 2000e13 as well.
 
 | Finding | Fix | Check |
 | --- | --- | --- |
