@@ -1,7 +1,7 @@
 import * as Sentry from "@sentry/nextjs";
 import { type NextRequest, NextResponse } from "next/server";
 
-import { extractPhotoGps, GPS_READ_DEADLINE_MS, GPS_STALE_CLAIM_MS, MAX_GPS_ATTEMPTS, type PhotoGpsOutcome } from "@/features/media/extract-photo-gps";
+import { extractPhotoGps, GPS_DB_MARGIN_MS, GPS_READ_DEADLINE_MS, GPS_STALE_CLAIM_MS, MAX_GPS_ATTEMPTS, type PhotoGpsOutcome } from "@/features/media/extract-photo-gps";
 import { confirmSubmission } from "@/features/memories/complete-submission";
 import { confirmMemory } from "@/features/memories/confirm";
 import { DERIVED_KINDS, deriveMedia, MAX_DECODE_ATTEMPTS, MAX_PIXELS, STALE_CLAIM_MS } from "@/features/memories/derive-media";
@@ -685,9 +685,10 @@ export async function GET(request: NextRequest): Promise<Response> {
       take: PHOTO_GPS_BATCH,
     });
     for (const row of undecided) {
-      // A photo starts only when its whole read deadline fits in what is left of the run: a run running out of time
-      // must never cost a photo one of its three attempts (the rest wait for the next run).
-      if (RUN_DEADLINE_MS - (Date.now() - now) < GPS_READ_DEADLINE_MS) {
+      // A photo starts only when its whole read deadline, and the margin for the database work around the read (Team
+      // Code Review #7), fit in what is left of the run: a run running out of time must never cost a photo one of its
+      // three attempts (the rest wait for the next run).
+      if (RUN_DEADLINE_MS - (Date.now() - now) < GPS_READ_DEADLINE_MS + GPS_DB_MARGIN_MS) {
         break;
       }
       // Each item in its own isolation scope: an identity set by a shared feature cannot leak into the next item.

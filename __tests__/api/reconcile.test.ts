@@ -552,11 +552,18 @@ describe("step (h): photo GPS (B3)", () => {
   });
 
   // B3 fix round 1: a photo starts only with the full read deadline (15 s) left, so a run running out of time never
-  // costs a photo one of its three attempts. The two steps put the second start exactly on the floor and just under it.
+  // costs a photo one of its three attempts. Team Code Review #7: plus a 5 s margin for the row read, the claim and the
+  // decision write around the read, which the read's own deadline does not cover. The two steps put the second start
+  // exactly on the 20 s floor and just under it.
+  it("the floor is the 15 s read deadline plus the 5 s database margin", async () => {
+    const { GPS_DB_MARGIN_MS, GPS_READ_DEADLINE_MS } = await import("@/features/media/extract-photo-gps");
+    expect({ GPS_READ_DEADLINE_MS, GPS_DB_MARGIN_MS }).toEqual({ GPS_READ_DEADLINE_MS: 15_000, GPS_DB_MARGIN_MS: 5_000 });
+  });
+
   it.each([
-    { stepMs: 35_000, starts: 2, why: "the second start has exactly 15 s left: it runs" },
-    { stepMs: 35_001, starts: 1, why: "the second start would have 14.999 s left: it waits for the next run" },
-  ])("starts a photo only with the full 15 s read deadline left ($why)", async ({ stepMs, starts }) => {
+    { stepMs: 30_000, starts: 2, why: "the second start has exactly 20 s left: it runs" },
+    { stepMs: 30_001, starts: 1, why: "the second start would have 19.999 s left: it waits for the next run" },
+  ])("starts a photo only with the full 15 s read deadline and the 5 s database margin left ($why)", async ({ stepMs, starts }) => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       extractGpsMock.mockImplementation(async ({ mediaId }) => { vi.setSystemTime(Date.now() + stepMs); return decideGps(mediaId, "absent"); });

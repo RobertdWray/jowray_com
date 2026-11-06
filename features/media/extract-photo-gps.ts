@@ -18,10 +18,18 @@ export const MAX_GPS_ATTEMPTS = 3;
 export const GPS_PREFIX_BYTES = 128 * 1024;
 /**
  * Bound on the reads, the prefix and any whole-original read together (photos are at most 25 MB, MAX_BYTES.PHOTO).
- * Cron step (h) starts a photo only when this much of its run is left, so running out of run time never costs a photo
- * one of its attempts.
+ * Cron step (h) starts a photo only when this much of its run is left, plus GPS_DB_MARGIN_MS, so running out of run
+ * time never costs a photo one of its attempts.
  */
 export const GPS_READ_DEADLINE_MS = 15_000;
+/**
+ * Room for the database work around the read, which GPS_READ_DEADLINE_MS does not cover: the row read and the claim
+ * before it, the decision write after it (Team Code Review #7). Each is one statement on one row, normally a few
+ * milliseconds on the cron's warm connection; the margin lets a slow database take seconds without the function's
+ * hard limit cutting off a photo whose attempt is already spent. Cron step (h) starts a photo only with this plus the
+ * read deadline left in its run.
+ */
+export const GPS_DB_MARGIN_MS = 5_000;
 /**
  * A GPS claim (`gpsClaimedAt`) older than this is presumed abandoned (the function died mid-read) and may be taken
  * over, as with deriveMedia's STALE_CLAIM_MS. It outlasts a whole read (GPS_READ_DEADLINE_MS) plus the claim and the
