@@ -4,6 +4,7 @@
 export const README_DIAGRAMS = {
   "how-a-memory-travels": {
     heading: "How a memory travels",
+    githubAnchor: "-how-a-memory-travels",
     src: "/diagrams/how-a-memory-travels.svg",
     width: 2174,
     height: 1030,
@@ -11,6 +12,7 @@ export const README_DIAGRAMS = {
   },
   "architecture": {
     heading: "Architecture",
+    githubAnchor: "\ufe0f-architecture",
     src: "/diagrams/architecture.svg",
     width: 2013,
     height: 576,
@@ -18,6 +20,7 @@ export const README_DIAGRAMS = {
   },
   "data-model": {
     heading: "Data model",
+    githubAnchor: "\ufe0f-data-model",
     src: "/diagrams/data-model.svg",
     width: 1804,
     height: 1542,

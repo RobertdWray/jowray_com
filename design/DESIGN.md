@@ -249,14 +249,19 @@ below), and a closing primary "Leave a memory of Jo".
   technical readers, after the privacy section under a walnut-soft eyebrow "For
   the technically curious". `detailed-diagrams.tsx` gives each a `<figure>`: a
   figcaption with an h3 (the README heading) and a one-sentence description,
-  then the image, then a quiet "Open … full size" link to the SVG.
+  then the image, then two links: "Open … full size" (the SVG) and "Read … in
+  the README on GitHub" (the README section, its long description; GitHub's
+  heading ids keep an emoji's U+FE0F, so two anchors start with it).
   - **Rendering.** `scripts/make-readme-diagrams.ts` renders the README blocks
     once, at development time, with real Mermaid in the installed Google Chrome
     (playwright-core), and writes `public/diagrams/<slug>.svg` plus the manifest
     `app/how-it-was-built/readme-diagrams.ts` (sizes and source hashes). The
     build only serves the committed files: no Mermaid in any bundle, no network,
     the page stays `○`. Shown through `next/image` with `unoptimized`, an SVG
-    cannot run script.
+    cannot run script. Opened full size, `/diagrams/*` is served with
+    `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline';
+    font-src data:; img-src data:` and `nosniff` (`next.config.ts`). Fixed ids
+    and `handDrawnSeed: 1` make a re-run on an unchanged README byte-identical.
   - **Theme.** Mermaid `base` theme from the tokens: paper ground, muslin shapes
     with `periwinkle-deep` borders, dashed `periwinkle` groups, `walnut` text
     and lines, `wood` lifelines, `wood-light` loop and note labels, walnut
@@ -273,9 +278,20 @@ below), and a closing primary "Leave a memory of Jo".
   - **Text alternative.** `alt` names the diagram type and its parts;
     `aria-describedby` points at the visible description.
   - **Drift guard.** `__tests__/lib/readme-diagrams.test.ts` fails when a README
-    block's SHA-256 differs from the manifest, when a block is added or removed,
-    or when an SVG holds script, event handlers, `foreignObject` or an outside
-    URL. Fix: run `npx tsx scripts/make-readme-diagrams.ts` and commit.
+    block's SHA-256 differs from the one in the manifest or in the SVG's first
+    line, or when a block is added, removed or retitled. Fix: run
+    `npx tsx scripts/make-readme-diagrams.ts` and commit.
+  - **Safety check.** `findUnsafeSvg` (`lib/readme-diagrams.ts`) runs in the
+    script before any file is written and in the test on every committed SVG.
+    It tokenizes the file strictly (no DOCTYPE, CDATA or processing
+    instructions), decodes entities, then allows only the elements and
+    attributes the generator emits; `href` and `url()` only to `#id` or
+    `data:`; CSS at-rules only `@font-face` and `@keyframes`; no CSS escapes.
+    Eighteen attack payloads (encoded `javascript:`, outside `<image>`,
+    `@import`, `<set>` on an event handler, and more) are spliced into a real
+    SVG in the test and each must be rejected for its reason. It proves what
+    the files contain, not how a browser parses them; the CSP above is the
+    second layer.
 
 ## 6. Layout
 - Content max-width 1200px, 5% side padding (≥16px on phones).

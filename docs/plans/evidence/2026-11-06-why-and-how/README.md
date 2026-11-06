@@ -50,3 +50,16 @@ Browser: Chrome via chrome-devtools MCP, isolated context `diagrams`. Server: `n
 | Full-size link | `/diagrams/data-model.svg` | `200`, `Content-Type: image/svg+xml` | — |
 
 Not run: Safari and a real iPhone (the SVGs use plain SVG text and embedded WOFF2, which Safari supports; Rob's preview pass covers it).
+
+### Review round 1 fixes (ledger step 16)
+
+Same browser and server (`next dev -p 3107`, isolated context `diagrams2`).
+
+| Check | URL / viewport | Result | Evidence |
+|---|---|---|---|
+| Headers | `curl -I /diagrams/data-model.svg`, `/how-it-was-built` | the SVG gets `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:`, `X-Content-Type-Options: nosniff` and `Document-Policy: js-profiling`; the page gets only `Document-Policy` | — |
+| SVG opened full size under the CSP | `/diagrams/how-a-memory-travels.svg` | no console messages; `document.fonts`: Atkinson Hyperlegible 400 and 700 both `loaded`; text computes to the Atkinson stack | — |
+| Determinism | two generator runs on an unchanged README | all three SVGs and the manifest byte-identical (`cmp`) | — |
+| No page scroll | `/how-it-was-built` at 320x800 mobile and 1280x900 | `scrollWidth == clientWidth`; images at natural size; the two links per figure stack at 320 and share a line with a dot at 1280 | `detailed-320-links.jpeg`, `detailed-1280-architecture-links.jpeg` |
+| README links | 320x800 | `https://github.com/RobertdWray/jowray_com#-how-a-memory-travels`, `#%EF%B8%8F-architecture`, `#%EF%B8%8F-data-model` (ids read from the GitHub repository page) | — |
+| Lighthouse accessibility | `/how-it-was-built`, desktop | 100, 0 failed (52 passed) | — |

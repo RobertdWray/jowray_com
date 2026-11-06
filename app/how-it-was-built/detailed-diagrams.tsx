@@ -1,4 +1,5 @@
 import Image from "next/image";
+import { REPO_URL } from "../_components/external-links";
 import { linkClass } from "../_components/field-classes";
 import { README_DIAGRAMS, type ReadmeDiagramSlug } from "./readme-diagrams";
 
@@ -50,7 +51,7 @@ export function DetailedDiagrams() {
         const titleId = `diagram-${slug}-title`;
         const descriptionId = `diagram-${slug}-description`;
         return (
-          // figcaption first (title + description), then the scroller, then the full-size link.
+          // figcaption first (title + description), then the scroller, then the full-size and README links.
           <figure key={slug} aria-labelledby={titleId} className="flex min-w-0 flex-col gap-4">
             <figcaption className="flex max-w-[40em] flex-col gap-2">
               <h3 id={titleId} className="font-display text-[24px] font-bold leading-[1.2]">
@@ -76,9 +77,18 @@ export function DetailedDiagrams() {
                 className="block max-w-none"
               />
             </div>
-            <p className="text-[18px] text-walnut-soft">
+            {/* The README section is the long description: the Mermaid source on GitHub reads as text (the
+                "Code" view of README.md) beside the prose around it. Anchors are GitHub's heading ids. */}
+            <p className="flex flex-col gap-2 text-[18px] text-walnut-soft sm:flex-row sm:flex-wrap sm:gap-x-3">
               <a href={diagram.src} className={linkClass}>
                 Open &ldquo;{diagram.heading}&rdquo; full size
+              </a>
+              {/* The dot only sits between links on one line; on a phone they stack and it would dangle. */}
+              <span aria-hidden="true" className="hidden sm:inline">
+                ·
+              </span>
+              <a href={`${REPO_URL}#${encodeURIComponent(diagram.githubAnchor)}`} className={linkClass}>
+                Read &ldquo;{diagram.heading}&rdquo; in the README on GitHub
               </a>
             </p>
           </figure>
