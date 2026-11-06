@@ -7,6 +7,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { crc32 } from "node:zlib";
 
 import sharp from "sharp";
 
@@ -44,6 +45,33 @@ function app2Filler(payloadBytes: number): Buffer {
 /** SOI, then 200 KiB of APP2 filler (four 51,200-byte segments; one segment holds at most 65,533), then the rest of `jpeg` from its EXIF APP1 on. */
 export function withLateExif(jpeg: Buffer): Buffer {
   return Buffer.concat([jpeg.subarray(0, 2), ...Array.from({ length: 4 }, () => app2Filler(51_200)), jpeg.subarray(2)]);
+}
+
+/** A 16 × 16 PNG, with the Liberty point in its eXIf chunk when `gps` is true. */
+export async function pngTile(gps: boolean): Promise<Buffer> {
+  const image = sharp({ create: { width: 16, height: 16, channels: 3, background: "#336699" } }).png();
+  return (gps ? image.withExif({ IFD3: liberty() }) : image).toBuffer();
+}
+
+/** One PNG chunk: length, type, data and its CRC-32 over type and data. */
+function pngChunk(type: string, data: Buffer): Buffer {
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  chunk.write(type, 4, "latin1");
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(chunk.subarray(4, 8 + data.length)), 8 + data.length);
+  return chunk;
+}
+
+/**
+ * `png` with `count` tEXt chunks (distinct keywords k0, k1, …, each with the value "v") inserted right after IHDR,
+ * so they come before sharp's eXIf chunk. Distinct keywords matter: ExifReader keys text tags by keyword, so repeats
+ * would collapse into one tag.
+ */
+export function withTextChunks(png: Buffer, count: number): Buffer {
+  const ihdrEnd = 8 + 12 + png.readUInt32BE(8); // signature, then IHDR's length, type, data and CRC
+  const text = Array.from({ length: count }, (_, i) => pngChunk("tEXt", Buffer.from(`k${i}\0v`, "latin1")));
+  return Buffer.concat([png.subarray(0, ihdrEnd), ...text, png.subarray(ihdrEnd)]);
 }
 
 export function readFixture(name: "gps.heic" | "tiny.heic" | "rotated.heic"): Buffer {

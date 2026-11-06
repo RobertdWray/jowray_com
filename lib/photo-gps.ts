@@ -8,10 +8,13 @@
  * Isomorphic on purpose: no `server-only`, no Node built-ins, nothing from `@/server` or `@/integrations`. A Client
  * Component imports this module dynamically. Coordinates are WGS 84 decimal degrees and are never logged (D14).
  *
- * GPS comes only from the EXIF GPS IFD, so both paths skip the same two ExifReader groups (`EXCLUDED_GROUPS`): `xmp`,
+ * GPS comes only from the EXIF GPS IFD, so both paths skip the same ExifReader groups (`EXCLUDED_GROUPS`): `xmp`,
  * which skips parsing the untrusted XML entirely (the group is never parsed, not just never returned) and keeps the
- * server off the optional `@xmldom/xmldom` parser (a position recorded only in XMP reads as absent), and `mpf`, a phone
- * JPEG's embedded preview images, which hold no GPS of their own.
+ * server off the optional `@xmldom/xmldom` parser (a position recorded only in XMP reads as absent); `mpf`, a phone
+ * JPEG's embedded preview images, which hold no GPS of their own; and `icc`, `iptc`, `photoshop`, `makerNotes` and
+ * `thumbnail`, which hold no GPS either and are untrusted parsing surface the reader never needs (Team Code Review #1).
+ * `png` stays: ExifReader parses a PNG's text chunks whenever it parses `exif` (a PNG may carry its Exif there), so
+ * excluding it would not skip them; their number is capped by ExifReader itself (4,096 since 4.54.0).
  */
 import ExifReader, { type ExpandedTags } from "exifreader";
 
@@ -22,7 +25,7 @@ export type GpsRead = { status: "found"; coordinates: Coordinates } | { status: 
 const ABSENT: GpsRead = Object.freeze({ status: "absent" });
 
 /** The ExifReader groups neither path parses: the browser and the server read a photo the same way. */
-const EXCLUDED_GROUPS = { mpf: true, xmp: true } as const;
+const EXCLUDED_GROUPS = { icc: true, iptc: true, makerNotes: true, mpf: true, photoshop: true, thumbnail: true, xmp: true } as const;
 
 /**
  * Browser: reads the metadata bytes of `file` through `File.slice` (ExifReader `length: "auto"`: a 128 KiB prefix,

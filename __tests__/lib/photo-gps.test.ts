@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { jpegMetadataComplete, readGpsFromBytes, readGpsFromFile, type GpsRead } from "@/lib/photo-gps";
 
-import { jpegWithGps, LAT_DMS, liberty, LIBERTY, LON_DMS, PREFIX_BYTES, readFixture, withLateExif } from "../helpers/photo-gps-fixtures";
+import { jpegWithGps, LAT_DMS, liberty, LIBERTY, LON_DMS, pngTile, PREFIX_BYTES, readFixture, withLateExif, withTextChunks } from "../helpers/photo-gps-fixtures";
 
 /** An XMP packet whose exif:GPS* claims a different point (10 N, 20 E) than the EXIF IFD: only EXIF may decide. */
 const XMP_OTHER_POINT =
@@ -261,17 +261,61 @@ describe("XMP is never parsed: GPS comes only from EXIF (B2 fix round 1)", () =>
   });
 });
 
-describe("the same ExifReader groups are skipped on both paths (final review, item 7)", () => {
-  it("passes excludeTags { mpf, xmp } from the browser (File) and the server (bytes), and both still find the point", async () => {
+describe("the same ExifReader groups are skipped on both paths (final review, item 7; Team Code Review #1)", () => {
+  /**
+   * Every group GPS never needs that ExifReader can skip, except `png`: its text chunks are parsed whenever `exif` is
+   * (a PNG may carry its Exif in a text chunk), so excluding it would not skip them; the cap on them comes from the
+   * library itself (see "a PNG's text chunks are capped").
+   */
+  const SKIPPED = { icc: true, iptc: true, makerNotes: true, mpf: true, photoshop: true, thumbnail: true, xmp: true };
+
+  it("passes the same excludeTags from the browser (File) and the server (bytes), and both still find the point", async () => {
     const load = vi.spyOn(ExifReader, "load"); // calls through to the real parser
     const bytes = await jpegWithGps(liberty());
     expectFound(readGpsFromBytes(bytes), LIBERTY);
     expectFound(await readGpsFromFile(new File([new Uint8Array(bytes)], "photo.jpg")), LIBERTY);
     expect(load).toHaveBeenCalledTimes(2);
     for (const call of load.mock.calls) {
-      expect((call[1] as { excludeTags?: Record<string, unknown> } | undefined)?.excludeTags).toEqual({ mpf: true, xmp: true });
+      expect((call[1] as { excludeTags?: Record<string, unknown> } | undefined)?.excludeTags).toEqual(SKIPPED);
     }
     load.mockRestore();
+  });
+
+  it("never returns an ICC profile it was given, on either path, and still finds the point", async () => {
+    const load = vi.spyOn(ExifReader, "load"); // calls through to the real parser
+    const bytes = await sharp({ create: { width: 16, height: 16, channels: 3, background: "#336699" } }).jpeg().withIccProfile("srgb").withExif({ IFD3: liberty() }).toBuffer();
+    expect(ExifReader.load(bytes, { expanded: true }).icc).toBeDefined(); // the fixture does carry one
+    load.mockClear();
+    expectFound(readGpsFromBytes(bytes), LIBERTY);
+    expectFound(await readGpsFromFile(new File([new Uint8Array(bytes)], "photo.jpg")), LIBERTY);
+    expect(load).toHaveBeenCalledTimes(2);
+    for (const result of load.mock.results) {
+      const tags = (await result.value) as { icc?: unknown; exif?: unknown };
+      expect(tags.exif).toBeDefined();
+      expect(tags.icc).toBeUndefined();
+    }
+    load.mockRestore();
+  });
+});
+
+describe("a PNG's text chunks are capped by the parser (Team Code Review #1/#5)", () => {
+  // exifreader 4.54.0: "PNG text chunks (tEXt, iTXt, zTXt) are read only up to the first 4,096 … This stops a crafted
+  // file with hundreds of thousands of chunks from exhausting memory." 4.51.0 read every one: a 25 MB PNG of 1.46
+  // million distinct tEXt chunks grew the heap by about 921 MB. 5,000 chunks tell the two apart without timing.
+  const TEXT_CHUNK_CAP = 4_096;
+  const OVER_THE_CAP = 5_000;
+
+  it("parses at most 4,096 text chunks on the server path, and still finds the EXIF point that follows them", async () => {
+    const load = vi.spyOn(ExifReader, "load"); // calls through to the real parser
+    const png = withTextChunks(await pngTile(true), OVER_THE_CAP);
+    expectFound(readGpsFromBytes(png), LIBERTY);
+    expect(load).toHaveBeenCalledTimes(1);
+    const tags = load.mock.results[0]!.value as { pngText?: Record<string, unknown> };
+    expect(Object.keys(tags.pngText ?? {}).length).toBeLessThanOrEqual(TEXT_CHUNK_CAP);
+  });
+
+  it("is absent for a PNG of text chunks with no GPS", async () => {
+    expect(readGpsFromBytes(withTextChunks(await pngTile(false), OVER_THE_CAP))).toEqual({ status: "absent" });
   });
 });
 
