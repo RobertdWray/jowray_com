@@ -70,7 +70,7 @@ const TOOLS = {
   update_memory: {
     title: "Edit a memory",
     description:
-      "Edits a memory's words, date, place, visibility or the contributor's name and relationship; send only the keys you change. Read `memoryVersion` and `contributor.contributorVersion` from get_memory first. On `stale`, compare `current` with the values you originally read; if a field you did not intend to change differs, stop and ask before retrying, otherwise retry from `current`.",
+      "Edits a memory's words, date, place, visibility or the contributor's name and relationship; send only the keys you change. Read `memoryVersion` and `contributor.contributorVersion` from get_memory first. On `stale`, compare every editable field in `current` with the value you read before this edit: if any differs, including a field you are changing, show Rob what changed and ask before retrying; retry from `current` without asking only when none differs (only the versions moved).",
     inputSchema: mcpMemoryChangesSchema,
     annotations: { destructiveHint: true },
   },
