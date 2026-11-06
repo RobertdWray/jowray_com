@@ -19,7 +19,7 @@ describe("next.config headers", () => {
     const diagrams = rules.find((rule) => rule.source === "/diagrams/:path*");
     expect(diagrams?.headers).toContainEqual({
       key: "Content-Security-Policy",
-      value: "default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:",
+      value: "default-src 'none'; style-src 'unsafe-inline'; font-src data:; sandbox; frame-ancestors 'none'",
     });
     expect(diagrams?.headers).toContainEqual({ key: "X-Content-Type-Options", value: "nosniff" });
     // Next.js applies every matching rule, so /diagrams/* keeps the site-wide Document-Policy too.

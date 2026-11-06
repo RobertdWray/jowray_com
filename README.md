@@ -149,7 +149,7 @@ erDiagram
     Memory ||--o{ MemoryRevision : "edit history"
     Memory ||--o{ EmailLog : "one row per email type"
     Media ||--o{ DerivedMedia : "web copy, thumbnail"
-    Media o|--o| Media : replaces
+    Media }o--o| Media : replaces
     User |o--o| Contributor : "Phase 3 login"
 
     Memory {

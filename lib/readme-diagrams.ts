@@ -117,9 +117,12 @@ export function svgSourceHash(svg: string): string | null {
 // SVG safety check. The SVGs are served from this origin (public/diagrams/, opened by the "full size" links), so
 // besides the Content-Security-Policy in next.config.ts, every file must hold only what the generator emits.
 // This is an allowlist over a strict tokenizer: anything it cannot read, any element or attribute the generator
-// does not produce, and any reference that is not a same-document `#id` or a `data:` URL is a problem.
-// Entities are decoded before any value is checked, CSS escapes are refused outright, and DOCTYPEs, CDATA and
-// processing instructions are unreadable by design. Widen an allowlist only after looking at what Mermaid emits.
+// does not produce, a repeated attribute, a namespace other than SVG's on the root (or any namespace declaration
+// below it), and any reference other than a same-document `#id` (or, in CSS, the embedded WOFF2 fonts) is a
+// problem. Entities are decoded before any value is checked; CSS escapes, CSS comments and XML comments inside
+// <svg> are refused outright, so nothing can be hidden from a check that reads one piece at a time; DOCTYPEs,
+// CDATA and processing instructions are unreadable by design. Widen an allowlist only after looking at what
+// Mermaid emits.
 // ---------------------------------------------------------------------------------------------------------------
 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
@@ -145,7 +148,7 @@ const ALLOWED_ELEMENTS = new Set([
   "tspan",
 ]);
 
-/** Every attribute it emits, plus `href`/`xlink:href`, which are held to same-document or data: values. */
+/** Every attribute it emits, plus `href`/`xlink:href`, which are held to same-document `#id` values. */
 const ALLOWED_ATTRIBUTES = new Set([
   "alignment-baseline",
   "aria-roledescription",
@@ -228,17 +231,22 @@ function decodeEntities(text: string, where: string, problems: string[]): string
   });
 }
 
-/** A reference is safe if it stays in this document (`#id`) or carries its own bytes (`data:`). */
-function isLocalReference(value: string): boolean {
-  const trimmed = value.trim();
-  return trimmed.startsWith("#") || trimmed.toLowerCase().startsWith("data:");
+/** A reference that stays in this document: markers, gradients and filters by id. */
+function isFragment(value: string): boolean {
+  return value.trim().startsWith("#");
 }
 
+/** The only `data:` URL the generator writes: an Atkinson Hyperlegible weight inside `@font-face`. */
+const EMBEDDED_FONT = /^data:font\/woff2;base64,[A-Za-z0-9+/]+={0,2}$/;
+
 /** Checks CSS from a <style> element or an attribute value (already entity-decoded). */
-function cssProblems(css: string, where: string, allowAtRules: boolean, problems: string[]): void {
-  const code = css.replace(/\/\*[\s\S]*?\*\//g, "");
+function cssProblems(code: string, where: string, allowAtRules: boolean, problems: string[]): void {
   if (code.includes("\\")) {
     problems.push(`${where}: a CSS escape (the generator never writes one, and they can disguise @import or url())`);
+  }
+  // Not stripped and then checked: a "/*" inside a CSS string would make the strip swallow real rules.
+  if (code.includes("/*")) {
+    problems.push(`${where}: a CSS comment (the generator never writes one, and one can hide url() or @import)`);
   }
   for (const [, rule] of code.matchAll(/@([A-Za-z-]+)/g)) {
     if (!allowAtRules || !ALLOWED_AT_RULES.has(rule.toLowerCase())) {
@@ -250,8 +258,8 @@ function cssProblems(css: string, where: string, allowAtRules: boolean, problems
     reference.lastIndex = (match.index ?? 0) + match[0].length;
     const found = reference.exec(code);
     const value = found ? (found[1] ?? found[2] ?? found[3] ?? "") : "";
-    if (!isLocalReference(value)) {
-      problems.push(`${where}: url(${value.slice(0, 60)}) is not a #id or data: URL`);
+    if (!isFragment(value) && !EMBEDDED_FONT.test(value.trim())) {
+      problems.push(`${where}: url(${value.slice(0, 60)}) is not a #id or an embedded WOFF2 font`);
     }
   }
   if (/image-set\(|(?<![\w-])src\(/i.test(code)) {
@@ -276,9 +284,14 @@ function checkElement(name: string, attributes: string, isRoot: boolean, problem
   if (isRoot && name !== "svg") {
     problems.push(`${where}: the root element is not <svg>`);
   }
-  let namespace: string | null = null;
+  const seen = new Set<string>();
   for (const [, attribute, rawValue] of attributes.matchAll(ATTRIBUTE)) {
     const at = `${where} ${attribute}`;
+    // XML forbids it, and a parser that kept the other copy would see a value this check never read.
+    if (seen.has(attribute)) {
+      problems.push(`${at}: a repeated attribute`);
+    }
+    seen.add(attribute);
     const value = decodeEntities(rawValue, at, problems);
     if (/^on/i.test(attribute)) {
       problems.push(`${at}: event-handler attribute`);
@@ -289,8 +302,8 @@ function checkElement(name: string, attributes: string, isRoot: boolean, problem
     if (/^(set|animate\w*)$/i.test(name) && attribute === "attributeName" && /^(on|href$|xlink:href$)/i.test(value)) {
       problems.push(`${at}: animates ${value}`);
     }
-    if ((attribute === "href" || attribute === "xlink:href") && !isLocalReference(value)) {
-      problems.push(`${at}: ${value.slice(0, 60)} is not a #id or data: URL`);
+    if ((attribute === "href" || attribute === "xlink:href") && !isFragment(value)) {
+      problems.push(`${at}: ${value.slice(0, 60)} is not a same-document #id`);
     }
     // Browsers ignore whitespace and control characters inside a URL scheme ("java\tscript:").
     const compact = Array.from(value)
@@ -299,13 +312,18 @@ function checkElement(name: string, attributes: string, isRoot: boolean, problem
     if (/javascript:/i.test(compact)) {
       problems.push(`${at}: javascript: URL`);
     }
+    // A default namespace below the root would put allowed names (`style`, `svg`) in another vocabulary.
     if (attribute === "xmlns") {
-      namespace = value;
+      if (!isRoot) {
+        problems.push(`${at}: a namespace declaration below the root (the generator writes xmlns only on <svg>)`);
+      } else if (value !== SVG_NAMESPACE) {
+        problems.push(`${at}: ${value.slice(0, 60)} is not the SVG namespace`);
+      }
     }
     cssProblems(value, at, false, problems);
   }
-  if (isRoot && namespace !== SVG_NAMESPACE) {
-    problems.push(`${where}: the root is not in the SVG namespace`);
+  if (isRoot && !seen.has("xmlns")) {
+    problems.push(`${where}: the root does not declare the SVG namespace`);
   }
 }
 
@@ -321,6 +339,10 @@ export function findUnsafeSvg(svg: string): string[] {
   let index = 0;
   while (index < svg.length) {
     if (svg.startsWith("<!--", index)) {
+      // Text nodes are checked one at a time, so `u<!-- -->rl(` inside <style> would read as two harmless pieces.
+      if (open.length > 0) {
+        problems.push(`offset ${index}: a comment inside <svg> (the generator writes only its header comment, above it)`);
+      }
       COMMENT.lastIndex = index;
       if (!COMMENT.exec(svg)) {
         problems.push(`offset ${index}: an unclosed comment`);

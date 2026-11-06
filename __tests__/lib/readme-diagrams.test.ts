@@ -151,7 +151,7 @@ describe("findUnsafeSvg rejects known attacks", () => {
   it.each([
     ["an entity-encoded javascript: href", beforeClose('<a href="&#106;avascript:alert(1)"><text>x</text></a>'), /javascript: URL/],
     ["an entity-encoded javascript: href on an allowed element", beforeClose('<g href="&#x6A;ava&#x09;script:alert(1)"/>'), /javascript: URL/],
-    ["an <image> loading from another host", beforeClose('<image href="//evil.example/x.png"/>'), /<image>: not an element[\s\S]*not a #id or data: URL/],
+    ["an <image> loading from another host", beforeClose('<image href="//evil.example/x.png"/>'), /<image>: not an element[\s\S]*is not a same-document #id/],
     ["@import in the stylesheet", inStyle("@import url(//evil.example/x.css);"), /@import[\s\S]*url\(\/\/evil\.example/],
     ["<set> animating an event handler", beforeClose('<set attributeName="onmouseover" to="alert(1)"/>'), /<set>: not an element[\s\S]*animates onmouseover/],
     ["<animate> swapping an href", beforeClose('<animate attributeName="href" to="javascript:alert(1)"/>'), /animates href/],
@@ -159,14 +159,24 @@ describe("findUnsafeSvg rejects known attacks", () => {
     ["<script>", beforeClose("<script>alert(1)</script>"), /<script>: script/],
     ["<foreignObject> with HTML", beforeClose('<foreignObject><div xmlns="http://www.w3.org/1999/xhtml">x</div></foreignObject>'), /foreignObject can carry HTML/],
     ["an outside url() in an allowed attribute, entity-encoded", beforeClose('<g fill="u&#114;l(//evil.example/x)"/>'), /url\(\/\/evil\.example\/x\) is not a #id/],
-    ["an outside url() in a style attribute, upper-case", beforeClose('<rect style="fill:URL(https://evil.example/x)"/>'), /is not a #id or data: URL/],
+    ["an outside url() in a style attribute, upper-case", beforeClose('<rect style="fill:URL(https://evil.example/x)"/>'), /is not a #id or an embedded WOFF2 font/],
     ["image-set() in a style attribute", beforeClose("<rect style=\"background:image-set(&quot;//evil.example/x.png&quot; 1x)\"/>"), /image-set/],
     ["a CSS escape disguising @import", inStyle("@\\69mport '//evil.example/x.css';"), /CSS escape/],
     ["a DOCTYPE declaring entities", afterHeader('<!DOCTYPE svg [<!ENTITY x "javascript:alert(1)">]>'), /markup the check cannot read/],
     ["a processing instruction", afterHeader('<?xml-stylesheet href="//evil.example/x.css"?>'), /markup the check cannot read/],
     ["an undeclared entity", beforeClose("<text>&x;</text>"), /not one of XML's character references/],
     ["a single-quoted attribute the tokenizer cannot read", beforeClose("<g fill='url(//evil.example/x)'/>"), /markup the check cannot read/],
-    ["an xlink:href to another host", beforeClose('<g xlink:href="https://evil.example/"/>'), /not a #id or data: URL/],
+    ["an xlink:href to another host", beforeClose('<g xlink:href="https://evil.example/"/>'), /is not a same-document #id/],
+    // Team Code Review, 2026-11-06 (plan "Team Code Review round"): namespaces, repeated attributes, data: URLs.
+    ["an XHTML namespace on a child element", beforeClose('<g xmlns="http://www.w3.org/1999/xhtml"><style>p{}</style></g>'), /<g> xmlns: a namespace declaration below the root/],
+    ["a nested <svg> in the XHTML namespace", beforeClose('<svg xmlns="http://www.w3.org/1999/xhtml"/>'), /<svg> xmlns: a namespace declaration below the root/],
+    ["a second xmlns on the root", base.replace("<svg ", '<svg xmlns="http://www.w3.org/1999/xhtml" '), /is not the SVG namespace[\s\S]*<svg> xmlns: a repeated attribute/],
+    ["a repeated attribute on a child element", beforeClose('<rect fill="#fffdf8" fill="#2e2420"/>'), /<rect> fill: a repeated attribute/],
+    ["a data: HTML document in an href", beforeClose('<g href="data:text/html,&lt;script&gt;alert(1)&lt;/script&gt;"/>'), /data:text\/html[\s\S]* is not a same-document #id/],
+    ["a data: SVG image in a CSS url()", beforeClose('<rect style="background:url(data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=)"/>'), /url\(data:image\/svg\+xml[^)]*\) is not a #id or an embedded WOFF2 font/],
+    // Review round 2 of PR #56 (plan §12 F8): two ways to hide a url() from a check that reads CSS piecewise.
+    ["an XML comment splitting url( in the stylesheet", inStyle("svg{background:u<!-- -->rl(//evil.example/x.png)}"), /a comment inside <svg>/],
+    ["a CSS comment hidden inside CSS strings", inStyle('svg{--a:"/*";background:url(//evil.example/x.png);--b:"*/"}'), /a CSS comment[\s\S]*url\(\/\/evil\.example\/x\.png\) is not a #id/],
   ])("%s", (_, spoofed, reason) => {
     const problems = findUnsafeSvg(spoofed);
     expect(problems.length).toBeGreaterThan(0);

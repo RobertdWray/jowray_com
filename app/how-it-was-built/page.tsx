@@ -232,9 +232,9 @@ export default function HowItWasBuiltPage() {
           </h2>
           <ul className="flex max-w-[40em] list-disc flex-col gap-3 pl-7 text-body leading-[1.6] marker:text-jo-red">
             <li>
-              Your private link lets you see, correct or add to your memory. The site keeps a scrambled
-              fingerprint of the link, never the link itself. Jo&apos;s family can also make corrections from
-              their private page.
+              Your private link lets you see, correct or add to your memory. The site&apos;s database keeps only
+              a scrambled fingerprint of the link, never the link itself. Jo&apos;s family can also make
+              corrections from their private page.
             </li>
             <li>Files sit in private storage. Photos are shown from a copy with the location data removed.</li>
             {/* Goes stale when the Phase 2 gallery ships (issue #37): reword it in that PR (plan §12 F4). */}

@@ -24,7 +24,7 @@ export const README_DIAGRAMS = {
     src: "/diagrams/data-model.svg",
     width: 1804,
     height: 1542,
-    sourceSha256: "567df2e38d3d64588f99dae08ea58115825be3cac909f59f3f45e682c00a6ab5",
+    sourceSha256: "3bc4bcd189f3d514e294c5d6398cf8d947191680e583b7cdce30578d98459253",
   },
 } as const;
 

@@ -11,16 +11,25 @@
 //
 // Each SVG embeds the Atkinson Hyperlegible weights it uses as data: URLs, because an SVG shown through <img> can
 // load no outside fonts. Requests from the page are refused, so the render cannot reach the network either.
-// Each SVG's first line records the SHA-256 of the README block it shows, and every file must pass findUnsafeSvg
-// (lib/readme-diagrams.ts) before it is written. With fixed ids and a fixed rough.js seed, re-running on an
-// unchanged README rewrites nothing.
+// Each SVG's first line records the SHA-256 of the README block it shows. Every diagram is rendered and must pass
+// the font-size floor and findUnsafeSvg (lib/readme-diagrams.ts) before anything under public/diagrams/ or the
+// manifest is touched, so a failed run leaves the committed files as they were. With fixed ids, a fixed rough.js
+// seed and a pinned look and layout, re-running on an unchanged README rewrites nothing on the same OS and Chrome
+// version; the text is measured by the local browser, so another machine may write different bytes for the same
+// drawing (the source hashes, and so the drift test, are unaffected).
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { MermaidConfig } from "mermaid";
 import { chromium } from "playwright-core";
 
-import { findUnsafeSvg, mermaidSourceHash, readmeMermaidBlocks, svgHeader } from "../lib/readme-diagrams";
+import {
+  findUnsafeSvg,
+  mermaidSourceHash,
+  readmeMermaidBlocks,
+  svgHeader,
+  type ReadmeMermaidBlock,
+} from "../lib/readme-diagrams";
 
 const ROOT = join(import.meta.dirname, "..");
 const README = join(ROOT, "README.md");
@@ -48,8 +57,14 @@ const MERMAID_CONFIG: MermaidConfig = {
   startOnLoad: false,
   securityLevel: "strict",
   deterministicIds: true,
-  // ER shapes are drawn through rough.js even in the classic look; its default seed (0) is random per run, so an
-  // unchanged README would rewrite data-model.svg on every run. A fixed seed makes the output byte-identical.
+  // mermaid 12.2.0's top-level default look is "classic", but its flowchart, sequence and ER defaults are "neo",
+  // so these diagrams render in "neo" (data-look="neo" in the SVGs). Pinning look and layout to what they already
+  // use keeps a Mermaid upgrade that changes a default from silently changing the drawings; both pins left the
+  // committed SVGs byte-identical.
+  look: "neo",
+  layout: "elk",
+  // The neo ER shapes are still drawn through rough.js, whose default seed (0) is random per run, so an unchanged
+  // README would rewrite data-model.svg on every run. A fixed seed makes the output byte-identical.
   handDrawnSeed: 1,
   theme: "base",
   htmlLabels: false, // SVG <text>, not <foreignObject>: it renders inside <img> and in every browser alike
@@ -245,11 +260,14 @@ function manifestSource(entries: ManifestEntry[]): string {
   ].join("\n");
 }
 
-async function main(): Promise<void> {
-  const blocks = readmeMermaidBlocks(readFileSync(README, "utf8"));
-  if (blocks.length === 0) {
-    throw new Error("README.md has no ```mermaid blocks.");
-  }
+interface RenderedDiagram {
+  entry: ManifestEntry;
+  /** The finished file: header line, SVG, trailing newline; already through the floor and the safety check. */
+  svg: string;
+}
+
+/** Renders every block in Chrome and checks each result; writes nothing, so any failure leaves the repo as it was. */
+async function renderAll(blocks: ReadmeMermaidBlock[]): Promise<RenderedDiagram[]> {
   const fonts = { "400": fontDataUrl("400"), "700": fontDataUrl("700") };
 
   const browser = await chromium
@@ -258,6 +276,7 @@ async function main(): Promise<void> {
       throw new Error(
         `Could not start Google Chrome (${error instanceof Error ? error.message : String(error)}). ` +
           "Install Chrome, or set CHROME_PATH to a Chrome or Chromium binary.",
+        { cause: error },
       );
     });
   try {
@@ -273,14 +292,7 @@ async function main(): Promise<void> {
       await Promise.all([document.fonts.load(`400 18px ${family}`), document.fonts.load(`700 18px ${family}`)]);
     }, FONT_STACK);
 
-    mkdirSync(SVG_DIR, { recursive: true });
-    for (const file of readdirSync(SVG_DIR)) {
-      if (file.endsWith(".svg")) {
-        rmSync(join(SVG_DIR, file));
-      }
-    }
-
-    const entries: ManifestEntry[] = [];
+    const rendered: RenderedDiagram[] = [];
     for (const block of blocks) {
       const args: RenderArgs = {
         id: `readme-${block.slug}`,
@@ -292,13 +304,22 @@ async function main(): Promise<void> {
         sequenceNumber: SEQUENCE_NUMBER,
         fonts,
       };
-      const result = await page.evaluate<RenderResult, RenderArgs>(
-        (renderArgs) =>
-          (window as unknown as { renderReadmeDiagram: (a: RenderArgs) => Promise<RenderResult> }).renderReadmeDiagram(
-            renderArgs,
-          ),
-        args,
-      );
+      let result: RenderResult;
+      try {
+        result = await page.evaluate<RenderResult, RenderArgs>(
+          (renderArgs) =>
+            (window as unknown as { renderReadmeDiagram: (a: RenderArgs) => Promise<RenderResult> }).renderReadmeDiagram(
+              renderArgs,
+            ),
+          args,
+        );
+      } catch (error) {
+        // A Mermaid parse error does not say which README block it came from.
+        throw new Error(
+          `"${block.heading}" could not be rendered: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
+        );
+      }
       if (result.tooSmall.length > 0) {
         throw new Error(`"${block.heading}" has text under ${MIN_FONT_PX}px:\n  ${result.tooSmall.join("\n  ")}`);
       }
@@ -308,25 +329,53 @@ async function main(): Promise<void> {
       if (problems.length > 0) {
         throw new Error(`"${block.heading}" failed the SVG safety check:\n  ${problems.join("\n  ")}`);
       }
-      writeFileSync(join(SVG_DIR, `${block.slug}.svg`), svg);
-      entries.push({
-        slug: block.slug,
-        heading: block.heading,
-        githubAnchor: block.githubAnchor,
-        width: result.width,
-        height: result.height,
-        hash,
+      rendered.push({
+        entry: {
+          slug: block.slug,
+          heading: block.heading,
+          githubAnchor: block.githubAnchor,
+          width: result.width,
+          height: result.height,
+          hash,
+        },
+        svg,
       });
-      console.log(`${block.heading} → public/diagrams/${block.slug}.svg (${result.width}×${result.height})`);
     }
-    writeFileSync(MANIFEST, manifestSource(entries));
-    console.log("app/how-it-was-built/readme-diagrams.ts updated");
+    return rendered;
   } finally {
     await browser.close();
   }
 }
 
+async function main(): Promise<void> {
+  const blocks = readmeMermaidBlocks(readFileSync(README, "utf8"));
+  if (blocks.length === 0) {
+    throw new Error("README.md has no ```mermaid blocks.");
+  }
+  const rendered = await renderAll(blocks);
+
+  // Every diagram rendered and passed its checks: only now replace the files, drop any SVG whose README block is
+  // gone, and write the manifest that names exactly the files left.
+  mkdirSync(SVG_DIR, { recursive: true });
+  const written = new Set<string>();
+  for (const { entry, svg } of rendered) {
+    const file = `${entry.slug}.svg`;
+    writeFileSync(join(SVG_DIR, file), svg);
+    written.add(file);
+    console.log(`${entry.heading} → public/diagrams/${file} (${entry.width}×${entry.height})`);
+  }
+  for (const file of readdirSync(SVG_DIR)) {
+    if (file.endsWith(".svg") && !written.has(file)) {
+      rmSync(join(SVG_DIR, file));
+      console.log(`public/diagrams/${file} removed (no README block)`);
+    }
+  }
+  writeFileSync(MANIFEST, manifestSource(rendered.map(({ entry }) => entry)));
+  console.log("app/how-it-was-built/readme-diagrams.ts updated");
+}
+
 main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : error);
+  // console.error prints an Error's stack and, under it, its cause (the original Mermaid or Playwright error).
+  console.error(error);
   process.exitCode = 1;
 });
