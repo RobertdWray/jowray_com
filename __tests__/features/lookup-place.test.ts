@@ -194,7 +194,7 @@ describe("lookupPlace: outcomes and the counters' order (D9)", () => {
     expect(fake.cache.get(LIBERTY_KEY)).toBe(Prisma.DbNull);
   });
 
-  it("a refusal (403/429): provider_refused, fenced (a request was sent), nothing cached, a Sentry warning", async () => {
+  it("a refusal (403/429/509): provider_refused, fenced (a request was sent), nothing cached, a Sentry warning", async () => {
     const { geocoder } = fakeProvider(() => {
       throw new PlaceProviderRefusedError(429);
     });

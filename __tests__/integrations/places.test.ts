@@ -78,7 +78,9 @@ describe("NominatimGeocoder", () => {
     expect(await geocoder.reverse(LIBERTY)).toBeNull();
   });
 
-  it.each([403, 429])("throws PlaceProviderRefusedError on %i, once (no retry)", async (status) => {
+  // 509 "Bandwidth Limit Exceeded": what OSM ops answered during the February 2026 anti-scraper measures (Team Code
+  // Review #3/#8). Like 403 and 429 it means "stop asking", not "try again".
+  it.each([403, 429, 509])("throws PlaceProviderRefusedError on %i, once (no retry)", async (status) => {
     fetchMock.mockResolvedValueOnce(json({ error: "blocked" }, status));
     const error = await geocoder.reverse(LIBERTY).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(PlaceProviderRefusedError);

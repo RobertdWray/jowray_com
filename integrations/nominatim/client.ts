@@ -10,6 +10,12 @@ import type { ReverseGeocoder } from "@/services/places/types";
 export const NOMINATIM_USER_AGENT = "jowray.com family memorial (https://www.jowray.com; memories@jowray.com)";
 
 /**
+ * Answers that mean "stop asking", not "try again": 403 (blocked), 429 (over the rate limit) and 509 (Bandwidth Limit
+ * Exceeded, which OSM ops answered during the February 2026 anti-scraper measures; Team Code Review #3/#8).
+ */
+const REFUSED_STATUSES: ReadonlySet<number> = new Set([403, 429, 509]);
+
+/**
  * OpenStreetMap Nominatim's reverse endpoint (R2, C5): `GET {base}/reverse?format=jsonv2&lat=…&lon=…&zoom=18&
  * addressdetails=1&accept-language=en`, the point at 6 dp (D6, R5) and nothing about the person. This file sets two
  * headers, the identifying User-Agent and Accept; in production the server's Sentry instrumentation also adds its
@@ -48,7 +54,7 @@ export class NominatimGeocoder implements ReverseGeocoder {
     } catch (error) {
       throw sanitized("request failed", error);
     }
-    if (response.status === 403 || response.status === 429) {
+    if (REFUSED_STATUSES.has(response.status)) {
       throw new PlaceProviderRefusedError(response.status);
     }
     if (!response.ok) {
