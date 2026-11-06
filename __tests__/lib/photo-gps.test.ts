@@ -261,6 +261,20 @@ describe("XMP is never parsed: GPS comes only from EXIF (B2 fix round 1)", () =>
   });
 });
 
+describe("the same ExifReader groups are skipped on both paths (final review, item 7)", () => {
+  it("passes excludeTags { mpf, xmp } from the browser (File) and the server (bytes), and both still find the point", async () => {
+    const load = vi.spyOn(ExifReader, "load"); // calls through to the real parser
+    const bytes = await jpegWithGps(liberty());
+    expectFound(readGpsFromBytes(bytes), LIBERTY);
+    expectFound(await readGpsFromFile(new File([new Uint8Array(bytes)], "photo.jpg")), LIBERTY);
+    expect(load).toHaveBeenCalledTimes(2);
+    for (const call of load.mock.calls) {
+      expect((call[1] as { excludeTags?: Record<string, unknown> } | undefined)?.excludeTags).toEqual({ mpf: true, xmp: true });
+    }
+    load.mockRestore();
+  });
+});
+
 describe("jpegMetadataComplete", () => {
   /** Offset of the SOS marker (FF DA) found by a plain scan; sharp writes no FF DA earlier in these small files. */
   function sosOffset(jpeg: Uint8Array): number {

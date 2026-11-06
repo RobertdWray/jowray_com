@@ -8,9 +8,10 @@
  * Isomorphic on purpose: no `server-only`, no Node built-ins, nothing from `@/server` or `@/integrations`. A Client
  * Component imports this module dynamically. Coordinates are WGS 84 decimal degrees and are never logged (D14).
  *
- * GPS comes only from the EXIF GPS IFD, so both paths exclude ExifReader's `xmp` group: that skips parsing the
- * untrusted XML entirely (the group is never parsed, not just never returned) and keeps the server off the optional
- * `@xmldom/xmldom` parser. A position recorded only in XMP reads as absent.
+ * GPS comes only from the EXIF GPS IFD, so both paths skip the same two ExifReader groups (`EXCLUDED_GROUPS`): `xmp`,
+ * which skips parsing the untrusted XML entirely (the group is never parsed, not just never returned) and keeps the
+ * server off the optional `@xmldom/xmldom` parser (a position recorded only in XMP reads as absent), and `mpf`, a phone
+ * JPEG's embedded preview images, which hold no GPS of their own.
  */
 import ExifReader, { type ExpandedTags } from "exifreader";
 
@@ -19,6 +20,9 @@ import { coordinatesSchema, type Coordinates } from "@/lib/validations/memory";
 export type GpsRead = { status: "found"; coordinates: Coordinates } | { status: "absent" } | { status: "failed"; error: unknown };
 
 const ABSENT: GpsRead = Object.freeze({ status: "absent" });
+
+/** The ExifReader groups neither path parses: the browser and the server read a photo the same way. */
+const EXCLUDED_GROUPS = { mpf: true, xmp: true } as const;
 
 /**
  * Browser: reads the metadata bytes of `file` through `File.slice` (ExifReader `length: "auto"`: a 128 KiB prefix,
@@ -32,7 +36,7 @@ const ABSENT: GpsRead = Object.freeze({ status: "absent" });
  */
 export async function readGpsFromFile(file: File): Promise<GpsRead> {
   try {
-    return gpsOf(await ExifReader.load(file, { length: "auto", expanded: true, includeOffsets: true, excludeTags: { mpf: true, xmp: true } }));
+    return gpsOf(await ExifReader.load(file, { length: "auto", expanded: true, includeOffsets: true, excludeTags: EXCLUDED_GROUPS }));
   } catch {
     // `length: "auto"` rejects with an untyped Error once it has read a whole file and found no metadata block (a WebP
     // or HEIC/HEIF with no Exif, such as a screenshot), where a bytes parse answers "absent". So parse the same bytes
@@ -51,7 +55,7 @@ export async function readGpsFromFile(file: File): Promise<GpsRead> {
  */
 export function readGpsFromBytes(bytes: Uint8Array): GpsRead {
   try {
-    return gpsOf(ExifReader.load(bytes, { expanded: true, excludeTags: { xmp: true } }));
+    return gpsOf(ExifReader.load(bytes, { expanded: true, excludeTags: EXCLUDED_GROUPS }));
   } catch (error) {
     return outcomeOfThrow(error);
   }
