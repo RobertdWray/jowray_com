@@ -6,6 +6,7 @@ import {
   EMAIL_REQUIRED_MESSAGE,
   MAX_MEMORIES_PER_SUBMISSION,
   NAME_REQUIRED_MESSAGE,
+  type Coordinates,
   type SubmissionIssueField,
 } from "@/lib/validations/memory";
 
@@ -32,6 +33,13 @@ export interface CardMediaItem {
   file: File;
   /** The recorder's judgement of a clip; null for files. */
   verdict: ClipVerdict | null;
+  /**
+   * A photo's point read from its EXIF in this browser, only to suggest places (B6, D2): `undefined` not read yet or
+   * reading, `null` none (or the read failed). Never sent to be stored and never in the saved draft.
+   */
+  gps?: Coordinates | null;
+  /** Place labels for `gps`: `undefined` not looked up yet or pending, `null` none (or failed), `[]` looked up with nothing usable. */
+  placeLabels?: string[] | null;
 }
 
 export interface MemoryCard {
@@ -71,6 +79,8 @@ export type CardsAction =
   | { type: "field"; id: string; field: CardTextField; value: string }
   | { type: "addMedia"; id: string; items: CardMediaItem[] }
   | { type: "removeMedia"; id: string; mediaId: string }
+  | { type: "setMediaGps"; id: string; mediaId: string; gps: Coordinates | null }
+  | { type: "setMediaPlaces"; id: string; mediaId: string; labels: string[] | null }
   | { type: "restore"; cards: DraftCard[] }
   | { type: "reset" }
   | { type: "ack" };
@@ -276,6 +286,61 @@ function updateCard(state: CardsState, id: string, change: (card: MemoryCard) =>
   return { ...state, cards: state.cards.map((card) => (card.id === id ? change(card) : card)) };
 }
 
+/**
+ * Change one media item in place. A result for a photo removed meanwhile, or a card that is gone, returns the state
+ * unchanged (the same object), so a late answer neither resurrects anything nor re-renders the form.
+ */
+function updateMedia(state: CardsState, id: string, mediaId: string, change: (item: CardMediaItem) => CardMediaItem): CardsState {
+  const card = state.cards.find((c) => c.id === id);
+  if (!card || !card.media.some((m) => m.id === mediaId)) {
+    return state;
+  }
+  return updateCard(state, id, (c) => ({ ...c, media: c.media.map((m) => (m.id === mediaId ? change(m) : m)) }));
+}
+
+/** The three typed fields of each open card: all the saved draft ever holds (no media, no GPS, no place labels). */
+export function toDraftCards(cards: ReadonlyArray<MemoryCard>): DraftCard[] {
+  return cards.filter((card) => card.open).map((card) => ({ approxDateText: card.approxDateText, place: card.place, note: card.note }));
+}
+
+/** At most this many place buttons under one card's "Where?". */
+export const MAX_PLACE_SUGGESTIONS = 6;
+
+function isPickedPhoto(item: CardMediaItem): boolean {
+  // Only photos picked as files: acceptFiles let them in, so they are an accepted photo type within MAX_BYTES.PHOTO
+  // (lib/photo-gps.ts's caller contract). Videos, voice notes and recordings are never read.
+  return item.kind === "PHOTO" && item.source === "file";
+}
+
+/** Photos whose GPS has not been read yet, on every card, in card and photo order. */
+export function gpsReadsDue(cards: ReadonlyArray<MemoryCard>): Array<{ cardId: string; item: CardMediaItem }> {
+  return cards.flatMap((card) => card.media.filter((item) => isPickedPhoto(item) && item.gps === undefined).map((item) => ({ cardId: card.id, item })));
+}
+
+/** Photos with a point whose place labels have not been asked for yet. */
+export function lookupsDue(cards: ReadonlyArray<MemoryCard>): Array<{ cardId: string; item: CardMediaItem; point: Coordinates }> {
+  return cards.flatMap((card) =>
+    card.media.flatMap((item) => (isPickedPhoto(item) && item.gps && item.placeLabels === undefined ? [{ cardId: card.id, item, point: item.gps }] : [])),
+  );
+}
+
+/**
+ * What a card's "Where?" can offer from its photos (D4): `hasGps` once any photo has a point (nothing is shown before),
+ * `pending` while one of those waits for its labels, and the labels, unique across the card, in photo order, at most six.
+ */
+export function placeSuggestionsFor(card: Pick<MemoryCard, "media">): { hasGps: boolean; pending: boolean; labels: string[] } {
+  const located = card.media.filter((item) => isPickedPhoto(item) && item.gps);
+  const labels: string[] = [];
+  for (const item of located) {
+    for (const label of item.placeLabels ?? []) {
+      if (labels.length < MAX_PLACE_SUGGESTIONS && !labels.includes(label)) {
+        labels.push(label);
+      }
+    }
+  }
+  return { hasGps: located.length > 0, pending: located.some((item) => item.placeLabels === undefined), labels };
+}
+
 export function cardsReducer(state: CardsState, action: CardsAction): CardsState {
   switch (action.type) {
     case "open": {
@@ -318,6 +383,10 @@ export function cardsReducer(state: CardsState, action: CardsAction): CardsState
       return updateCard(state, action.id, (card) => ({ ...card, media: [...card.media, ...action.items] }));
     case "removeMedia":
       return updateCard(state, action.id, (card) => ({ ...card, media: card.media.filter((m) => m.id !== action.mediaId) }));
+    case "setMediaGps":
+      return updateMedia(state, action.id, action.mediaId, (item) => ({ ...item, gps: action.gps }));
+    case "setMediaPlaces":
+      return updateMedia(state, action.id, action.mediaId, (item) => ({ ...item, placeLabels: action.labels }));
     case "restore": {
       const count = Math.max(INITIAL_CARDS, Math.min(action.cards.length, MAX_CARDS));
       const cards = Array.from({ length: count }, (_, i) => {
