@@ -3,7 +3,7 @@ import Link from "next/link";
 
 import { PrimaryLink, secondaryButtonClass } from "../_components/buttons";
 import { REPO_URL, ROB_URL } from "../_components/external-links";
-import { linkClass } from "../_components/field-classes";
+import { linkClass, quietLinkClass } from "../_components/field-classes";
 import { StitchedHeart } from "../_components/hearts";
 import { StackDiagram, StitchedSteps, type DiagramItem } from "./diagrams";
 
@@ -126,7 +126,7 @@ export default function HowItWasBuiltPage() {
           </p>
           <p className="text-body">
             By{" "}
-            <a href={ROB_URL} className={linkClass}>
+            <a href={ROB_URL} className={quietLinkClass}>
               Rob Wray
             </a>
             , Jo&apos;s son.{" "}

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 
 import { SecondaryLink } from "../_components/buttons";
 import { ROB_URL, TRACY_URL } from "../_components/external-links";
-import { linkClass } from "../_components/field-classes";
+import { linkClass, quietLinkClass } from "../_components/field-classes";
 import { StitchedHeart } from "../_components/hearts";
 
 export const metadata: Metadata = {
@@ -33,11 +33,11 @@ export default function ObituaryPage() {
         </p>
         <p>
           Jo leaves behind her husband Richard Wray, her son{" "}
-          <a href={ROB_URL} className={linkClass}>
+          <a href={ROB_URL} className={quietLinkClass}>
             Robert Wray
           </a>{" "}
           and his wife,{" "}
-          <a href={TRACY_URL} className={linkClass}>
+          <a href={TRACY_URL} className={quietLinkClass}>
             Tracy Gold
           </a>
           , and her grandchild, Ava Goldwray. She also leaves her sister Kay Bartholomew, brother-in-law Doug

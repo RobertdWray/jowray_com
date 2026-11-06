@@ -187,7 +187,7 @@ that wrap. The Mrs. Claus paragraph is a pull-quote: Fraunces 24px on a
 ### 5.7 Footer
 Centered: stitched-heart outline (40px), Fraunces 22px "Made with love by
 Richard, Kay, Rob, Tracy and Ava." ("Rob" links to robwray.com and "Tracy" to
-tracycgold.com, added 2026-11-06), 18px contact line, then the 18px links line
+tracycgold.com as quiet links, added 2026-11-06; see §7a), 18px contact line, then the 18px links line
 "Jo's obituary · How this site was built".
 
 ### 5.8 Thank-you
@@ -210,7 +210,7 @@ blind date, the 1971 wedding) replaced the first draft; the story band now opens
 with two short paragraphs drawn from it, and its pull-quote starts at "Jo loved
 Christmas" so the wedding is told once.
 2026-11-06: the words are unchanged, but "Robert Wray" links to robwray.com and
-"Tracy Gold" to tracycgold.com (Rob's request). The story band's tagline under
+"Tracy Gold" to tracycgold.com (Rob's request), as quiet links (§7a). The story band's tagline under
 "Jo's story" was removed the same day (Tracy didn't like it); the heading stands
 alone.
 
@@ -218,8 +218,8 @@ alone.
 After the story band, on the muslin ground: one centered `paper` card, 760px
 max, 3px dashed `periwinkle` border, `shadow-card`. Uppercase red-deep eyebrow
 "A note from Rob", h2 "Why I built this", Rob's two paragraphs about Ivan's
-funeral (his words, lightly edited), a Fraunces signature linking "Rob Wray" to
-robwray.com, then the primary "Leave a memory of Jo" (full width and
+funeral (his words, lightly edited), a Fraunces signature with "Rob Wray" as a
+quiet link to robwray.com (§7a), then the primary "Leave a memory of Jo" (full width and
 balanced-wrap on phones, so the label never leaves "Jo" alone on a line) and a
 text link to `/how-it-was-built`.
 
@@ -264,6 +264,17 @@ cover; then write in the same register.
   "Submit" · "Mrs. Claus" (except in the obituary pull-quote).
 - Empty and error states sound like a kind teacher: "Nothing here yet — be
   the first to tell a Jo story."
+
+## 7a. Links to people (added 2026-11-06)
+The site is about Jo, not the people who made it. Links to a person's own site
+(Rob, Tracy) use `quietLinkClass` (`app/_components/field-classes.ts`): the text
+stays the color of the sentence, with a 1px `wood` underline 4px below it, which
+darkens to walnut and thickens to 2px on hover and keyboard focus. Red (`linkClass`)
+stays for links into the site and for actions. No external-link icon: it would
+pull the eye back to the names. Contrast: walnut text 11.2:1 or more on every
+ground; the `wood` underline 3.37:1 on the darkest gingham square, 3.97:1 on
+muslin, 4.46:1 on paper (Rob: "noticeable but more subtle… This website isn't
+supposed to be about Rob or Tracy").
 
 ## 8. Accessibility (non-negotiable)
 - WCAG AA everywhere, AAA for body text (walnut on muslin and paper is).

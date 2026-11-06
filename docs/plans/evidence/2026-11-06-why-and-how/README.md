@@ -34,3 +34,17 @@ Same browser and server as the baseline. Viewports: `320x800x1,mobile`, `390x844
 Screenshots: `how-it-was-built-320.jpeg` (full page), `how-it-was-built-390-trip.jpeg`, `how-it-was-built-390-stack.jpeg`, `how-it-was-built-1280-top.jpeg`, `how-it-was-built-1280-stack.jpeg`, `home-why-320.jpeg`, `home-why-320-actions.jpeg`, `home-why-390-actions.jpeg`, `home-why-1280.jpeg`, `home-story-1280.jpeg`, `focus-github-1280.jpeg`. The round "N" badge in the corner is the Next.js dev-mode indicator; it does not appear in production.
 
 Not run by the agent: VoiceOver (plan N12); Rob's optional iPhone pass covers it.
+
+## Hotfix E7: quiet links to Rob's and Tracy's sites (branch `hotfix/quiet-personal-links`)
+
+Viewport `1280x900x2` (desktop, 2x for legibility), same server and browser as above.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Computed style of the four personal links on `/` (signature, footer Rob and Tracy) | text `rgb(46, 36, 32)` (walnut, same as the parent), `underline 1px rgb(138, 114, 89)` (wood), offset 4px; the site link "How this site was built" stays `rgb(165, 13, 38)` | — |
+| Contrast (WCAG luminance) | walnut text 11.23:1 on the darkest gingham square, 13.22:1 muslin, 14.87:1 paper; wood underline 3.37:1 darkest gingham, 3.97:1 muslin, 4.46:1 paper | — |
+| Lighthouse accessibility | 100, 0 failed audits on `/obituary` (desktop), `/` (mobile), `/how-it-was-built` (desktop) | — |
+| Lighthouse "Agentic Browsing" on `/` mobile | CLS 0.168. Production `main` (`95f4df4`) scores the same 0.168, so it is pre-existing (plan §12 F7) | — |
+| Checks | validate, test:run (1,214 passed, 7 skipped), build:offline all exit 0 | — |
+
+Screenshots: `quiet-links-home-1280.jpeg` (note signature and footer), `quiet-links-obituary-1280.jpeg`.

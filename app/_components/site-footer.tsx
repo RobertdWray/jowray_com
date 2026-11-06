@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { ROB_URL, TRACY_URL } from "./external-links";
-import { linkClass } from "./field-classes";
+import { linkClass, quietLinkClass } from "./field-classes";
 import { StitchedHeart } from "./hearts";
 
 export function SiteFooter() {
@@ -10,11 +10,11 @@ export function SiteFooter() {
       <StitchedHeart size={40} />
       <p className="font-display text-lead">
         Made with love by Richard, Kay,{" "}
-        <a href={ROB_URL} className={linkClass}>
+        <a href={ROB_URL} className={quietLinkClass}>
           Rob
         </a>
         ,{" "}
-        <a href={TRACY_URL} className={linkClass}>
+        <a href={TRACY_URL} className={quietLinkClass}>
           Tracy
         </a>{" "}
         and Ava.

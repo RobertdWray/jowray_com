@@ -5,7 +5,7 @@ import joSanta from "@/public/photos/jo-santa.jpg";
 
 import { PrimaryLink, SecondaryLink } from "./_components/buttons";
 import { ROB_URL } from "./_components/external-links";
-import { linkClass } from "./_components/field-classes";
+import { linkClass, quietLinkClass } from "./_components/field-classes";
 import { StitchedHeart } from "./_components/hearts";
 
 export default function HomePage() {
@@ -222,7 +222,7 @@ export default function HomePage() {
             </p>
           </div>
           <p className="font-display text-lead">
-            <a href={ROB_URL} className={linkClass}>
+            <a href={ROB_URL} className={quietLinkClass}>
               Rob Wray
             </a>
             , Jo&apos;s son
