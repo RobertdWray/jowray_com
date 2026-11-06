@@ -2,54 +2,17 @@
  * lib/photo-gps.ts (plan 2026-11-06-photo-gps-places B2): GPS from a photo's EXIF, read the same way from a browser
  * `File` (adaptive `length: "auto"` reads through `File.slice`) and from the stored original's bytes on the server.
  *
- * Fixtures: JPEGs are made here with sharp `withExif` (IFD3 = GPS) at the plan's point, the Statue of Liberty
- * (40.689247 N, 74.044502 W = 40° 41′ 21.2892″ N, 74° 2′ 40.2072″ W), so no family photo enters the repo.
- * `gps.heic` is `tiny.heic` with the same point written by exiftool (provenance in __tests__/fixtures/README.md).
- * `File` here is Node's global (the vitest environment is node), the class ExifReader's `instanceof File` check sees.
+ * Fixtures come from __tests__/helpers/photo-gps-fixtures.ts (sharp `withExif` JPEGs at the Statue of Liberty, and the
+ * HEIC files). `File` here is Node's global (the vitest environment is node), the class ExifReader's `instanceof File`
+ * check sees.
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-
 import ExifReader from "exifreader";
 import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { jpegMetadataComplete, readGpsFromBytes, readGpsFromFile, type GpsRead } from "@/lib/photo-gps";
 
-const FIXTURES = join(__dirname, "..", "fixtures");
-const LIBERTY = { latitude: 40.689247, longitude: -74.044502 };
-const LAT_DMS = "40/1 41/1 212892/10000";
-const LON_DMS = "74/1 2/1 402072/10000";
-/** ExifReader's first adaptive read (README: "an initial 128 KiB prefix"); also the server's prefix size (B3). */
-const PREFIX_BYTES = 128 * 1024;
-
-type Ifd3 = Record<string, string>;
-
-async function jpegWithGps(ifd3: Ifd3 | null, size = 16): Promise<Buffer> {
-  const image = sharp({ create: { width: size, height: size, channels: 3, background: "#336699" } }).jpeg();
-  return (ifd3 ? image.withExif({ IFD3: ifd3 }) : image).toBuffer();
-}
-
-const liberty = (refs: { lat?: string; lon?: string } = { lat: "N", lon: "W" }): Ifd3 => ({
-  ...(refs.lat === undefined ? {} : { GPSLatitudeRef: refs.lat }),
-  GPSLatitude: LAT_DMS,
-  ...(refs.lon === undefined ? {} : { GPSLongitudeRef: refs.lon }),
-  GPSLongitude: LON_DMS,
-});
-
-/** One APP2 segment whose identifier ExifReader does not know (not ICC_PROFILE, not MPF), so it is skipped as padding. */
-function app2Filler(payloadBytes: number): Buffer {
-  const id = Buffer.from("FILLER\0", "latin1");
-  const header = Buffer.alloc(4);
-  header.writeUInt16BE(0xffe2, 0);
-  header.writeUInt16BE(payloadBytes + 2, 2);
-  return Buffer.concat([header, id, Buffer.alloc(payloadBytes - id.length)]);
-}
-
-/** SOI, then 200 KiB of APP2 filler (four 51,200-byte segments; one segment holds at most 65,533), then the rest of `jpeg` from its EXIF APP1 on. */
-function withLateExif(jpeg: Buffer): Buffer {
-  return Buffer.concat([jpeg.subarray(0, 2), ...Array.from({ length: 4 }, () => app2Filler(51_200)), jpeg.subarray(2)]);
-}
+import { jpegWithGps, LAT_DMS, liberty, LIBERTY, LON_DMS, PREFIX_BYTES, readFixture, withLateExif } from "../helpers/photo-gps-fixtures";
 
 type Recorded = { file: File; slices: Array<[number | undefined, number | undefined]>; wholeReads: () => number };
 
@@ -138,11 +101,11 @@ describe("readGpsFromBytes", () => {
   });
 
   it("is absent for a HEIC with no EXIF (tiny.heic)", () => {
-    expect(readGpsFromBytes(readFileSync(join(FIXTURES, "tiny.heic")))).toEqual({ status: "absent" });
+    expect(readGpsFromBytes(readFixture("tiny.heic"))).toEqual({ status: "absent" });
   });
 
   it("finds the point in gps.heic (exiftool-written GPS IFD in a HEIC Exif item)", () => {
-    expectFound(readGpsFromBytes(readFileSync(join(FIXTURES, "gps.heic"))), LIBERTY);
+    expectFound(readGpsFromBytes(readFixture("gps.heic")), LIBERTY);
   });
 
   it.each([
@@ -197,13 +160,13 @@ describe("readGpsFromFile", () => {
   });
 
   it("finds the point in gps.heic through the metadata read alone, without a whole-file read", async () => {
-    const gps = recordingFile(readFileSync(join(FIXTURES, "gps.heic")), "gps.heic", "image/heic");
+    const gps = recordingFile(readFixture("gps.heic"), "gps.heic", "image/heic");
     expectFound(await readGpsFromFile(gps.file), LIBERTY);
     expect(gps.wholeReads()).toBe(0);
   });
 
   it("is absent for a metadata-less HEIC (tiny.heic): the auto read rejects, the whole-file bytes parse decides", async () => {
-    const tiny = recordingFile(readFileSync(join(FIXTURES, "tiny.heic")), "tiny.heic", "image/heic");
+    const tiny = recordingFile(readFixture("tiny.heic"), "tiny.heic", "image/heic");
     expect(await readGpsFromFile(tiny.file)).toEqual({ status: "absent" });
     expect(tiny.wholeReads()).toBe(1);
   });
@@ -224,7 +187,7 @@ describe("readGpsFromFile", () => {
 
   it("is failed (it resolves, never rejects) when the fallback's whole-file read itself throws", async () => {
     const unreadable = new DOMException("The file could not be read.", "NotReadableError");
-    const tiny = recordingFile(readFileSync(join(FIXTURES, "tiny.heic")), "tiny.heic", "image/heic", unreadable);
+    const tiny = recordingFile(readFixture("tiny.heic"), "tiny.heic", "image/heic", unreadable);
     expect(await readGpsFromFile(tiny.file)).toEqual({ status: "failed", error: unreadable });
   });
 
@@ -240,9 +203,9 @@ describe("readGpsFromFile", () => {
       "WebP with GPS": await tile().webp().withExif(gpsExif).toBuffer(),
       "WebP, no metadata": await tile().webp().toBuffer(),
       "GIF, no metadata": await tile().gif().toBuffer(),
-      "gps.heic": readFileSync(join(FIXTURES, "gps.heic")),
-      "tiny.heic": readFileSync(join(FIXTURES, "tiny.heic")),
-      "rotated.heic": readFileSync(join(FIXTURES, "rotated.heic")),
+      "gps.heic": readFixture("gps.heic"),
+      "tiny.heic": readFixture("tiny.heic"),
+      "rotated.heic": readFixture("rotated.heic"),
       "text": new TextEncoder().encode("plain text"),
     };
     const summary = (read: GpsRead) => (read.status === "found" ? { status: read.status, coordinates: read.coordinates } : { status: read.status });
@@ -307,6 +270,6 @@ describe("jpegMetadataComplete", () => {
   });
 
   it("is false for a HEIC (not a JPEG)", () => {
-    expect(jpegMetadataComplete(readFileSync(join(FIXTURES, "gps.heic")))).toBe(false);
+    expect(jpegMetadataComplete(readFixture("gps.heic"))).toBe(false);
   });
 });
