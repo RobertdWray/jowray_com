@@ -36,7 +36,7 @@ export const mediaWordsFields = {
 export const memoryFileInputSchema = fileInputSchema.extend(mediaWordsFields);
 export type MemoryFileInput = z.infer<typeof memoryFileInputSchema>;
 
-const NEEDS_CONTENT = "Add a file, a recording, or a few words";
+const NEEDS_CONTENT = "Add at least one: a photo, a video, a voice recording or a few words";
 
 /**
  * Name and email are required since 2026-11-04 (Rob's items 1 and 6, ruling 2):

@@ -166,7 +166,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
       if (!cardId) {
         return;
       }
-      // A recording answers "needs a recording, a file or a few words" as well as typing does.
+      // A recording answers "needs at least one: a photo, a video, a voice recording or a few words" as well as typing does.
       clearFieldIssue(`note:${cardId}`);
       const item: CardMediaItem = {
         id: `${cardId}-${crypto.randomUUID()}`,

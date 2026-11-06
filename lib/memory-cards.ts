@@ -187,7 +187,7 @@ export function validateForSend(cards: MemoryCard[]): CardIssue[] {
     const position = i + 1;
     const needsContent = card.media.length === 0 && !hasWords(card);
     if (needsContent && (hasContent(card) || (position === 1 && open.every((c) => isEmpty(c))))) {
-      issues.push({ target: "note", cardId: card.id, position, message: `Memory ${position} needs a recording, a file or a few words.` });
+      issues.push({ target: "note", cardId: card.id, position, message: `Memory ${position} needs at least one: a photo, a video, a voice recording or a few words.` });
     }
   });
   return issues;

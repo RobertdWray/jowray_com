@@ -130,7 +130,7 @@ describe("createSubmissionInputSchema (Task 15)", async () => {
     expect(result.success).toBe(false);
     if (result.success) { return; }
     const locations = result.error.issues.map((issue) => submissionIssueLocation(issue));
-    expect(locations).toContainEqual({ memoryIndex: 1, fileIndex: null, field: null, message: "Add a file, a recording, or a few words" });
+    expect(locations).toContainEqual({ memoryIndex: 1, fileIndex: null, field: null, message: "Add at least one: a photo, a video, a voice recording or a few words" });
     expect(locations).toContainEqual(expect.objectContaining({ memoryIndex: 2, fileIndex: 0 }));
     const top = createSubmissionInputSchema.safeParse({ ...send([memory()]), email: "nope" });
     expect(top.success).toBe(false);
