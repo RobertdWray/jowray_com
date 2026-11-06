@@ -84,8 +84,6 @@ export class SendGridTransport implements EmailTransport {
         const [response] = await client.send({
           to: message.to,
           from: message.from,
-          // The helper library's `replyTo`; `Mail.setReplyTo` sends it as the v3 API's `reply_to`.
-          replyTo: message.replyTo,
           subject: message.subject,
           text: message.text,
           html: message.html,

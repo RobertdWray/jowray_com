@@ -6,7 +6,6 @@
 // EmailLog row. The address must be allowlisted unless OUTBOUND_ENABLED=true.
 import sgMail from "@sendgrid/mail";
 
-import { FAMILY_CONTACT_EMAIL } from "../lib/contact";
 import { buildSample, parseTemplate } from "./render-email-preview";
 
 function required(name: string): string {
@@ -35,8 +34,6 @@ async function main(): Promise<void> {
   const [response] = await sgMail.send({
     to,
     from: required("SENDGRID_FROM_EMAIL"),
-    // Same Reply-To as `deliver()` in services/email, so a real-inbox check sees the production headers.
-    replyTo: FAMILY_CONTACT_EMAIL,
     subject: rendered.subject,
     text: rendered.text,
     html: rendered.html,

@@ -32,7 +32,7 @@ describe("buildMemoryConfirmation: fixed content (issue #46, D1)", () => {
     expect(build().subject).toBe(MEMORY_CONFIRMATION_SUBJECT);
   });
 
-  it("names the family contact address in the questions line, as text and as a mailto link (the same address as Reply-To)", () => {
+  it("names the family contact address in the questions line, as text and as a mailto link", () => {
     const { html, text } = build();
     expect(text).toContain("Questions, or a memory that won't fit in a box? Email robwray@gmail.com.");
     expect(html).toContain('<a href="mailto:robwray@gmail.com"');

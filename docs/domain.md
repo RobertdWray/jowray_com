@@ -70,7 +70,6 @@ Your machine may say a host doesn't resolve for up to 30 minutes after a record 
 
 ## Not done here
 
-- **Email DNS.** The zone has no MX, SPF, DKIM, or DMARC records. Add them when SendGrid sending is set up, using SendGrid's domain authentication CNAMEs plus a DMARC record. Until then, nothing stops someone from spoofing `@jowray.com` addresses.
 - **The `vercel.app` alias.** `jowraycom.vercel.app` still serves the site instead of redirecting to `www.jowray.com`. That's harmless now. If duplicate indexing ever matters, redirect it.
 - **Absolute URLs in code.** The app doesn't build any yet. When it does (Open Graph `metadataBase`, magic-link callbacks, SMS reply links), use `https://www.jowray.com`.
 
@@ -85,4 +84,26 @@ Created by `scripts/dns-setup.ts` (idempotent; re-run it to check validation). S
 | CNAME | `s2._domainkey` | `s2.domainkey.u46785377.wl128.sendgrid.net` | `8931d1c589ebf61c67c588090494d13c` |
 | TXT | `_dmarc` | `v=DMARC1; p=none; rua=mailto:dmarc@jowray.com` | `c726c35b037f8ab93d2c9d23f1c827a1` |
 
-No `MX` record exists; `jowray.com` does not receive mail (`dmarc@jowray.com` reports go nowhere until one is added). Every outgoing email therefore sets Reply-To to the family contact address (`FAMILY_CONTACT_EMAIL` in `lib/contact.ts`, robwray@gmail.com), so a reader who presses Reply on a message from `memories@jowray.com` reaches a real inbox instead of bouncing.
+## Inbound email (Cloudflare Email Routing, enabled 2026-11-06)
+
+`memories@jowray.com` is the From address of every site email, and Cloudflare Email Routing forwards it to `robwray@gmail.com` (`FAMILY_CONTACT_EMAIL` in `lib/contact.ts`). So a reader who presses Reply reaches the family, and the emails set no Reply-To. (PR #54 briefly set a gmail.com Reply-To while the zone had no MX. That costs about 2 SpamAssassin points (`FREEMAIL_FORGED_REPLYTO`), so it was removed once forwarding worked.)
+
+| Item | Value | Id |
+|---|---|---|
+| Rule | `memories@jowray.com` (literal "to") → forward to `robwray@gmail.com` | `2d9dedb3b5f94ff8b1b002d4a08d000a` |
+| Destination | `robwray@gmail.com`, verified 2024-09-10 (account-level) | `4dddb2b1320f4de0911753a138d68a78` |
+| Catch-all | Disabled: every other `@jowray.com` address bounces, including `dmarc@` (the `_dmarc` `rua` reports) | `d83ade668358471e8f52042aa3677cfb` |
+
+Records Email Routing added on enable. Cloudflare marks the MX and DKIM records `read_only`; they are managed by Email Routing, not `scripts/dns-setup.ts`. None of them overlap SendGrid's `em4653` / `s1` / `s2` records.
+
+| Type | Name | Content | Cloudflare record id |
+|---|---|---|---|
+| MX 22 | `@` | `route1.mx.cloudflare.net` | `8f88ba5dadb212cc39ae4a28e5342225` |
+| MX 54 | `@` | `route2.mx.cloudflare.net` | `1fde463fecf605ceafc5bb66d1fccae4` |
+| MX 82 | `@` | `route3.mx.cloudflare.net` | `79ce8deaf9fb343927707396c295fcde` |
+| TXT | `@` | `v=spf1 include:_spf.mx.cloudflare.net ~all` | `295d965357a0318aea2de621bbb97604` |
+| TXT | `cf2024-1._domainkey` | Cloudflare's DKIM public key | `0ef21db9b9a98db42704799097534929` |
+
+Proven on 2026-11-06. A message from a Gmail account to `memories@jowray.com` arrived at `robwray@gmail.com` with SPF (SRS envelope `@jowray.com`), DKIM (`jowray.com`, `cloudflare-email.net`, `gmail.com`), ARC and DMARC all passing.
+
+**Managing it.** `CLOUDFLARE_DNS_ONLY_API_TOKEN` cannot manage Email Routing: `/email/routing` returns error 10000. Use the `cf` CLI (1.0.0-beta.28 or newer) after `cf auth login`, which grants the `email_routing:write` OAuth scope. Commands live under `cf email-routing` (`settings get`, `dns get`, `rules list|create`, `addresses create`, `rules catch-all get`). Pass the zone id with `-z`; the dry-run output shows a domain name left unresolved in the URL. The dashboard path is Email → Email Routing.
