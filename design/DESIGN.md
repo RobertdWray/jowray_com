@@ -260,8 +260,12 @@ below), and a closing primary "Leave a memory of Jo".
     the page stays `○`. Shown through `next/image` with `unoptimized`, an SVG
     cannot run script. Opened full size, `/diagrams/*` is served with
     `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline';
-    font-src data:; img-src data:` and `nosniff` (`next.config.ts`). Fixed ids
-    and `handDrawnSeed: 1` make a re-run on an unchanged README byte-identical.
+    font-src data:; sandbox; frame-ancestors 'none'` and `nosniff`
+    (`next.config.ts`): an opened SVG gets an opaque origin and no other site
+    can frame it. Fixed ids, `handDrawnSeed: 1` and the pinned `look: "neo"`
+    and `layout: "elk"` make a re-run on an unchanged README byte-identical on
+    the same OS and Chrome version (the local Chrome measures the text). The
+    script renders and checks every diagram before it writes any file.
   - **Theme.** Mermaid `base` theme from the tokens: paper ground, muslin shapes
     with `periwinkle-deep` borders, dashed `periwinkle` groups, `walnut` text
     and lines, `wood` lifelines, `wood-light` loop and note labels, walnut
@@ -285,11 +289,14 @@ below), and a closing primary "Leave a memory of Jo".
     script before any file is written and in the test on every committed SVG.
     It tokenizes the file strictly (no DOCTYPE, CDATA or processing
     instructions), decodes entities, then allows only the elements and
-    attributes the generator emits; `href` and `url()` only to `#id` or
-    `data:`; CSS at-rules only `@font-face` and `@keyframes`; no CSS escapes.
-    Eighteen attack payloads (encoded `javascript:`, outside `<image>`,
-    `@import`, `<set>` on an event handler, and more) are spliced into a real
-    SVG in the test and each must be rejected for its reason. It proves what
+    attributes the generator emits; `xmlns` only on the root and only SVG's;
+    no repeated attribute; `href` only to `#id`; CSS `url()` only to `#id` or
+    an embedded WOFF2 font; CSS at-rules only `@font-face` and `@keyframes`;
+    no CSS escapes, no CSS comments and no XML comments inside `<svg>`.
+    Twenty-six attack payloads (encoded `javascript:`, outside `<image>`,
+    `@import`, `<set>` on an event handler, an XHTML namespace, a `url()`
+    split by a comment, and more) are spliced into a real SVG in the test and
+    each must be rejected for its reason. It proves what
     the files contain, not how a browser parses them; the CSP above is the
     second layer.
 

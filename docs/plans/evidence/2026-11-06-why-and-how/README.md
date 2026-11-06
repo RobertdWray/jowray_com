@@ -77,3 +77,21 @@ Viewport `1280x900x2` (desktop, 2x for legibility), same server and browser as a
 | Checks | validate, test:run (1,214 passed, 7 skipped), build:offline all exit 0 | — |
 
 Screenshots: `quiet-links-home-1280.jpeg` (note signature and footer), `quiet-links-obituary-1280.jpeg`.
+
+## Team Code Review round (ledger step 17), commit `68faf98`
+
+Plan §10a and rulings E21–E28. No dev server: the SVGs were opened in Google Chrome through Playwright (`channel: "chrome"`), with each response fulfilled by `page.route` carrying the exact header under test. Generator: `npx tsx scripts/make-readme-diagrams.ts`, mermaid 12.2.0, Node 26.13.0.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Validator and generator changes alone, unchanged README | all three SVGs and the manifest byte-identical to `38cab03` (`cmp` against `git show HEAD:…`) | — |
+| After the README ER fix (E22) | `how-a-memory-travels.svg` and `architecture.svg` byte-identical to `38cab03`; only `data-model.svg` and its manifest `sourceSha256` changed; size still 1804×1542; a second run is byte-identical | — |
+| `look: "neo"` and `layout: "elk"` pinned (E28) | byte-identical before the README fix; for contrast, a top-level `look: "classic"` changed all three files and `layout: "dagre"` changed two | — |
+| Self-loop markers on `Media` | crow's foot with a ring (zero or more replacements) at one end, ring and bar (zero or one target) at the other | `detailed-1280-data-model-tcr.jpeg` (`data-model.svg` opened full size, 1280×1542 viewport, under the new CSP) |
+| New CSP, opened full size (E26) | all three SVGs: status 200, no console messages, `self.origin` `null` (sandboxed), Atkinson Hyperlegible applied; embedded faces `loaded` (400 and 700 in `how-a-memory-travels.svg`; the other two embed only 400, the one weight they use); screenshots pixel-identical to the old policy | — |
+| Framing (E26) | an `<iframe>` from another origin is refused ("violates … frame-ancestors 'none'"); an `<img>` of the same file on another origin still renders at natural width | — |
+| Generator failure path (E27), scratch copy | a broken "Data model" block exits 1 with `"Data model" could not be rendered: page.evaluate: Error: Parse error on line 10` and its `[cause]`; all three committed SVGs untouched. A successful run removes a stale `old.svg` | — |
+| Validator (E23–E25) | 46 tests in `__tests__/lib/readme-diagrams.test.ts`, 26 attack payloads, each rejected for its reason; the committed SVGs pass | — |
+| `npm run validate`, `npm run test:run`, `npm run build:offline` | all exit 0; 1,268 tests (1,261 passed, 7 skipped); `○ /how-it-was-built` | ledger step 17 |
+
+Not run: Safari and an iPhone under the new CSP (plan §12 F10); the production header check after merge (F9).
