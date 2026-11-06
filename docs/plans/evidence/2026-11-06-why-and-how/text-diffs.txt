@@ -1,0 +1,27 @@
+### /obituary main (expect identical)
+IDENTICAL
+
+### / #story (expect only the tagline removed)
+3,4d2
+< Hunt Valley, Maryland, by way of Reisterstown and a lot of summers on Lake George.
+< 
+
+### / footer
+1c1
+< Made with love by Richard, Rob, Tracy and Ava.
+---
+> Made with love by Richard, Kay, Rob, Tracy and Ava.
+5c5
+< Jo's obituary
+---
+> Jo's obituary · How this site was built
+
+### /obituary footer
+1c1
+< Made with love by Richard, Rob, Tracy and Ava.
+---
+> Made with love by Richard, Kay, Rob, Tracy and Ava.
+5c5
+< Jo's obituary
+---
+> Jo's obituary · How this site was built

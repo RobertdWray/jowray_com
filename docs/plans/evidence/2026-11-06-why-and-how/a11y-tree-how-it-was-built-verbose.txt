@@ -1,0 +1,286 @@
+uid=1_0 RootWebArea "How this site was built — Jo Wray" url="http://localhost:3106/how-it-was-built"
+  uid=2_0 ignored
+    uid=2_1 ignored
+      uid=1_1 banner
+        uid=2_2 ignored
+          uid=1_2 link "Jo Wray" url="http://localhost:3106/"
+            uid=2_3 ignored
+              uid=1_3 "Jo Wray"
+          uid=1_4 navigation
+            uid=1_5 link "Leave a memory" url="http://localhost:3106/share"
+              uid=1_6 "Leave a memory"
+            uid=1_7 link "Jo's story" url="http://localhost:3106/#story"
+              uid=1_8 "Jo's story"
+      uid=1_9 main
+        uid=2_4 ignored
+          uid=1_10 region "How this site was built"
+            uid=2_5 ignored
+              uid=2_6 paragraph
+                uid=1_11 "BEHIND THE SCENES"
+              uid=1_12 heading "How this site was built" level="1"
+                uid=2_7 "How this site was built"
+            uid=2_8 paragraph
+              uid=1_13 "Jo's family wanted one place where everyone who knew her could leave a memory without making an account, installing anything, or being good with computers. Many of the people sharing are over 70 and on a phone, so every choice starts there."
+            uid=2_9 paragraph
+              uid=1_14 "By"
+              uid=1_15 link "Rob Wray" url="https://www.robwray.com/"
+                uid=1_16 "Rob Wray"
+              uid=1_17 ", Jo's son."
+              uid=1_18 link "Why I built it" url="http://localhost:3106/#why"
+                uid=1_19 "Why I built it"
+              uid=1_20 "."
+            uid=2_10 ignored
+              uid=1_21 link "See the code on GitHub" url="https://github.com/RobertdWray/jowray_com"
+                uid=1_22 "See the code on GitHub"
+            uid=2_11 list "The first version in numbers"
+              uid=2_12 listitem level="1"
+                uid=2_13 ignored
+                  uid=1_23 "3 days"
+                uid=2_14 ignored
+                  uid=1_24 "to build the first version, November 2–4, 2026"
+              uid=2_15 listitem level="1"
+                uid=2_16 ignored
+                  uid=1_25 "37"
+                uid=2_17 ignored
+                  uid=1_26 "pull requests in those three days"
+              uid=2_18 listitem level="1"
+                uid=2_19 ignored
+                  uid=1_27 "1,200+"
+                uid=2_20 ignored
+                  uid=1_28 "automated tests"
+              uid=2_21 listitem level="1"
+                uid=2_22 ignored
+                  uid=1_29 "0"
+                uid=2_23 ignored
+                  uid=1_30 "accounts to make"
+          uid=1_31 region "The trip a memory takes"
+            uid=1_32 heading "The trip a memory takes" level="2"
+              uid=2_24 "The trip a memory takes"
+            uid=2_25 figure
+              uid=2_26 list "What happens after you press Send"
+                uid=2_27 listitem level="1"
+                  uid=2_28 ignored
+                    uid=1_33 heading "You share." level="3"
+                      uid=2_29 "You share."
+                    uid=2_30 paragraph
+                      uid=1_34 "Type a few words, record your voice, or pick photos and videos. No account needed."
+                uid=2_31 listitem level="1"
+                  uid=2_32 ignored
+                    uid=1_35 heading "Your words are saved." level="3"
+                      uid=2_33 "Your words are saved."
+                    uid=2_34 paragraph
+                      uid=1_36 "Your name, your words and when you sent them go into the family's database."
+                uid=2_35 listitem level="1"
+                  uid=2_36 ignored
+                    uid=1_37 heading "Files go straight to private storage." level="3"
+                      uid=2_37 "Files go straight to private storage."
+                    uid=2_38 paragraph
+                      uid=1_38 "Photos, videos and recordings travel directly from your phone to a private store. Each file is checked to make sure it really is a photo, video or recording, and photos get a web-sized copy with the location data removed."
+                uid=2_39 listitem level="1"
+                  uid=2_40 ignored
+                    uid=1_39 heading "You get a private link." level="3"
+                      uid=2_41 "You get a private link."
+                    uid=2_42 paragraph
+                      uid=1_40 "It's on the thank-you screen and in an email, so you can come back to fix a typo or add a photo."
+                uid=2_43 listitem level="1"
+                  uid=2_44 ignored
+                    uid=1_41 heading "The family reads it." level="3"
+                      uid=2_45 "The family reads it."
+                    uid=2_46 paragraph
+                      uid=1_42 "Jo's family gets a note that a memory arrived and reads it on their private page."
+              uid=2_47 Figcaption
+                uid=1_43 "Every ten minutes, a background job looks for uploads that reached storage but still need finishing, and for emails that need another try. If an upload is interrupted, you may need to send that file again."
+          uid=1_44 region "What runs where"
+            uid=1_45 heading "What runs where" level="2"
+              uid=2_48 "What runs where"
+            uid=2_49 figure
+              uid=2_50 list "Where each part of the site runs, from your browser down"
+                uid=2_51 listitem level="1"
+                  uid=2_52 ignored
+                    uid=1_46 heading "Your phone or computer" level="3"
+                      uid=2_53 "Your phone or computer"
+                    uid=2_54 paragraph
+                      uid=1_47 "The share page, the recorder and the uploads, all in your web browser."
+                uid=2_55 listitem level="1"
+                  uid=2_56 ignored
+                    uid=1_48 heading "The website, on Vercel" level="3"
+                      uid=2_57 "The website, on Vercel"
+                    uid=2_58 paragraph
+                      uid=1_49 "Next.js 16 and React 19: the pages, the code that saves memories, the upload and media routes, and the ten-minute background job."
+                uid=2_59 listitem level="1"
+                  uid=2_60 list "Services the website uses"
+                    uid=2_61 listitem level="2"
+                      uid=1_50 heading "Neon Postgres" level="3"
+                        uid=2_62 "Neon Postgres"
+                      uid=2_63 paragraph
+                        uid=1_51 "Memories, names and their edit history."
+                    uid=2_64 listitem level="2"
+                      uid=1_52 heading "Vercel Blob" level="3"
+                        uid=2_65 "Vercel Blob"
+                      uid=2_66 paragraph
+                        uid=1_53 "Photos, videos and recordings, kept private. Uploads arrive here straight from your browser."
+                    uid=2_67 listitem level="2"
+                      uid=1_54 heading "SendGrid" level="3"
+                        uid=2_68 "SendGrid"
+                      uid=2_69 paragraph
+                        uid=1_55 "Your receipt and the family's alert."
+                    uid=2_70 listitem level="2"
+                      uid=1_56 heading "Sentry" level="3"
+                        uid=2_71 "Sentry"
+                      uid=2_72 paragraph
+                        uid=1_57 "Error reports and recordings of visits, so problems get fixed fast."
+              uid=2_73 Figcaption
+                uid=1_58 "Inside, the code is layered so each part only talks to the ones below it: pages, then features, then services, then the outside vendors. A linter enforces it."
+          uid=1_59 region "How Rob and AI built it"
+            uid=1_60 heading "How Rob and AI built it" level="2"
+              uid=2_74 "How Rob and AI built it"
+            uid=2_75 paragraph
+              uid=1_61 "The first version took three days and 37 pull requests. Rob decided what to build and made every call about Jo. AI coding agents, mostly Anthropic's Claude with OpenAI's Codex on some features, planned, built, tested and documented the work, and independent AI reviewers checked it."
+            uid=2_76 figure
+              uid=2_77 list "How each change was made"
+                uid=2_78 listitem level="1"
+                  uid=2_79 ignored
+                    uid=1_62 heading "Rob decides." level="3"
+                      uid=2_80 "Rob decides."
+                    uid=2_81 paragraph
+                      uid=1_63 "What the site should do, how it should feel, and every call about Jo."
+                uid=2_82 listitem level="1"
+                  uid=2_83 ignored
+                    uid=1_64 heading "A written plan." level="3"
+                      uid=2_84 "A written plan."
+                    uid=2_85 paragraph
+                      uid=1_65 "An agent writes a plan with Rob's decisions quoted word for word, plus a "premortem": imagine it failed, then ask why."
+                uid=2_86 listitem level="1"
+                  uid=2_87 ignored
+                    uid=1_66 heading "Built on its own branch." level="3"
+                      uid=2_88 "Built on its own branch."
+                    uid=2_89 paragraph
+                      uid=1_67 "Every change, even an urgent fix, gets its own branch, with tests written first for the risky parts like uploads and email."
+                uid=2_90 listitem level="1"
+                  uid=2_91 ignored
+                    uid=1_68 heading "Reviewed." level="3"
+                      uid=2_92 "Reviewed."
+                    uid=2_93 paragraph
+                      uid=1_69 "A fresh AI reviewer reads the whole change, and for bigger changes two more AI models, Google's Gemini and OpenAI's Codex, review it independently."
+                uid=2_94 listitem level="1"
+                  uid=2_95 ignored
+                    uid=1_70 heading "Rob approves, and it ships." level="3"
+                      uid=2_96 "Rob approves, and it ships."
+                    uid=2_97 paragraph
+                      uid=1_71 "Automated checks must pass before anything reaches the live site."
+              uid=2_98 Figcaption
+                uid=1_72 "Then around again. You can read the plans, decisions and review notes in the repository."
+          uid=1_73 region "Made for Jo's people"
+            uid=1_74 heading "Made for Jo's people" level="2"
+              uid=2_99 "Made for Jo's people"
+            uid=2_100 list
+              uid=2_101 listitem level="1"
+                uid=2_102 ListMarker "• "
+                  ignored
+                uid=1_75 "Large text in Atkinson Hyperlegible, a typeface made for low-vision readers."
+              uid=2_103 listitem level="1"
+                uid=2_104 ListMarker "• "
+                  ignored
+                uid=1_76 "Big buttons, and nothing hidden behind a hover."
+              uid=2_105 listitem level="1"
+                uid=2_106 ListMarker "• "
+                  ignored
+                uid=1_77 "iPhone photos work as they are, including Apple's HEIC format."
+              uid=2_107 listitem level="1"
+                uid=2_108 ListMarker "• "
+                  ignored
+                uid=1_78 "The heart is the logo because Jo's maiden name was Hart."
+          uid=1_79 region "Built with"
+            uid=1_80 heading "Built with" level="2"
+              uid=2_109 "Built with"
+            uid=2_110 list
+              uid=2_111 listitem level="1"
+                uid=1_81 "Next.js 16"
+              uid=2_112 listitem level="1"
+                uid=1_82 "React 19"
+              uid=2_113 listitem level="1"
+                uid=1_83 "TypeScript"
+              uid=2_114 listitem level="1"
+                uid=1_84 "Tailwind CSS 4"
+              uid=2_115 listitem level="1"
+                uid=1_85 "Prisma 7"
+              uid=2_116 listitem level="1"
+                uid=1_86 "Neon Postgres 18"
+              uid=2_117 listitem level="1"
+                uid=1_87 "Vercel (hosting, Blob storage, cron)"
+              uid=2_118 listitem level="1"
+                uid=1_88 "SendGrid"
+              uid=2_119 listitem level="1"
+                uid=1_89 "Sentry"
+              uid=2_120 listitem level="1"
+                uid=1_90 "sharp and heic-decode (libheif in WebAssembly)"
+              uid=2_121 listitem level="1"
+                uid=1_91 "Vitest"
+              uid=2_122 listitem level="1"
+                uid=1_92 "Claude Code"
+          uid=1_93 region "Privacy, in plain words"
+            uid=1_94 heading "Privacy, in plain words" level="2"
+              uid=2_123 "Privacy, in plain words"
+            uid=2_124 list
+              uid=2_125 listitem level="1"
+                uid=2_126 ListMarker "• "
+                  ignored
+                uid=1_95 "Your private link lets you see, correct or add to your memory. The site keeps a scrambled fingerprint of the link, never the link itself. Jo's family can also make corrections from their private page."
+              uid=2_127 listitem level="1"
+                uid=2_128 ListMarker "• "
+                  ignored
+                uid=1_96 "Files sit in private storage. Photos are shown from a copy with the location data removed."
+              uid=2_129 listitem level="1"
+                uid=2_130 ListMarker "• "
+                  ignored
+                uid=1_97 "Nothing you share is public yet. The family reads every memory first."
+              uid=2_131 listitem level="1"
+                uid=2_132 ListMarker "• "
+                  ignored
+                uid=1_98 "One honest note: during this early version, Rob uses detailed error reports and recordings of visits, including what people type and the photos on screen, to find and fix problems. Reports can include your name and email address. The family approved this. Some recordings, and screenshots sent with a problem report, can include private links."
+          uid=1_99 region "The code is open"
+            uid=1_100 heading "The code is open" level="2"
+              uid=2_133 "The code is open"
+            uid=2_134 paragraph
+              uid=1_101 "The code, the plans and the decisions are"
+              uid=1_102 link "on GitHub" url="https://github.com/RobertdWray/jowray_com"
+                uid=1_103 "on GitHub"
+              uid=1_104 "."
+            uid=2_135 ignored
+              uid=1_105 link "Leave a memory of Jo" url="http://localhost:3106/share"
+                uid=1_106 "Leave a memory of Jo"
+      uid=1_107 contentinfo
+        uid=2_136 paragraph
+          uid=1_108 "Made with love by Richard, Kay,"
+          uid=1_109 link "Rob" url="https://www.robwray.com/"
+            uid=1_110 "Rob"
+          uid=1_111 ","
+          uid=1_112 link "Tracy" url="https://tracycgold.com/"
+            uid=1_113 "Tracy"
+          uid=1_114 "and Ava."
+        uid=2_137 paragraph
+          uid=1_115 "Questions, or a memory that won't fit in a box? Email"
+          uid=1_116 link "robwray@gmail.com" url="mailto:robwray@gmail.com"
+            uid=1_117 "robwray@gmail.com"
+          uid=1_118 "."
+        uid=2_138 paragraph
+          uid=1_119 link "Jo's obituary" url="http://localhost:3106/obituary"
+            uid=1_120 "Jo's obituary"
+          uid=1_121 link "How this site was built" url="http://localhost:3106/how-it-was-built"
+            uid=1_122 "How this site was built"
+      uid=2_139 generic
+        uid=2_140 generic
+          uid=2_141 generic
+            uid=2_142 ignored
+              uid=2_143 ignored
+                uid=2_144 generic
+                  uid=2_145 ignored
+                    uid=1_123 button "Open Next.js Dev Tools" expandable haspopup="menu"
+                      uid=2_146 image
+                        uid=2_147 ignored
+                        uid=2_148 ignored
+                        uid=2_149 ignored
+                        uid=2_150 ignored
+                        uid=2_151 ignored
+      uid=2_152 generic
+        uid=1_124 alert atomic live="assertive" relevant="additions text"

@@ -132,7 +132,7 @@ Page copy (every line `[PROPOSED]` unless tagged; the bracketed `F#` refers to �
 >
 > By [Rob Wray](ROB_URL), Jo's son. [Why I built it](/#why). · [See the code on GitHub] *(`<a>` with `secondaryButtonClass` → REPO_URL)*
 >
-> **Stat row (4 tiles):** **3 days** to build the first version, November 2–4, 2026 [F2] · **37** pull requests in those three days [F3] · **About N** automated tests [F4] · **0** accounts to make [F5]
+> **Stat row (4 tiles):** **3 days** to build the first version, November 2–4, 2026 [F2] · **37** pull requests in those three days [F3] · **1,200+** automated tests [F4] · **0** accounts to make [F5]
 >
 > ## The trip a memory takes *(StitchedSteps)*
 > 1. **You share.** Type a few words, record your voice, or pick photos and videos. No account needed. [F5]
@@ -184,7 +184,7 @@ Re-check any row whose source file changes before merge (§2 rule 4). "Exec" mea
 | F1 | Contributors are often over 70 and on a phone | README "What this is": "Most of the people sharing are over 70 and on an iPhone"; the copy softens "Most" to "Many" because no one has measured it | ok as softened |
 | F2 | First version took 3 days, Nov 2–4, 2026 | First commit `f0cd5aa` 2026-11-02 14:40 −0500. README: "PR #1 on 2026-11-02 to PR #40 on 2026-11-04" | ok |
 | F3 | 37 pull requests in those three days | `gh pr list --repo RobertdWray/jowray_com --state merged --limit 200 --json number,mergedAt --jq '[.[] \| select(.mergedAt >= "2026-11-02T05:00:00Z" and .mergedAt < "2026-11-05T05:00:00Z")] \| length'` → **37** (Eastern days). The same query with UTC days gives 35. PR numbers 1–40 share their sequence with issues, so "40" overcounts | ok, ET query recorded |
-| F4 | About N automated tests | **Exec:** take the "Tests" count from Step 8's `npm run test:run` summary, round down to the nearest 100, and record the commit. README's "~1200" is not a source | exec |
+| F4 | 1,200+ automated tests (1,221 at `95f4df4`, 2026-11-06: 1,214 passed, 7 skipped) | **Done (was exec):** take the "Tests" count from Step 8's `npm run test:run` summary, round down to the nearest 100, and record the commit. README's "~1200" is not a source | exec |
 | F5 | No account needed | No sign-in exists in Phase 1; README roadmap puts Auth.js in Phase 3 | ok |
 | F6 | Name, words and time are saved; edit history kept | `lib/validations/memory.ts:69` (email, name); `features/memories/media-state.ts:42-48`: revisions keep "the first one … and the latest MAX_REVISIONS_PER_MEMORY − 1" (200). So the copy says "edit history", **not** "every edit" | ok as worded |
 | F7 | Files go straight to private storage, are checked by type, and photos get a web copy without location data | README Security table: "Bytes never pass through our servers"; "A file becomes `READY` only once its first bytes match an allowed type"; "Photos are shown from a derived copy with EXIF and GPS stripped". The **15-minute** figure is left out: `lib/upload-ticket.ts:15-25` gives 15 min to *start* an upload and a 1 h Blob token for the transfer | ok, no duration |
@@ -254,20 +254,31 @@ Every result goes into the ledger and the evidence folder. Each screenshot or au
 | Step | What | Done when | Status | Commit | Evidence / notes |
 |---|---|---|---|---|---|
 | 0 | Plan triage after the outside review | This file revised; Rob's bucket rules applied | done 2026-11-06 | — | §10–§12 |
-| 1 | Worktree, `npm ci`, plan copied to `docs/plans/2026-11-06-why-and-how-built.md`, baseline captured (§8.1) | Plan committed; `baseline-*.json` saved | done 2026-11-06 | (this commit) | `baseline-home.json`, `baseline-obituary.json`; Lighthouse a11y 100 with 0 failures on `/`, `/obituary`, `/share` (evidence README) |
-| 2 | `external-links.ts` | File exists; `npm run validate` passes | pending | | |
-| 3 | Home: tagline removed, `#why` note | §8.3 `#story` diff shows only the tagline gone | pending | | |
-| 4 | Footer | §8.3 footer diff as specified | pending | | |
-| 5 | Obituary name links | §8.3 `/obituary` diff identical | pending | | |
-| 6 | `/how-it-was-built` + diagrams | Builds as `○`; every §6 row still holds | pending | | F4 count: |
-| 7 | DESIGN.md, README | Sections in §7 updated | pending | | |
-| 8 | Checks | §8.2 all green | pending | | |
-| 9 | Browser verification | §8.3–§8.9 recorded in the evidence README | pending | | |
+| 1 | Worktree, `npm ci`, plan copied to `docs/plans/2026-11-06-why-and-how-built.md`, baseline captured (§8.1) | Plan committed; `baseline-*.json` saved | done 2026-11-06 | `66ee216` | `baseline-home.json`, `baseline-obituary.json`; Lighthouse a11y 100 with 0 failures on `/`, `/obituary`, `/share` (evidence README) |
+| 2 | `external-links.ts` | File exists; `npm run validate` passes | done 2026-11-06 | (step 2–9 commit) | validate exit 0 |
+| 3 | Home: tagline removed, `#why` note | §8.3 `#story` diff shows only the tagline gone | done 2026-11-06 | (step 2–9 commit) | `text-diffs.txt`; ruling E2 |
+| 4 | Footer | §8.3 footer diff as specified | done 2026-11-06 | (step 2–9 commit) | `text-diffs.txt` |
+| 5 | Obituary name links | §8.3 `/obituary` diff identical | done 2026-11-06 | (step 2–9 commit) | `text-diffs.txt`: IDENTICAL |
+| 6 | `/how-it-was-built` + diagrams | Builds as `○`; every §6 row still holds | done 2026-11-06 | (step 2–9 commit) | F4 count: 1,221 tests at `95f4df4` → tile "1,200+"; rulings E1, E4 |
+| 7 | DESIGN.md, README | Sections in §7 updated | done 2026-11-06 | (step 2–9 commit) | ruling E3 |
+| 8 | Checks | §8.2 all green | done 2026-11-06 | (step 2–9 commit) | validate, test:run (1,214 passed, 7 skipped), build:offline all exit 0; `○ /how-it-was-built` |
+| 9 | Browser verification | §8.3–§8.9 recorded in the evidence README | done 2026-11-06 | (step 2–9 commit) | evidence README "After the change"; Lighthouse 100 / 0 failures on all four pages |
 | 10 | Push, PR, preview | PR open with §11 and §12 in its body; preview URL and deployed SHA recorded here | pending | | preview: |
 | 11 | Rob reads the copy on the preview (Rob) | Rob's changes applied, or "approved" recorded | pending | | |
 | 12 | Merge (Rob's word only) | Rob says merge; `ci` green | pending | | |
 
 **Done** means: steps 1–10 are `done`, every §6 row holds, the evidence is saved, and the PR plus preview link are with Rob. **Rollback:** revert the merge through a new branch and PR (`git revert -m 1 <merge-sha>`). No data, schema or environment changes are involved.
+
+## 9a. Execution rulings (what changed while building, why, and the cost if wrong)
+
+| # | What | Why | Cost if wrong |
+|---|---|---|---|
+| E1 | `/how-it-was-built` puts the side padding on `<main>` and the 1200px cap on an inner box (not one box, as §5c first said) | On one box the 5% resolves against the whole window, so the content started 40px right of the header logo at 1280px; the header already solved this the same way (`app/_components/site-header.tsx` comment). Logo and h1 now both sit at x=64 | None found: 320–1280px reflow and Lighthouse unchanged |
+| E2 | The note's "Leave a memory of Jo" button is full width, centered and `text-balance` on phones; the card padding is `p-5` there (`sm:p-10`) | Inside the card the label must wrap below 640px; left-aligned it left "Jo" alone on the last line, which looked broken. Balanced, it reads "Leave a / memory of Jo" | Cosmetic only; `sm:w-auto` restores the desktop look |
+| E3 | README: "a team of Claude agents" and "Claude agents planned, built…" now say "AI agents (mostly Claude)" / "mostly Claude with OpenAI's Codex on some features", next to the planned 40 → 37 fix | Same overstatement fact F14 corrects on the page; leaving it would make the README contradict the site | None: wording only |
+| E4 | The test tile reads "1,200+" | 1,221 tests at `95f4df4`; "1,200+" stays true as tests are added, while "About 1,200" would drift | Low: if tests were ever deleted below 1,200, update the tile |
+| E5 | "The code is open" is an h2, not a bold line | Every other section is an h2; a heading keeps the screen-reader outline consistent | None |
+| E6 | Node: Homebrew's v26.13.0 via `PATH`, since the shell defaults to nvm's v22 (added to §2) | The repo targets Node 26 | None |
 
 ## 10. Outside review triage (2026-11-06)
 
@@ -333,7 +344,7 @@ Copy these into the PR body. After merge, Rob decides which to file at https://g
 | F2 | Medium (Rob's decision) | The telemetry rationale says "only family will be using it", but the home page invites "her students, her church friends, her neighbors". The 100-person launch reaches people who never approved unmasked replays | AGENTS.md Sentry section; `app/page.tsx` hero; issues #38/#43 | Rob decides one: add a short notice at the point of sharing (`lib/consent`, with a CONSENT_VERSION bump), or end the alpha settings before the wide launch (telemetry plan §13) |
 | F3 | Low | The `/how-it-was-built` privacy line must change when the alpha settings end | `app/how-it-was-built/page.tsx` (code comment); telemetry plan §13 | In the same commit as §13: say replays are sampled and masked; keep the screenshot residual if still true |
 | F4 | Low | "Nothing you share is public yet" goes stale when the Phase 2 gallery ships | `app/how-it-was-built/page.tsx` (code comment); issue #37 | Reword it in the gallery PR; add a checkbox to #37 |
-| F5 | Low (conditional) | Any accessibility finding Step 9 shows was already in the baseline | Evidence README | One issue that lists the findings with their Lighthouse IDs and URLs |
+| F5 | Not needed (2026-11-06) | Any accessibility finding Step 9 shows was already in the baseline. The baseline and after runs were both 100 with 0 failures, so there is nothing to file | Evidence README | One issue that lists the findings with their Lighthouse IDs and URLs |
 
 ## Citations
 

@@ -186,7 +186,9 @@ that wrap. The Mrs. Claus paragraph is a pull-quote: Fraunces 24px on a
 
 ### 5.7 Footer
 Centered: stitched-heart outline (40px), Fraunces 22px "Made with love by
-Richard, Rob, Tracy and Ava.", 18px contact line.
+Richard, Kay, Rob, Tracy and Ava." ("Rob" links to robwray.com and "Tracy" to
+tracycgold.com, added 2026-11-06), 18px contact line, then the 18px links line
+"Jo's obituary · How this site was built".
 
 ### 5.8 Thank-you
 Centered, min full viewport height. 96px solid heart inside a 150px `paper`
@@ -207,6 +209,40 @@ button. Links keep their resting color on hover (hover thickens the underline);
 blind date, the 1971 wedding) replaced the first draft; the story band now opens
 with two short paragraphs drawn from it, and its pull-quote starts at "Jo loved
 Christmas" so the wedding is told once.
+2026-11-06: the words are unchanged, but "Robert Wray" links to robwray.com and
+"Tracy Gold" to tracycgold.com (Rob's request). The story band's tagline under
+"Jo's story" was removed the same day (Tracy didn't like it); the heading stands
+alone.
+
+### 5.10 Note from Rob (home `#why`, added 2026-11-06)
+After the story band, on the muslin ground: one centered `paper` card, 760px
+max, 3px dashed `periwinkle` border, `shadow-card`. Uppercase red-deep eyebrow
+"A note from Rob", h2 "Why I built this", Rob's two paragraphs about Ivan's
+funeral (his words, lightly edited), a Fraunces signature linking "Rob Wray" to
+robwray.com, then the primary "Leave a memory of Jo" (full width and
+balanced-wrap on phones, so the label never leaves "Jo" alone on a line) and a
+text link to `/how-it-was-built`.
+
+### 5.11 How this site was built (`/how-it-was-built`, added 2026-11-06)
+For curious visitors and the GitHub crowd; reached from the note and the footer,
+no nav entry. Padding sits on `main` and the 1200px cap on the box inside it
+(as in the header). Sections: intro with a dashed secondary "See the code on
+GitHub", four stat tiles, three diagrams, "Made for Jo's people", "Built with"
+chips, "Privacy, in plain words", and a closing primary "Leave a memory of Jo".
+
+- **Diagrams are HTML lists, never SVG or Mermaid.** A scaled SVG shrinks its
+  labels under the 17px floor on a phone, and Mermaid needs client JS.
+  `StitchedSteps` is a numbered vertical timeline (red 48px badges joined by a
+  dashed periwinkle "thread", `paper` cards); `StackDiagram` stacks tiers with
+  dashed connectors and ends in a row of service cards (1, 2 or 4 columns).
+- Unstyled lists carry `role="list"` (Safari/VoiceOver drops list semantics
+  without markers). Number badges and connectors are `aria-hidden`; step titles
+  are h3 under each section's h2.
+- Every sentence is checked against the code in the plan's fact table
+  (`docs/plans/2026-11-06-why-and-how-built.md` §6). Two lines will go stale
+  and carry code comments: "Nothing you share is public yet" (Phase 2 gallery)
+  and the alpha telemetry note (update it, don't delete it, when the alpha
+  settings end; replays continue at 10%).
 
 ## 6. Layout
 - Content max-width 1200px, 5% side padding (≥16px on phones).
@@ -233,7 +269,8 @@ cover; then write in the same register.
 - WCAG AA everywhere, AAA for body text (walnut on muslin and paper is).
 - Real `<button>`, `<a href>`, `<label for>` on every control; no click
   handlers on divs.
-- Visible goldenrod focus ring on everything focusable.
+- Visible 3px walnut focus outline on everything focusable (`app/globals.css`;
+  goldenrod fails contrast as a focus color, so it is never the ring).
 - Decorative SVGs `aria-hidden="true"`; the heart mark in the header is
   decorative (the wordmark carries the name).
 - No text below 17px, no light-weight type, no text over photos.
