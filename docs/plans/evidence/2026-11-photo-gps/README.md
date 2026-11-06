@@ -105,3 +105,20 @@ Also observed:
   build:offline` printed it and exited 0. It also logged two Sentry release-creation network errors, which is the release step
   meeting the network block, not a build failure.
 
+### B11: PR A (#63) merged into this branch (2026-11-06, `next dev -p 3107`, `PLACES_PROVIDER=stub`)
+
+After the merge of `origin/main` with PR #63, the same e2e branch and an isolated context at 390×844. There was no Send of a
+real memory: that branch does not have the final review's migration. An empty Send is refused in the browser.
+
+| File | What it shows |
+|---|---|
+| `b11-390-a-and-b.png` | The "Your memory" card after picking the Liberty JPEG. **PR A's** copy: the helper line "Add at least one: a photo, a video, a voice recording or a few words. Everything else is optional." under the heading, "When is this memory from? (optional, roughly is fine)", the media heading "Add a photo, video or voice recording", and "Your memory of Jo (optional with a photo, video or voice recording)". **PR B's** "From your photos:" with the stub button "Photo location found near 40.69, -74.04 (test)" and the OpenStreetMap credit under Where. |
+
+Also checked (accessibility tree and DOM):
+- **Before Send:** the words box's `aria-describedby` is `c1-helper`, the helper line.
+- **After an empty Send:** it is `c1-helper c1-error` (helper, then "Memory 1 needs at least one: a photo, a video, a voice
+  recording or a few words."), with `aria-invalid="true"`. The alert summary lists the name, email and Memory 1 problems, and
+  focus goes to Name.
+- **After picking the photo:** the card has content, so the error clears and `aria-describedby` is back to `c1-helper`.
+- **Logs:** each run made one `POST /api/places/suggest` (200). No browser console errors or warnings, no server errors.
+
