@@ -98,7 +98,7 @@ One stateless handler serves the 2025-era Streamable HTTP (JSON-RPC over `POST`,
 ### Sentry and logs
 
 - `registerTools` calls `Sentry.wrapMcpServerWithSentry(server)` (idempotent), so each call is an MCP span named for the tool. Under Rob's 2026-11-04 alpha ruling (`genAI: { inputs: true, outputs: true }` in `lib/sentry/data-collection.ts`) the span also carries the arguments and the result text (`mcp.tool.result.content`): contributor email and words may reach Sentry, as the policy allows.
-- Claim links are scrubbed: `scrubSpan` in `lib/sentry/scrub.ts` covers span attributes, and `__tests__/lib/sentry-envelope.test.ts` proves with the real SDK that a `draft_memory` result's token never leaves while the MCP span does.
+- Claim links are scrubbed: `scrubSpan` in `lib/sentry/scrub.ts` covers span attributes, and `__tests__/lib/sentry-envelope.test.ts` proves with the real SDK that the token in a `draft_memory` or a `reissue_claim_link` result never leaves while each tool's MCP span does (the reissue case added by the Team Code Review, G4).
 - An exception is reported once, by our boundary: the Sentry wrapper captures only when a handler throws, and ours never does.
 - Pino logs ids only: `mcp_unauthorized` (path and whether a secret is configured, never the header), `mcp_tool_failed`, `mcp_handler_error`, and the features' own lines (`memory_drafted`, `draft_duplicate`, `admin_coordinates_set`, …). Never the header, arguments, words, emails or links; `verboseLogs` stays off.
 
@@ -138,7 +138,7 @@ One stateless handler serves the 2025-era Streamable HTTP (JSON-RPC over `POST`,
 | **tests** | |
 | `__tests__/api/mcp.test.ts` | Gate; `tools/list` inline snapshot (the contract); every result row; boundary on all eight tools; schema and `prepareInput` refusals, including an unknown top-level key on every tool and arguments over 1000 elements; no `claimToken` in any body; the 2026-07-28 era; `listChanged: false` in both eras |
 | `__tests__/api/mcp-handler-errors.test.ts` | A registration throw in either era reaches Sentry once and Pino with ids only; protocol rejections reported; normal calls report and log nothing |
-| `__tests__/lib/sentry-envelope.test.ts` | MCP span case with the real SDK: `mcp.tool.name` and `mcp.tool.result.content` present, no `SENTRYTEST_` token |
+| `__tests__/lib/sentry-envelope.test.ts` | MCP span case with the real SDK: `draft_memory` and `reissue_claim_link` spans with `mcp.tool.result.content`, neither tool's `SENTRYTEST_` token in any envelope |
 | `__tests__/api/admin-auth.test.ts`, `__tests__/lib/env.test.ts` | Realms independent, fail closed, no `WWW-Authenticate`, header read before env; `getMcpEnv` |
 | `__tests__/features/set-coordinates.test.ts`, `__tests__/features/admin-memories.test.ts`, `__tests__/features/draft-memory.test.ts` | The coordinates feature; no coordinates anywhere in the admin page's view; the pair on a draft |
 | `__tests__/lib/source-input.test.ts`, `__tests__/lib/validations-admin.test.ts`, `__tests__/lib/validations-memory.test.ts`, `__tests__/scripts/draft-memory.test.ts` | The shared derivation (the script re-exports it, its test unchanged); schemas |

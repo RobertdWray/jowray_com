@@ -21,11 +21,12 @@ vi.mock("next/headers", () => ({
     }),
 }));
 
-// The MCP draft_memory tool returns a claim link in its result (plan 2026-11-06 §4.6); the feature is the only mock.
-const MCP_TOKEN = vi.hoisted(() => "SENTRYTEST_" + "m".repeat(32));
+// The MCP draft_memory and reissue_claim_link tools return a claim link in their results (plan 2026-11-06 §4.6;
+// Team Code Review G4 added the reissue); the feature is the only mock. Each tool gets its own token.
+const { MCP_TOKEN, MCP_REISSUE_TOKEN } = vi.hoisted(() => ({ MCP_TOKEN: "SENTRYTEST_" + "m".repeat(32), MCP_REISSUE_TOKEN: "SENTRYTEST_" + "r".repeat(32) }));
 vi.mock("@/features/memories/draft-memory", () => ({
   draftMemory: async () => ({ ok: true, memoryId: "00000000-0000-4000-8000-000000000001", claimToken: MCP_TOKEN, claimLink: `https://preview.test/m/${MCP_TOKEN}`, originalNoteRecorded: false }),
-  reissueDraftClaimLink: async () => ({ ok: false, code: "not_found" }),
+  reissueDraftClaimLink: async () => ({ ok: true, memoryId: "00000000-0000-4000-8000-000000000001", claimLink: `https://preview.test/m/${MCP_REISSUE_TOKEN}` }),
 }));
 
 /**
@@ -195,7 +196,7 @@ describe("streamed spans (beforeSendSpan on the real SDK)", () => {
 });
 
 describe("MCP tool spans (plan 2026-11-06 §4.6)", () => {
-  it("record a tool call as an MCP span, and the claim link in its result leaves without the token", async () => {
+  it("record each tool call as an MCP span, and the claim link in a draft_memory or reissue_claim_link result leaves without the token", async () => {
     const before = sent.length;
     const server = new McpServer({ name: "jowray", version: "1" });
     // registerTools wraps the server with wrapMcpServerWithSentry before it registers the tools.
@@ -216,18 +217,23 @@ describe("MCP tool spans (plan 2026-11-06 §4.6)", () => {
         arguments: { contributor: { email: EMAIL }, note: "Jo was a light.", sourceInput: { kind: "gmail", messageId: "1a1a2317fba34eec" } },
       },
     });
-    await vi.waitFor(() => expect(responses.some((r) => r.id === 1)).toBe(true));
-    // The caller (the model) still gets the real link.
+    await client.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "reissue_claim_link", arguments: { memoryId: "00000000-0000-4000-8000-000000000001" } } });
+    await vi.waitFor(() => expect(responses.some((r) => r.id === 1) && responses.some((r) => r.id === 2)).toBe(true));
+    // The caller (the model) still gets the real links.
     expect(responses.find((r) => r.id === 1)?.result?.structuredContent?.claimLink).toBe(`https://preview.test/m/${MCP_TOKEN}`);
+    expect(responses.find((r) => r.id === 2)?.result?.structuredContent?.claimLink).toBe(`https://preview.test/m/${MCP_REISSUE_TOKEN}`);
     await server.close();
     await Sentry.flush(5000);
 
     const envelopes = sent.slice(before);
-    // The wrapper's span exists, and it carried the tool result (the attribute the scrubber had to clean).
-    expect(envelopes.some((item) => item.includes('"mcp.tool.name":"draft_memory"') || item.includes('"mcp.tool.name":{"value":"draft_memory"'))).toBe(true);
+    // The wrapper's spans exist, one per tool, and they carried the tool results (the attribute the scrubber had to clean).
+    for (const tool of ["draft_memory", "reissue_claim_link"]) {
+      expect(envelopes.some((item) => item.includes(`"mcp.tool.name":"${tool}"`) || item.includes(`"mcp.tool.name":{"value":"${tool}"`)), tool).toBe(true);
+    }
     expect(envelopes.some((item) => item.includes("mcp.tool.result.content"))).toBe(true);
     for (const envelope of sent) {
       expect(envelope).not.toContain(MCP_TOKEN);
+      expect(envelope).not.toContain(MCP_REISSUE_TOKEN);
       expect(envelope).not.toContain("SENTRYTEST_");
     }
   });
