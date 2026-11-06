@@ -255,15 +255,15 @@ Every result goes into the ledger and the evidence folder. Each screenshot or au
 |---|---|---|---|---|---|
 | 0 | Plan triage after the outside review | This file revised; Rob's bucket rules applied | done 2026-11-06 | — | §10–§12 |
 | 1 | Worktree, `npm ci`, plan copied to `docs/plans/2026-11-06-why-and-how-built.md`, baseline captured (§8.1) | Plan committed; `baseline-*.json` saved | done 2026-11-06 | `66ee216` | `baseline-home.json`, `baseline-obituary.json`; Lighthouse a11y 100 with 0 failures on `/`, `/obituary`, `/share` (evidence README) |
-| 2 | `external-links.ts` | File exists; `npm run validate` passes | done 2026-11-06 | (step 2–9 commit) | validate exit 0 |
-| 3 | Home: tagline removed, `#why` note | §8.3 `#story` diff shows only the tagline gone | done 2026-11-06 | (step 2–9 commit) | `text-diffs.txt`; ruling E2 |
-| 4 | Footer | §8.3 footer diff as specified | done 2026-11-06 | (step 2–9 commit) | `text-diffs.txt` |
-| 5 | Obituary name links | §8.3 `/obituary` diff identical | done 2026-11-06 | (step 2–9 commit) | `text-diffs.txt`: IDENTICAL |
-| 6 | `/how-it-was-built` + diagrams | Builds as `○`; every §6 row still holds | done 2026-11-06 | (step 2–9 commit) | F4 count: 1,221 tests at `95f4df4` → tile "1,200+"; rulings E1, E4 |
-| 7 | DESIGN.md, README | Sections in §7 updated | done 2026-11-06 | (step 2–9 commit) | ruling E3 |
-| 8 | Checks | §8.2 all green | done 2026-11-06 | (step 2–9 commit) | validate, test:run (1,214 passed, 7 skipped), build:offline all exit 0; `○ /how-it-was-built` |
-| 9 | Browser verification | §8.3–§8.9 recorded in the evidence README | done 2026-11-06 | (step 2–9 commit) | evidence README "After the change"; Lighthouse 100 / 0 failures on all four pages |
-| 10 | Push, PR, preview | PR open with §11 and §12 in its body; preview URL and deployed SHA recorded here | pending | | preview: |
+| 2 | `external-links.ts` | File exists; `npm run validate` passes | done 2026-11-06 | `146786f` | validate exit 0 |
+| 3 | Home: tagline removed, `#why` note | §8.3 `#story` diff shows only the tagline gone | done 2026-11-06 | `146786f` | `text-diffs.txt`; ruling E2 |
+| 4 | Footer | §8.3 footer diff as specified | done 2026-11-06 | `146786f` | `text-diffs.txt` |
+| 5 | Obituary name links | §8.3 `/obituary` diff identical | done 2026-11-06 | `146786f` | `text-diffs.txt`: IDENTICAL |
+| 6 | `/how-it-was-built` + diagrams | Builds as `○`; every §6 row still holds | done 2026-11-06 | `146786f` | F4 count: 1,221 tests at `95f4df4` → tile "1,200+"; rulings E1, E4 |
+| 7 | DESIGN.md, README | Sections in §7 updated | done 2026-11-06 | `146786f` | ruling E3 |
+| 8 | Checks | §8.2 all green | done 2026-11-06 | `146786f` | validate, test:run (1,214 passed, 7 skipped), build:offline all exit 0; `○ /how-it-was-built` |
+| 9 | Browser verification | §8.3–§8.9 recorded in the evidence README | done 2026-11-06 | `146786f` | evidence README "After the change"; Lighthouse 100 / 0 failures on all four pages |
+| 10 | Push, PR, preview | PR open with §11 and §12 in its body; preview URL and deployed SHA recorded here | done 2026-11-06 | `146786f` | PR #53; `ci` pass (2m29s); preview https://jowraycom-git-feat-why-and-how-built-rob-wrays-projects.vercel.app (deployment protection: 302 to Vercel login unless signed in) |
 | 11 | Rob reads the copy on the preview (Rob) | Rob's changes applied, or "approved" recorded | pending | | |
 | 12 | Merge (Rob's word only) | Rob says merge; `ci` green | pending | | |
 
