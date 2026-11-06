@@ -8,7 +8,7 @@ The photo is a plain 640×480 blue JPEG generated with `sharp` for this run. It 
 
 ## Offline checks (no `.env*`, `DATABASE_URL` unset)
 
-`npm run validate` clean, `npm run test:run` 1263 passed / 7 skipped (70 files), `npm run build:offline` passes. These were run before the runtime check and again after the env files were deleted.
+`npm run validate` clean, `npm run test:run` 1265 passed / 7 skipped (70 files), `npm run build:offline` passes (final state, after fix round 1). Round 0 ran all three before the runtime check and again after the env files were deleted, with 1263 passed / 7 skipped; fix round 1 added two tests.
 
 ## Environment fix made during the run
 
@@ -20,7 +20,7 @@ The first photo-only Send failed with a 500: `column "reservedUntil" does not ex
 |---|---|---|
 | 390×844: labels and helper line | Under the heading "Your memory": "Add at least one: a photo, a video, a voice recording or a few words. Everything else is optional." (`<p>`, 17px, weight 400, `rgb(90, 74, 62)` = walnut-soft, 8px under the heading). Labels: "When is this memory from? (optional, roughly is fine)", "Where? (optional)", "Add a photo, video or voice recording" (no "(optional)"), "Your memory of Jo (optional with a photo, video or voice recording)". The helper spans in the labels are weight 400. `scrollWidth` 390 = `clientWidth` 390 | `390-card-labels.png`, `390-words-label.png`, `390-a11y-tree.txt` |
 | 1280×800: labels and helper line | Same strings under "Memory 1" (helper 970px wide on one line); placeholders for Memory 2 and 3 unchanged; no horizontal scroll | `1280-card-labels.png`, `1280-a11y-tree.txt` |
-| 390: name + email, empty card, Send (started from `scrollY` 0) | `role="alert"` summary "We couldn't send this yet:" with one link "Memory 1 needs at least one: a photo, a video, a voice recording or a few words." (`#c1-note`); `activeElement` `c1-note`; textarea `aria-invalid="true"`, `aria-describedby="c1-error"`, inline line with the same words; border 2px `rgb(165, 13, 38)` (jo-red-deep) plus the 4px ring at 40%; page scrolled 0 → 1507 and the field block's centre is 421 for a viewport centre of 422 | `390-empty-card-send-note-focused.png` |
+| 390: name + email, empty card, Send (started from `scrollY` 0) | `role="alert"` summary "We couldn't send this yet:" with one link "Memory 1 needs at least one: a photo, a video, a voice recording or a few words." (`#c1-note`); `activeElement` `c1-note`; textarea `aria-invalid="true"`, `aria-describedby="c1-helper c1-error"` (round 0: `"c1-error"`; fix round 1 put the helper line first), inline line with the same words; border 2px `rgb(165, 13, 38)` (jo-red-deep) plus the 4px ring at 40%; page scrolled 0 → 1507 and the field block's centre is 421 for a viewport centre of 422 | `390-empty-card-send-note-focused.png` |
 | 1280: name + email, empty card (after "Clear this memory"), Send from `scrollY` 0 | Same summary, focus, inline line, border and ring; scrolled 0 → 653, block centre 398 for viewport centre 400 | `1280-empty-card-send-note-focused.png` |
 | 390: date-only card ("Summer 1985") | Refused: same message on Memory 1's words box, focus `c1-note`, block centred (421 / 422), still on the form | `390-date-only-refused.png` |
 | 1280: date-only card ("Summer 1985", restored from the draft) | Refused: same message, red state, focus `c1-note`, block centred (398 / 400) | `1280-date-only-refused.png` |
