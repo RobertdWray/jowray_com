@@ -63,7 +63,7 @@ const TOOLS = {
   },
   set_coordinates: {
     title: "Set a memory's coordinates",
-    description: `Sets or clears a memory's coordinates. ${PLACE_RULE} Call get_memory first for \`memoryVersion\`; \`null\` clears both; \`changed: false\` means the pair was already equal.`,
+    description: `Sets or clears a memory's coordinates. ${PLACE_RULE} Call get_memory first for \`memoryVersion\`; \`null\` clears both; \`changed: false\` means the pair was already equal. Returns the new \`memoryVersion\` (unchanged when nothing changed): pass it to a following update_memory or set_coordinates instead of re-reading.`,
     inputSchema: adminCoordinatesSchema,
     annotations: { destructiveHint: true, idempotentHint: true },
   },
@@ -168,7 +168,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool("set_coordinates", TOOLS.set_coordinates, (args) =>
     runTool("set_coordinates", args.memoryId, async () => {
       const result = await setMemoryCoordinatesAsAdmin(args);
-      return result.ok ? toolResult({ changed: result.changed }) : refusal(result);
+      return result.ok ? toolResult({ changed: result.changed, memoryVersion: result.memoryVersion }) : refusal(result);
     })
   );
 

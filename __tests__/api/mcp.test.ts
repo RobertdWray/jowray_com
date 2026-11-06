@@ -435,7 +435,7 @@ describe("tools/list contract (case 2)", () => {
             "destructiveHint": true,
             "idempotentHint": true,
           },
-          "description": "Sets or clears a memory's coordinates. \`coordinates\` are WGS 84 decimal degrees for the named place (a town, a facility or community campus such as Broadmead, a church, a park, a lake), never a residence or a unit inside a place. Ask Rob before saving them. Call get_memory first for \`memoryVersion\`; \`null\` clears both; \`changed: false\` means the pair was already equal.",
+          "description": "Sets or clears a memory's coordinates. \`coordinates\` are WGS 84 decimal degrees for the named place (a town, a facility or community campus such as Broadmead, a church, a park, a lake), never a residence or a unit inside a place. Ask Rob before saving them. Call get_memory first for \`memoryVersion\`; \`null\` clears both; \`changed: false\` means the pair was already equal. Returns the new \`memoryVersion\` (unchanged when nothing changed): pass it to a following update_memory or set_coordinates instead of re-reading.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "properties": {
@@ -715,8 +715,8 @@ const CONTRACT: ContractRow[] = [
   { tool: "draft_memory", args: draftArgs, feature: "draftMemory", answer: { ok: false, code: "invalid", message: "The note needs some words" }, expected: { code: "invalid", message: "The note needs some words" }, isError: true },
   { tool: "draft_memory", args: draftArgs, feature: "draftMemory", answer: { ok: false, code: "duplicate", memoryId: ID, status: "PENDING" }, expected: { code: "duplicate", memoryId: ID, status: "PENDING" }, isError: true },
   { tool: "draft_memory", args: draftArgs, feature: "draftMemory", answer: { ok: false, code: "budget_exceeded" }, expected: { code: "budget_exceeded" }, isError: true },
-  { tool: "set_coordinates", args: coordinateArgs, feature: "setMemoryCoordinatesAsAdmin", answer: { ok: true, changed: true }, expected: { changed: true } },
-  { tool: "set_coordinates", args: { ...coordinateArgs, coordinates: null }, feature: "setMemoryCoordinatesAsAdmin", answer: { ok: true, changed: false }, expected: { changed: false } },
+  { tool: "set_coordinates", args: coordinateArgs, feature: "setMemoryCoordinatesAsAdmin", answer: { ok: true, changed: true, memoryVersion: "2026-11-04T10:00:01.000Z" }, expected: { changed: true, memoryVersion: "2026-11-04T10:00:01.000Z" } },
+  { tool: "set_coordinates", args: { ...coordinateArgs, coordinates: null }, feature: "setMemoryCoordinatesAsAdmin", answer: { ok: true, changed: false, memoryVersion: VERSION }, expected: { changed: false, memoryVersion: VERSION } },
   { tool: "set_coordinates", args: coordinateArgs, feature: "setMemoryCoordinatesAsAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
   { tool: "set_coordinates", args: coordinateArgs, feature: "setMemoryCoordinatesAsAdmin", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
   {
@@ -782,7 +782,7 @@ describe("the result contract (case 3: every row of plan §4.5)", () => {
   });
 
   it("set_coordinates, update_memory, set_status, set_deleted and reissue_claim_link hand the feature the validated arguments", async () => {
-    features.setMemoryCoordinatesAsAdmin.mockResolvedValueOnce({ ok: true, changed: true });
+    features.setMemoryCoordinatesAsAdmin.mockResolvedValueOnce({ ok: true, changed: true, memoryVersion: VERSION });
     await callTool("set_coordinates", coordinateArgs);
     expect(features.setMemoryCoordinatesAsAdmin).toHaveBeenCalledWith(coordinateArgs);
     features.updateMemoryAsAdmin.mockResolvedValueOnce({ ok: true, written: [], current: editable });

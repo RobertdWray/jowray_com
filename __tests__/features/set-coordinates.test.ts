@@ -71,9 +71,11 @@ beforeEach(() => {
 describe("setMemoryCoordinatesAsAdmin", () => {
   it("locks the memory row before re-reading it, then writes both columns and one ADMIN revision", async () => {
     const result = await setMemoryCoordinatesAsAdmin({ memoryId: MEM, memoryVersion: version(), coordinates: BROADMEAD });
-    expect(result).toEqual({ ok: true, changed: true });
+    // The committed version comes back (review R3), so the next write does not have to re-read first.
+    expect(result).toEqual({ ok: true, changed: true, memoryVersion: version() });
+    expect(version()).not.toBe(T0.toISOString());
     expect(calls).toEqual([`lock:memory:${MEM}`, `read:${MEM}`, `update:${MEM}`, `revision:${MEM}`]);
-    expect(tx.memory.update).toHaveBeenCalledWith({ where: { id: MEM }, data: { latitude: 39.4815, longitude: -76.6447 } });
+    expect(tx.memory.update).toHaveBeenCalledWith({ where: { id: MEM }, data: { latitude: 39.4815, longitude: -76.6447 }, select: { updatedAt: true } });
     expect(memories[0]).toMatchObject({ latitude: 39.4815, longitude: -76.6447 });
     expect(revisions).toHaveLength(1);
     // The first revision of a memory also records the consent version in force (appendRevision).
@@ -84,8 +86,8 @@ describe("setMemoryCoordinatesAsAdmin", () => {
     memories[0] = memoryRow({ latitude: 39.4815, longitude: -76.6447 });
     revisions.push({ memoryId: MEM, changedVia: "ADMIN", before: {}, after: { note: "x" }, createdAt: T0, id: "rev_0" });
     const result = await setMemoryCoordinatesAsAdmin({ memoryId: MEM, memoryVersion: version(), coordinates: null });
-    expect(result).toEqual({ ok: true, changed: true });
-    expect(tx.memory.update).toHaveBeenCalledWith({ where: { id: MEM }, data: { latitude: null, longitude: null } });
+    expect(result).toEqual({ ok: true, changed: true, memoryVersion: version() });
+    expect(tx.memory.update).toHaveBeenCalledWith({ where: { id: MEM }, data: { latitude: null, longitude: null }, select: { updatedAt: true } });
     expect(memories[0]).toMatchObject({ latitude: null, longitude: null });
     expect(revisions).toHaveLength(2);
     // Not the first revision: no consent version is added. toEqual pins the exact snapshot keys.
@@ -93,10 +95,10 @@ describe("setMemoryCoordinatesAsAdmin", () => {
     expect(revisions[1]!.after).toEqual({ coordinates: null });
   });
 
-  it("answers changed: false and writes nothing when the pair is already equal, including null to null", async () => {
-    expect(await setMemoryCoordinatesAsAdmin({ memoryId: MEM, memoryVersion: version(), coordinates: null })).toEqual({ ok: true, changed: false });
+  it("answers changed: false with the unchanged version and writes nothing when the pair is already equal, including null to null", async () => {
+    expect(await setMemoryCoordinatesAsAdmin({ memoryId: MEM, memoryVersion: version(), coordinates: null })).toEqual({ ok: true, changed: false, memoryVersion: T0.toISOString() });
     memories[0] = memoryRow({ latitude: 39.4815, longitude: -76.6447 });
-    expect(await setMemoryCoordinatesAsAdmin({ memoryId: MEM, memoryVersion: version(), coordinates: { ...BROADMEAD } })).toEqual({ ok: true, changed: false });
+    expect(await setMemoryCoordinatesAsAdmin({ memoryId: MEM, memoryVersion: version(), coordinates: { ...BROADMEAD } })).toEqual({ ok: true, changed: false, memoryVersion: T0.toISOString() });
     expect(tx.memory.update).not.toHaveBeenCalled();
     expect(revisions).toHaveLength(0);
     expect(memories[0]!.updatedAt).toEqual(T0);
@@ -104,8 +106,20 @@ describe("setMemoryCoordinatesAsAdmin", () => {
 
   it("treats a pair that differs in one coordinate as a change", async () => {
     memories[0] = memoryRow({ latitude: 39.4815, longitude: -76.6447 });
-    expect(await setMemoryCoordinatesAsAdmin({ memoryId: MEM, memoryVersion: version(), coordinates: { latitude: 39.4815, longitude: -76.6448 } })).toEqual({ ok: true, changed: true });
+    expect(await setMemoryCoordinatesAsAdmin({ memoryId: MEM, memoryVersion: version(), coordinates: { latitude: 39.4815, longitude: -76.6448 } })).toEqual({ ok: true, changed: true, memoryVersion: expect.any(String) });
     expect(revisions[0]).toMatchObject({ before: { coordinates: BROADMEAD }, after: { coordinates: { latitude: 39.4815, longitude: -76.6448 } } });
+  });
+
+  it("chains: the returned memoryVersion opens the next write without a stale (review R3)", async () => {
+    const first = await setMemoryCoordinatesAsAdmin({ memoryId: MEM, memoryVersion: version(), coordinates: BROADMEAD });
+    if (!first.ok) { throw new Error("setup"); }
+    const second = await setMemoryCoordinatesAsAdmin({ memoryId: MEM, memoryVersion: first.memoryVersion, coordinates: null });
+    expect(second).toEqual({ ok: true, changed: true, memoryVersion: version() });
+    if (!second.ok) { throw new Error("setup"); }
+    expect(second.memoryVersion).not.toBe(first.memoryVersion);
+    // An unchanged answer hands back a version that still works.
+    const third = await setMemoryCoordinatesAsAdmin({ memoryId: MEM, memoryVersion: second.memoryVersion, coordinates: null });
+    expect(third).toEqual({ ok: true, changed: false, memoryVersion: second.memoryVersion });
   });
 
   it("answers stale with the current version and pair when memoryVersion is old, and writes nothing", async () => {
@@ -117,7 +131,7 @@ describe("setMemoryCoordinatesAsAdmin", () => {
     expect(revisions).toHaveLength(0);
     // The version from `current` opens the next attempt.
     if (result.ok || result.code !== "stale") { throw new Error("setup"); }
-    expect(await setMemoryCoordinatesAsAdmin({ memoryId: MEM, memoryVersion: result.current.memoryVersion, coordinates: BROADMEAD })).toEqual({ ok: true, changed: true });
+    expect(await setMemoryCoordinatesAsAdmin({ memoryId: MEM, memoryVersion: result.current.memoryVersion, coordinates: BROADMEAD })).toEqual({ ok: true, changed: true, memoryVersion: version() });
   });
 
   it("reports a stale row without coordinates as coordinates: null", async () => {
