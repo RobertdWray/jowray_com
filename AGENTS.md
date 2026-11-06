@@ -64,6 +64,8 @@ Next.js 16 with `cacheComponents: true` prerenders whatever it can at build time
 
 `npm run validate` (= `next typegen && tsc --noEmit`, then `eslint`), `npm run test:run`, `npm run build:offline` (the build behind `scripts/no-network.mjs`, which refuses non-loopback sockets and DNS lookups on the main thread of every Node process in the build; worker threads and native code are outside it, so it is a strong check, not a proof — `__tests__/scripts/no-network.test.ts` pins its behaviour). All three pass with `DATABASE_URL` unset and no `.env*` file; fonts come from the Fontsource packages.
 
+`npm audit` is not clean on purpose and every `--force` fix it offers is a downgrade; the overrides in `package.json` and the accepted advisory are explained in `docs/dependencies.md`. Never run `npm audit fix --force`.
+
 ### Rules every agent follows
 
 - Every change goes on a branch with a PR.
