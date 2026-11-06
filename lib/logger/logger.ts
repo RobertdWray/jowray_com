@@ -20,6 +20,9 @@ const PII_KEYS = [
   "approxDateText",
   "originalFilename",
   "claimLink",
+  // Where a photo was taken (plan 2026-11-06-photo-gps-places, 2026-11-06): contributor content too. Log outcomes, not points.
+  "latitude",
+  "longitude",
 ];
 // Pino wildcards match one level each; these paths cover the top level and
 // three levels down (enough for a Prisma `include` shape). Log ids, never rows.
