@@ -197,7 +197,7 @@ describe("tools/list contract (case 2)", () => {
           "annotations": {
             "readOnlyHint": true,
           },
-          "description": "One memory with its contributor, files, coordinates, revision history and emails. \`memoryVersion\` and \`contributor.contributorVersion\` are what update_memory and set_coordinates need.",
+          "description": "One memory with its contributor, files, coordinates, revision history and emails. \`memoryVersion\` and \`contributor.contributorVersion\` are what update_memory and set_coordinates need. Each file's \`coordinates\` is where the camera was (often a home); never propose it for set_coordinates.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,

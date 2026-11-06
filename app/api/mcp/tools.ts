@@ -52,7 +52,7 @@ const TOOLS = {
   get_memory: {
     title: "Get a memory",
     description:
-      "One memory with its contributor, files, coordinates, revision history and emails. `memoryVersion` and `contributor.contributorVersion` are what update_memory and set_coordinates need.",
+      "One memory with its contributor, files, coordinates, revision history and emails. `memoryVersion` and `contributor.contributorVersion` are what update_memory and set_coordinates need. Each file's `coordinates` is where the camera was (often a home); never propose it for set_coordinates.",
     inputSchema: mcpMemoryIdSchema,
     annotations: { readOnlyHint: true },
   },
