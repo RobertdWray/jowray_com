@@ -323,7 +323,8 @@ const settle = (page, ms = 450) => page.waitForTimeout(ms);
     const r = document.querySelector("dialog[open]").getBoundingClientRect();
     return { left: Math.round(r.left), right: Math.round(r.right), vw: innerWidth };
   });
-  check("phone: Privacy note fits with 16px gutters", pn.left >= 16 && pn.vw - pn.right >= 16, JSON.stringify(pn));
+  // Exactly 16px each side: the dialog's own UA max-width once won and left 21px (regression review, PR #61).
+  check("phone: Privacy note has exactly 16px gutters", pn.left === 16 && pn.vw - pn.right === 16, JSON.stringify(pn));
   await page.screenshot({ path: join(evidence, "09-phone-privacy-note.jpg"), quality: 80, type: "jpeg" });
 
   check("phone: no console errors", errors.length === 0, errors.join(" | ").slice(0, 600));

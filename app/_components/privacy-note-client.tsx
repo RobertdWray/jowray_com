@@ -65,6 +65,8 @@ export function PrivacyNote() {
         Privacy
       </button>
       {/* m-auto: Preflight zeroes every margin, which would undo the browser's centring of a modal dialog [C9].
+          max-w-none: the browser's own dialog max-width (100% - 6px - 2em, at the footer's 18px) would otherwise win
+          over the 16px gutters the width asks for.
           open:flex, not flex: a display utility would override the browser's display:none for a closed dialog and
           show the note on the page. Inside, the text scrolls on its own above the Close row, so on a short screen
           Close stays in reach and nothing ever scrolls underneath it. */}
@@ -73,7 +75,7 @@ export function PrivacyNote() {
         aria-labelledby={titleId}
         onPointerDown={notePressed}
         onClick={closeOnBackdrop}
-        className="m-auto max-h-[calc(100%-32px)] w-[min(560px,calc(100%-32px))] overflow-hidden rounded-card border-[3px] border-dashed border-wood bg-paper p-0 text-left text-walnut shadow-card backdrop:bg-walnut/50 open:flex open:flex-col"
+        className="m-auto max-h-[calc(100%-32px)] w-[min(560px,calc(100%-32px))] max-w-none overflow-hidden rounded-card border-[3px] border-dashed border-wood bg-paper p-0 text-left text-walnut shadow-card backdrop:bg-walnut/50 open:flex open:flex-col"
       >
         <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-6 pb-4 pt-6 sm:px-8 sm:pt-8">
           <h2

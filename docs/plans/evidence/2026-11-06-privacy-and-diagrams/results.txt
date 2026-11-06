@@ -29,7 +29,7 @@ PASS  desktop: no console errors
 PASS  phone: no horizontal page overflow  — {"scroll":390,"client":390}
 PASS  phone: one-finger swipe over a fitted diagram scrolls the page  — scrollY 9117 → 9318, scale 1
 PASS  phone: full screen fills the window and the diagram fits  — {"w":390,"h":844,"vw":390,"vh":844,"imgW":390}
-PASS  phone: Privacy note fits with 16px gutters  — {"left":21,"right":369,"vw":390}
+PASS  phone: Privacy note has exactly 16px gutters  — {"left":16,"right":374,"vw":390}
 PASS  phone: no console errors
 PASS  footer 320px: every later link carries its own dot, none dangles  — [["Jo's obituary"],["·How this site was built","·Privacy"]]
 PASS  footer 412px: every later link carries its own dot, none dangles  — [["Jo's obituary","·How this site was built"],["·Privacy"]]
@@ -52,7 +52,7 @@ PASS  inline: a double-click on a fitted diagram does not zoom it  — {"scale":
 PASS  footer: the obituary and how-it-was-built links are ≥44px tall  — [{"text":"Jo's obituary","height":44},{"text":"How this site was built","height":44}]
 PASS  Privacy note: a click on its border keeps it open; a backdrop click closes it  — {"x":361,"y":450,"onDialog":true,"borderLeft":"3px","openAfterBorder":true,"openAfterBackdrop":false}
 PASS  phone: a double-tap on a fitted diagram does not zoom it  — {"scale":1,"x":0,"y":0}
-PASS  short screen 375×480: the focused link is inside the note's scrolling text, clear of the Close row  — {"focused":true,"scrolls":true,"link":{"top":320,"bottom":345},"region":{"top":19,"bottom":365},"closeRow":{"top":365,"bottom":461}}
+PASS  short screen 375×480: the focused link is inside the note's scrolling text, clear of the Close row  — {"focused":true,"scrolls":true,"link":{"top":288,"bottom":345},"region":{"top":19,"bottom":365},"closeRow":{"top":365,"bottom":461}}
 PASS  short screen 844×390: the focused link is inside the note's scrolling text, clear of the Close row  — {"focused":true,"scrolls":true,"link":{"top":222,"bottom":247},"region":{"top":19,"bottom":267},"closeRow":{"top":267,"bottom":371}}
 PASS  WebKit, classic scrollbar: full screen stays inside the usable width  — {"dialog":1265,"closeRight":1241,"usable":1265,"window":1280}
 
