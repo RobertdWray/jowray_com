@@ -1,0 +1,209 @@
+uid=20_0 RootWebArea "Jo Wray — Leave a memory" url="http://localhost:3107/share"
+  uid=22_0 ignored
+    uid=22_1 ignored
+      uid=20_1 banner
+        uid=22_2 ignored
+          uid=20_2 link "Jo Wray" url="http://localhost:3107/"
+            uid=22_3 ignored
+              uid=20_3 "Jo Wray"
+          uid=20_4 navigation
+            uid=20_5 link "Leave a memory" url="http://localhost:3107/share"
+              uid=20_6 "Leave a memory"
+            uid=20_7 link "Jo's story" url="http://localhost:3107/#story"
+              uid=20_8 "Jo's story"
+      uid=20_9 main
+        uid=22_4 ignored
+          uid=22_5 generic
+            uid=22_6 ignored
+              uid=20_10 heading "Write it down here." level="1"
+                uid=22_7 "Write it down here."
+              uid=22_8 paragraph
+                uid=20_11 "Tell us who you are and roughly when the memory is from — "her classroom, 1970s" or"
+                uid=20_12 ""Christmas 2019" is plenty. Then tell the story the way you'd tell it at her kitchen table."
+            uid=20_13 form
+              uid=20_14 paragraph live="polite" relevant="additions text"
+              uid=20_15 region "About you"
+                uid=20_16 heading "About you" level="2"
+                  uid=22_9 "About you"
+                uid=22_10 ignored
+                  uid=22_11 ignored
+                    uid=22_12 LabelText
+                      uid=20_17 "Your name"
+                    uid=20_18 textbox "Your name" required
+                      uid=22_13 ignored
+                      uid=22_14 generic
+                  uid=22_15 ignored
+                    uid=22_16 LabelText
+                      uid=20_19 "Email"
+                    uid=20_20 textbox "Email" required
+                      uid=22_17 ignored
+                      uid=22_18 generic
+                  uid=22_19 ignored
+                    uid=22_20 LabelText
+                      uid=20_21 "How you knew Jo "
+                      uid=20_22 "(optional)"
+                    uid=20_23 textbox "How you knew Jo (optional)"
+                      uid=22_21 ignored
+                      uid=22_22 generic
+                uid=22_23 paragraph
+                  uid=20_24 "One memory is plenty. Add more if they come to you."
+              uid=22_24 ignored
+                uid=22_25 ignored
+                  uid=20_25 region "Memory 1"
+                    uid=20_26 heading "Memory 1" level="2"
+                      uid=22_26 "Memory 1"
+                      uid=22_27 ignored
+                        uid=22_28 ignored
+                    uid=22_29 ignored
+                      uid=22_30 ignored
+                        uid=22_31 ignored
+                          uid=22_32 LabelText
+                            uid=22_33 ignored
+                              uid=20_27 "When is this memory from? "
+                              uid=20_28 "(roughly is fine)"
+                            uid=20_29 textbox "When is this memory from? (roughly is fine)"
+                              uid=22_34 ignored
+                              uid=22_35 generic
+                          uid=22_36 ignored
+                            uid=22_37 LabelText
+                              uid=22_38 ignored
+                                uid=20_30 "Where? "
+                                uid=20_31 "(optional)"
+                              uid=20_32 textbox "Where? (optional)" value="Photo location found near 40.69, -74.04 (test)"
+                                uid=22_39 ignored
+                                uid=22_40 generic
+                                  uid=22_41 "Photo location found near 40.69, -74.04 (test)"
+                            uid=20_33 generic live="polite" relevant="additions text"
+                              uid=22_42 ignored
+                                uid=22_43 paragraph
+                                  uid=21_0 "From your photos:"
+                                uid=22_44 group "From your photos:"
+                                  uid=21_1 button "Photo location found near 40.69, -74.04 (test)" focusable focused pressed
+                                    uid=22_45 "Photo location found near 40.69, -74.04 (test)"
+                                uid=22_46 paragraph
+                                  uid=21_2 link "Place names © OpenStreetMap contributors" url="https://www.openstreetmap.org/copyright"
+                                    uid=21_3 "Place names © OpenStreetMap contributors"
+                        uid=22_47 generic
+                          uid=22_48 paragraph
+                            uid=20_34 "Add a photo, video or voice recording "
+                            uid=20_35 "(optional)"
+                          uid=22_49 list "Add a photo, video or voice recording (optional)"
+                            uid=22_50 listitem level="1"
+                              uid=22_51 ignored
+                              uid=22_52 paragraph
+                                uid=21_4 "Photo"
+                                uid=21_5 " · "
+                                uid=21_6 "b6-liberty-gps.jpg"
+                                uid=21_7 " ·"
+                                uid=21_8 " "
+                                uid=21_9 "2 KB"
+                              uid=22_53 generic
+                                uid=21_10 button "Remove Photo 1, Memory 1"
+                                  uid=22_54 "Remove"
+                          uid=22_55 ignored
+                            uid=22_56 ignored
+                              uid=20_36 "Rather say it than type it?"
+                            uid=20_37 button "Record your voice for Memory 1"
+                              uid=22_57 "Record your voice"
+                              uid=22_58 ignored
+                                uid=22_59 "for "
+                                uid=22_60 "Memory 1"
+                          uid=22_61 ignored
+                            uid=22_62 ignored
+                            uid=22_63 ignored
+                            uid=22_64 ignored
+                            uid=20_38 button "Upload photos, videos or recordings"
+                              uid=22_65 "Upload photos, videos or recordings"
+                      uid=22_66 ignored
+                        uid=22_67 LabelText
+                          uid=20_39 "Your memory of Jo"
+                        uid=20_40 textbox "Your memory of Jo" multiline
+                          uid=22_68 ignored
+                          uid=22_69 generic
+                    uid=22_70 generic
+                      uid=21_11 button "Clear this memory"
+                        uid=22_71 "Clear this memory"
+                uid=20_41 region "Memory 2"
+                  uid=22_72 ignored
+                    uid=20_42 "Memory 2"
+                  uid=20_43 button "Add a second memory"
+                    uid=22_73 "Add a "
+                    uid=22_74 "second"
+                    uid=22_75 " memory"
+                uid=20_44 region "Memory 3"
+                  uid=22_76 ignored
+                    uid=20_45 "Memory 3"
+                  uid=20_46 button "Add a third memory"
+                    uid=22_77 "Add a "
+                    uid=22_78 "third"
+                    uid=22_79 " memory"
+              uid=22_80 generic
+                uid=22_81 ignored
+                  uid=22_82 LabelText
+                    uid=22_83 ignored
+                      uid=20_47 "Who can see "
+                      uid=20_48 "this"
+                      uid=20_49 "?"
+                    uid=20_50 combobox "Who can see this?" expandable haspopup="menu" value="Everyone"
+                      uid=22_84 MenuListPopup
+                        uid=22_85 ignored
+                          uid=20_51 option "Everyone" selected
+                          uid=20_52 option "Family"
+                  uid=20_53 button "Send this to Jo's family"
+                    uid=22_86 "Send this to Jo's family"
+                uid=22_87 paragraph
+                  uid=20_54 "Memories go to Richard, Rob and Tracy first. Later, with your okay, they'll join a shared collection the whole family can read."
+                uid=22_88 LabelText
+                  uid=20_55 checkbox "The family may contact me at this email address about this memory." checked
+                  uid=22_89 ignored
+                    uid=20_56 "The family may contact me at this email address about this memory."
+                uid=22_90 LabelText
+                  uid=20_57 checkbox "Let me know when my story is posted in Jo's story collection." checked
+                  uid=22_91 ignored
+                    uid=20_58 "Let me know when my story is posted in Jo's story collection."
+                uid=22_92 LabelText
+                  uid=20_59 checkbox "Sign up for our weekly mailing list to be notified when new memories are posted."
+                  uid=22_93 ignored
+                    uid=20_60 "Sign up for our weekly mailing list to be notified when new memories are posted."
+                uid=22_94 paragraph
+                  uid=20_61 "By sharing, you let the family keep this memory and show it within the memorial, and do other creative, respectful things to help us remember Jo."
+      uid=20_62 contentinfo
+        uid=22_95 paragraph
+          uid=20_63 "Made with love by Richard, Kay,"
+          uid=20_64 link "Rob" url="https://www.robwray.com/"
+            uid=20_65 "Rob"
+          uid=20_66 ","
+          uid=20_67 link "Tracy" url="https://tracycgold.com/"
+            uid=20_68 "Tracy"
+          uid=20_69 "and Ava."
+        uid=22_96 paragraph
+          uid=20_70 "Questions, or a memory that won't fit in a box? Email"
+          uid=20_71 link "robwray@gmail.com" url="mailto:robwray@gmail.com"
+            uid=20_72 "robwray@gmail.com"
+          uid=20_73 "."
+        uid=22_97 paragraph
+          uid=20_74 link "Jo's obituary" url="http://localhost:3107/obituary"
+            uid=20_75 "Jo's obituary"
+          uid=20_76 link "How this site was built" url="http://localhost:3107/how-it-was-built"
+            uid=20_77 "How this site was built"
+      uid=22_98 generic
+        uid=20_78 button "Report a problem"
+          uid=22_99 image
+          uid=22_100 ignored
+            uid=22_101 "Report a problem"
+      uid=22_102 generic
+        uid=22_103 generic
+          uid=22_104 generic
+            uid=22_105 ignored
+              uid=22_106 ignored
+                uid=22_107 generic
+                  uid=22_108 ignored
+                    uid=20_79 button "Open Next.js Dev Tools" expandable haspopup="menu"
+                      uid=22_109 image
+                        uid=22_110 ignored
+                        uid=22_111 ignored
+                        uid=22_112 ignored
+                        uid=22_113 ignored
+                        uid=22_114 ignored
+      uid=22_115 generic
+        uid=20_80 alert atomic live="assertive" relevant="additions text"
