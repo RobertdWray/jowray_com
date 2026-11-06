@@ -3,8 +3,9 @@ import Link from "next/link";
 import { FAMILY_CONTACT_EMAIL } from "@/lib/contact";
 
 import { ROB_URL, TRACY_URL } from "./external-links";
-import { linkClass, quietLinkClass } from "./field-classes";
+import { footerLinkClass, linkClass, quietLinkClass } from "./field-classes";
 import { StitchedHeart } from "./hearts";
+import { PrivacyNote } from "./privacy-note-client";
 
 export function SiteFooter() {
   return (
@@ -28,15 +29,26 @@ export function SiteFooter() {
         </a>
         .
       </p>
-      <p className="text-[18px] text-walnut-soft">
-        <Link href="/obituary" className={linkClass}>
+      {/* <div>s, not a <p>: the Privacy note's <dialog> and its headings and paragraphs are flow content, which a
+          <p> cannot contain (React reports that nesting as a hydration error). A wrapping flex row in which each dot
+          belongs to the link after it, so wherever the row breaks a dot never ends a line and every link keeps its
+          separator. The closed dialog is display:none and the open one sits in the top layer, so neither takes a
+          place in the row. */}
+      <div className="flex flex-wrap items-center justify-center gap-x-2 text-[18px] text-walnut-soft">
+        <Link href="/obituary" className={footerLinkClass}>
           Jo&apos;s obituary
         </Link>
-        <span aria-hidden="true"> · </span>
-        <Link href="/how-it-was-built" className={linkClass}>
-          How this site was built
-        </Link>
-      </p>
+        <div className="flex items-center gap-x-2">
+          <span aria-hidden="true">·</span>
+          <Link href="/how-it-was-built" className={footerLinkClass}>
+            How this site was built
+          </Link>
+        </div>
+        <div className="flex items-center gap-x-2">
+          <span aria-hidden="true">·</span>
+          <PrivacyNote />
+        </div>
+      </div>
     </footer>
   );
 }
