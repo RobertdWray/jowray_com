@@ -1,14 +1,16 @@
 import { z } from "zod";
 
 import { sourceInputSchema } from "@/lib/source-input";
-import { MEMORY_STATUSES } from "@/lib/validations/admin";
+import { adminCoordinatesSchema, adminDeletedSchema, adminMemoryChangesSchema, adminMemoryIdSchema, adminStatusSchema, MEMORY_STATUSES } from "@/lib/validations/admin";
 import { draftMemoryObjectSchema } from "@/lib/validations/memory";
 
 /**
  * Input schemas for the MCP tools at /api/mcp (plan 2026-11-06 §4.5). The
- * tools are thin adapters over the admin features, so most inputs are the
- * admin schemas re-exported; these two are the MCP's own. The SDK validates
- * arguments against them and the features parse again with their own schemas.
+ * tools are thin adapters over the admin features, so six inputs are strict
+ * copies of the admin schemas and two are the MCP's own. Every one is strict
+ * at the top level, so a mistyped or misplaced key is refused rather than
+ * silently dropped. The SDK validates arguments against them and the features
+ * parse again with their own schemas.
  */
 
 /** `list_memories`: every filter optional (an object schema even when empty, per the MCP spec); unknown keys are refused. */
@@ -38,4 +40,25 @@ export const mcpDraftInputSchema = draftMemoryObjectSchema
   })
   .strict();
 
-export { adminCoordinatesSchema, adminDeletedSchema, adminMemoryChangesSchema, adminMemoryIdSchema, adminStatusSchema } from "@/lib/validations/admin";
+/*
+ * Strict copies of the admin schemas behind the other six tools (Team Code
+ * Review, G2): a `note` beside `changes` instead of inside it, or any key a
+ * tool does not take, is a schema refusal instead of a call that quietly
+ * ignores it. The admin schemas themselves stay non-strict at the top level:
+ * the REST routes and the admin Server Functions share them.
+ */
+
+/** `get_memory` and `reissue_claim_link`. */
+export const mcpMemoryIdSchema = adminMemoryIdSchema.strict();
+
+/** `set_coordinates`. */
+export const mcpCoordinatesSchema = adminCoordinatesSchema.strict();
+
+/** `update_memory` (`changes` is already strict). */
+export const mcpMemoryChangesSchema = adminMemoryChangesSchema.strict();
+
+/** `set_status`. */
+export const mcpStatusSchema = adminStatusSchema.strict();
+
+/** `set_deleted`. */
+export const mcpDeletedSchema = adminDeletedSchema.strict();

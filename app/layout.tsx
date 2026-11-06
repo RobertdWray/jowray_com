@@ -4,6 +4,7 @@ import "@fontsource-variable/fraunces/standard-italic.css"; // the italic closer
 import "@fontsource/atkinson-hyperlegible/400.css";
 import "@fontsource/atkinson-hyperlegible/700.css";
 import "./globals.css";
+import { SiteAnalytics } from "./_components/analytics-client";
 import { SiteHeader } from "./_components/site-header";
 import { SiteFooter } from "./_components/site-footer";
 
@@ -20,6 +21,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <SiteHeader />
         {children}
         <SiteFooter />
+        <SiteAnalytics />
       </body>
     </html>
   );

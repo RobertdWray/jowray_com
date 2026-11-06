@@ -1,3 +1,4 @@
+import type { McpServerOptions } from "@modelcontextprotocol/server";
 import * as Sentry from "@sentry/nextjs";
 import { createMcpHandler, type McpHandlerOptions } from "mcp-handler";
 import type { NextRequest } from "next/server";
@@ -47,13 +48,27 @@ function reportHandlerEvent(event: McpHandlerEvent): void {
  * every session (review round 2, R8). `verboseLogs` stays off;
  * `onEvent` reports the handler's errors (above). The features log ids, the
  * tools log the tool name, memory id and Sentry event id.
+ *
+ * `maxToolInputElements` (Team Code Review, G3; advisory GHSA-46jr-4wx8-v453):
+ * the SDK counts the array items and object members of a `tools/call`'s
+ * arguments before any schema runs and refuses more than this as a 200
+ * `isError` result. It is off unless set, and mcp-handler parses the body
+ * itself, so the SDK's own body-size check does not apply. Our largest
+ * legitimate input, a full `draft_memory`, has about 20 elements. The option
+ * belongs to `McpServerOptions`; mcp-handler's options type leaves it out but
+ * passes every option it does not consume to `new McpServer(serverInfo,
+ * options)` (`mcp-handler` 2.3.1 `dist/index.js`, `initializeMcpApiHandler`),
+ * hence the widened type.
  */
-const handler = createMcpHandler(registerTools, {
+const HANDLER_OPTIONS: McpHandlerOptions & Pick<McpServerOptions, "maxToolInputElements"> = {
   serverInfo: { name: "jowray", version: "1" },
   capabilities: { tools: { listChanged: false } },
   maxSubscriptions: 0,
+  maxToolInputElements: 1000,
   onEvent: reportHandlerEvent,
-});
+};
+
+const handler = createMcpHandler(registerTools, HANDLER_OPTIONS);
 
 /**
  * Our own gate, not mcp-handler's `withMcpAuth`: that answers with an RFC 9728

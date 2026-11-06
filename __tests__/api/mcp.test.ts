@@ -198,6 +198,7 @@ describe("tools/list contract (case 2)", () => {
           "description": "One memory with its contributor, files, coordinates, revision history and emails. \`memoryVersion\` and \`contributor.contributorVersion\` are what update_memory and set_coordinates need.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
             "properties": {
               "memoryId": {
                 "format": "uuid",
@@ -438,6 +439,7 @@ describe("tools/list contract (case 2)", () => {
           "description": "Sets or clears a memory's coordinates. \`coordinates\` are WGS 84 decimal degrees for the named place (a town, a facility or community campus such as Broadmead, a church, a park, a lake), never a residence or a unit inside a place. Ask Rob before saving them. Call get_memory first for \`memoryVersion\`; \`null\` clears both; \`changed: false\` means the pair was already equal. Returns the new \`memoryVersion\` (unchanged when nothing changed): pass it to a following update_memory or set_coordinates instead of re-reading.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
             "properties": {
               "coordinates": {
                 "anyOf": [
@@ -492,9 +494,10 @@ describe("tools/list contract (case 2)", () => {
           "annotations": {
             "destructiveHint": true,
           },
-          "description": "Edits a memory's words, date, place, visibility or the contributor's name and relationship; send only the keys you change. Read \`memoryVersion\` and \`contributor.contributorVersion\` from get_memory first. On \`stale\`, compare \`current\` with the values you originally read; if a field you did not intend to change differs, stop and ask before retrying, otherwise retry from \`current\`.",
+          "description": "Edits a memory's words, date, place, visibility or the contributor's name and relationship; send only the keys you change. Read \`memoryVersion\` and \`contributor.contributorVersion\` from get_memory first. On \`stale\`, compare every editable field in \`current\` with the value you read before this edit: if any differs, including a field you are changing, show Rob what changed and ask before retrying; retry from \`current\` without asking only when none differs (only the versions moved).",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
             "properties": {
               "changes": {
                 "additionalProperties": false,
@@ -605,6 +608,7 @@ describe("tools/list contract (case 2)", () => {
           "description": "Moves a shared memory between PENDING, APPROVED and HIDDEN. A DRAFT is refused (\`draft\`): only the sender's Share leaves DRAFT.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
             "properties": {
               "memoryId": {
                 "format": "uuid",
@@ -637,6 +641,7 @@ describe("tools/list contract (case 2)", () => {
           "description": "Soft-deletes (\`deleted: true\`) or restores (\`deleted: false\`) a memory. On restore, \`purgedFiles\` counts files whose bytes are already gone.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
             "properties": {
               "deleted": {
                 "type": "boolean",
@@ -664,6 +669,7 @@ describe("tools/list contract (case 2)", () => {
           "description": "Mints a new claim link for a DRAFT. This revokes the link already sent; only on Rob's explicit confirmation.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
             "properties": {
               "memoryId": {
                 "format": "uuid",
@@ -862,6 +868,43 @@ describe("schema refusals and prepareInput refusals (case 5)", () => {
     for (const fn of Object.values(features)) {
       expect(fn).not.toHaveBeenCalled();
     }
+  });
+
+  it("refuses an unknown top-level key on every tool instead of dropping it (Team Code Review G2)", async () => {
+    // One plausible model mistake per tool: a key at the wrong level or one the tool does not take.
+    for (const [tool, args, key] of [
+      ["list_memories", { status: "DRAFT", limit: 5 }, "limit"],
+      ["get_memory", { ...memoryArgs, includeCoordinates: false }, "includeCoordinates"],
+      ["draft_memory", { ...draftArgs, phone: "+14105551234" }, "phone"],
+      ["set_coordinates", { ...coordinateArgs, place: "Broadmead" }, "place"],
+      ["update_memory", { ...changeArgs, note: "words beside changes instead of inside it" }, "note"],
+      ["set_status", { memoryId: ID, status: "APPROVED", reason: "family asked" }, "reason"],
+      ["set_deleted", { memoryId: ID, deleted: true, purge: true }, "purge"],
+      ["reissue_claim_link", { ...memoryArgs, confirmed: true }, "confirmed"],
+    ] as const) {
+      const { status, result } = await callTool(tool, args);
+      expect(status, tool).toBe(200);
+      expect(result.isError, tool).toBe(true);
+      expect(result.structuredContent, tool).toBeUndefined();
+      expect(result.content[0]!.text, tool).toContain("Input validation error");
+      expect(result.content[0]!.text, tool).toContain(key);
+    }
+    for (const fn of Object.values(features)) {
+      expect(fn).not.toHaveBeenCalled();
+    }
+  });
+
+  it("refuses arguments with more than 1000 elements before the schema runs (maxToolInputElements; Team Code Review G3, GHSA-46jr-4wx8-v453)", async () => {
+    // 2 members + 1001 array items: over the limit, counted by the SDK before zod sees it.
+    const { status, result } = await callTool("update_memory", { ...changeArgs, padding: Array.from({ length: 1001 }, () => 0) });
+    expect(status).toBe(200);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toBeUndefined();
+    expect(result.content[0]!.text).toBe("Invalid arguments for tool update_memory: arguments contain more than the maximum of 1000 elements");
+    // A legitimate call stays far below the limit: the largest input, a full draft, has about 20 elements.
+    features.draftMemory.mockResolvedValueOnce({ ok: true, memoryId: ID, claimToken: CLAIM_TOKEN, claimLink: CLAIM_LINK, originalNoteRecorded: false });
+    expect((await callTool("draft_memory", draftArgs)).result.isError).toBeUndefined();
+    expect(features.updateMemoryAsAdmin).not.toHaveBeenCalled();
   });
 
   it("maps a prepareInput refusal to invalid with its message, before the feature", async () => {
