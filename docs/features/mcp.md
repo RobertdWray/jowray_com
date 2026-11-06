@@ -1,19 +1,19 @@
 # MCP connector
 
-The `jowray` MCP server at `https://www.jowray.com/api/mcp`: eight admin tools that let Rob's Claude list, read, draft and edit memories from any Claude surface (claude.ai, the phone, Desktop, cloud sessions, Claude Code), so the `jowray-draft-memory` skill no longer needs the laptop checkout. It also gives each memory optional map coordinates.
+The `jowray` MCP server at `https://www.jowray.com/api/mcp`: nine admin tools that let Rob's Claude list, read, draft and edit memories, and suggest place names from the GPS saved with their photos, from any Claude surface (claude.ai, the phone, Desktop, cloud sessions, Claude Code), so the `jowray-draft-memory` skill no longer needs the laptop checkout. It also gives each memory optional map coordinates.
 
-**Status:** [PR #60](https://github.com/RobertdWray/jowray_com/pull/60) (route, eight tools, `MCP_API_SECRET`, memory coordinates, the shared `sourceInput` derivation, the skill rewritten to prefer the connector; merged 2026-11-06 as `d583308` and deployed to Production). Plan and ledger: [`docs/plans/2026-11-06-mcp-endpoint.md`](../plans/2026-11-06-mcp-endpoint.md). Not configured or used yet: every Rob row in the ledger (plan §3) is open: `MCP_API_SECRET` in Vercel Production, the connector added, approval set on six tools, the production smoke draft, the skill delivered to every surface, the first real run. Until the secret is set, production answers 401 to every request (checked 2026-11-06 after the deploy: `/api/mcp` 401 with no `WWW-Authenticate`; both OAuth well-known paths 404).
+**Status:** [PR #60](https://github.com/RobertdWray/jowray_com/pull/60) (route, every tool below except `suggest_places`, `MCP_API_SECRET`, memory coordinates, the shared `sourceInput` derivation, the skill rewritten to prefer the connector; merged 2026-11-06 as `d583308` and deployed to Production). Plan and ledger: [`docs/plans/2026-11-06-mcp-endpoint.md`](../plans/2026-11-06-mcp-endpoint.md). Not configured or used yet: every Rob row in the ledger (plan §3) is open: `MCP_API_SECRET` in Vercel Production, the connector added, approval set on six tools, the production smoke draft, the skill delivered to every surface, the first real run. Until the secret is set, production answers 401 to every request (checked 2026-11-06 after the deploy: `/api/mcp` 401 with no `WWW-Authenticate`; both OAuth well-known paths 404).
 
 ## What we built
 
 1. Rob adds a custom connector in Claude: the URL above, **No sign-in**, and the request header `authorization: Bearer <MCP_API_SECRET>`. Anthropic's servers call the site directly, so one connector serves every Claude surface; Claude Code adds the same URL and header itself.
 2. Every `GET` or `POST` to `/api/mcp` first passes the bearer gate, `unauthorized(request, "mcp")` in `app/api/admin/_auth.ts`. It reads the `authorization` header before any env or Prisma access and compares it in constant time with `Bearer <MCP_API_SECRET>`. No secret configured, an empty one, or a missing or wrong header: a plain `401` (`{ error: { code: "unauthorized" } }`) with **no `WWW-Authenticate` challenge**, logged as `mcp_unauthorized`. The admin API's `ADMIN_API_SECRET` does not open it.
 3. An authenticated request goes to `mcp-handler`, which builds a fresh `McpServer` for every request and runs `registerTools` on it: stateless, `maxDuration` 30 s, both protocol eras.
-4. The model sees eight tools, each a thin adapter over an admin feature the admin page or the admin API already runs: `list_memories` and `get_memory` read; `draft_memory`, `set_coordinates`, `update_memory`, `set_status`, `set_deleted` and `reissue_claim_link` write.
+4. The model sees nine tools, each a thin adapter over an admin feature: `list_memories`, `get_memory` and `suggest_places` read; `draft_memory`, `set_coordinates`, `update_memory`, `set_status`, `set_deleted` and `reissue_claim_link` write. `suggest_places` (photo GPS, plan `docs/plans/2026-11-06-photo-gps-places.md`, B7) changes no memory: it asks OpenStreetMap for place names near each photo's saved point through the site's cached, throttled lookup.
 5. `draft_memory` takes a `sourceInput` (a `gmail` message id; an `sms` number, time and text; or `other` with the original text) and never a `source` or `sourceRef`. The server derives both with `prepareInput` from `lib/source-input.ts`, the same code the laptop script runs, so no model computes the dedup key.
 6. Every answer our tools return carries the same JSON twice, as `structuredContent` and as a text block. A refusal is an `isError` result with a `code` the skill acts on; an unexpected exception becomes `{ code: "internal", eventId }`.
 7. A memory may hold one WGS 84 `coordinates` pair for a future map, set by `draft_memory` or `set_coordinates` and read only through `list_memories` and `get_memory`. The admin page and the claim page never show it.
-8. In Claude, Rob sets **requires approval** on the six tools that write, so Claude asks before each call: the five annotated `destructiveHint: true` and `draft_memory`. `draft_memory` keeps its non-destructive annotations, which are accurate (it only adds, and a repeat answers `duplicate`), but it writes a row and returns a live claim link, and `list_memories` and `get_memory` bring text any visitor can submit into the same session (Team Code Review, G1).
+8. In Claude, Rob sets **requires approval** on the six tools that write, so Claude asks before each call: the five annotated `destructiveHint: true` and `draft_memory`. `suggest_places` is read-only (`readOnlyHint`, `openWorldHint`; it writes only the lookup cache) and is not among them. `draft_memory` keeps its non-destructive annotations, which are accurate (it only adds, and a repeat answers `duplicate`), but it writes a row and returns a live claim link, and `list_memories` and `get_memory` bring text any visitor can submit into the same session (Team Code Review, G1).
 
 ## Why we built it
 
@@ -57,7 +57,7 @@ sequenceDiagram
   T-->>C: 200 isError with code internal and eventId on a throw
 ```
 
-### The eight tools
+### The nine tools
 
 | Tool | Calls | Success payload | `isError` codes | Annotations | Approval in Claude |
 |---|---|---|---|---|---|
@@ -69,6 +69,7 @@ sequenceDiagram
 | `set_status` | `setMemoryStatusAsAdmin` | `{}` | `invalid`, `not_found`, `draft` | destructive, idempotent | yes |
 | `set_deleted` | `setMemoryDeletedAsAdmin` | `{ purgedFiles }` | `invalid`, `not_found` | destructive, idempotent | yes |
 | `reissue_claim_link` | `reissueDraftClaimLink` | `{ memoryId, claimLink }` | `invalid`, `not_found`, `not_draft` | destructive, not idempotent | yes |
+| `suggest_places` | `suggestPlacesForMemory(memoryId)`: `lookupPlace` per unique point of the memory's live READY photos that have GPS, no viewer key, one 20 s deadline | `{ photos: [{ mediaId, originalFilename, coordinates, labels }], pending, attribution }`; `coordinates` is where the camera was, a landmark label's `point` is the place's own | `not_found`, `disabled`, `daily_limit`, `provider_refused` (`pending` lists photos whose lookup came back `busy` or `failed`) | `readOnlyHint`, `openWorldHint` | no |
 
 Every tool can also answer `internal { eventId }`. On `stale`, `update_memory`'s description tells the model to compare every editable field in `current` with the value it read before the edit and to show Rob and ask before retrying whenever any differs, even a field it is changing, because a retry sends Rob's value over the other person's; only a move of the versions alone is retried without asking (Team Code Review, O2). `not_found` means no such memory or, for every write except `set_deleted`, a soft-deleted one; `last_words` refuses emptying the words of a memory with no ready file; `draft` means only the sender's Share leaves DRAFT; reissuing revokes the link already sent. The exact model-facing contract (titles, descriptions, annotations, input JSON Schemas) is the inline snapshot in `__tests__/api/mcp.test.ts`. Annotations are hints: approval is a per-tool setting Rob applies in Claude, and must be applied again after every re-add of the connector. Success payloads are mapped field by field, so no answer carries `claimToken`, `claimTokenHash`, `blobUrl` or `storageKey`; the claim link appears only in the two success payloads that exist to return it.
 
@@ -120,13 +121,14 @@ One stateless handler serves the 2025-era Streamable HTTP (JSON-RPC over `POST`,
 |---|---|
 | **app** | |
 | `app/api/mcp/route.ts` | `GET` and `POST`: the gate, then `createMcpHandler` (`serverInfo` `jowray`, `listChanged: false`, `maxSubscriptions: 0`, `maxToolInputElements: 1000`, `onEvent` → `reportHandlerEvent`); `maxDuration` 30 |
-| `app/api/mcp/tools.ts` | The eight tool definitions (`TOOLS`), `registerTools`, `toolResult`, `refusal`, the `runTool` boundary, the place rule |
+| `app/api/mcp/tools.ts` | The nine tool definitions (`TOOLS`), `registerTools`, `toolResult`, `refusal`, the `runTool` boundary, the place rule |
 | `app/api/admin/_auth.ts` | `unauthorized(request, realm)`: one bearer gate for the `admin` and `mcp` realms; plain 401, no challenge |
 | **features** | |
 | `features/admin/set-coordinates.ts` | `setMemoryCoordinatesAsAdmin`: lock, re-read, `stale`, `changed: false`, one ADMIN revision |
 | `features/admin/get-memory.ts`, `features/admin/list-memories.ts` | `includeCoordinates` opt-in; revision stripping for the admin page |
 | `features/memories/draft-memory.ts` | Stores the pair on create and in the creation revision |
 | `features/admin/update-memory.ts`, `set-status.ts`, `set-deleted.ts` | Existing admin writes behind three tools, unchanged |
+| `features/places/suggest-for-memory.ts` | `suggestPlacesForMemory` behind `suggest_places` (photo GPS, B7); the lookup itself is `features/places/lookup-place.ts` |
 | **lib + server** | |
 | `lib/validations/mcp.ts` | `mcpListInputSchema`, `mcpDraftInputSchema` (strict, `sourceInput` instead of `source` + `sourceRef`); strict copies of the five admin schemas the other tools take (`mcpMemoryIdSchema`, `mcpCoordinatesSchema`, `mcpMemoryChangesSchema`, `mcpStatusSchema`, `mcpDeletedSchema`); the admin schemas stay as the REST routes use them |
 | `lib/validations/memory.ts`, `lib/validations/admin.ts` | `coordinatesSchema`, `coordinatesOf`, `draftMemoryObjectSchema`; `adminCoordinatesSchema` and the `isoDate` description the model reads |
@@ -137,7 +139,7 @@ One stateless handler serves the 2025-era Streamable HTTP (JSON-RPC over `POST`,
 | `docs/environment.md` | `MCP_API_SECRET` row; "MCP connector (`/api/mcp`)" setup, rotation and fallback |
 | `docs/skills/jowray-draft-memory/SKILL.md` | The skill: connector first, script as fallback; the coordinates question; `duplicate`, `stale` and `internal` handling |
 | **tests** | |
-| `__tests__/api/mcp.test.ts` | Gate; `tools/list` inline snapshot (the contract); every result row; boundary on all eight tools; schema and `prepareInput` refusals, including an unknown top-level key on every tool and arguments over 1000 elements; no `claimToken` in any body; the 2026-07-28 era; `listChanged: false` in both eras |
+| `__tests__/api/mcp.test.ts` | Gate; `tools/list` inline snapshot (the contract); every result row; boundary on all nine tools; schema and `prepareInput` refusals, including an unknown top-level key on every tool and arguments over 1000 elements; no `claimToken` in any body; the 2026-07-28 era; `listChanged: false` in both eras |
 | `__tests__/api/mcp-handler-errors.test.ts` | A registration throw in either era reaches Sentry once and Pino with ids only; protocol rejections reported; normal calls report and log nothing |
 | `__tests__/lib/sentry-envelope.test.ts` | MCP span case with the real SDK: `draft_memory` and `reissue_claim_link` spans with `mcp.tool.result.content`, neither tool's `SENTRYTEST_` token in any envelope |
 | `__tests__/api/admin-auth.test.ts`, `__tests__/lib/env.test.ts` | Realms independent, fail closed, no `WWW-Authenticate`, header read before env; `getMcpEnv` |
@@ -153,7 +155,7 @@ One stateless handler serves the 2025-era Streamable HTTP (JSON-RPC over `POST`,
 
 - The tests above. `__tests__/api/mcp.test.ts` runs the real route, gate, env accessor, `mcp-handler` and SDK with the features mocked; its inline snapshot pins each tool's name, title, description, annotations and input schema, so any change to what the model sees shows in the diff.
 - Recorded checks (plan §3): at `48d7621`, the last code commit, `npm run validate` green, `npm run test:run` 74 files / 1365 passed and `npm run build:offline` green with `/api/mcp` dynamic; at `e2f9a86`, with `TEST_DATABASE_URL` on a local Postgres 18.6, both integration suites passed (75 files / 1372); PR #60's `ci` green, including `prisma migrate deploy` on Postgres 18 and the integration suites. Three `/code-review` rounds: R1–R5 and R8 applied as fix-up commits, R6 and R7 declined with reasons, round 3 found nothing.
-- Locally with a throwaway secret (`next dev`, plan §3 commit 5, and the end-to-end run on a Neon branch off `dev`, plan §6.2): 401 with no header or a wrong bearer, no `WWW-Authenticate`, both well-known paths 404, an authenticated `GET` 405; eight tools in both eras; every tool exercised, including `stale`, `changed: false`, clearing, a schema refusal for a half pair and latitude 91, `draft` on a DRAFT, `duplicate` with the same id, and the `prepareInput` email mismatch; the text block equal to `structuredContent` on every JSON result; the admin page and its History showing no coordinates.
+- Locally with a throwaway secret (`next dev`, plan §3 commit 5, and the end-to-end run on a Neon branch off `dev`, plan §6.2): 401 with no header or a wrong bearer, no `WWW-Authenticate`, both well-known paths 404, an authenticated `GET` 405; every tool PR #60 shipped, in both eras; every tool exercised, including `stale`, `changed: false`, clearing, a schema refusal for a half pair and latitude 91, `draft` on a DRAFT, `duplicate` with the same id, and the `prepareInput` email mismatch; the text block equal to `structuredContent` on every JSON result; the admin page and its History showing no coordinates.
 - Sensitivity: with `beforeSendSpan` returning spans unscrubbed, the envelope case fails on the token; with `Memory_longitude_range` dropped, exactly the three longitude cases fail.
 - Skill micro-tests (plan §6.4): three role-play rounds against `SKILL.md` with mocked tools; all scenarios pass at `c227994`, two last edges applied in `57e59aa`.
 - Team Code Review (George and Oscar at `353121c`; plan §3): fix-ups `e27d97d` to `c4a3d7e`; at `c4a3d7e`, `npm run validate` green, `npm run test:run` 74 files / 1367 passed, `npm run build:offline` green. Declined suggestions are recorded in a [PR comment](https://github.com/RobertdWray/jowray_com/pull/60#issuecomment-6692691326).
