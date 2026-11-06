@@ -99,11 +99,11 @@ Light edits to Rob's text (the full list):
 ## 5. Footer, obituary, new page
 
 ### 5a. Footer: `app/_components/site-footer.tsx` [C6]
-- Credit line, `[APPROVED]` (R4): `Made with love by Richard, Kay, <a href={ROB_URL}>Rob</a>, <a href={TRACY_URL}>Tracy</a> and Ava.`, with `linkClass` on both links. Put `{" "}` wherever a JSX line break would otherwise drop a space; Step 9's text diff checks this.
+- Credit line, `[APPROVED]` (R4): `Made with love by Richard, Kay, <a href={ROB_URL}>Rob</a>, <a href={TRACY_URL}>Tracy</a> and Ava.`, with `linkClass` on both links (superseded by E20: `quietLinkClass`). Put `{" "}` wherever a JSX line break would otherwise drop a space; Step 9's text diff checks this.
 - Links line: `Jo's obituary · How this site was built`, with the middle dot in `<span aria-hidden="true">`.
 
 ### 5b. Obituary: `app/obituary/page.tsx:33` [C6]
-- Wrap "Robert Wray" in `<a href={ROB_URL} className={linkClass}>` and "Tracy Gold" in `<a href={TRACY_URL} className={linkClass}>` (R3).
+- Wrap "Robert Wray" in `<a href={ROB_URL} className={linkClass}>` and "Tracy Gold" in `<a href={TRACY_URL} className={linkClass}>` (R3; superseded by E20: both use `quietLinkClass`).
 - The rendered text must be byte-identical to the baseline (Step 9).
 - Edit the code comment at `:13-15` to read: words verbatim; two name links added at Rob's request on 2026-11-06.
 
@@ -298,6 +298,7 @@ Every result goes into the ledger and the evidence folder. Each screenshot or au
 | E17 | The README parser tracks every CommonMark fence (backticks or tildes, any length) | A `## ` line inside a bash code block, or a mermaid fence inside a tilde-fenced block, was misread; both are now test cases | None |
 | E18 | Each figure links to its README section on GitHub ("Read … in the README on GitHub", `linkClass`), as its long description; the two links stack on phones (no dangling separator) | Anchors are GitHub's heading ids, read from the repository page on 2026-11-06: `-how-a-memory-travels`, `\uFE0F-architecture`, `\uFE0F-data-model` (the variation selector survives). `githubHeadingAnchor` reproduces github-slugger and is tested against those ids; the manifest stores them, ASCII-escaped. Not worded "as text": GitHub draws the block as a picture, and the Mermaid source is on README.md's Code view | A retitled heading fails the drift test until the script is re-run |
 | E19 | Not done (optional): starting the data-model scroller on its content | The drawing's bounding box is already tight (the "replaces" label sits at the left edge); the empty area is the layout's top-left quadrant, and scrolling the region on load would need client JS | Cosmetic |
+| E20 | Hotfix, PR #55 stacked on #53 (branch `hotfix/quiet-personal-links`; numbered E7 before PR #56 took E7–E19): the links to Rob's and Tracy's sites use a new `quietLinkClass` (walnut text, 1px `wood` underline, darker and 2px on hover/focus) in the footer, note signature, obituary and `/how-it-was-built` byline; red `linkClass` stays for site links | Rob, 2026-11-06: "make the links to Rob and Tracy's site noticable but more subtle… This website isn't supposed to be about Rob or Tracy. But people might want to know who we are". An Opus UX/UI advisor recommended this exact treatment for all four places; contrast recomputed (underline ≥ 3.37:1 on every ground, text ≥ 11.2:1) | Low: if the 1px line fades on a dim phone over the gingham, change `decoration-1` to `decoration-2` at rest |
 
 ## 10. Outside review triage (2026-11-06)
 
@@ -364,6 +365,9 @@ Copy these into the PR body. After merge, Rob decides which to file at https://g
 | F3 | Low | The `/how-it-was-built` privacy line must change when the alpha settings end | `app/how-it-was-built/page.tsx` (code comment); telemetry plan §13 | In the same commit as §13: say replays are sampled and masked; keep the screenshot residual if still true |
 | F4 | Low | "Nothing you share is public yet" goes stale when the Phase 2 gallery ships | `app/how-it-was-built/page.tsx` (code comment); issue #37 | Reword it in the gallery PR; add a checkbox to #37 |
 | F5 | Not needed (2026-11-06) | Any accessibility finding Step 9 shows was already in the baseline. The baseline and after runs were both 100 with 0 failures, so there is nothing to file | Evidence README | One issue that lists the findings with their Lighthouse IDs and URLs |
+| F6 | Low | The site's normal red `linkClass` turns walnut on hover (`hover:text-walnut`), against DESIGN.md §5.9 ("links keep their resting color on hover; hover thickens the underline"); a hovered red link now looks like a quiet personal link | `app/_components/field-classes.ts` `linkClass` | Replace `hover:text-walnut` with `hover:decoration-2`, then check every red link (share form, claim page, admin, footer) on hover; raised by the UX advisor during E20 |
+| F7 | Medium | Home page `/` on Lighthouse **mobile** has Cumulative Layout Shift 0.168 ("needs improvement", over 0.1); content jumping under a thumb is a mis-tap risk for older visitors. Pre-existing: production `main` at `95f4df4` scores the same 0.168 (checked 2026-11-06), so neither PR #53 nor the E20 hotfix causes it | `app/page.tsx` hero (image, fonts); Lighthouse "Agentic Browsing" category | Record a performance trace of `/` at 412px (chrome-devtools `performance_start_trace`) to find the shifting element (likely the font swap in the hero heading/buttons or the hero image box), fix at the root, re-run mobile Lighthouse |
+| F8 | Low | `findUnsafeSvg` (`lib/readme-diagrams.ts`) misses two `<style>` tricks found in review round 2 of PR #56: an XML comment splitting `url(` (`u<!-- -->rl(`, text nodes are checked one at a time, ~line 363) and `/*` `*/` hidden inside CSS strings (comment stripping ~line 239 also removes the `url()` between them). The `/diagrams/*` CSP blocks both and neither can run script; exploiting it needs repo write access, since the SVGs come from our own README via our generator | `lib/readme-diagrams.ts`; `__tests__/lib/readme-diagrams.test.ts` | Refuse any XML or CSS comment inside `<style>` (the generator emits none), add both payloads as negative fixtures, regenerate nothing |
 
 ## Citations
 

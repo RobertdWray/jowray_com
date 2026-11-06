@@ -63,3 +63,17 @@ Same browser and server (`next dev -p 3107`, isolated context `diagrams2`).
 | No page scroll | `/how-it-was-built` at 320x800 mobile and 1280x900 | `scrollWidth == clientWidth`; images at natural size; the two links per figure stack at 320 and share a line with a dot at 1280 | `detailed-320-links.jpeg`, `detailed-1280-architecture-links.jpeg` |
 | README links | 320x800 | `https://github.com/RobertdWray/jowray_com#-how-a-memory-travels`, `#%EF%B8%8F-architecture`, `#%EF%B8%8F-data-model` (ids read from the GitHub repository page) | — |
 | Lighthouse accessibility | `/how-it-was-built`, desktop | 100, 0 failed (52 passed) | — |
+
+## Hotfix E20: quiet links to Rob's and Tracy's sites (branch `hotfix/quiet-personal-links`)
+
+Viewport `1280x900x2` (desktop, 2x for legibility), same server and browser as above.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Computed style of the three personal links on `/` (signature, footer Rob and Tracy) | text `rgb(46, 36, 32)` (walnut, same as the parent), `underline 1px rgb(138, 114, 89)` (wood), offset 4px; the site link "How this site was built" stays `rgb(165, 13, 38)` | — |
+| Contrast (WCAG luminance) | walnut text 11.23:1 on the darkest gingham square, 13.22:1 muslin, 14.87:1 paper; wood underline 3.37:1 darkest gingham, 3.97:1 muslin, 4.46:1 paper | — |
+| Lighthouse accessibility | 100, 0 failed audits on `/obituary` (desktop), `/` (mobile), `/how-it-was-built` (desktop) | — |
+| Lighthouse "Agentic Browsing" on `/` mobile | CLS 0.168. Production `main` (`95f4df4`) scores the same 0.168, so it is pre-existing (plan §12 F7) | — |
+| Checks | validate, test:run (1,214 passed, 7 skipped), build:offline all exit 0 | — |
+
+Screenshots: `quiet-links-home-1280.jpeg` (note signature and footer), `quiet-links-obituary-1280.jpeg`.

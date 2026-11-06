@@ -12,3 +12,11 @@ export const fileInputClass =
 // `font-normal`: an error line sits inside the field's bold wrapper and must not inherit its weight (DESIGN.md § 5.4).
 export const errorClass = "text-small font-normal text-jo-red-deep";
 export const linkClass = "text-jo-red-deep underline hover:text-walnut break-words";
+// Links to a person's own website (Rob, Tracy): noticeable but quiet, because the site is about Jo, not them. The text
+// keeps the sentence's color (Preflight gives links `color: inherit`), so red stays for actions and links into the
+// site; the 1px `wood` underline is the non-color cue SC 1.4.1 asks for (at least 3.3:1 against muslin, the darkest
+// gingham square and paper). Hover and keyboard focus darken and thicken the underline; the global 3px walnut focus outline still
+// applies. Tailwind v4 `hover:` only matches devices that can hover, so a tap on a phone doesn't stick it.
+// Plan: docs/plans/2026-11-06-why-and-how-built.md, ruling E20.
+export const quietLinkClass =
+  "underline decoration-wood decoration-1 underline-offset-4 break-words hover:decoration-walnut hover:decoration-2 focus-visible:decoration-walnut focus-visible:decoration-2";
