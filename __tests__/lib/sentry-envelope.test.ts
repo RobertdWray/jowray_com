@@ -1,6 +1,8 @@
+import { InMemoryTransport, McpServer } from "@modelcontextprotocol/server";
 import * as Sentry from "@sentry/nextjs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
+import { registerTools } from "@/app/api/mcp/tools";
 import { DATA_COLLECTION } from "@/lib/sentry/data-collection";
 import { scrubBreadcrumb, scrubEvent, scrubLog, scrubSpan } from "@/lib/sentry/scrub";
 import { instrumentedAction } from "@/lib/sentry/server-action";
@@ -17,6 +19,14 @@ vi.mock("next/headers", () => ({
       "next-url": "/m/SENTRYTEST_" + "h".repeat(32),
       cookie: "_vercel_jwt=SENTRYTEST_" + "j".repeat(32),
     }),
+}));
+
+// The MCP draft_memory and reissue_claim_link tools return a claim link in their results (plan 2026-11-06 §4.6;
+// Team Code Review G4 added the reissue); the feature is the only mock. Each tool gets its own token.
+const { MCP_TOKEN, MCP_REISSUE_TOKEN } = vi.hoisted(() => ({ MCP_TOKEN: "SENTRYTEST_" + "m".repeat(32), MCP_REISSUE_TOKEN: "SENTRYTEST_" + "r".repeat(32) }));
+vi.mock("@/features/memories/draft-memory", () => ({
+  draftMemory: async () => ({ ok: true, memoryId: "00000000-0000-4000-8000-000000000001", claimToken: MCP_TOKEN, claimLink: `https://preview.test/m/${MCP_TOKEN}`, originalNoteRecorded: false }),
+  reissueDraftClaimLink: async () => ({ ok: true, memoryId: "00000000-0000-4000-8000-000000000001", claimLink: `https://preview.test/m/${MCP_REISSUE_TOKEN}` }),
 }));
 
 /**
@@ -180,6 +190,50 @@ describe("streamed spans (beforeSendSpan on the real SDK)", () => {
     // The Server Function span from the instrumentedAction case above is streamed too.
     expect(sent.some((item) => item.includes('"type":"span"') && item.includes("createSubmission"))).toBe(true);
     for (const envelope of sent) {
+      expect(envelope).not.toContain("SENTRYTEST_");
+    }
+  });
+});
+
+describe("MCP tool spans (plan 2026-11-06 §4.6)", () => {
+  it("record each tool call as an MCP span, and the claim link in a draft_memory or reissue_claim_link result leaves without the token", async () => {
+    const before = sent.length;
+    const server = new McpServer({ name: "jowray", version: "1" });
+    // registerTools wraps the server with wrapMcpServerWithSentry before it registers the tools.
+    registerTools(server);
+    const [client, serverSide] = InMemoryTransport.createLinkedPair();
+    const responses: Array<{ id?: unknown; result?: { structuredContent?: { claimLink?: string }; isError?: boolean } }> = [];
+    client.onmessage = (message) => {
+      responses.push(message as (typeof responses)[number]);
+    };
+    await server.connect(serverSide);
+    await client.start();
+    await client.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "draft_memory",
+        arguments: { contributor: { email: EMAIL }, note: "Jo was a light.", sourceInput: { kind: "gmail", messageId: "1a1a2317fba34eec" } },
+      },
+    });
+    await client.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "reissue_claim_link", arguments: { memoryId: "00000000-0000-4000-8000-000000000001" } } });
+    await vi.waitFor(() => expect(responses.some((r) => r.id === 1) && responses.some((r) => r.id === 2)).toBe(true));
+    // The caller (the model) still gets the real links.
+    expect(responses.find((r) => r.id === 1)?.result?.structuredContent?.claimLink).toBe(`https://preview.test/m/${MCP_TOKEN}`);
+    expect(responses.find((r) => r.id === 2)?.result?.structuredContent?.claimLink).toBe(`https://preview.test/m/${MCP_REISSUE_TOKEN}`);
+    await server.close();
+    await Sentry.flush(5000);
+
+    const envelopes = sent.slice(before);
+    // The wrapper's spans exist, one per tool, and they carried the tool results (the attribute the scrubber had to clean).
+    for (const tool of ["draft_memory", "reissue_claim_link"]) {
+      expect(envelopes.some((item) => item.includes(`"mcp.tool.name":"${tool}"`) || item.includes(`"mcp.tool.name":{"value":"${tool}"`)), tool).toBe(true);
+    }
+    expect(envelopes.some((item) => item.includes("mcp.tool.result.content"))).toBe(true);
+    for (const envelope of sent) {
+      expect(envelope).not.toContain(MCP_TOKEN);
+      expect(envelope).not.toContain(MCP_REISSUE_TOKEN);
       expect(envelope).not.toContain("SENTRYTEST_");
     }
   });

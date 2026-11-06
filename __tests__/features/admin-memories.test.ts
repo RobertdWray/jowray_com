@@ -18,7 +18,7 @@ const T0 = new Date("2026-11-04T10:00:00.000Z");
 const T1 = new Date("2026-11-04T11:00:00.000Z");
 
 type ContributorRow = { id: string; name: string | null; email: string | null; relationship: string | null; phone: string | null; contactOptIn: boolean; mailingListOptIn: boolean; updatedAt: Date }
-type MemoryRow = { id: string; memorialId: string; contributorId: string | null; type: string; source: string; sourceRef: string | null; visibility: string; approxDateText: string | null; place: string | null; contributorNote: string | null; notifyWhenPosted: boolean; consentVersion: string; consentedAt: Date | null; status: string; claimTokenHash: string; submissionId: string | null; submissionIndex: number | null; createdAt: Date; updatedAt: Date; deletedAt: Date | null }
+type MemoryRow = { id: string; memorialId: string; contributorId: string | null; type: string; source: string; sourceRef: string | null; visibility: string; approxDateText: string | null; place: string | null; contributorNote: string | null; notifyWhenPosted: boolean; consentVersion: string; consentedAt: Date | null; status: string; claimTokenHash: string; submissionId: string | null; submissionIndex: number | null; createdAt: Date; updatedAt: Date; deletedAt: Date | null; latitude: number | null; longitude: number | null }
 type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; durationSeconds: number | null; width: number | null; height: number | null; caption: string | null; approxDateText: string | null; place: string | null; sortOrder: number; deletedAt: Date | null; purgedAt: Date | null; createdAt: Date; blobUrl: string | null; storageKey: string; exif: unknown; replacesMediaId: string | null; derivatives: Array<{ kind: string; status: string }> }
 interface Rev { memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown>; createdAt?: Date; id?: string }
 interface EmailRow { memoryId: string; emailType: string; status: string; sentAt: Date | null; attempts: number; createdAt: Date; recipientEmail: string }
@@ -114,7 +114,7 @@ import { setMemoryStatusAsAdmin } from "@/features/admin/set-status";
 import { updateMemoryAsAdmin } from "@/features/admin/update-memory";
 
 function memoryRow(over: Partial<MemoryRow>): MemoryRow {
-  return { id: MEM, memorialId: "memorial_1", contributorId: CON, type: "PHOTO", source: "WEB_UPLOAD", sourceRef: null, visibility: "FAMILY", approxDateText: "Summer 1998", place: null, contributorNote: "old note", notifyWhenPosted: true, consentVersion: "2026-11-v2", consentedAt: T0, status: "PENDING", claimTokenHash: "h".repeat(64), submissionId: null, submissionIndex: null, createdAt: T0, updatedAt: T0, deletedAt: null, ...over };
+  return { id: MEM, memorialId: "memorial_1", contributorId: CON, type: "PHOTO", source: "WEB_UPLOAD", sourceRef: null, visibility: "FAMILY", approxDateText: "Summer 1998", place: null, contributorNote: "old note", notifyWhenPosted: true, consentVersion: "2026-11-v2", consentedAt: T0, status: "PENDING", claimTokenHash: "h".repeat(64), submissionId: null, submissionIndex: null, createdAt: T0, updatedAt: T0, deletedAt: null, latitude: null, longitude: null, ...over };
 }
 function mediaRow(over: Partial<MediaRow>): MediaRow {
   return { id: "med_1", memoryId: MEM, status: "READY", mimeType: "image/jpeg", originalFilename: "a.jpg", durationSeconds: null, width: 10, height: 10, caption: null, approxDateText: null, place: null, sortOrder: 0, deletedAt: null, purgedAt: null, createdAt: T0, blobUrl: "https://blob/x", storageKey: "originals/x/a.jpg", exif: { gps: 1 }, replacesMediaId: null, derivatives: [{ kind: "WEB_IMAGE", status: "READY" }, { kind: "THUMBNAIL", status: "READY" }], ...over };
@@ -183,6 +183,18 @@ describe("listMemoriesForAdmin (V6)", () => {
     expect(await listMemoriesForAdmin({ status: "NOPE" })).toEqual({ ok: false, code: "invalid" });
   });
 
+  it("leaves coordinates out of every row by default and adds them only when asked (plan 2026-11-06 §4.2)", async () => {
+    memories[0] = memoryRow({ latitude: 39.4815, longitude: -76.6447 });
+    memories.push(memoryRow({ id: MEM2, createdAt: T1 }));
+    const plain = await listMemoriesForAdmin({});
+    if (!plain.ok) { throw new Error("setup"); }
+    for (const row of plain.rows) { expect(row).not.toHaveProperty("coordinates"); }
+    expect(JSON.stringify(plain)).not.toMatch(/coordinates|latitude|longitude|39\.4815/);
+    const withCoordinates = await listMemoriesForAdmin({}, { includeCoordinates: true });
+    if (!withCoordinates.ok) { throw new Error("setup"); }
+    expect(withCoordinates.rows.map((r) => [r.id, r.coordinates])).toEqual([[MEM, { latitude: 39.4815, longitude: -76.6447 }], [MEM2, null]]);
+  });
+
   it("counts by status over live rows, plus the deleted ones", async () => {
     memories.push(memoryRow({ id: MEM2, status: "APPROVED" }), memoryRow({ id: "m3", status: "DRAFT", deletedAt: T1 }));
     expect(await adminStatusCounts()).toEqual({ DRAFT: 0, PENDING: 1, APPROVED: 1, HIDDEN: 0, deleted: 1, total: 2 });
@@ -207,6 +219,51 @@ describe("getMemoryForAdmin", () => {
     for (const secret of ["h".repeat(64), "https://blob/x", "originals/x/a.jpg", "gps", "recipientEmail"]) {
       expect(json).not.toContain(secret);
     }
+  });
+
+  describe("coordinates (plan 2026-11-06 §4.2: set through /api/mcp and the admin draft API, read only through /api/mcp)", () => {
+    const BROADMEAD = { latitude: 39.4815, longitude: -76.6447 };
+    beforeEach(() => {
+      memories[0] = memoryRow({ place: "Broadmead", latitude: BROADMEAD.latitude, longitude: BROADMEAD.longitude });
+      revisions.push(
+        // The draft's creation revision: coordinates beside everything else it wrote.
+        { id: "r_create", memoryId: MEM, changedVia: "ADMIN", before: {}, after: { note: "old note", place: "Broadmead", coordinates: null, consentVersion: "2026-11-v2" }, createdAt: T0 },
+        // A set_coordinates revision: nothing but coordinates.
+        { id: "r_coords", memoryId: MEM, changedVia: "ADMIN", before: { coordinates: null }, after: { coordinates: BROADMEAD }, createdAt: T1 },
+        // A place edit: no coordinates involved.
+        { id: "r_place", memoryId: MEM, changedVia: "ADMIN", before: { place: null }, after: { place: "Broadmead" }, createdAt: T1 },
+        // An empty pair that never held coordinates is left as it was.
+        { id: "r_empty", memoryId: MEM, changedVia: "ADMIN", before: {}, after: {}, createdAt: T1 },
+      );
+    });
+
+    it("the default view (the admin page) has no coordinates anywhere, drops coordinate-only revisions and keeps the rest", async () => {
+      const view = await getMemoryForAdmin(MEM);
+      expect(view).not.toBeNull();
+      expect(view).not.toHaveProperty("coordinates");
+      expect(JSON.stringify(view)).not.toMatch(/coordinates|latitude|longitude|39\.4815|-76\.6447/);
+      expect(view!.revisions.map((r) => r.id)).toEqual(["r_create", "r_place", "r_empty"]);
+      expect(view!.revisions[0]).toMatchObject({ before: {}, after: { note: "old note", place: "Broadmead", consentVersion: "2026-11-v2" } });
+      expect(view!.revisions[1]).toMatchObject({ before: { place: null }, after: { place: "Broadmead" } });
+    });
+
+    it("the opt-in view carries the pair and every revision unchanged", async () => {
+      const view = await getMemoryForAdmin(MEM, { includeCoordinates: true });
+      expect(view!.coordinates).toEqual(BROADMEAD);
+      expect(view!.revisions.map((r) => r.id)).toEqual(["r_create", "r_coords", "r_place", "r_empty"]);
+      expect(view!.revisions[0]!.after).toHaveProperty("coordinates", null);
+      expect(view!.revisions[1]).toMatchObject({ before: { coordinates: null }, after: { coordinates: BROADMEAD } });
+    });
+
+    it("the opt-in view says coordinates: null for a memory without them", async () => {
+      memories[0] = memoryRow({});
+      expect((await getMemoryForAdmin(MEM, { includeCoordinates: true }))!.coordinates).toBeNull();
+    });
+
+    it("does not change the revisions it was given (stripping works on copies)", async () => {
+      await getMemoryForAdmin(MEM);
+      expect(revisions.find((r) => r.id === "r_create")!.after).toHaveProperty("coordinates", null);
+    });
   });
 
   it("returns a deleted memory with its deletedAt, and null for an unknown id", async () => {
