@@ -921,3 +921,35 @@ describe("the modern protocol era (case 7)", () => {
     expect(body.error?.message).toBe("Subscription limit reached");
   });
 });
+
+/**
+ * Review round 2, R8: the tool list is static and `maxSubscriptions: 0` refuses
+ * every `subscriptions/listen`, so the server must not advertise
+ * `tools.listChanged` (the SDK defaults it to true in `setToolRequestHandlers`).
+ * Where each era advertises capabilities, read from @modelcontextprotocol/server
+ * 2.4.0 `dist/mcp-oHn3ureC.mjs`: the 2025-era `initialize` result
+ * (`_oninitialize`) and the 2026-07-28 `server/discover` result (`_ondiscover`).
+ */
+describe("advertised capabilities (review R8)", () => {
+  it("the 2025-era initialize result says tools.listChanged is false", async () => {
+    const response = await authed({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "test", version: "1" } },
+    });
+    expect(response.status).toBe(200);
+    const result = (await rpcBody(response)).result as { capabilities?: { tools?: { listChanged?: boolean } } };
+    expect(result.capabilities?.tools).toEqual({ listChanged: false });
+  });
+
+  it("the 2026-07-28 server/discover result says tools.listChanged is false", async () => {
+    const response = await authed(
+      { jsonrpc: "2.0", id: 1, method: "server/discover", params: { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {} } } },
+      { "mcp-protocol-version": "2026-07-28", "mcp-method": "server/discover" }
+    );
+    expect(response.status).toBe(200);
+    const result = (await rpcBody(response)).result as { capabilities?: { tools?: { listChanged?: boolean } } };
+    expect(result.capabilities?.tools).toEqual({ listChanged: false });
+  });
+});

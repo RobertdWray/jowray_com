@@ -41,11 +41,19 @@ function reportHandlerEvent(event: McpHandlerEvent): void {
  * `registerTools` on a fresh server for every request (stateless, both the
  * 2026-07-28 protocol and the 2025-era Streamable HTTP fallback). No
  * subscribable resources, so `subscriptions/listen` is refused rather than
- * holding the function open until `maxDuration`. `verboseLogs` stays off;
+ * holding the function open until `maxDuration`. The tool list is static, so
+ * `tools.listChanged` is advertised as false (the SDK defaults it to true):
+ * otherwise a client following the capability would open a refused listen on
+ * every session (review round 2, R8). `verboseLogs` stays off;
  * `onEvent` reports the handler's errors (above). The features log ids, the
  * tools log the tool name, memory id and Sentry event id.
  */
-const handler = createMcpHandler(registerTools, { serverInfo: { name: "jowray", version: "1" }, maxSubscriptions: 0, onEvent: reportHandlerEvent });
+const handler = createMcpHandler(registerTools, {
+  serverInfo: { name: "jowray", version: "1" },
+  capabilities: { tools: { listChanged: false } },
+  maxSubscriptions: 0,
+  onEvent: reportHandlerEvent,
+});
 
 /**
  * Our own gate, not mcp-handler's `withMcpAuth`: that answers with an RFC 9728
