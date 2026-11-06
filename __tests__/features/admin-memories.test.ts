@@ -221,7 +221,7 @@ describe("getMemoryForAdmin", () => {
     }
   });
 
-  describe("coordinates (plan 2026-11-06 §4.2: set and read only through /api/mcp)", () => {
+  describe("coordinates (plan 2026-11-06 §4.2: set through /api/mcp and the admin draft API, read only through /api/mcp)", () => {
     const BROADMEAD = { latitude: 39.4815, longitude: -76.6447 };
     beforeEach(() => {
       memories[0] = memoryRow({ place: "Broadmead", latitude: BROADMEAD.latitude, longitude: BROADMEAD.longitude });

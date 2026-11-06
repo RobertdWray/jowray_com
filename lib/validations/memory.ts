@@ -157,7 +157,8 @@ const SOURCE_REF_PREFIX = { EMAIL: "gmail:", SMS: "sms:", OTHER: "other:" } as c
  * A memory's map position: WGS 84 decimal degrees (RFC 7946 §4), named fields so
  * latitude and longitude are never swapped. For the named place (a town, a
  * facility or community campus, a church, a park), never a residence or unit.
- * Set and read only through /api/mcp; the database CHECKs repeat both ranges
+ * Set through /api/mcp and the admin draft API (POST /api/admin/memories), read
+ * only through /api/mcp; the database CHECKs repeat both ranges
  * and keep the two columns together (migration 20261106120000_memory_coordinates).
  */
 export const coordinatesSchema = z

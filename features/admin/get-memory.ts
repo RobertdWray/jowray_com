@@ -97,7 +97,8 @@ function isEmptyObject(value: unknown): boolean {
 }
 
 /**
- * Coordinates are set and read only through /api/mcp (plan 2026-11-06 §4.2), so
+ * Coordinates are set through /api/mcp and the admin draft API and read only
+ * through /api/mcp (plan 2026-11-06 §4.2), so
  * the admin page's History must not show them: `app/admin/history.tsx` renders
  * every key a revision touched. Remove the key from both snapshots, and drop a
  * revision that held nothing else (a `set_coordinates` write). A revision that

@@ -128,8 +128,8 @@ model Memory {
   approxYear      Int?
   approxMonth     Int?
   place           String?
-  latitude        Float?         // WGS 84 decimal degrees; set and read only through /api/mcp (lib/validations/memory.ts coordinatesSchema)
-  longitude       Float?         // WGS 84 decimal degrees; set and read only through /api/mcp (lib/validations/memory.ts coordinatesSchema)
+  latitude        Float?         // WGS 84 decimal degrees; set through /api/mcp and the admin draft API, read only through /api/mcp (lib/validations/memory.ts coordinatesSchema)
+  longitude       Float?         // WGS 84 decimal degrees; set through /api/mcp and the admin draft API, read only through /api/mcp (lib/validations/memory.ts coordinatesSchema)
   contributorNote String?        // the person's words: as typed on /share, or an admin-drafted excerpt (verbatim, or a light rewrite the sender edits before Share; the verbatim text is in the ADMIN revision's before)
   language        String         @default("en")
   visibility      Visibility     @default(FAMILY)
