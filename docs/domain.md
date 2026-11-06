@@ -85,4 +85,4 @@ Created by `scripts/dns-setup.ts` (idempotent; re-run it to check validation). S
 | CNAME | `s2._domainkey` | `s2.domainkey.u46785377.wl128.sendgrid.net` | `8931d1c589ebf61c67c588090494d13c` |
 | TXT | `_dmarc` | `v=DMARC1; p=none; rua=mailto:dmarc@jowray.com` | `c726c35b037f8ab93d2c9d23f1c827a1` |
 
-No `MX` record exists; `jowray.com` does not receive mail (`dmarc@jowray.com` reports go nowhere until one is added).
+No `MX` record exists; `jowray.com` does not receive mail (`dmarc@jowray.com` reports go nowhere until one is added). Every outgoing email therefore sets Reply-To to the family contact address (`FAMILY_CONTACT_EMAIL` in `lib/contact.ts`, robwray@gmail.com), so a reader who presses Reply on a message from `memories@jowray.com` reaches a real inbox instead of bouncing.
