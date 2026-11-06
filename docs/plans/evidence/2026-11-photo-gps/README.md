@@ -122,3 +122,35 @@ Also checked (accessibility tree and DOM):
 - **After picking the photo:** the card has content, so the error clears and `aria-describedby` is back to `c1-helper`.
 - **Logs:** each run made one `POST /api/places/suggest` (200). No browser console errors or warnings, no server errors.
 
+### Before merge: B9's end-to-end on the final code (2026-11-06, `ce32c7a`, `next dev -p 3107`, `PLACES_PROVIDER=stub`)
+
+Re-run because the GPS claim lease, the callback task and the purge changed after B9. First, `prisma migrate deploy` on the
+throwaway branch `gps-e2e-20261106` (host checked: `ep-delicate-tooth-bbjln6ux`) applied the one pending migration,
+`20261106210000_photo_gps_claim_lease`. The contributor was "Runtime check PR B final" (`@example.com`), in an isolated context
+at 390×844, with a throwaway `MCP_API_SECRET`, deleted afterwards.
+
+| File | What it shows |
+|---|---|
+| `b12pre-tone.wav` | A generated 1 s 440 Hz tone (8 kHz, 8 KB): the non-image file in the memory. |
+| `b12pre-e2e-results.json` | Every step as data, described below. |
+
+What the results show:
+- **Send.** The Liberty JPEG, the no-EXIF JPEG and the WAV were sent in one memory. The place button showed before Send.
+- **Rows after the after-hooks:**
+  - The Liberty photo has `gpsCheckedAt`, `gpsAttempts` 1, `gpsClaimedAt` null and 40.69, -74.04.
+  - The no-EXIF photo has `gpsCheckedAt`, 1 attempt, a null claim and no point.
+  - The WAV is untouched: no stamp, 0 attempts, no claim.
+  - The memory's own coordinates are null.
+- **Server log.** One `photo_gps` line per photo (`found` and `absent`, attempt 1), none for the WAV, and no coordinate anywhere.
+- **Cron.** `GET /api/cron/reconcile-uploads` answered 200 with every count 0, and the rows were byte-identical.
+- **MCP.** `tools/list` has 9 tools in both eras, and the live `get_memory` description carries the camera-point sentence. `get_memory` gives the Liberty file 40.69, -74.04, and null for the other two. `suggest_places` returns the Liberty photo with the stub label, `pending: []` and the credit. A wrong bearer gets 401 with no `WWW-Authenticate`.
+
+Notes:
+- The log names no after-task (Pino does not log span names), so the evidence for item 4 is indirect:
+  - The dev logger runs at debug (`NODE_ENV=development`, the same flag that pretty-prints this log, and `LOG_LEVEL` unset).
+  - Before the fix, finalize scheduled `finalize.photo_gps` for every file, and the step logged a debug "photo GPS skipped" (`not_eligible`) line for a non-image.
+  - Here the WAV has only "upload ticket issued" and "upload recorded".
+  - The unit tests pin the scheduling itself.
+- The `photo_gps` lines locally come from finalize's task, because Blob cannot call back to `localhost`.
+- No browser console errors. The server log has no errors, and its one WARN is the deliberate wrong-bearer refusal.
+
