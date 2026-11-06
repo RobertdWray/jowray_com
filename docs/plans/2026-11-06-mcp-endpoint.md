@@ -11,6 +11,7 @@
 3. One PR with ordered commits (Rob, 2026-11-06).
 4. Agent's calls, flagged for veto: `draft_memory` accepts only `sourceInput`; no server-side rounding of coordinates; the privacy guard is the tool description plus the skill asking Rob before saving; a named community or facility campus (Broadmead) is a place, a residence or unit inside it is not.
 5. From the review round (§10): every tool runs inside one error boundary that reports to Sentry and returns `{ code: "internal", eventId }`; `wrapMcpServerWithSentry` is called explicitly; versions are pinned exactly; a single builder replaces the four lanes.
+6. A place phrase that names a home (a street address such as "12 Elm Road, Towson", or "her apartment at Broadmead") gets no coordinates at all, not even for the town or campus it sits in; the Where text still follows the skill's existing street/unit rule. Orchestrator's call, 2026-11-06, from the §6.4 skill micro-tests; **flagged for Rob's veto**.
 
 ---
 
