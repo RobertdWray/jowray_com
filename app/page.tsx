@@ -4,6 +4,8 @@ import Link from "next/link";
 import joSanta from "@/public/photos/jo-santa.jpg";
 
 import { PrimaryLink, SecondaryLink } from "./_components/buttons";
+import { ROB_URL } from "./_components/external-links";
+import { linkClass, quietLinkClass } from "./_components/field-classes";
 import { StitchedHeart } from "./_components/hearts";
 
 export default function HomePage() {
@@ -152,9 +154,6 @@ export default function HomePage() {
         <div className="mx-auto flex max-w-[1200px] flex-wrap items-start gap-x-16 gap-y-8">
           <div className="flex min-w-0 flex-[1_1_280px] flex-col gap-[14px]">
             <h2 className="font-display text-h2-sm font-bold sm:text-h2">Jo&apos;s story</h2>
-            <p className="text-body text-paper">
-              Hunt Valley, Maryland, by way of Reisterstown and a lot of summers on Lake George.
-            </p>
           </div>
           <div className="flex min-w-0 flex-[2_1_480px] flex-col gap-5 text-body leading-[1.6]">
             <p>
@@ -194,6 +193,50 @@ export default function HomePage() {
                 Read Jo&apos;s full obituary
               </Link>
             </p>
+          </div>
+        </div>
+      </section>
+
+      {/* Rob's note, in his words with light edits (plan docs/plans/2026-11-06-why-and-how-built.md §4b). */}
+      <section id="why" aria-labelledby="why-heading" className="px-[max(16px,5%)] py-[72px]">
+        <div className="mx-auto flex max-w-[760px] flex-col gap-5 rounded-card border-[3px] border-dashed border-periwinkle bg-paper p-5 shadow-card sm:p-10">
+          <div className="flex flex-col gap-[10px]">
+            <p className="text-body font-bold uppercase tracking-[0.08em] text-jo-red-deep">A note from Rob</p>
+            <h2 id="why-heading" className="font-display text-h2-sm font-bold sm:text-h2">
+              Why I built this
+            </h2>
+          </div>
+          <div className="flex flex-col gap-5 text-body leading-[1.6]">
+            <p>
+              Many of you know that Jo&apos;s father, Ivan, was a Baptist minister and a chaplain in the
+              Army. When he retired from the clergy, he never really stopped being a minister. It
+              wasn&apos;t clear to me how much he was loved until his funeral, when we had a line out the
+              door of people wanting to share how Ivan had changed their lives. We had a military funeral,
+              and if memory serves, at least 20 people weren&apos;t able to share a story they had about
+              Ivan.
+            </p>
+            <p>
+              So I built this website for Mom, to make sure we capture her stories: to help cheer up Dad,
+              to tell Ava who Grandma was when she is older, and, hopefully, to help all of us heal as we
+              share with one another the love Mom brought us all.
+            </p>
+          </div>
+          <p className="font-display text-lead">
+            <a href={ROB_URL} className={quietLinkClass}>
+              Rob Wray
+            </a>
+            , Jo&apos;s son
+          </p>
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-4 pt-1">
+            {/* Full width and centered on phones: inside the card the label wraps, and a ragged, left-aligned
+                wrap looks broken. */}
+            <PrimaryLink href="/share" className="w-full min-w-0 text-center text-balance sm:w-auto">
+              <StitchedHeart size={26} color="#fff" />
+              Leave a memory of Jo
+            </PrimaryLink>
+            <Link href="/how-it-was-built" className={`${linkClass} text-body`}>
+              How this site was built
+            </Link>
           </div>
         </div>
       </section>

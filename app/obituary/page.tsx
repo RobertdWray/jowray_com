@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 
 import { SecondaryLink } from "../_components/buttons";
-import { linkClass } from "../_components/field-classes";
+import { ROB_URL, TRACY_URL } from "../_components/external-links";
+import { linkClass, quietLinkClass } from "../_components/field-classes";
 import { StitchedHeart } from "../_components/hearts";
 
 export const metadata: Metadata = {
@@ -12,7 +13,8 @@ export const metadata: Metadata = {
 
 // Static page: no request-time data, so it prerenders at build. The text is
 // the family's obituary, verbatim (the longer version from 2026-11-04); edit it
-// here only when they change it.
+// here only when they change it. The words are unchanged by the two name links
+// (Robert Wray, Tracy Gold) Rob asked for on 2026-11-06.
 export default function ObituaryPage() {
   return (
     <main className="mx-auto flex w-full max-w-[760px] flex-1 flex-col gap-6 px-[max(16px,5%)] py-10">
@@ -30,8 +32,15 @@ export default function ObituaryPage() {
           a brief illness.
         </p>
         <p>
-          Jo leaves behind her husband Richard Wray, her son Robert Wray and his wife, Tracy Gold, and
-          her grandchild, Ava Goldwray. She also leaves her sister Kay Bartholomew, brother-in-law Doug
+          Jo leaves behind her husband Richard Wray, her son{" "}
+          <a href={ROB_URL} className={quietLinkClass}>
+            Robert Wray
+          </a>{" "}
+          and his wife,{" "}
+          <a href={TRACY_URL} className={quietLinkClass}>
+            Tracy Gold
+          </a>
+          , and her grandchild, Ava Goldwray. She also leaves her sister Kay Bartholomew, brother-in-law Doug
           Bartholomew, and nephews Andrew, Daniel, and Paul.
         </p>
         <p>

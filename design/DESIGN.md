@@ -186,7 +186,9 @@ that wrap. The Mrs. Claus paragraph is a pull-quote: Fraunces 24px on a
 
 ### 5.7 Footer
 Centered: stitched-heart outline (40px), Fraunces 22px "Made with love by
-Richard, Rob, Tracy and Ava.", 18px contact line.
+Richard, Kay, Rob, Tracy and Ava." ("Rob" links to robwray.com and "Tracy" to
+tracycgold.com as quiet links, added 2026-11-06; see §7a), 18px contact line, then the 18px links line
+"Jo's obituary · How this site was built".
 
 ### 5.8 Thank-you
 Centered, min full viewport height. 96px solid heart inside a 150px `paper`
@@ -207,6 +209,96 @@ button. Links keep their resting color on hover (hover thickens the underline);
 blind date, the 1971 wedding) replaced the first draft; the story band now opens
 with two short paragraphs drawn from it, and its pull-quote starts at "Jo loved
 Christmas" so the wedding is told once.
+2026-11-06: the words are unchanged, but "Robert Wray" links to robwray.com and
+"Tracy Gold" to tracycgold.com (Rob's request), as quiet links (§7a). The story band's tagline under
+"Jo's story" was removed the same day (Tracy didn't like it); the heading stands
+alone.
+
+### 5.10 Note from Rob (home `#why`, added 2026-11-06)
+After the story band, on the muslin ground: one centered `paper` card, 760px
+max, 3px dashed `periwinkle` border, `shadow-card`. Uppercase red-deep eyebrow
+"A note from Rob", h2 "Why I built this", Rob's two paragraphs about Ivan's
+funeral (his words, lightly edited), a Fraunces signature with "Rob Wray" as a
+quiet link to robwray.com (§7a), then the primary "Leave a memory of Jo" (full width and
+balanced-wrap on phones, so the label never leaves "Jo" alone on a line) and a
+text link to `/how-it-was-built`.
+
+### 5.11 How this site was built (`/how-it-was-built`, added 2026-11-06)
+For curious visitors and the GitHub crowd; reached from the note and the footer,
+no nav entry. Padding sits on `main` and the 1200px cap on the box inside it
+(as in the header). Sections: intro with a dashed secondary "See the code on
+GitHub", four stat tiles, three diagrams, "Made for Jo's people", "Built with"
+chips, "Privacy, in plain words", "The detailed version" (added 2026-11-06, see
+below), and a closing primary "Leave a memory of Jo".
+
+- **The plain-language diagrams are HTML lists, never SVG or Mermaid.** A scaled
+  SVG shrinks its labels under the 17px floor on a phone. They stay the
+  accessible summary for everyone. `StitchedSteps` is a numbered vertical timeline (red 48px badges joined by a
+  dashed periwinkle "thread", `paper` cards); `StackDiagram` stacks tiers with
+  dashed connectors and ends in a row of service cards (1, 2 or 4 columns).
+- Unstyled lists carry `role="list"` (Safari/VoiceOver drops list semantics
+  without markers). Number badges and connectors are `aria-hidden`; step titles
+  are h3 under each section's h2.
+- Every sentence is checked against the code in the plan's fact table
+  (`docs/plans/2026-11-06-why-and-how-built.md` §6). Two lines will go stale
+  and carry code comments: "Nothing you share is public yet" (Phase 2 gallery)
+  and the alpha telemetry note (update it, don't delete it, when the alpha
+  settings end; replays continue at 10%).
+- **"The detailed version"** (Rob, 2026-11-06, plan ruling R9): README.md's three
+  Mermaid diagrams ("How a memory travels", "Architecture", "Data model") for
+  technical readers, after the privacy section under a walnut-soft eyebrow "For
+  the technically curious". `detailed-diagrams.tsx` gives each a `<figure>`: a
+  figcaption with an h3 (the README heading) and a one-sentence description,
+  then the image, then two links: "Open … full size" (the SVG) and "Read … in
+  the README on GitHub" (the README section, its long description; GitHub's
+  heading ids keep an emoji's U+FE0F, so two anchors start with it).
+  - **Rendering.** `scripts/make-readme-diagrams.ts` renders the README blocks
+    once, at development time, with real Mermaid in the installed Google Chrome
+    (playwright-core), and writes `public/diagrams/<slug>.svg` plus the manifest
+    `app/how-it-was-built/readme-diagrams.ts` (sizes and source hashes). The
+    build only serves the committed files: no Mermaid in any bundle, no network,
+    the page stays `○`. Shown through `next/image` with `unoptimized`, an SVG
+    cannot run script. Opened full size, `/diagrams/*` is served with
+    `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline';
+    font-src data:; sandbox; frame-ancestors 'none'` and `nosniff`
+    (`next.config.ts`): an opened SVG gets an opaque origin and no other site
+    can frame it. Fixed ids, `handDrawnSeed: 1` and the pinned `look: "neo"`
+    and `layout: "elk"` make a re-run on an unchanged README byte-identical on
+    the same OS and Chrome version (the local Chrome measures the text). The
+    script renders and checks every diagram before it writes any file.
+  - **Theme.** Mermaid `base` theme from the tokens: paper ground, muslin shapes
+    with `periwinkle-deep` borders, dashed `periwinkle` groups, `walnut` text
+    and lines, `wood` lifelines, `wood-light` loop and note labels, walnut
+    autonumber badges with paper digits. Atkinson Hyperlegible 18px, embedded in
+    each SVG as a data: URL (an `<img>` SVG can load no outside font).
+  - **17px floor.** Never scaled down: the script fails if any text computes
+    under 17px. Two Mermaid sizes are not configurable and are lifted in the
+    script: the `autonumber` digits (12px → 17px bold in a 13px-radius circle)
+    and ER relationship labels (14px → 18px, via `themeCSS`).
+  - **Phones.** Each image sits at natural size in a `role="region"`,
+    `tabIndex={0}` scroller with an `aria-label` ("… diagram, scrolls
+    sideways"), so the page never scrolls sideways (WCAG 1.4.10 allows 2-D
+    content to). Arrow keys scroll it once focused.
+  - **Text alternative.** `alt` names the diagram type and its parts;
+    `aria-describedby` points at the visible description.
+  - **Drift guard.** `__tests__/lib/readme-diagrams.test.ts` fails when a README
+    block's SHA-256 differs from the one in the manifest or in the SVG's first
+    line, or when a block is added, removed or retitled. Fix: run
+    `npx tsx scripts/make-readme-diagrams.ts` and commit.
+  - **Safety check.** `findUnsafeSvg` (`lib/readme-diagrams.ts`) runs in the
+    script before any file is written and in the test on every committed SVG.
+    It tokenizes the file strictly (no DOCTYPE, CDATA or processing
+    instructions), decodes entities, then allows only the elements and
+    attributes the generator emits; `xmlns` only on the root and only SVG's;
+    no repeated attribute; `href` only to `#id`; CSS `url()` only to `#id` or
+    an embedded WOFF2 font; CSS at-rules only `@font-face` and `@keyframes`;
+    no CSS escapes, no CSS comments and no XML comments inside `<svg>`.
+    Twenty-six attack payloads (encoded `javascript:`, outside `<image>`,
+    `@import`, `<set>` on an event handler, an XHTML namespace, a `url()`
+    split by a comment, and more) are spliced into a real SVG in the test and
+    each must be rejected for its reason. It proves what
+    the files contain, not how a browser parses them; the CSP above is the
+    second layer.
 
 ## 6. Layout
 - Content max-width 1200px, 5% side padding (≥16px on phones).
@@ -229,11 +321,25 @@ cover; then write in the same register.
 - Empty and error states sound like a kind teacher: "Nothing here yet — be
   the first to tell a Jo story."
 
+## 7a. Links to people (added 2026-11-06)
+The site is about Jo, not the people who made it. Links to a person's own site
+(Rob, Tracy) use `quietLinkClass` (`app/_components/field-classes.ts`): the text
+stays the color of the sentence, with a 1px `wood` underline 4px below it, which
+darkens to walnut and thickens to 2px on hover and keyboard focus. Red (`linkClass`)
+stays for every other link (pages of the site, the church, email) and for actions. No external-link icon: it would
+pull the eye back to the names. Contrast: walnut text 11.2:1 or more on every
+ground; the `wood` underline 3.37:1 on the darkest gingham square, 3.97:1 on
+muslin, 4.46:1 on paper (Rob: "noticeable but more subtle… This website isn't
+supposed to be about Rob or Tracy").
+
 ## 8. Accessibility (non-negotiable)
 - WCAG AA everywhere, AAA for body text (walnut on muslin and paper is).
 - Real `<button>`, `<a href>`, `<label for>` on every control; no click
   handlers on divs.
-- Visible goldenrod focus ring on everything focusable.
+- Visible 3px walnut focus outline on everything focusable (`app/globals.css`;
+  goldenrod fails contrast as a focus color, so it is never the ring). The rule
+  covers links, buttons, form controls and any `[tabindex="0"]` element, such
+  as the scrolling diagram regions on `/how-it-was-built`.
 - Decorative SVGs `aria-hidden="true"`; the heart mark in the header is
   decorative (the wordmark carries the name).
 - No text below 17px, no light-weight type, no text over photos.

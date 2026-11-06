@@ -13,7 +13,7 @@
 ![Sentry 11](https://img.shields.io/badge/Sentry-11-362d59)
 ![Tests](https://img.shields.io/badge/Vitest-~1200%20tests-6e9f18)
 
-**Live:** [www.jowray.com](https://www.jowray.com) · **Share a memory:** [/share](https://www.jowray.com/share) · **Obituary:** [/obituary](https://www.jowray.com/obituary)
+**Live:** [www.jowray.com](https://www.jowray.com) · **Share a memory:** [/share](https://www.jowray.com/share) · **Obituary:** [/obituary](https://www.jowray.com/obituary) · **How it was built:** [/how-it-was-built](https://www.jowray.com/how-it-was-built)
 
 </div>
 
@@ -27,11 +27,13 @@ So Phase 1 of this site does one thing well: **it collects.** A visitor opens th
 
 The design brief is one line: *"A celebration of Jo, not a memorial of her."* Warm, bright, handmade, a little cheeky. Jo's maiden name was Hart, so **the heart is the mark**, always red and always hand-stitched. Body text is Atkinson Hyperlegible with a 17 px floor, touch targets are 56 px or larger, there are no modals and nothing hides behind hover. See [`design/DESIGN.md`](design/DESIGN.md).
 
-The repository is also a record of **how it was built**: in three days, by Rob and a team of Claude agents, through 40 pull requests, each with a written plan, a premortem, a ledger of decisions and a review. See [How this was built](#-how-this-was-built).
+The repository is also a record of **how it was built**: in three days, by Rob and a team of AI agents (mostly Claude), through 37 merged pull requests, each with a written plan, a premortem, a ledger of decisions and a review. See [How this was built](#-how-this-was-built).
 
 ---
 
 ## 🧭 How a memory travels
+
+<!-- The three Mermaid diagrams in this file are also shown on /how-it-was-built. After editing one, run `npx tsx scripts/make-readme-diagrams.ts` and commit the result; __tests__/lib/readme-diagrams.test.ts fails until you do. -->
 
 ```mermaid
 sequenceDiagram
@@ -147,7 +149,7 @@ erDiagram
     Memory ||--o{ MemoryRevision : "edit history"
     Memory ||--o{ EmailLog : "one row per email type"
     Media ||--o{ DerivedMedia : "web copy, thumbnail"
-    Media o|--o| Media : replaces
+    Media }o--o| Media : replaces
     User |o--o| Contributor : "Phase 3 login"
 
     Memory {
@@ -250,7 +252,7 @@ Database scripts: `db:migrate` (dev), `db:migrate:prod` (deploy), `db:seed`, `db
 
 ## 🤝 How this was built
 
-The site went from `create-next-app` to collecting real memories in three days ([PR #1](https://github.com/RobertdWray/jowray_com/pull/1) on 2026-11-02 to [PR #40](https://github.com/RobertdWray/jowray_com/pull/40) on 2026-11-04). Rob set direction and made every product call; Claude agents planned, built, reviewed and documented. The rules of the road are in [`AGENTS.md`](AGENTS.md):
+The site went from `create-next-app` to collecting real memories in three days ([PR #1](https://github.com/RobertdWray/jowray_com/pull/1) on 2026-11-02 to [PR #40](https://github.com/RobertdWray/jowray_com/pull/40) on 2026-11-04). Rob set direction and made every product call; AI agents, mostly Claude with OpenAI's Codex on some features, planned, built, reviewed and documented. The visitor-facing version of this story, with diagrams, is the site's own [/how-it-was-built](https://www.jowray.com/how-it-was-built) page. The rules of the road are in [`AGENTS.md`](AGENTS.md):
 
 - 🌿 **Every change on a branch with a PR**, critical fixes included.
 - 📋 **A plan before code.** Each feature has a plan in [`docs/plans/`](docs/plans/) with Rob's rulings quoted verbatim, a *"do not re-ask"* table, a premortem, a ledger of what shipped, and *"cost if wrong"* notes. The plans are frozen once executed; the feature docs summarise them.
