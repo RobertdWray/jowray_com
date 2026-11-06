@@ -35,7 +35,36 @@ Screenshots: `how-it-was-built-320.jpeg` (full page), `how-it-was-built-390-trip
 
 Not run by the agent: VoiceOver (plan N12); Rob's optional iPhone pass covers it.
 
-## Hotfix E7: quiet links to Rob's and Tracy's sites (branch `hotfix/quiet-personal-links`)
+## Detailed diagrams (R9), branch `feat/detailed-diagrams` on top of `d682edd`
+
+Browser: Chrome via chrome-devtools MCP, isolated context `diagrams`. Server: `next dev -p 3107` in `/Users/rob/Documents/active_work/jowray_wt_diagrams`, Node 26.13.0. SVGs from `npx tsx scripts/make-readme-diagrams.ts` (Google Chrome 156, mermaid 12.2.0): `how-a-memory-travels.svg` 2174×1030, `architecture.svg` 2013×576, `data-model.svg` 1804×1542.
+
+| Check | URL / viewport | Result | Evidence |
+|---|---|---|---|
+| `npm run validate`, `npm run test:run`, `npm run build:offline` | — | all exit 0; 1,237 tests (1,230 passed, 7 skipped); build lists `○ /how-it-was-built`; no Mermaid or Playwright code in `.next/static` or `.next/server` (the only hits are the package names in an inlined `package.json` list) | ledger steps 13–14 |
+| Drift guard fails when it should | README "Architecture" label edited, test run, edit reverted | `× Architecture was rendered from the current README text`, with the regenerate command in the message | — |
+| Natural size, no page scroll | `/how-it-was-built` at 320x800 mobile, 390x844 mobile, 640x450x2 (1280 at 200%), 1280x900 | `scrollWidth == clientWidth` at every width; each image renders at its natural size (e.g. 2174×1030) inside a region 345 px wide at 390; no text under 17px in `main` at 320 | `detailed-390-top.jpeg`, `detailed-390-architecture-scrolled.jpeg`, `detailed-320-data-model.jpeg`, `detailed-1280-top.jpeg`, `detailed-1280-data-model.jpeg` |
+| Keyboard | 1280x900 | Shift+Tab from the first "Open … full size" link focuses the region "How a memory travels diagram, scrolls sideways"; `:focus-visible`, outline `rgb(46, 36, 32) solid 3px`, offset 2px; ArrowRight scrolls it (`scrollLeft` 0 → 80) | `detailed-1280-focus.jpeg` |
+| Accessibility tree | 1280x900 | h2 "The detailed version", then per diagram: h3, description, region with its label, image with its `alt` as name and the description as `description`, the full-size link | `a11y-tree-detailed.txt` (taken before the sequence diagram's `alt` dropped "13", so a README edit cannot leave it stale) |
+| Lighthouse accessibility | `/how-it-was-built`, desktop and mobile | 100, 0 failed (52 passed) on both; best practices and SEO 100 | — |
+| Full-size link | `/diagrams/data-model.svg` | `200`, `Content-Type: image/svg+xml` | — |
+
+Not run: Safari and a real iPhone (the SVGs use plain SVG text and embedded WOFF2, which Safari supports; Rob's preview pass covers it).
+
+### Review round 1 fixes (ledger step 16)
+
+Same browser and server (`next dev -p 3107`, isolated context `diagrams2`).
+
+| Check | URL / viewport | Result | Evidence |
+|---|---|---|---|
+| Headers | `curl -I /diagrams/data-model.svg`, `/how-it-was-built` | the SVG gets `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:`, `X-Content-Type-Options: nosniff` and `Document-Policy: js-profiling`; the page gets only `Document-Policy` | — |
+| SVG opened full size under the CSP | `/diagrams/how-a-memory-travels.svg` | no console messages; `document.fonts`: Atkinson Hyperlegible 400 and 700 both `loaded`; text computes to the Atkinson stack | — |
+| Determinism | two generator runs on an unchanged README | all three SVGs and the manifest byte-identical (`cmp`) | — |
+| No page scroll | `/how-it-was-built` at 320x800 mobile and 1280x900 | `scrollWidth == clientWidth`; images at natural size; the two links per figure stack at 320 and share a line with a dot at 1280 | `detailed-320-links.jpeg`, `detailed-1280-architecture-links.jpeg` |
+| README links | 320x800 | `https://github.com/RobertdWray/jowray_com#-how-a-memory-travels`, `#%EF%B8%8F-architecture`, `#%EF%B8%8F-data-model` (ids read from the GitHub repository page) | — |
+| Lighthouse accessibility | `/how-it-was-built`, desktop | 100, 0 failed (52 passed) | — |
+
+## Hotfix E20: quiet links to Rob's and Tracy's sites (branch `hotfix/quiet-personal-links`)
 
 Viewport `1280x900x2` (desktop, 2x for legibility), same server and browser as above.
 

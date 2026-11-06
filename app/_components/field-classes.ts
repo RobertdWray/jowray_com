@@ -17,6 +17,6 @@ export const linkClass = "text-jo-red-deep underline hover:text-walnut break-wor
 // site; the 1px `wood` underline is the non-color cue SC 1.4.1 asks for (at least 3.3:1 against muslin, the darkest
 // gingham square and paper). Hover and keyboard focus darken and thicken the underline; the global 3px walnut focus outline still
 // applies. Tailwind v4 `hover:` only matches devices that can hover, so a tap on a phone doesn't stick it.
-// Plan: docs/plans/2026-11-06-why-and-how-built.md, ruling E7.
+// Plan: docs/plans/2026-11-06-why-and-how-built.md, ruling E20.
 export const quietLinkClass =
   "underline decoration-wood decoration-1 underline-offset-4 break-words hover:decoration-walnut hover:decoration-2 focus-visible:decoration-walnut focus-visible:decoration-2";

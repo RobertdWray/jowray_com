@@ -108,7 +108,8 @@
   textarea::placeholder {
     color: var(--color-wood);
   }
-  :is(input, textarea, select, button, a):focus-visible {
+  /* [tabindex="0"]: keyboard-focusable regions, such as the sideways-scrolling diagrams on /how-it-was-built. */
+  :is(input, textarea, select, button, a, [tabindex="0"]):focus-visible {
     outline: 3px solid var(--color-walnut);
     outline-offset: 2px;
   }
