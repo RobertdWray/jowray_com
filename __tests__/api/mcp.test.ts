@@ -692,7 +692,7 @@ describe("tools/list contract (case 2)", () => {
             "openWorldHint": true,
             "readOnlyHint": true,
           },
-          "description": "Place names near where each photo was taken, from the GPS saved with the photo (OpenStreetMap). Read-only. Landmark labels carry the place's own point; the photo's point is where the camera was. If \`pending\` is non-empty, call again at most twice (results are cached), then tell Rob which photos are still pending. \`coordinates\` are WGS 84 decimal degrees for the named place (a town, a facility or community campus such as Broadmead, a church, a park, a lake), never a residence or a unit inside a place. Ask Rob before saving them.",
+          "description": "Place names near where each photo was taken, from the GPS saved with the photo (OpenStreetMap). Read-only. Landmark labels carry the place's own point; the photo's point (each photo's \`coordinates\`) is where the camera was. If \`pending\` is non-empty, call again at most twice (results are cached), then tell Rob which photos are still pending. \`coordinates\` are WGS 84 decimal degrees for the named place (a town, a facility or community campus such as Broadmead, a church, a park, a lake), never a residence or a unit inside a place. Ask Rob before saving them.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,

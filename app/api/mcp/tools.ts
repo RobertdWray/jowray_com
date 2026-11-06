@@ -95,7 +95,7 @@ const TOOLS = {
   },
   suggest_places: {
     title: "Suggest places from photos",
-    description: `Place names near where each photo was taken, from the GPS saved with the photo (OpenStreetMap). Read-only. Landmark labels carry the place's own point; the photo's point is where the camera was. If \`pending\` is non-empty, call again at most twice (results are cached), then tell Rob which photos are still pending. ${PLACE_RULE}`,
+    description: `Place names near where each photo was taken, from the GPS saved with the photo (OpenStreetMap). Read-only. Landmark labels carry the place's own point; the photo's point (each photo's \`coordinates\`) is where the camera was. If \`pending\` is non-empty, call again at most twice (results are cached), then tell Rob which photos are still pending. ${PLACE_RULE}`,
     inputSchema: mcpMemoryIdSchema,
     // It changes no memory (only the lookup cache) and asks OpenStreetMap (C27).
     annotations: { readOnlyHint: true, openWorldHint: true },
