@@ -75,3 +75,9 @@ Also observed:
   with no parser code in it. `node_modules/exifreader/src` (634 KB in dev, unminified) and `lib/photo-gps.ts` (8 KB) were fetched
   only after the first photo was picked.
 - The browser console had no errors or warnings. The dev server log shows each `POST /api/places/suggest 200` and no errors.
+
+### B6 fix round 1: a failed lookup is asked again on re-add (2026-11-06, same setup)
+
+| File | What it shows |
+|---|---|
+| `b6f1-390-readd-after-failure.png` | 390×844. The page's `fetch` was wrapped so the first `POST /api/places/suggest` answered a faked `503 busy`: no buttons. After removing the photo and picking it again, a second request answered 200 and the button appeared, as shown. A third remove and re-add sent no request: the kept answer was reused. |
