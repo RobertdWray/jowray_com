@@ -105,9 +105,16 @@ export async function POST(request: NextRequest): Promise<Response> {
               data: outcome.status === "PENDING" ? { attempts: 1, error: "blob not visible yet" } : { processedAt: new Date(), attempts: 1, error: null },
             });
             if (outcome.status === "READY") {
-              // Closed-tab backstop for a photo's GPS, first because it is quick and independent of the copies. It
-              // never throws; a claim on its own row makes a race with finalize harmless, and cron (h) retries (B3).
-              await extractPhotoGps({ mediaId });
+              // Closed-tab backstop for a photo's GPS, in a task of its own like finalize's, so it never waits on the
+              // copies or holds them up. Photos only: `contentType` is the ticket's type (the token allows only that
+              // one), and recordMedia relabels only within a kind. The step never throws. With finalize also
+              // scheduling it, the first worker to claim reads the bytes and the other is skipped while that claim is
+              // live (`gpsClaimedAt`); cron (h) retries a failed read (final review, items 2 to 4).
+              if (blob.contentType.startsWith("image/")) {
+                afterWithFlush("upload.callback.photo_gps", async () => {
+                  await extractPhotoGps({ mediaId });
+                });
+              }
               // Closed-tab backstop for the derived copies; finalize normally gets there first and the
               // claim rows make the race harmless. A failure here is not a callback failure: cron (g) retries.
               try {

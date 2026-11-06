@@ -263,10 +263,13 @@ export async function finalizeUpload({
       await deriveMedia({ mediaId: outcome.mediaId, deadlineMs: DERIVE_DEADLINE_FINALIZE_MS });
     });
     // A photo's GPS, read from the original in a task of its own: never through the derived copies, which are
-    // stripped (plan 2026-11-06-photo-gps-places B3). Other kinds are skipped at once; cron step (h) retries.
-    afterWithFlush("finalize.photo_gps", async () => {
-      await extractPhotoGps({ mediaId: outcome.mediaId });
-    });
+    // stripped (plan 2026-11-06-photo-gps-places B3). Photos only (the ticket's type; recordMedia relabels only within
+    // a kind), so a video or a voice note schedules nothing (final review, item 4); cron step (h) retries.
+    if (verified.claims.mimeType.startsWith("image/")) {
+      afterWithFlush("finalize.photo_gps", async () => {
+        await extractPhotoGps({ mediaId: outcome.mediaId });
+      });
+    }
   }
   return { status: outcome.status, claimLink: `${getSiteUrl()}/m/${claimToken}`, emailed };
 }

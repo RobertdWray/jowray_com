@@ -426,6 +426,20 @@ describe("finalizeUpload", () => {
     expect(deriveMock).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    { kind: "a video", mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 },
+    { kind: "a voice note", mimeType: "audio/mp4", maxBytes: 100 * 1024 * 1024 },
+  ])("never schedules the photo GPS step for $kind: only image tickets get it (final review, item 4)", async ({ mimeType, maxBytes }) => {
+    headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 1234, contentType: mimeType, uploadedAt: new Date() });
+    media = [row({ mimeType, maxBytes })];
+    const result = await finalizeUpload({ ticket: mintUploadTicket({ ...claims, mimeType, maxBytes }), claimToken: CLAIM });
+    expect(result.status).toBe("READY");
+    expect(afterNames).toContain("finalize.checksum_and_derive");
+    expect(afterNames).not.toContain("finalize.photo_gps");
+    for (const cb of afterCalls) { await cb(); }
+    expect(extractGpsMock).not.toHaveBeenCalled();
+  });
+
   it("rejects a tampered ticket, a mismatched claim token, and does not touch the row", async () => {
     const ticket = mintUploadTicket(claims);
     expect(await finalizeUpload({ ticket: { ...ticket, maxBytes: 1 }, claimToken: CLAIM })).toEqual({ status: "REJECTED", reason: "bad_signature" });
@@ -462,7 +476,7 @@ describe("finalizeUpload", () => {
     media = [row({ mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 })];
     const result = await finalizeUpload({ ticket: mintUploadTicket({ ...claims, mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 }), claimToken: CLAIM });
     expect(result.status).toBe("READY");
-    expect(afterNames).toEqual(["finalize.admin_alert", "finalize.checksum_and_derive", "finalize.photo_gps"]); // the cron hashes large files
+    expect(afterNames).toEqual(["finalize.admin_alert", "finalize.checksum_and_derive"]); // the cron hashes large files; a video gets no GPS task
     for (const cb of afterCalls) { await cb(); }
     expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_1" });
     expect(media[0]?.checksumSha256).toBeNull();
