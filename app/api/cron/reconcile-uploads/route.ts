@@ -89,8 +89,6 @@ const DERIVE_BATCH = 3;
 const DERIVE_DEADLINE_MS = 30_000;
 /** Step (h): photos per run. On the 10-minute schedule that is about 60 an hour, which is also the backfill rate. */
 const PHOTO_GPS_BATCH = 10;
-/** Step (h) starts a photo only with at least this much of the run left: a prefix read, perhaps a whole-original read, three queries. */
-const PHOTO_GPS_MIN_START_MS = 5_000;
 /** Step (h): the count each extraction outcome adds to. */
 const GPS_COUNT: Record<PhotoGpsOutcome, "gpsFound" | "gpsAbsent" | "gpsFailed" | "gpsSkipped"> = {
   found: "gpsFound",
@@ -680,15 +678,15 @@ export async function GET(request: NextRequest): Promise<Response> {
       take: PHOTO_GPS_BATCH,
     });
     for (const row of undecided) {
-      // Each photo gets only what is left of the run, and none starts without room for a read.
-      const remainingMs = RUN_DEADLINE_MS - (Date.now() - now);
-      if (remainingMs < PHOTO_GPS_MIN_START_MS) {
+      // A photo starts only when its whole read deadline fits in what is left of the run: a run running out of time
+      // must never cost a photo one of its three attempts (the rest wait for the next run).
+      if (RUN_DEADLINE_MS - (Date.now() - now) < GPS_READ_DEADLINE_MS) {
         break;
       }
       // Each item in its own isolation scope: an identity set by a shared feature cannot leak into the next item.
       await Sentry.withIsolationScope(async () => {
         try {
-          const outcome = await extractPhotoGps({ mediaId: row.id, deadlineMs: Math.min(GPS_READ_DEADLINE_MS, remainingMs) });
+          const outcome = await extractPhotoGps({ mediaId: row.id, deadlineMs: GPS_READ_DEADLINE_MS });
           counts[GPS_COUNT[outcome]] += 1;
         } catch (error) {
           counts.errors += 1;

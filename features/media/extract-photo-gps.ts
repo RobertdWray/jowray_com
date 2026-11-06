@@ -16,7 +16,11 @@ export type PhotoGpsOutcome = "found" | "absent" | "failed" | "skipped";
 export const MAX_GPS_ATTEMPTS = 3;
 /** A JPEG's EXIF almost always sits in its first 128 KiB, so that is read first [C50]; ExifReader's own first read is the same size. */
 export const GPS_PREFIX_BYTES = 128 * 1024;
-/** Bound on a whole-original read (photos are at most 25 MB, MAX_BYTES.PHOTO); cron step (h) passes what is left of its run when that is less. */
+/**
+ * Bound on the reads, the prefix and any whole-original read together (photos are at most 25 MB, MAX_BYTES.PHOTO).
+ * Cron step (h) starts a photo only when this much of its run is left, so running out of run time never costs a photo
+ * one of its attempts.
+ */
 export const GPS_READ_DEADLINE_MS = 15_000;
 
 class OriginalMissingError extends Error {
@@ -96,10 +100,15 @@ export async function extractPhotoGps({ mediaId, deadlineMs = GPS_READ_DEADLINE_
   }
 }
 
-/** The GPS in the stored original; a missing original is a failure (the row is READY, so its bytes should be there). */
+/**
+ * The GPS in the stored original; a missing original is a failure (the row is READY, so its bytes should be there).
+ * One deadline covers both reads: its signal aborts a stalled prefix read or download, body included, and the abort
+ * surfaces as a failure that leaves the row undecided.
+ */
 async function readGps(storageKey: string, mimeType: string, deadlineMs: number): Promise<GpsRead> {
+  const signal = AbortSignal.timeout(deadlineMs);
   if (mimeType === "image/jpeg") {
-    const prefix = await createStorageService().readPrefix(storageKey, GPS_PREFIX_BYTES);
+    const prefix = await createStorageService().readPrefix(storageKey, GPS_PREFIX_BYTES, { signal });
     if (prefix === null) {
       return { status: "failed", error: new OriginalMissingError() };
     }
@@ -108,13 +117,13 @@ async function readGps(storageKey: string, mimeType: string, deadlineMs: number)
       return fromPrefix;
     }
   }
-  const whole = await readWhole(storageKey, deadlineMs);
+  const whole = await readWhole(storageKey, signal);
   return whole === null ? { status: "failed", error: new OriginalMissingError() } : readGpsFromBytes(whole);
 }
 
-/** The whole original, or null when it is missing. The deadline aborts the fetch, body included, rather than waiting on a stalled download. */
-async function readWhole(storageKey: string, deadlineMs: number): Promise<Uint8Array | null> {
-  const file = await createStorageService().get(storageKey, { signal: AbortSignal.timeout(deadlineMs) });
+/** The whole original, or null when it is missing. */
+async function readWhole(storageKey: string, signal: AbortSignal): Promise<Uint8Array | null> {
+  const file = await createStorageService().get(storageKey, { signal });
   return file === null ? null : new Uint8Array(await new Response(file.stream).arrayBuffer());
 }
 

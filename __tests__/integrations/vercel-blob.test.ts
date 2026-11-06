@@ -86,6 +86,23 @@ describe("VercelBlobStorageService.readPrefix (issue #45)", () => {
   });
 });
 
+describe("VercelBlobStorageService.readPrefix deadline (B3 fix round 1)", () => {
+  it("passes the caller's abort signal to the SDK, so a deadline stops a stalled prefix read too", async () => {
+    const controller = new AbortController();
+    const { stream } = countingStream(16, 16);
+    getMock.mockResolvedValueOnce(result(200, stream, 16));
+    expect(await service.readPrefix("k", 128, { signal: controller.signal })).toHaveLength(16);
+    expect(getMock.mock.calls[0]![1]).toMatchObject({ abortSignal: controller.signal, headers: { Range: "bytes=0-127" } });
+  });
+
+  it("without options, sends no signal (the byte check in recordMedia is unchanged)", async () => {
+    const { stream } = countingStream(16, 16);
+    getMock.mockResolvedValueOnce(result(200, stream, 16));
+    await service.readPrefix("k", 128);
+    expect(getMock.mock.calls[0]![1]).toMatchObject({ abortSignal: undefined });
+  });
+});
+
 describe("VercelBlobStorageService.get", () => {
   it("passes the caller's abort signal to the SDK so a deadline can stop a download", async () => {
     const controller = new AbortController();

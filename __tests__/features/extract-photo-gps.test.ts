@@ -56,7 +56,7 @@ vi.mock("@/server/db/client", () => ({ getDb: () => db }));
 
 /** The store: pathname → bytes. */
 const blobs = new Map<string, Uint8Array>();
-const readPrefixMock = vi.fn(async (pathname: string, maxBytes: number): Promise<Uint8Array | null> => blobs.get(pathname)?.subarray(0, maxBytes) ?? null);
+const readPrefixMock = vi.fn(async (pathname: string, maxBytes: number, _options?: { signal?: AbortSignal }): Promise<Uint8Array | null> => blobs.get(pathname)?.subarray(0, maxBytes) ?? null);
 const getMock = vi.fn(async (pathname: string, _options?: { signal?: AbortSignal }) => {
   const bytes = blobs.get(pathname);
   return bytes ? { stream: new Blob([new Uint8Array(bytes)]).stream(), contentType: "application/octet-stream", contentLength: bytes.byteLength } : null;
@@ -127,7 +127,7 @@ describe("extractPhotoGps: outcomes", () => {
   it("found: a JPEG whose EXIF sits in the 128 KiB prefix; one prefix read, no whole-file read, coordinates and the stamp in one conditional write", async () => {
     blobs.set(KEY, await jpegWithGps(liberty()));
     expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("found");
-    expect(readPrefixMock).toHaveBeenCalledWith(KEY, PREFIX_BYTES);
+    expect(readPrefixMock).toHaveBeenCalledWith(KEY, PREFIX_BYTES, { signal: expect.any(AbortSignal) });
     expect(getMock).not.toHaveBeenCalled();
     expectLibertyStored(media[0]);
     expect(media[0]!.gpsAttempts).toBe(1);
@@ -160,7 +160,7 @@ describe("extractPhotoGps: outcomes", () => {
     const late = withLateExif(await jpegWithGps(liberty()));
     blobs.set(KEY, late);
     expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("found");
-    expect(readPrefixMock).toHaveBeenCalledWith(KEY, PREFIX_BYTES);
+    expect(readPrefixMock).toHaveBeenCalledWith(KEY, PREFIX_BYTES, { signal: expect.any(AbortSignal) });
     expect(getMock).toHaveBeenCalledTimes(1);
     expect(getMock.mock.calls[0]![1]?.signal).toBeInstanceOf(AbortSignal);
     expectLibertyStored(media[0]);
@@ -218,6 +218,27 @@ describe("extractPhotoGps: outcomes", () => {
     for (const [, context] of captureExceptionMock.mock.calls) {
       expect(context).toMatchObject({ tags: { step: "photo_gps" } });
     }
+  });
+});
+
+describe("extractPhotoGps: one deadline for both reads (B3 fix round 1)", () => {
+  it("an aborted prefix read (a stalled store) is failed, reported, and leaves the row undecided at its claimed attempt", async () => {
+    blobs.set(KEY, await jpegWithGps(liberty()));
+    readPrefixMock.mockImplementationOnce(async (_pathname, _maxBytes, options) => new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(options.signal?.reason))));
+    expect(await extractPhotoGps({ mediaId: "med_1", deadlineMs: 20 })).toBe("failed");
+    expect(media[0]).toMatchObject({ gpsCheckedAt: null, latitude: null, longitude: null, gpsAttempts: 1 });
+    expect(getMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock.mock.calls[0]![1]).toMatchObject({ tags: { step: "photo_gps" } });
+    expect(photoGpsLines()).toEqual([{ level: "warn", action: "photo_gps", mediaId: "med_1", outcome: "failed", attempt: 1, errorType: "TimeoutError" }]);
+  });
+
+  it("the prefix read and the whole-file read share one deadline signal", async () => {
+    blobs.set(KEY, withLateExif(await jpegWithGps(liberty())));
+    expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("found");
+    const prefixSignal = readPrefixMock.mock.calls[0]![2]?.signal;
+    expect(prefixSignal).toBeInstanceOf(AbortSignal);
+    expect(getMock.mock.calls[0]![1]?.signal).toBe(prefixSignal);
   });
 });
 

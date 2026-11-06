@@ -45,8 +45,18 @@ function matches(row: Record<string, unknown>, where: Record<string, unknown>): 
     return actual === v;
   });
 }
+/** Prisma's `orderBy` for one column (Dates or strings), stable for ties like the database's index order is for these fixtures. */
+function ordered<T extends Record<string, unknown>>(rows: T[], orderBy?: Record<string, "asc" | "desc">): T[] {
+  const [column, direction] = Object.entries(orderBy ?? {})[0] ?? [];
+  if (column === undefined) {
+    return rows;
+  }
+  const key = (row: T) => { const v = row[column]; return v instanceof Date ? v.getTime() : String(v); };
+  const sign = direction === "desc" ? -1 : 1;
+  return [...rows].sort((a, b) => (key(a) < key(b) ? -sign : key(a) > key(b) ? sign : 0));
+}
 function finder<T extends Record<string, unknown>>(rows: () => T[]) {
-  return vi.fn(async ({ where, take }: { where: Record<string, unknown>; take?: number }) => rows().filter((r) => matches(r, where)).slice(0, take ?? 1000));
+  return vi.fn(async ({ where, orderBy, take }: { where: Record<string, unknown>; orderBy?: Record<string, "asc" | "desc">; take?: number }) => ordered(rows().filter((r) => matches(r, where)), orderBy).slice(0, take ?? 1000));
 }
 const derivedDeletes: Array<Record<string, unknown>> = [];
 /** Fixture rows are /share memories unless a row says otherwise (the real columns are NOT NULL). */
@@ -60,14 +70,14 @@ let onLock: ((memoryId: string) => void) | null = null;
 const lockCalls: string[] = [];
 const dbStub = {
   // Prisma always returns `derivatives` as an array when it is included, and every scalar; fixtures may omit `derivatives` and `purgedAt`.
-  media: { updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Partial<MediaRow> }) => { const rows = media.filter((m) => matches({ purgedAt: null, reservedUntil: null, ...m } as unknown as Record<string, unknown>, where)); for (const r of rows) { Object.assign(r, data); } return { count: rows.length }; }), findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => (await finder(() => media.map((m) => ({ purgedAt: null, reservedUntil: null, gpsCheckedAt: null, gpsAttempts: 0, ...m })) as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }), findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { const m = media.find((x) => x.id === where.id); if (!m) { throw new Error("not found"); } return { purgedAt: null, reservedUntil: null, ...m }; }) },
+  media: { updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Partial<MediaRow> }) => { const rows = media.filter((m) => matches({ purgedAt: null, reservedUntil: null, ...m } as unknown as Record<string, unknown>, where)); for (const r of rows) { Object.assign(r, data); } return { count: rows.length }; }), findMany: vi.fn(async (args: { where: Record<string, unknown>; orderBy?: Record<string, "asc" | "desc">; take?: number }) => (await finder(() => media.map((m) => ({ purgedAt: null, reservedUntil: null, gpsCheckedAt: null, gpsAttempts: 0, ...m })) as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }), findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { const m = media.find((x) => x.id === where.id); if (!m) { throw new Error("not found"); } return { purgedAt: null, reservedUntil: null, ...m }; }) },
   $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(String(values[0])); onLock?.(String(values[0])); return [{ id: values[0] }]; }),
   $transaction: vi.fn(async (fn: (t: typeof dbStub) => Promise<unknown>) => { inTransaction = true; try { return await fn(dbStub); } finally { inTransaction = false; } }),
   derivedMedia: { deleteMany: vi.fn(async ({ where }: { where: { mediaId: string; storageKey?: { in: string[] } } }) => { derivedDeletes.push(where); const m = media.find((x) => x.id === where.mediaId); if (m?.derivatives) { m.derivatives = m.derivatives.filter((d) => where.storageKey ? !where.storageKey.in.includes(d.storageKey) : false); } return { count: 1 }; }) },
   webhookEvent: { findMany: finder(() => events as unknown as Record<string, unknown>[]), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<EventRow> }) => { Object.assign(events.find((e) => e.id === where.id)!, data); }) },
   // Prisma returns every scalar; fixtures may omit the submission columns and the lease (null = legacy row / no open submission)
   // and status/source (a /share memory unless the row says otherwise).
-  emailLog: { findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => finder(() => emails.map((e) => ({ ...e, memory: e.memory ? { uploadLeaseUntil: null, ...e.memory } : e.memory })) as unknown as Record<string, unknown>[])(args)) },
+  emailLog: { findMany: vi.fn(async (args: { where: Record<string, unknown>; orderBy?: Record<string, "asc" | "desc">; take?: number }) => finder(() => emails.map((e) => ({ ...e, memory: e.memory ? { uploadLeaseUntil: null, ...e.memory } : e.memory })) as unknown as Record<string, unknown>[])(args)) },
   memory: { findMany: finder(() => memories.map((m) => shareMemory({ submissionId: null, submissionIndex: null, uploadLeaseUntil: null, ...m })) as unknown as Record<string, unknown>[]) },
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
@@ -541,21 +551,32 @@ describe("step (h): photo GPS (B3)", () => {
     expect(second.data).toMatchObject({ gpsAbsent: 2, gpsFailed: 1, gpsSkipped: 1 });
   });
 
-  it("hands each photo a read deadline within what is left of the run, and starts none once less than the minimum is left", async () => {
+  // B3 fix round 1: a photo starts only with the full read deadline (15 s) left, so a run running out of time never
+  // costs a photo one of its three attempts. The two steps put the second start exactly on the floor and just under it.
+  it.each([
+    { stepMs: 35_000, starts: 2, why: "the second start has exactly 15 s left: it runs" },
+    { stepMs: 35_001, starts: 1, why: "the second start would have 14.999 s left: it waits for the next run" },
+  ])("starts a photo only with the full 15 s read deadline left ($why)", async ({ stepMs, starts }) => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
-      extractGpsMock.mockImplementation(async ({ mediaId }) => { vi.setSystemTime(Date.now() + 10_000); return decideGps(mediaId, "absent"); });
+      extractGpsMock.mockImplementation(async ({ mediaId }) => { vi.setSystemTime(Date.now() + stepMs); return decideGps(mediaId, "absent"); });
       const res = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
-      const deadlines = extractGpsMock.mock.calls.map((c) => c[0].deadlineMs!);
-      // 50 s of run budget at 10 s per photo: starts at 0, 10, 20, 30 and 40 s; at 50 s nothing is left to start with.
-      expect(deadlines).toHaveLength(5);
-      expect(deadlines[0]).toBeLessThanOrEqual(15_000);
-      expect(deadlines[4]).toBeLessThanOrEqual(10_000);
-      expect(deadlines.every((ms) => ms > 0)).toBe(true);
-      expect(res.data.gpsAbsent).toBe(5);
+      expect(extractGpsMock).toHaveBeenCalledTimes(starts);
+      // Every photo that starts gets the whole read deadline, never a remainder.
+      expect(extractGpsMock.mock.calls.map((c) => c[0].deadlineMs)).toEqual(Array.from({ length: starts }, () => 15_000));
+      expect(res.data).toMatchObject({ gpsAbsent: starts, errors: 0 });
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("takes the oldest first: it asks for createdAt ascending, and the store's order decides, whatever order the rows were written in", async () => {
+    const shuffled = [photo("med_mid", minutesAgo(100)), photo("med_newest", minutesAgo(10)), photo("med_oldest", minutesAgo(1_000)), photo("med_old", minutesAgo(500))];
+    media = shuffled;
+    await run(`Bearer ${SECRET}`);
+    expect(extractGpsMock.mock.calls.map((c) => c[0].mediaId)).toEqual(["med_oldest", "med_old", "med_mid", "med_newest"]);
+    const gpsQuery = dbStub.media.findMany.mock.calls.map((c) => c[0] as { where: Record<string, unknown>; orderBy?: unknown; take?: number }).find((args) => "gpsCheckedAt" in args.where);
+    expect(gpsQuery).toMatchObject({ orderBy: { createdAt: "asc" }, take: 10 });
   });
 
   it("counts a throw (which the step should never do) as a run error and moves on to the next photo", async () => {

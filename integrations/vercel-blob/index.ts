@@ -106,13 +106,15 @@ export class VercelBlobStorageService implements StorageService {
    * is what tells us there is a body); should the host ever send the whole
    * file, only `maxBytes` are read before the stream is cancelled, so the
    * transfer stays bounded either way. Nothing after the prefix is buffered.
-   * Callers never ask for a range of an empty blob (that would be a 416).
+   * Callers never ask for a range of an empty blob (that would be a 416). A
+   * caller's `signal` aborts the request, body included, as for `get`.
    */
-  async readPrefix(pathname: string, maxBytes: number): Promise<Uint8Array | null> {
+  async readPrefix(pathname: string, maxBytes: number, options: StorageGetOptions = {}): Promise<Uint8Array | null> {
     const result = await get(pathname, {
       access: "private",
       token: this.token(),
       headers: { Range: `bytes=0-${Math.max(0, maxBytes - 1)}` },
+      abortSignal: options.signal,
     });
     if (!result || result.stream === null) {
       return null;

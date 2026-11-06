@@ -27,7 +27,8 @@ const ABSENT: GpsRead = Object.freeze({ status: "absent" });
  *
  * Caller contract: pass only files of an accepted photo type, which are at most `MAX_BYTES.PHOTO` (25 MB). When the
  * adaptive read rejects (a metadata-less WebP or HEIC/HEIF, or bytes that are no image), the auto loop has already read
- * the file and the fallback below reads the whole file once more, into memory.
+ * the file (or its first 128 KiB, for bytes that are no image) and the fallback below reads the whole file once more,
+ * into memory.
  */
 export async function readGpsFromFile(file: File): Promise<GpsRead> {
   try {

@@ -39,9 +39,10 @@ export interface StorageService {
   /**
    * The first `maxBytes` bytes of a blob (fewer when the blob is shorter), or
    * null when it is missing. Transfers the prefix, never the file: this is the
-   * byte check that runs before a row becomes READY (issue #45).
+   * byte check that runs before a row becomes READY (issue #45), and the photo
+   * GPS step's first read, which passes a deadline `signal` like `get`.
    */
-  readPrefix(pathname: string, maxBytes: number): Promise<Uint8Array | null>;
+  readPrefix(pathname: string, maxBytes: number, options?: StorageGetOptions): Promise<Uint8Array | null>;
   del(pathname: string): Promise<void>;
   /** Short-lived GET URL for a private blob, served by the blob host (supports Range). */
   presignGet(options: PresignGetOptions): Promise<PresignGetResult>;
