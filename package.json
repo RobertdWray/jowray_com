@@ -57,8 +57,8 @@
     "vitest": "^5.1.0"
   },
   "overrides": {
-    "@vercel/cli-config": {
-      "zod": "$zod"
+    "@vercel/oidc": {
+      "@vercel/cli-config": "^0.3.7"
     },
     "@typescript-eslint/typescript-estree": {
       "minimatch": "^11.0.1"
