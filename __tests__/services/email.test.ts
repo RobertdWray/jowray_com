@@ -172,7 +172,7 @@ function age(ms: number) {
   }
 }
 function lastMessage() {
-  return sendMock.mock.calls.at(-1)?.[0] as { to: unknown; subject: string; html: string; text: string };
+  return sendMock.mock.calls.at(-1)?.[0] as { to: unknown; from: string; replyTo: unknown; subject: string; html: string; text: string };
 }
 
 describe("sendMemoryConfirmation", () => {
@@ -596,18 +596,45 @@ describe("two email types on one memory", () => {
   });
 });
 
+describe("reply-to: memories@jowray.com is not a mailbox", () => {
+  beforeEach(() => {
+    process.env.OUTBOUND_ENABLED = "true";
+    resetEnvCache();
+  });
+
+  it("every email type sends a reader's Reply to the family contact address, not the sending address", async () => {
+    expect((await sendMemoryConfirmation(base)).sent).toBe(true);
+    expect(lastMessage()).toMatchObject({ from: "memories@jowray.com", replyTo: "robwray@gmail.com" });
+
+    const receipt: SubmissionConfirmationInput = {
+      anchorMemoryId: "mem_anchor",
+      to: "person@example.com",
+      memories: [{ position: 1, hasWords: true, media: [], claimLink: "https://www.jowray.com/m/aaaa", missingFiles: 0 }],
+    };
+    expect((await sendSubmissionConfirmation(receipt)).sent).toBe(true);
+    expect(lastMessage()).toMatchObject({ from: "memories@jowray.com", replyTo: "robwray@gmail.com" });
+
+    expect((await sendAdminNewMemory(adminContent)).sent).toBe(true);
+    expect(lastMessage()).toMatchObject({ from: "memories@jowray.com", replyTo: "robwray@gmail.com" });
+    expect(sendMock).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe("transport attachments", () => {
   it("sends inline attachments with a content id and keeps tracking off", async () => {
     const { SendGridTransport } = await import("@/integrations/sendgrid");
     await new SendGridTransport().send({
       to: base.to,
       from: "memories@jowray.com",
+      replyTo: "robwray@gmail.com",
       subject: "s",
       text: "t",
       html: '<img src="cid:brand-heart">',
       attachments: [{ filename: "heart.png", contentType: "image/png", contentBase64: "aGVhcnQ=", contentId: "brand-heart" }],
     });
-    const msg = sendMock.mock.calls[0]?.[0] as { attachments?: unknown[]; trackingSettings: { openTracking: { enable: boolean }; clickTracking: { enable: boolean } } };
+    const msg = sendMock.mock.calls[0]?.[0] as { replyTo: unknown; attachments?: unknown[]; trackingSettings: { openTracking: { enable: boolean }; clickTracking: { enable: boolean } } };
+    // `replyTo` is the helper-library field; `Mail.setReplyTo` turns it into the v3 API's `reply_to`.
+    expect(msg.replyTo).toBe("robwray@gmail.com");
     // `content_id` is the v3 API field name; SendGrid answers 400 "content_id parameter is required if disposition = 'inline'" to `contentId`.
     expect(msg.attachments).toEqual([{ content: "aGVhcnQ=", filename: "heart.png", type: "image/png", disposition: "inline", content_id: "brand-heart" }]);
     expect(msg.trackingSettings.openTracking.enable).toBe(false);
@@ -616,7 +643,7 @@ describe("transport attachments", () => {
 
   it("refuses an attachment whose content id or filename breaks the MIME contract", async () => {
     const { SendGridTransport } = await import("@/integrations/sendgrid");
-    const message = { to: base.to, from: "memories@jowray.com", subject: "s", text: "t", html: "" };
+    const message = { to: base.to, from: "memories@jowray.com", replyTo: "robwray@gmail.com", subject: "s", text: "t", html: "" };
     await expect(new SendGridTransport().send({ ...message, attachments: [{ filename: "heart.png", contentType: "image/png", contentBase64: "aGVhcnQ=", contentId: "bad id<" }] })).rejects.toThrow(/content id/i);
     await expect(new SendGridTransport().send({ ...message, attachments: [{ filename: "../heart.png\r\n", contentType: "image/png", contentBase64: "aGVhcnQ=", contentId: "ok" }] })).rejects.toThrow(/filename/i);
     expect(sendMock).not.toHaveBeenCalled();
@@ -624,14 +651,14 @@ describe("transport attachments", () => {
 
   it("omits the attachments field when a message has none", async () => {
     const { SendGridTransport } = await import("@/integrations/sendgrid");
-    await new SendGridTransport().send({ to: base.to, from: "memories@jowray.com", subject: "s", text: "t", html: "<p>t</p>" });
+    await new SendGridTransport().send({ to: base.to, from: "memories@jowray.com", replyTo: "robwray@gmail.com", subject: "s", text: "t", html: "<p>t</p>" });
     const msg = sendMock.mock.calls[0]?.[0] as Record<string, unknown>;
     expect("attachments" in msg).toBe(false);
   });
 
   it("passes an array of recipients through as one message", async () => {
     const { SendGridTransport } = await import("@/integrations/sendgrid");
-    await new SendGridTransport().send({ to: ["a@example.com", "b@example.org"], from: "memories@jowray.com", subject: "s", text: "t", html: "<p>t</p>" });
+    await new SendGridTransport().send({ to: ["a@example.com", "b@example.org"], from: "memories@jowray.com", replyTo: "robwray@gmail.com", subject: "s", text: "t", html: "<p>t</p>" });
     const msg = sendMock.mock.calls[0]?.[0] as { to: unknown };
     expect(msg.to).toEqual(["a@example.com", "b@example.org"]);
     expect(sendMock).toHaveBeenCalledTimes(1);

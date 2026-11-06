@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { FAMILY_CONTACT_EMAIL } from "@/lib/contact";
+
 import { linkClass } from "./field-classes";
 import { StitchedHeart } from "./hearts";
 
@@ -10,8 +12,8 @@ export function SiteFooter() {
       <p className="font-display text-lead">Made with love by Richard, Rob, Tracy and Ava.</p>
       <p className="text-[18px] text-walnut-soft">
         Questions, or a memory that won&apos;t fit in a box? Email{" "}
-        <a href="mailto:robwray@gmail.com" className={linkClass}>
-          robwray@gmail.com
+        <a href={`mailto:${FAMILY_CONTACT_EMAIL}`} className={linkClass}>
+          {FAMILY_CONTACT_EMAIL}
         </a>
         .
       </p>

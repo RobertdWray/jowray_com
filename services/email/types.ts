@@ -138,6 +138,8 @@ export interface EmailAttachment {
 export interface OutboundEmail {
   to: string | string[];
   from: string;
+  /** Where a reader's Reply goes. Required: the `from` address is not an inbox anyone reads. */
+  replyTo: string;
   subject: string;
   text: string;
   html: string;
