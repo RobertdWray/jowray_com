@@ -12,6 +12,11 @@ import { resetEnvCache } from "@/server/config/env";
 
 const SECRET = "a".repeat(40);
 const ID = "00000000-0000-4000-8000-000000000001";
+const VERSION = "2026-11-04T10:00:00.000Z";
+/** The raw token a feature returns beside the link; it must never appear in a response. */
+const CLAIM_TOKEN = "t".repeat(43);
+const CLAIM_LINK = `https://www.jowray.com/m/${"u".repeat(43)}`;
+const BROADMEAD = { latitude: 39.4815, longitude: -76.6447 };
 
 const features = vi.hoisted(() => ({
   listMemoriesForAdmin: vi.fn(),
@@ -71,6 +76,9 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<{ 
   if (!body.result) {
     throw new Error(`tools/call ${name} answered without a result: ${raw}`);
   }
+  // Case 6: no response body ever names or carries a claim token (the claim link is the only way a token leaves).
+  expect(raw).not.toContain("claimToken");
+  expect(raw).not.toContain(CLAIM_TOKEN);
   return { status, result: body.result as unknown as ToolCallResult, raw };
 }
 
@@ -140,5 +148,763 @@ describe("the error boundary", () => {
     expect(features.getMemoryForAdmin).toHaveBeenCalledWith(ID, { includeCoordinates: true });
     expect(result.isError).toBeUndefined();
     expect(result.structuredContent).toEqual({ id: ID, place: "Broadmead", coordinates: null });
+  });
+});
+
+describe("tools/list contract (case 2)", () => {
+  it("pins every tool's name, title, description, annotations and input schema", async () => {
+    const body = await rpcBody(await authed({ jsonrpc: "2.0", id: 1, method: "tools/list" }));
+    const tools = (body.result?.tools ?? []) as Array<Record<string, unknown>>;
+    expect(tools.map(({ name, title, description, annotations, inputSchema }) => ({ name, title, description, annotations, inputSchema }))).toMatchInlineSnapshot(`
+      [
+        {
+          "annotations": {
+            "readOnlyHint": true,
+          },
+          "description": "Lists memories newest first (200 at most) with each row's coordinates, plus the count in each status. Filter by status, search text, or \`deleted: true\` for the soft-deleted ones.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "deleted": {
+                "description": "true lists the soft-deleted memories instead of the live ones",
+                "type": "boolean",
+              },
+              "q": {
+                "description": "Case-insensitive search over the words, the place and the contributor's name and email",
+                "maxLength": 100,
+                "type": "string",
+              },
+              "status": {
+                "description": "Only memories in this status",
+                "enum": [
+                  "DRAFT",
+                  "PENDING",
+                  "APPROVED",
+                  "HIDDEN",
+                ],
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+          "name": "list_memories",
+          "title": "List memories",
+        },
+        {
+          "annotations": {
+            "readOnlyHint": true,
+          },
+          "description": "One memory with its contributor, files, coordinates, revision history and emails. \`memoryVersion\` and \`contributor.contributorVersion\` are what update_memory and set_coordinates need.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "memoryId": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+            },
+            "required": [
+              "memoryId",
+            ],
+            "type": "object",
+          },
+          "name": "get_memory",
+          "title": "Get a memory",
+        },
+        {
+          "annotations": {
+            "destructiveHint": false,
+            "idempotentHint": true,
+          },
+          "description": "Saves a DRAFT memory on a sender's behalf and returns its claim link for Rob's reply. Pass \`sourceInput\`, never \`sourceRef\`. A \`duplicate\` error means nothing was saved. \`coordinates\` are WGS 84 decimal degrees for the named place (a town, a facility or community campus such as Broadmead, a church, a park, a lake), never a residence or a unit inside a place. Ask Rob before saving them.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "approxDateText": {
+                "anyOf": [
+                  {
+                    "maxLength": 120,
+                    "type": "string",
+                  },
+                  {
+                    "type": "null",
+                  },
+                ],
+              },
+              "contributor": {
+                "properties": {
+                  "email": {
+                    "maxLength": 254,
+                    "type": "string",
+                  },
+                  "name": {
+                    "anyOf": [
+                      {
+                        "maxLength": 120,
+                        "type": "string",
+                      },
+                      {
+                        "type": "null",
+                      },
+                    ],
+                  },
+                  "phone": {
+                    "anyOf": [
+                      {
+                        "maxLength": 40,
+                        "type": "string",
+                      },
+                      {
+                        "type": "null",
+                      },
+                    ],
+                  },
+                  "relationship": {
+                    "anyOf": [
+                      {
+                        "maxLength": 120,
+                        "type": "string",
+                      },
+                      {
+                        "type": "null",
+                      },
+                    ],
+                  },
+                },
+                "required": [
+                  "email",
+                ],
+                "type": "object",
+              },
+              "coordinates": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "latitude": {
+                        "description": "WGS 84 decimal degrees, -90 to 90",
+                        "maximum": 90,
+                        "minimum": -90,
+                        "type": "number",
+                      },
+                      "longitude": {
+                        "description": "WGS 84 decimal degrees, -180 to 180",
+                        "maximum": 180,
+                        "minimum": -180,
+                        "type": "number",
+                      },
+                    },
+                    "required": [
+                      "latitude",
+                      "longitude",
+                    ],
+                    "type": "object",
+                  },
+                  {
+                    "type": "null",
+                  },
+                ],
+              },
+              "note": {
+                "maxLength": 10000,
+                "type": "string",
+              },
+              "originalNote": {
+                "maxLength": 10000,
+                "type": "string",
+              },
+              "place": {
+                "anyOf": [
+                  {
+                    "maxLength": 200,
+                    "type": "string",
+                  },
+                  {
+                    "type": "null",
+                  },
+                ],
+              },
+              "sourceInput": {
+                "description": "Where the words came from; the server turns it into the memory's source reference",
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "gmail",
+                        "description": "The words came in an email in Rob's Gmail",
+                        "type": "string",
+                      },
+                      "messageId": {
+                        "description": "Gmail id of the sender's message that holds the words (8 to 32 hex characters), not the thread id",
+                        "minLength": 1,
+                        "type": "string",
+                      },
+                    },
+                    "required": [
+                      "kind",
+                      "messageId",
+                    ],
+                    "type": "object",
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "sms",
+                        "description": "The words came in a text message",
+                        "type": "string",
+                      },
+                      "number": {
+                        "description": "Sender's number in E.164, for example +14105551234",
+                        "minLength": 1,
+                        "type": "string",
+                      },
+                      "sentAt": {
+                        "description": "When the text was sent, ISO-8601 with an explicit zone or offset, for example 2026-11-03T14:05-04:00",
+                        "minLength": 1,
+                        "type": "string",
+                      },
+                      "text": {
+                        "description": "The full text of the message, as received",
+                        "minLength": 1,
+                        "type": "string",
+                      },
+                    },
+                    "required": [
+                      "kind",
+                      "number",
+                      "sentAt",
+                      "text",
+                    ],
+                    "type": "object",
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "email": {
+                        "description": "Sender's email address; defaults to contributor.email and must match it",
+                        "minLength": 1,
+                        "type": "string",
+                      },
+                      "kind": {
+                        "const": "other",
+                        "description": "Anything else, for example a card or a message passed on by hand",
+                        "type": "string",
+                      },
+                      "originalText": {
+                        "description": "The full original message text, not the excerpt",
+                        "minLength": 1,
+                        "type": "string",
+                      },
+                    },
+                    "required": [
+                      "kind",
+                      "originalText",
+                    ],
+                    "type": "object",
+                  },
+                ],
+              },
+              "visibility": {
+                "default": "PUBLIC",
+                "enum": [
+                  "PUBLIC",
+                  "FAMILY",
+                  "PRIVATE",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "contributor",
+              "note",
+              "sourceInput",
+            ],
+            "type": "object",
+          },
+          "name": "draft_memory",
+          "title": "Draft a memory",
+        },
+        {
+          "annotations": {
+            "destructiveHint": true,
+            "idempotentHint": true,
+          },
+          "description": "Sets or clears a memory's coordinates. \`coordinates\` are WGS 84 decimal degrees for the named place (a town, a facility or community campus such as Broadmead, a church, a park, a lake), never a residence or a unit inside a place. Ask Rob before saving them. Call get_memory first for \`memoryVersion\`; \`null\` clears both; \`changed: false\` means the pair was already equal.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "coordinates": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "latitude": {
+                        "description": "WGS 84 decimal degrees, -90 to 90",
+                        "maximum": 90,
+                        "minimum": -90,
+                        "type": "number",
+                      },
+                      "longitude": {
+                        "description": "WGS 84 decimal degrees, -180 to 180",
+                        "maximum": 180,
+                        "minimum": -180,
+                        "type": "number",
+                      },
+                    },
+                    "required": [
+                      "latitude",
+                      "longitude",
+                    ],
+                    "type": "object",
+                  },
+                  {
+                    "type": "null",
+                  },
+                ],
+              },
+              "memoryId": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+              "memoryVersion": {
+                "description": "ISO-8601 timestamp exactly as get_memory returned it",
+                "type": "string",
+              },
+            },
+            "required": [
+              "memoryId",
+              "memoryVersion",
+              "coordinates",
+            ],
+            "type": "object",
+          },
+          "name": "set_coordinates",
+          "title": "Set a memory's coordinates",
+        },
+        {
+          "annotations": {
+            "destructiveHint": true,
+          },
+          "description": "Edits a memory's words, date, place, visibility or the contributor's name and relationship; send only the keys you change. Read \`memoryVersion\` and \`contributor.contributorVersion\` from get_memory first. On \`stale\`, compare \`current\` with the values you originally read; if a field you did not intend to change differs, stop and ask before retrying, otherwise retry from \`current\`.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "changes": {
+                "additionalProperties": false,
+                "properties": {
+                  "approxDateText": {
+                    "anyOf": [
+                      {
+                        "maxLength": 120,
+                        "type": "string",
+                      },
+                      {
+                        "type": "null",
+                      },
+                    ],
+                  },
+                  "name": {
+                    "anyOf": [
+                      {
+                        "maxLength": 120,
+                        "type": "string",
+                      },
+                      {
+                        "type": "null",
+                      },
+                    ],
+                  },
+                  "note": {
+                    "anyOf": [
+                      {
+                        "maxLength": 10000,
+                        "type": "string",
+                      },
+                      {
+                        "type": "null",
+                      },
+                    ],
+                  },
+                  "place": {
+                    "anyOf": [
+                      {
+                        "maxLength": 200,
+                        "type": "string",
+                      },
+                      {
+                        "type": "null",
+                      },
+                    ],
+                  },
+                  "relationship": {
+                    "anyOf": [
+                      {
+                        "maxLength": 120,
+                        "type": "string",
+                      },
+                      {
+                        "type": "null",
+                      },
+                    ],
+                  },
+                  "visibility": {
+                    "enum": [
+                      "PUBLIC",
+                      "FAMILY",
+                      "PRIVATE",
+                    ],
+                    "type": "string",
+                  },
+                },
+                "type": "object",
+              },
+              "contributorVersion": {
+                "anyOf": [
+                  {
+                    "description": "ISO-8601 timestamp exactly as get_memory returned it",
+                    "type": "string",
+                  },
+                  {
+                    "type": "null",
+                  },
+                ],
+              },
+              "memoryId": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+              "memoryVersion": {
+                "description": "ISO-8601 timestamp exactly as get_memory returned it",
+                "type": "string",
+              },
+            },
+            "required": [
+              "memoryId",
+              "memoryVersion",
+              "contributorVersion",
+              "changes",
+            ],
+            "type": "object",
+          },
+          "name": "update_memory",
+          "title": "Edit a memory",
+        },
+        {
+          "annotations": {
+            "destructiveHint": true,
+            "idempotentHint": true,
+          },
+          "description": "Moves a shared memory between PENDING, APPROVED and HIDDEN. A DRAFT is refused (\`draft\`): only the sender's Share leaves DRAFT.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "memoryId": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+              "status": {
+                "enum": [
+                  "PENDING",
+                  "APPROVED",
+                  "HIDDEN",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "memoryId",
+              "status",
+            ],
+            "type": "object",
+          },
+          "name": "set_status",
+          "title": "Set a memory's status",
+        },
+        {
+          "annotations": {
+            "destructiveHint": true,
+            "idempotentHint": true,
+          },
+          "description": "Soft-deletes (\`deleted: true\`) or restores (\`deleted: false\`) a memory. On restore, \`purgedFiles\` counts files whose bytes are already gone.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "deleted": {
+                "type": "boolean",
+              },
+              "memoryId": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+            },
+            "required": [
+              "memoryId",
+              "deleted",
+            ],
+            "type": "object",
+          },
+          "name": "set_deleted",
+          "title": "Delete or restore a memory",
+        },
+        {
+          "annotations": {
+            "destructiveHint": true,
+            "idempotentHint": false,
+          },
+          "description": "Mints a new claim link for a DRAFT. This revokes the link already sent; only on Rob's explicit confirmation.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "memoryId": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+            },
+            "required": [
+              "memoryId",
+            ],
+            "type": "object",
+          },
+          "name": "reissue_claim_link",
+          "title": "Reissue a draft's claim link",
+        },
+      ]
+    `);
+  });
+});
+
+/** One row of the §4.5 result contract: the feature's answer and what the model must receive. */
+interface ContractRow {
+  tool: string;
+  args: Record<string, unknown>;
+  feature: keyof typeof features;
+  answer: unknown;
+  expected: Record<string, unknown>;
+  isError?: true;
+}
+
+const memoryArgs = { memoryId: ID };
+const coordinateArgs = { memoryId: ID, memoryVersion: VERSION, coordinates: BROADMEAD };
+const changeArgs = { memoryId: ID, memoryVersion: VERSION, contributorVersion: VERSION, changes: { place: "Broadmead" } };
+const draftArgs = {
+  contributor: { name: "Joyce Gilley", email: "joyce@example.com", relationship: "Friend from church" },
+  note: "Jo always had a kind word.",
+  place: "Broadmead, Cockeysville",
+  visibility: "FAMILY",
+  coordinates: BROADMEAD,
+  sourceInput: { kind: "gmail", messageId: "1a1a2317fba34eec" },
+};
+const editable = { name: "Joyce", relationship: "friend", approxDateText: null, place: "Broadmead", note: "words", visibility: "FAMILY", memoryVersion: VERSION, contributorVersion: VERSION };
+
+const CONTRACT: ContractRow[] = [
+  { tool: "list_memories", args: {}, feature: "listMemoriesForAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
+  { tool: "get_memory", args: memoryArgs, feature: "getMemoryForAdmin", answer: { id: ID, place: "Broadmead", coordinates: BROADMEAD }, expected: { id: ID, place: "Broadmead", coordinates: BROADMEAD } },
+  { tool: "get_memory", args: memoryArgs, feature: "getMemoryForAdmin", answer: null, expected: { code: "not_found" }, isError: true },
+  { tool: "draft_memory", args: draftArgs, feature: "draftMemory", answer: { ok: true, memoryId: ID, claimToken: CLAIM_TOKEN, claimLink: CLAIM_LINK, originalNoteRecorded: false }, expected: { memoryId: ID, claimLink: CLAIM_LINK, originalNoteRecorded: false } },
+  { tool: "draft_memory", args: draftArgs, feature: "draftMemory", answer: { ok: false, code: "invalid", message: "The note needs some words" }, expected: { code: "invalid", message: "The note needs some words" }, isError: true },
+  { tool: "draft_memory", args: draftArgs, feature: "draftMemory", answer: { ok: false, code: "duplicate", memoryId: ID, status: "PENDING" }, expected: { code: "duplicate", memoryId: ID, status: "PENDING" }, isError: true },
+  { tool: "draft_memory", args: draftArgs, feature: "draftMemory", answer: { ok: false, code: "budget_exceeded" }, expected: { code: "budget_exceeded" }, isError: true },
+  { tool: "set_coordinates", args: coordinateArgs, feature: "setMemoryCoordinatesAsAdmin", answer: { ok: true, changed: true }, expected: { changed: true } },
+  { tool: "set_coordinates", args: { ...coordinateArgs, coordinates: null }, feature: "setMemoryCoordinatesAsAdmin", answer: { ok: true, changed: false }, expected: { changed: false } },
+  { tool: "set_coordinates", args: coordinateArgs, feature: "setMemoryCoordinatesAsAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
+  { tool: "set_coordinates", args: coordinateArgs, feature: "setMemoryCoordinatesAsAdmin", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
+  {
+    tool: "set_coordinates",
+    args: coordinateArgs,
+    feature: "setMemoryCoordinatesAsAdmin",
+    answer: { ok: false, code: "stale", current: { memoryVersion: "2026-11-04T11:00:00.000Z", coordinates: null } },
+    expected: { code: "stale", current: { memoryVersion: "2026-11-04T11:00:00.000Z", coordinates: null } },
+    isError: true,
+  },
+  { tool: "update_memory", args: changeArgs, feature: "updateMemoryAsAdmin", answer: { ok: true, written: ["place"], current: editable }, expected: { written: ["place"], current: editable } },
+  { tool: "update_memory", args: changeArgs, feature: "updateMemoryAsAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
+  { tool: "update_memory", args: changeArgs, feature: "updateMemoryAsAdmin", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
+  { tool: "update_memory", args: changeArgs, feature: "updateMemoryAsAdmin", answer: { ok: false, code: "last_words" }, expected: { code: "last_words" }, isError: true },
+  { tool: "update_memory", args: changeArgs, feature: "updateMemoryAsAdmin", answer: { ok: false, code: "stale", current: editable }, expected: { code: "stale", current: editable }, isError: true },
+  { tool: "set_status", args: { memoryId: ID, status: "APPROVED" }, feature: "setMemoryStatusAsAdmin", answer: { ok: true }, expected: {} },
+  { tool: "set_status", args: { memoryId: ID, status: "APPROVED" }, feature: "setMemoryStatusAsAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
+  { tool: "set_status", args: { memoryId: ID, status: "APPROVED" }, feature: "setMemoryStatusAsAdmin", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
+  { tool: "set_status", args: { memoryId: ID, status: "APPROVED" }, feature: "setMemoryStatusAsAdmin", answer: { ok: false, code: "draft" }, expected: { code: "draft" }, isError: true },
+  { tool: "set_deleted", args: { memoryId: ID, deleted: false }, feature: "setMemoryDeletedAsAdmin", answer: { ok: true, purgedFiles: 2 }, expected: { purgedFiles: 2 } },
+  { tool: "set_deleted", args: { memoryId: ID, deleted: true }, feature: "setMemoryDeletedAsAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
+  { tool: "set_deleted", args: { memoryId: ID, deleted: true }, feature: "setMemoryDeletedAsAdmin", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
+  { tool: "reissue_claim_link", args: memoryArgs, feature: "reissueDraftClaimLink", answer: { ok: true, memoryId: ID, claimLink: CLAIM_LINK }, expected: { memoryId: ID, claimLink: CLAIM_LINK } },
+  { tool: "reissue_claim_link", args: memoryArgs, feature: "reissueDraftClaimLink", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
+  { tool: "reissue_claim_link", args: memoryArgs, feature: "reissueDraftClaimLink", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
+  { tool: "reissue_claim_link", args: memoryArgs, feature: "reissueDraftClaimLink", answer: { ok: false, code: "not_draft" }, expected: { code: "not_draft" }, isError: true },
+];
+
+describe("the result contract (case 3: every row of plan §4.5)", () => {
+  it.each(CONTRACT.map((row) => [`${row.tool} → ${row.isError ? `isError ${String(row.expected.code)}` : "ok"}`, row] as const))("%s", async (_label, row) => {
+    features[row.feature].mockResolvedValueOnce(row.answer);
+    const { status, result } = await callTool(row.tool, row.args);
+    expect(status).toBe(200);
+    expect(result.isError).toBe(row.isError);
+    expect(result.structuredContent).toEqual(row.expected);
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0]!.type).toBe("text");
+    expect(JSON.parse(result.content[0]!.text)).toEqual(row.expected);
+  });
+
+  it("list_memories returns rows with coordinates and the status counts, and maps the filters for the feature", async () => {
+    const list = { ok: true, query: { status: "DRAFT", q: "Joyce", deleted: true }, rows: [{ id: ID, excerpt: "words", coordinates: BROADMEAD }], shown: 1, total: 1 };
+    const counts = { DRAFT: 1, PENDING: 0, APPROVED: 0, HIDDEN: 0, deleted: 0, total: 1 };
+    features.listMemoriesForAdmin.mockResolvedValueOnce(list);
+    features.adminStatusCounts.mockResolvedValueOnce(counts);
+    const { result } = await callTool("list_memories", { status: "DRAFT", q: "Joyce", deleted: true });
+    expect(features.listMemoriesForAdmin).toHaveBeenCalledWith({ status: "DRAFT", q: "Joyce", deleted: "true" }, { includeCoordinates: true });
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toEqual({ query: list.query, rows: list.rows, shown: 1, total: 1, counts });
+    // deleted: false means the live rows, which the feature reads as an absent toggle.
+    features.listMemoriesForAdmin.mockResolvedValueOnce({ ...list, query: {} });
+    features.adminStatusCounts.mockResolvedValueOnce(counts);
+    await callTool("list_memories", { deleted: false });
+    expect(features.listMemoriesForAdmin).toHaveBeenLastCalledWith({ status: undefined, q: undefined, deleted: undefined }, { includeCoordinates: true });
+  });
+
+  it("draft_memory derives source and sourceRef on the server and passes everything else through", async () => {
+    features.draftMemory.mockResolvedValueOnce({ ok: true, memoryId: ID, claimToken: CLAIM_TOKEN, claimLink: CLAIM_LINK, originalNoteRecorded: false });
+    await callTool("draft_memory", draftArgs);
+    const prepared = features.draftMemory.mock.calls[0]![0] as Record<string, unknown>;
+    expect(prepared).not.toHaveProperty("sourceInput");
+    expect(prepared).toMatchObject({ source: "EMAIL", sourceRef: "gmail:1a1a2317fba34eec", coordinates: BROADMEAD, place: "Broadmead, Cockeysville", visibility: "FAMILY", note: draftArgs.note });
+  });
+
+  it("set_coordinates, update_memory, set_status, set_deleted and reissue_claim_link hand the feature the validated arguments", async () => {
+    features.setMemoryCoordinatesAsAdmin.mockResolvedValueOnce({ ok: true, changed: true });
+    await callTool("set_coordinates", coordinateArgs);
+    expect(features.setMemoryCoordinatesAsAdmin).toHaveBeenCalledWith(coordinateArgs);
+    features.updateMemoryAsAdmin.mockResolvedValueOnce({ ok: true, written: [], current: editable });
+    await callTool("update_memory", changeArgs);
+    expect(features.updateMemoryAsAdmin).toHaveBeenCalledWith(changeArgs);
+    features.setMemoryStatusAsAdmin.mockResolvedValueOnce({ ok: true });
+    await callTool("set_status", { memoryId: ID, status: "HIDDEN" });
+    expect(features.setMemoryStatusAsAdmin).toHaveBeenCalledWith({ memoryId: ID, status: "HIDDEN" });
+    features.setMemoryDeletedAsAdmin.mockResolvedValueOnce({ ok: true, purgedFiles: 0 });
+    await callTool("set_deleted", { memoryId: ID, deleted: true });
+    expect(features.setMemoryDeletedAsAdmin).toHaveBeenCalledWith({ memoryId: ID, deleted: true });
+    features.reissueDraftClaimLink.mockResolvedValueOnce({ ok: true, memoryId: ID, claimLink: CLAIM_LINK });
+    await callTool("reissue_claim_link", memoryArgs);
+    expect(features.reissueDraftClaimLink).toHaveBeenCalledWith(memoryArgs);
+  });
+});
+
+describe("the error boundary on every tool (case 4)", () => {
+  const VALID_ARGS: Array<[string, Record<string, unknown>, keyof typeof features]> = [
+    ["list_memories", {}, "listMemoriesForAdmin"],
+    ["get_memory", memoryArgs, "getMemoryForAdmin"],
+    ["draft_memory", draftArgs, "draftMemory"],
+    ["set_coordinates", coordinateArgs, "setMemoryCoordinatesAsAdmin"],
+    ["update_memory", changeArgs, "updateMemoryAsAdmin"],
+    ["set_status", { memoryId: ID, status: "PENDING" }, "setMemoryStatusAsAdmin"],
+    ["set_deleted", { memoryId: ID, deleted: true }, "setMemoryDeletedAsAdmin"],
+    ["reissue_claim_link", memoryArgs, "reissueDraftClaimLink"],
+  ];
+
+  it.each(VALID_ARGS)("%s answers internal with an event id when its feature throws", async (tool, args, feature) => {
+    features[feature].mockRejectedValueOnce(new Error("ECONNREFUSED /var/task/node_modules/@prisma/client"));
+    features.adminStatusCounts.mockResolvedValue({ DRAFT: 0, PENDING: 0, APPROVED: 0, HIDDEN: 0, deleted: 0, total: 0 });
+    const { status, result, raw } = await callTool(tool, args);
+    expect(status).toBe(200);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toEqual({ code: "internal", eventId: expect.stringMatching(/^[0-9a-f]{32}$/) });
+    expect(raw).not.toMatch(/ECONNREFUSED|\/var\/task|prisma/);
+  });
+});
+
+describe("schema refusals and prepareInput refusals (case 5)", () => {
+  it("refuses a hand-built source + sourceRef with a schema isError (200, not 400) and never calls the feature", async () => {
+    const { sourceInput: _sourceInput, ...withoutSourceInput } = draftArgs;
+    for (const args of [
+      { ...withoutSourceInput, source: "EMAIL", sourceRef: "gmail:1a1a2317fba34eec" },
+      { ...draftArgs, source: "EMAIL", sourceRef: "gmail:1a1a2317fba34eec" },
+    ]) {
+      const { status, result } = await callTool("draft_memory", args);
+      expect(status).toBe(200);
+      expect(result.isError).toBe(true);
+    }
+    expect(features.draftMemory).not.toHaveBeenCalled();
+  });
+
+  it("refuses arguments outside a tool's schema the same way (out-of-range coordinates, a non-uuid id, DRAFT as a status)", async () => {
+    for (const [tool, args] of [
+      ["set_coordinates", { ...coordinateArgs, coordinates: { latitude: 91, longitude: 0 } }],
+      ["get_memory", { memoryId: "mem_1" }],
+      ["set_status", { memoryId: ID, status: "DRAFT" }],
+    ] as const) {
+      const { status, result } = await callTool(tool, args);
+      expect(status, tool).toBe(200);
+      expect(result.isError, tool).toBe(true);
+    }
+    for (const fn of Object.values(features)) {
+      expect(fn).not.toHaveBeenCalled();
+    }
+  });
+
+  it("maps a prepareInput refusal to invalid with its message, before the feature", async () => {
+    const mismatch = await callTool("draft_memory", { ...draftArgs, sourceInput: { kind: "other", email: "someone-else@example.com", originalText: "Dear Rob" } });
+    expect(mismatch.result.isError).toBe(true);
+    expect(mismatch.result.structuredContent).toEqual({ code: "invalid", message: "sourceInput.email must match contributor.email (the dedup key is the stored address)" });
+    const badId = await callTool("draft_memory", { ...draftArgs, sourceInput: { kind: "gmail", messageId: "thread-f:1" } });
+    expect(badId.result.structuredContent).toEqual({ code: "invalid", message: "A Gmail message id is 8 to 32 hex characters" });
+    expect(features.draftMemory).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Case 7: the 2026-07-28 protocol, served natively. Requirements read from
+ * @modelcontextprotocol/server 2.4.0 `dist/src-DdvbAHrR.mjs`
+ * (`classifyRequestBody`, `validateStandardRequestHeaders`, the 2026 codec's
+ * `RequestMetaEnvelopeSchema`) and `dist/index.mjs` (`serveModern`,
+ * `standardHeadersOf`): the `MCP-Protocol-Version` and `Mcp-Method` headers,
+ * `Mcp-Name` for `tools/call` (it must equal `params.name`), and a `_meta`
+ * envelope whose protocol-version key matches the header and which carries
+ * `clientCapabilities` (an empty object is valid).
+ */
+describe("the modern protocol era (case 7)", () => {
+  const MODERN = "2026-07-28";
+  const envelope = { "io.modelcontextprotocol/protocolVersion": MODERN, "io.modelcontextprotocol/clientCapabilities": {} };
+
+  function modern(method: string, params: Record<string, unknown>, extraHeaders: Record<string, string> = {}): Promise<Response> {
+    return authed({ jsonrpc: "2.0", id: 7, method, params: { ...params, _meta: envelope } }, { "mcp-protocol-version": MODERN, "mcp-method": method, ...extraHeaders });
+  }
+
+  it("lists the eight tools", async () => {
+    const response = await modern("tools/list", {});
+    expect(response.status).toBe(200);
+    const tools = ((await rpcBody(response)).result?.tools ?? []) as Array<{ name: string }>;
+    expect(tools).toHaveLength(8);
+  });
+
+  it("calls a tool with the Mcp-Name header", async () => {
+    features.getMemoryForAdmin.mockResolvedValueOnce({ id: ID, coordinates: null });
+    const response = await modern("tools/call", { name: "get_memory", arguments: memoryArgs }, { "mcp-name": "get_memory" });
+    expect(response.status).toBe(200);
+    const result = (await rpcBody(response)).result as unknown as ToolCallResult;
+    expect(result.structuredContent).toEqual({ id: ID, coordinates: null });
+  });
+
+  it("really is the modern path: it refuses a request missing a header the era requires", async () => {
+    const withoutMethod = await authed({ jsonrpc: "2.0", id: 7, method: "tools/list", params: { _meta: envelope } }, { "mcp-protocol-version": MODERN });
+    expect(withoutMethod.status).toBe(400);
+    const withoutName = await modern("tools/call", { name: "get_memory", arguments: memoryArgs });
+    expect(withoutName.status).toBe(400);
+    expect(features.getMemoryForAdmin).not.toHaveBeenCalled();
+  });
+
+  it("refuses subscriptions/listen (maxSubscriptions: 0) instead of holding the function open", async () => {
+    const response = await modern("subscriptions/listen", { notifications: { toolsListChanged: true } });
+    const body = await rpcBody(response);
+    expect(body.error?.message).toBe("Subscription limit reached");
   });
 });

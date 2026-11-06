@@ -1,6 +1,8 @@
+import { InMemoryTransport, McpServer } from "@modelcontextprotocol/server";
 import * as Sentry from "@sentry/nextjs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
+import { registerTools } from "@/app/api/mcp/tools";
 import { DATA_COLLECTION } from "@/lib/sentry/data-collection";
 import { scrubBreadcrumb, scrubEvent, scrubLog, scrubSpan } from "@/lib/sentry/scrub";
 import { instrumentedAction } from "@/lib/sentry/server-action";
@@ -17,6 +19,13 @@ vi.mock("next/headers", () => ({
       "next-url": "/m/SENTRYTEST_" + "h".repeat(32),
       cookie: "_vercel_jwt=SENTRYTEST_" + "j".repeat(32),
     }),
+}));
+
+// The MCP draft_memory tool returns a claim link in its result (plan 2026-11-06 §4.6); the feature is the only mock.
+const MCP_TOKEN = vi.hoisted(() => "SENTRYTEST_" + "m".repeat(32));
+vi.mock("@/features/memories/draft-memory", () => ({
+  draftMemory: async () => ({ ok: true, memoryId: "00000000-0000-4000-8000-000000000001", claimToken: MCP_TOKEN, claimLink: `https://preview.test/m/${MCP_TOKEN}`, originalNoteRecorded: false }),
+  reissueDraftClaimLink: async () => ({ ok: false, code: "not_found" }),
 }));
 
 /**
@@ -180,6 +189,45 @@ describe("streamed spans (beforeSendSpan on the real SDK)", () => {
     // The Server Function span from the instrumentedAction case above is streamed too.
     expect(sent.some((item) => item.includes('"type":"span"') && item.includes("createSubmission"))).toBe(true);
     for (const envelope of sent) {
+      expect(envelope).not.toContain("SENTRYTEST_");
+    }
+  });
+});
+
+describe("MCP tool spans (plan 2026-11-06 §4.6)", () => {
+  it("record a tool call as an MCP span, and the claim link in its result leaves without the token", async () => {
+    const before = sent.length;
+    const server = new McpServer({ name: "jowray", version: "1" });
+    // registerTools wraps the server with wrapMcpServerWithSentry before it registers the tools.
+    registerTools(server);
+    const [client, serverSide] = InMemoryTransport.createLinkedPair();
+    const responses: Array<{ id?: unknown; result?: { structuredContent?: { claimLink?: string }; isError?: boolean } }> = [];
+    client.onmessage = (message) => {
+      responses.push(message as (typeof responses)[number]);
+    };
+    await server.connect(serverSide);
+    await client.start();
+    await client.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "draft_memory",
+        arguments: { contributor: { email: EMAIL }, note: "Jo was a light.", sourceInput: { kind: "gmail", messageId: "1a1a2317fba34eec" } },
+      },
+    });
+    await vi.waitFor(() => expect(responses.some((r) => r.id === 1)).toBe(true));
+    // The caller (the model) still gets the real link.
+    expect(responses.find((r) => r.id === 1)?.result?.structuredContent?.claimLink).toBe(`https://preview.test/m/${MCP_TOKEN}`);
+    await server.close();
+    await Sentry.flush(5000);
+
+    const envelopes = sent.slice(before);
+    // The wrapper's span exists, and it carried the tool result (the attribute the scrubber had to clean).
+    expect(envelopes.some((item) => item.includes('"mcp.tool.name":"draft_memory"') || item.includes('"mcp.tool.name":{"value":"draft_memory"'))).toBe(true);
+    expect(envelopes.some((item) => item.includes("mcp.tool.result.content"))).toBe(true);
+    for (const envelope of sent) {
+      expect(envelope).not.toContain(MCP_TOKEN);
       expect(envelope).not.toContain("SENTRYTEST_");
     }
   });
