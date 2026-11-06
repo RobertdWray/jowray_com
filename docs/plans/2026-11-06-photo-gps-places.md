@@ -90,7 +90,7 @@ Rob, 2026-11-06 (verbatim; issue #58 "make it clear fields are optional" says th
 | D8 | Site-wide **lease and fence** throttle: claim, send at once, then fence next-allowed = DB `now()` + 1.1 s; the lease expires after 10 s | Real sends are spaced, not just reservations [C1, C23, C22] |
 | D9 | Quota contract: the **viewer counter counts incoming requests** and is checked first; the **provider counter counts calls actually sent**, charged after the slot is won and a fresh cache check misses | Clear accounting; the fresh check also stops duplicate calls for the same new point |
 | D10 | Lookups use a **POST Route Handler**, not a Server Function | Server Actions queue one at a time [C15] |
-| D11 | **ExifReader 4.51.0**, pinned exactly (MPL-2.0; JPEG and HEIC). In the browser, `length: 'auto'` on the `File` | Maintained; adaptive reads handle metadata past a fixed prefix [C9, C11] |
+| D11 | **ExifReader 4.51.0** (4.54.0 since the Team Code Review round, §5.8), pinned exactly (MPL-2.0; JPEG and HEIC). In the browser, `length: 'auto'` on the `File` | Maintained; adaptive reads handle metadata past a fixed prefix [C9, C11] |
 | D12 | 0/0, NaN, out-of-range values or a missing N/S/E/W ref count as **absent** | Android sends zeros and blank refs |
 | D13 | MCP `suggest_places` returns, for landmark labels, the **matched place's own point**; the skill proposes `set_coordinates` only with that, never the camera point | Camera point ≠ place point [C7] |
 | D14 | Coordinates are **shown nowhere on the site**, admin page included; only MCP with `includeCoordinates`. Pino redacts them; Sentry keeps them | PR #60 rule [C39]; logger rule [C44]; Rob's telemetry ruling [C38] |
@@ -222,7 +222,7 @@ The main checkout is behind `origin/main` and shared with other sessions. Never 
 | B7 | MCP: media coordinates, `suggest_places`, skill | `mcp.test.ts` updated in all three spots; tool tests GREEN | reviewed | `e6cd48c`, `8b2c9be`, `0b2ec46` | 9 tools both eras | B8 |
 | B8 | Logger keys, docs, layout sync | grep checks in §B8 | reviewed | `dd2aa6d`, `41a8598`, `d61e0d9` | both greps hit; AGENTS.md block identical | B9 |
 | B9 | Full checks plus local e2e (§9.B) | all bullets pass; Neon branch id recorded | reviewed | `ccae5ef` | Neon `gps-e2e-20261106` = `br-winter-lab-bbd4405m`; `b9-*` evidence | B10 |
-| B10 | PR B opened (base `main`; #60 merged first), `ci` green, review sorted | PR URL; review verdict | reviewed | `1e4d0c8`, fix wave `cbb50b2`…`6c5e996` | [#66](https://github.com/RobertdWray/jowray_com/pull/66) (draft); per-step reviews closed; final whole-branch review + `/code-review high`: ready with fixes → one fix wave | Rob's final review process, then merge |
+| B10 | PR B opened (base `main`; #60 merged first), `ci` green, review sorted | PR URL; review verdict | reviewed | `1e4d0c8`, fix wave `cbb50b2`…`6c5e996`, Team Code Review wave (see §5.8) | [#66](https://github.com/RobertdWray/jowray_com/pull/66) (draft); per-step reviews closed; final whole-branch review + `/code-review high`: ready with fixes → one fix wave; Team Code Review (George + Oscar, 8 findings): ExifReader 4.54.0, wider `excludeTags`, 509 refusal, step (h) margin, purge doc; migrations unchanged (F16) | Rob's final review process, then merge |
 | B11 | After #60 (and A) merge: transition per §10 | `git diff origin/main...HEAD --stat` lists only B files; `ci` green | implemented (early) | `7c110d2`, `b43d1db` | #60 merged 2026-11-06 18:56 UTC as merge commit `d583308`; merged `origin/main` before B6 and again after #61; only B files in the diff | after A merges: merge again |
 | B12 | Rob: Vercel env, merge, deploy, smoke, device checks (§9.C, §9.D) | deployed SHA recorded; smoke passes | todo | | | done |
 
@@ -248,6 +248,11 @@ The main checkout is behind `origin/main` and shared with other sessions. Never 
 - Ruling: GPS reads on /share have their own queue (cap 2), separate from lookups (cap 2) — lookups can wait seconds on the site slot — cost if wrong: up to four tasks at once on a phone.
 - Ruling: migrations are append-only once PR #66's Preview build applied `20261106200000_photo_gps_places`; the final fix wave adds `20261106210000_photo_gps_claim_lease` — cost if wrong: one extra small migration.
 - Ruling: the GPS claim became a time-limited lease (`Media.gpsClaimedAt`, deriveMedia's pattern) instead of leaving overlapping reads as a follow-up — the final review ranked it first — cost if wrong: one nullable column.
+- Ruling (Team Code Review round): `exifreader` 4.51.0 → 4.54.0, pinned exactly, after a supply-chain check (same maintainer, provenance-attested GitHub Actions publish, same `scripts`, no new network/fs/eval/child_process in `src/` or `dist/`) — 4.54.0 caps a PNG's text chunks at 4,096; on 4.51.0 a crafted 25 MB PNG grew the heap by about 921 MB — cost if wrong: a three-day-old release.
+- Ruling (Team Code Review round): both read paths also skip `icc`, `iptc`, `photoshop`, `makerNotes` and `thumbnail`; `png` is kept, because ExifReader parses PNG text chunks whenever it parses `exif` — cost if wrong: none for GPS.
+- Ruling (Team Code Review round): Nominatim's 509 is a refusal (`provider_refused`) like 403 and 429 — cost if wrong: a transient 509 ends an MCP call that a retry might have finished.
+- Ruling (Team Code Review round): cron step (h) starts a photo only with the 15 s read deadline plus a 5 s database margin (`GPS_DB_MARGIN_MS`) left — the read's deadline does not cover the row read, claim and decision write — cost if wrong: one fewer photo in a run that started (h) late.
+- Ruling (Team Code Review round): the two PR migrations are not edited to add `SET lock_timeout` — Prisma v7 docs: `migrate deploy` "Compares applied migrations against the migration history and **warns** if any migrations have been modified", and both are applied on throwaway databases — cost if wrong: a deploy-time `ALTER TABLE` could queue behind a long transaction; F16.
 
 ---
 
@@ -308,7 +313,7 @@ The "files or words" guards in `features/` are unchanged (R1).
 
 ### B2. `lib/photo-gps.ts`, isomorphic and no `server-only` [C9, C10, C11, C18, C24]
 
-- `package.json`: `"exifreader": "4.51.0"` exactly.
+- `package.json`: `"exifreader": "4.51.0"` exactly (4.54.0 since the Team Code Review round, §5.8).
 - The result type: `type GpsRead = { status: "found"; coordinates: Coordinates } | { status: "absent" } | { status: "failed"; error: unknown }`.
 - `readGpsFromFile(file: File): Promise<GpsRead>` (browser):
   - Calls `ExifReader.load(file, { length: "auto", expanded: true, includeOffsets: true, excludeTags: { mpf: true } })`, so only the
@@ -654,7 +659,7 @@ Written by a separate subagent (R8). Paste it as-is into PR B's description (and
 | F3 | Photo date: store EXIF `DateTimeOriginal` in `Media.capturedAt` and suggest "When?" | low | `DateTimeOriginal` has no zone. Use `OffsetTimeOriginal` when present, else keep local-time text. Same parse in `lib/photo-gps.ts`. |
 | F4 | Fallback place provider if OSMF blocks or changes policy | low | Add `integrations/<provider>` behind `services/places` `ReverseGeocoder`; switch with `PLACES_PROVIDER`; check that provider's storage terms. |
 | F5 | Video GPS (QuickTime/MP4 ISO 6709 location) | low | ExifReader does not read video. Needs a box parser for `©xyz`/`udta`. Same `Media` columns and step (h). |
-| F6 | Prune `PlaceLookup`, `PlaceLookupThrottle` test rows and `EgressCounter` | low | A reconcile step deleting rows older than N days, oldest first, bounded per run. |
+| F6 | Prune `PlaceLookup`, `PlaceLookupThrottle` test rows and `EgressCounter` | medium (privacy; Team Code Review #4) | `PlaceLookup` keeps each looked-up point at 6 dp with its place and `fetchedAt`, after a purge and for `/share` photos never sent. A reconcile step deleting rows older than N days, oldest first, bounded per run. |
 | F7 | iPhone hint near the photo buttons ("Options → Location to include where it was taken") | low | Only if device checks show Location off by default. Copy in `card-media-client.tsx`. |
 | F8 | Preview database branches inherit production rows, now including photo coordinates | low | Previews are protected and already hold names and emails. Consider scrubbing on branch creation. |
 | F9 | A general per-media "enrichment" status if more per-photo extractions are added | low | Generalize `gpsCheckedAt`/`gpsAttempts` and step (h) when a second extractor arrives. |
@@ -663,7 +668,8 @@ Written by a separate subagent (R8). Paste it as-is into PR B's description (and
 | F12 | `recordMedia`'s `readPrefix` call has no deadline signal (pre-existing) | low | Pass the same `{ signal }` the GPS step uses. |
 | F13 | (Fixed in this PR by the `gpsClaimedAt` lease, migration `20261106210000_photo_gps_claim_lease`.) | — | — |
 | F14 | Rob: delete the throwaway Neon branch `gps-e2e-20261106` (`br-winter-lab-bbd4405m`) | — | Holds a production copy plus the B9 e2e memory. |
-| F15 | Cron step (h) runs last and starts a photo only with 15 s left, so a backlog in (a)–(g) can skip whole runs | low | Delays GPS retries and the backfill; never costs an attempt. Option: run (h) before (g) with its own slice. |
+| F15 | Cron step (h) runs last and starts a photo only with 20 s left (15 s read + 5 s database margin since the Team Code Review round), so a backlog in (a)–(g) can skip whole runs | low | Delays GPS retries and the backfill; never costs an attempt. Option: run (h) before (g) with its own slice. |
+| F16 | A bounded `lock_timeout` for every migration at deploy level (the migrate-deploy connection), so no `ALTER TABLE` can queue the site's queries behind a long transaction; the two PR #66 migrations lack the per-file `SET lock_timeout = '5s'` of `20261105140000_media_reserved_until` | low | Team Code Review #2/#6. Not by editing applied migrations: `migrate deploy` warns when an applied migration was modified. Repo-wide build config, e.g. `options=-c lock_timeout=5s` on the migrate URL; document the `migrate resolve --rolled-back` recovery with it. |
 
 ---
 
