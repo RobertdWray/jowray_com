@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { coordinatesSchema } from "@/lib/validations/memory";
+
 /**
  * Input schemas for the family admin page (docs/plans/2026-11-04-admin-page.md §3.5).
  * Pure zod, no server imports, so the client forms can type against them.
@@ -34,7 +36,11 @@ export const adminListQuerySchema = z.object({
 });
 export type AdminListQuery = z.infer<typeof adminListQuerySchema>;
 
-const isoDate = z.string().refine((value) => !Number.isNaN(Date.parse(value)), { message: "Expected an ISO date" });
+// A row version (`updatedAt` as ISO). The description reaches the MCP tool schemas (tools/list), so the model passes the value back untouched.
+const isoDate = z
+  .string()
+  .refine((value) => !Number.isNaN(Date.parse(value)), { message: "Expected an ISO date" })
+  .describe("ISO-8601 timestamp exactly as get_memory returned it");
 
 /**
  * One admin save: only the keys the user changed are present (dirty-field
@@ -69,6 +75,16 @@ export type AdminMemoryChanges = AdminMemoryChangesInput["changes"];
 export const adminStatusSchema = z.object({
   memoryId: z.uuid(),
   status: z.enum(["PENDING", "APPROVED", "HIDDEN"]),
+});
+
+/**
+ * Set or clear a memory's coordinates (MCP `set_coordinates`; features/admin/set-coordinates.ts).
+ * `coordinates` must be stated: a pair sets both columns, null clears both.
+ */
+export const adminCoordinatesSchema = z.object({
+  memoryId: z.uuid(),
+  memoryVersion: isoDate,
+  coordinates: coordinatesSchema.nullable(),
 });
 
 export const adminDeletedSchema = z.object({

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { adminDraftFormSchema, adminListQuerySchema, adminMemoryChangesSchema } from "@/lib/validations/admin";
+import { z } from "zod";
+
+import { adminCoordinatesSchema, adminDraftFormSchema, adminListQuerySchema, adminMemoryChangesSchema } from "@/lib/validations/admin";
 
 const MEMORY_ID = "00000000-0000-4000-8000-000000000001";
 const VERSIONS = { memoryVersion: "2026-11-04T10:00:00.000Z", contributorVersion: "2026-11-04T10:00:00.000Z" };
@@ -84,5 +86,32 @@ describe("adminDraftFormSchema (V3)", () => {
     expect(adminDraftFormSchema.safeParse({ ...valid, source: "EMAIL" }).success).toBe(false);
     expect(adminDraftFormSchema.safeParse({ ...valid, sourceRef: "other:" + "a".repeat(32) }).success).toBe(false);
     expect(adminDraftFormSchema.safeParse({ ...valid, phone: "+15555550100" }).success).toBe(false);
+  });
+});
+
+describe("adminCoordinatesSchema (MCP set_coordinates, plan 2026-11-06 §4.2)", () => {
+  const base = { memoryId: MEMORY_ID, memoryVersion: VERSIONS.memoryVersion };
+
+  it("takes a memory id, the version get_memory returned and a WGS 84 pair, or null to clear both", () => {
+    expect(adminCoordinatesSchema.parse({ ...base, coordinates: { latitude: 39.4815, longitude: -76.6447 } })).toEqual({ ...base, coordinates: { latitude: 39.4815, longitude: -76.6447 } });
+    expect(adminCoordinatesSchema.parse({ ...base, coordinates: null }).coordinates).toBeNull();
+  });
+
+  it("requires coordinates to be stated: an omitted key is not a clear", () => {
+    expect(adminCoordinatesSchema.safeParse(base).success).toBe(false);
+  });
+
+  it("refuses a half pair, an out-of-range value, a string, a stale-looking version and a non-uuid id", () => {
+    expect(adminCoordinatesSchema.safeParse({ ...base, coordinates: { latitude: 39.4815 } }).success).toBe(false);
+    expect(adminCoordinatesSchema.safeParse({ ...base, coordinates: { latitude: 91, longitude: 0 } }).success).toBe(false);
+    expect(adminCoordinatesSchema.safeParse({ ...base, coordinates: { latitude: 0, longitude: -180.0001 } }).success).toBe(false);
+    expect(adminCoordinatesSchema.safeParse({ ...base, coordinates: { latitude: "39.4815", longitude: "-76.6447" } }).success).toBe(false);
+    expect(adminCoordinatesSchema.safeParse({ ...base, memoryVersion: "yesterday", coordinates: null }).success).toBe(false);
+    expect(adminCoordinatesSchema.safeParse({ ...base, memoryId: "mem_1", coordinates: null }).success).toBe(false);
+  });
+
+  it("tells the model in the JSON Schema to pass memoryVersion exactly as get_memory returned it", () => {
+    const schema = z.toJSONSchema(adminCoordinatesSchema);
+    expect(schema.properties?.memoryVersion).toMatchObject({ type: "string", description: "ISO-8601 timestamp exactly as get_memory returned it" });
   });
 });

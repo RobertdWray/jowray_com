@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import { MAX_FILES_PER_MEMORY } from "@/lib/media-types";
 import {
   contributorEmailSchema,
+  coordinatesOf,
+  coordinatesSchema,
   contributorNameSchema,
   createSubmissionInputSchema,
   draftMemoryInputSchema,
+  draftMemoryObjectSchema,
   EMAIL_INVALID_MESSAGE,
   EMAIL_REQUIRED_MESSAGE,
   fileInputSchema,
@@ -286,5 +289,54 @@ describe("draftMemoryInputSchema", () => {
     expect(parsed.note).toBe("  Two spaces lead.\n\nAnd a blank line.  ");
     expect(parsed.approxDateText).toBeNull();
     expect(parsed.place).toBe("Broadmead");
+  });
+});
+
+describe("coordinatesSchema (WGS 84 decimal degrees, plan 2026-11-06 §4.2)", () => {
+  it("accepts the full ranges, including the poles and the antimeridian", () => {
+    for (const pair of [{ latitude: 39.4815, longitude: -76.6447 }, { latitude: 90, longitude: 180 }, { latitude: -90, longitude: -180 }, { latitude: 0, longitude: 0 }]) {
+      expect(coordinatesSchema.parse(pair)).toEqual(pair);
+    }
+  });
+
+  it("refuses values out of range, non-finite numbers, strings, a missing half and extra keys", () => {
+    for (const bad of [
+      { latitude: 90.0001, longitude: 0 },
+      { latitude: -90.0001, longitude: 0 },
+      { latitude: 0, longitude: 180.0001 },
+      { latitude: 0, longitude: -180.0001 },
+      { latitude: Number.NaN, longitude: 0 },
+      { latitude: 0, longitude: Number.POSITIVE_INFINITY },
+      { latitude: "39.4815", longitude: -76.6447 },
+      { latitude: 39.4815 },
+      { longitude: -76.6447 },
+      { latitude: 39.4815, longitude: -76.6447, altitude: 120 },
+    ]) {
+      expect(coordinatesSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+  });
+
+  it("reads a row's pair as the API shows it: null unless both columns are set", () => {
+    expect(coordinatesOf({ latitude: 39.4815, longitude: -76.6447 })).toEqual({ latitude: 39.4815, longitude: -76.6447 });
+    expect(coordinatesOf({ latitude: null, longitude: null })).toBeNull();
+    expect(coordinatesOf({ latitude: 0, longitude: 0 })).toEqual({ latitude: 0, longitude: 0 });
+  });
+});
+
+describe("draftMemoryInputSchema coordinates (plan 2026-11-06 §4.2)", () => {
+  const valid = { contributor: { email: "joyce@example.com" }, note: "Jo was kind.", source: "EMAIL", sourceRef: "gmail:1a1a2317fba34eec" };
+
+  it("takes optional coordinates for the named place; absent, null and a pair all parse", () => {
+    expect(draftMemoryInputSchema.parse(valid).coordinates).toBeUndefined();
+    expect(draftMemoryInputSchema.parse({ ...valid, coordinates: null }).coordinates).toBeNull();
+    expect(draftMemoryInputSchema.parse({ ...valid, coordinates: { latitude: 39.4815, longitude: -76.6447 } }).coordinates).toEqual({ latitude: 39.4815, longitude: -76.6447 });
+    expect(draftMemoryInputSchema.safeParse({ ...valid, coordinates: { latitude: 91, longitude: 0 } }).success).toBe(false);
+  });
+
+  it("is built from the exported object schema, which carries the same fields without the source refines", () => {
+    expect(Object.keys(draftMemoryObjectSchema.shape)).toEqual(["contributor", "note", "originalNote", "approxDateText", "place", "source", "sourceRef", "visibility", "coordinates"]);
+    // The refines live only on draftMemoryInputSchema: the object schema alone lets a mismatched prefix through.
+    expect(draftMemoryObjectSchema.safeParse({ ...valid, source: "SMS" }).success).toBe(true);
+    expect(draftMemoryInputSchema.safeParse({ ...valid, source: "SMS" }).success).toBe(false);
   });
 });
