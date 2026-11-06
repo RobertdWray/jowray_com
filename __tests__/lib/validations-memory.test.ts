@@ -15,6 +15,7 @@ import {
   memoryFileInputSchema,
   NAME_REQUIRED_MESSAGE,
   NAME_TOO_LONG_MESSAGE,
+  NEEDS_CONTENT_ITEMS,
   submissionIssueLocation,
   submissionMemorySchema,
   uploadTicketRequestSchema,
@@ -79,7 +80,14 @@ describe("memory file validation", () => {
     expect(parsed.memories[0]?.files[0]?.durationSeconds).toBe(24);
   });
 
-  it("a card takes up to the per-memory cap of files and needs a file or a few words", () => {
+  it("names what a memory can be in one shared phrase (Rob's R1, 2026-11-06)", () => {
+    expect(NEEDS_CONTENT_ITEMS).toBe("a photo, a video, a voice recording or a few words");
+    const refused = submissionMemorySchema.safeParse({ files: [], note: "" });
+    expect(refused.success).toBe(false);
+    expect(refused.error?.issues[0]?.message).toBe(`Add at least one: ${NEEDS_CONTENT_ITEMS}`);
+  });
+
+  it("a card takes up to the per-memory cap of files and needs at least one file (photo, video or voice recording) or a few words", () => {
     const files = Array.from({ length: MAX_FILES_PER_MEMORY }, (_, i) => ({ ...file, name: `f${i}.webm` }));
     expect(submissionMemorySchema.parse({ files }).files).toHaveLength(MAX_FILES_PER_MEMORY);
     expect(submissionMemorySchema.safeParse({ files: [...files, file] }).success).toBe(false);
@@ -133,7 +141,7 @@ describe("createSubmissionInputSchema (Task 15)", async () => {
     expect(result.success).toBe(false);
     if (result.success) { return; }
     const locations = result.error.issues.map((issue) => submissionIssueLocation(issue));
-    expect(locations).toContainEqual({ memoryIndex: 1, fileIndex: null, field: null, message: "Add a file, a recording, or a few words" });
+    expect(locations).toContainEqual({ memoryIndex: 1, fileIndex: null, field: null, message: "Add at least one: a photo, a video, a voice recording or a few words" });
     expect(locations).toContainEqual(expect.objectContaining({ memoryIndex: 2, fileIndex: 0 }));
     const top = createSubmissionInputSchema.safeParse({ ...send([memory()]), email: "nope" });
     expect(top.success).toBe(false);

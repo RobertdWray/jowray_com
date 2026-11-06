@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { type CardIssue, hasContent, type CardTextField, type MemoryCard } from "@/lib/memory-cards";
+import { type CardIssue, hasContent, type CardTextField, type MemoryCard, NEEDS_CONTENT_HELPER } from "@/lib/memory-cards";
 
 import { SecondaryButton, TertiaryButton } from "../_components/buttons";
 import { errorClass, helperClass, inputClass, labelClass, textareaClass } from "../_components/field-classes";
@@ -12,6 +12,7 @@ import { CardMedia, type CardMediaRecording } from "./card-media-client";
 export function cardIds(cardId: string) {
   return {
     heading: `${cardId}-heading`,
+    helper: `${cardId}-helper`,
     date: `${cardId}-date`,
     place: `${cardId}-place`,
     note: `${cardId}-note`,
@@ -75,23 +76,29 @@ export function MemoryCardSection({
 
   return (
     <section aria-labelledby={ids.heading} className="flex flex-col gap-[22px] rounded-form border-[3px] border-wood-light bg-paper p-6 shadow-form sm:p-8">
-      <h2 id={ids.heading} tabIndex={-1} className="font-display text-card-title font-bold outline-none focus-visible:ring-4 focus-visible:ring-periwinkle">
-        {isFirst ? (
-          <>
-            <span className="narrow:hidden">{heading}</span>
-            <span className="wide:hidden">Your memory</span>
-          </>
-        ) : (
-          heading
-        )}
-      </h2>
+      {/* What a memory needs, said before Send (WCAG 3.3.2; Rob's ruling R1, 2026-11-06): one of four, the rest optional. */}
+      <div className="flex flex-col gap-2">
+        <h2 id={ids.heading} tabIndex={-1} className="font-display text-card-title font-bold outline-none focus-visible:ring-4 focus-visible:ring-periwinkle">
+          {isFirst ? (
+            <>
+              <span className="narrow:hidden">{heading}</span>
+              <span className="wide:hidden">Your memory</span>
+            </>
+          ) : (
+            heading
+          )}
+        </h2>
+        <p id={ids.helper} className={`text-small ${helperClass}`}>
+          {NEEDS_CONTENT_HELPER}
+        </p>
+      </div>
       {/* Item 7 (2026-11-04): with room to spare (`roomy`) the card is two columns, when/where and the media on the
           left, the words on the right filling the row's height (about 52 characters a line, SC 1.4.8 guidance). */}
       <div className="flex flex-col gap-[22px] roomy:grid roomy:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] roomy:gap-x-8">
         <div className="flex flex-col gap-[22px]">
           <div className="flex flex-wrap gap-5 roomy:flex-col">
             <label htmlFor={ids.date} className={`${labelClass} flex-[1_1_220px] roomy:flex-none`}>
-              <span>When is this memory from? <span className={helperClass}>(roughly is fine)</span></span>
+              <span>When is this memory from? <span className={helperClass}>(optional, roughly is fine)</span></span>
               <input
                 id={ids.date}
                 value={card.approxDateText}
@@ -133,7 +140,9 @@ export function MemoryCardSection({
             with the row at `roomy`. The error line sits right under the textarea however tall the row is, and the
             textarea is capped to the window so label, words and error fit a short one (review, 2026-11-04). */}
         <div className={`${labelClass} roomy:flex-1`} data-field>
-          <label htmlFor={ids.note}>Your memory of Jo</label>
+          <label htmlFor={ids.note}>
+            Your memory of Jo <span className={helperClass}>(optional with a photo, video or voice recording)</span>
+          </label>
           <textarea
             id={ids.note}
             value={card.note}
@@ -143,7 +152,8 @@ export function MemoryCardSection({
             className={`${textareaClass} roomy:min-h-[300px] roomy:max-h-[calc(100dvh-14rem)] roomy:flex-1`}
             placeholder="She once…"
             aria-invalid={issue ? "true" : undefined}
-            aria-describedby={issue ? ids.error : undefined}
+            // The helper line is the words box's description too: someone who tabs straight here still hears the rule.
+            aria-describedby={issue ? `${ids.helper} ${ids.error}` : ids.helper}
             disabled={disabled}
           />
           {issue && (
