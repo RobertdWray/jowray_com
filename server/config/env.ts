@@ -2,7 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 
-import { logError } from "@/lib/logger";
+import { logError, type LogCategory } from "@/lib/logger";
 
 /**
  * Per-feature environment sub-schemas.
@@ -60,7 +60,7 @@ const blobSchema = z.object({
  * keys gate the family's receipts, so a typo in Vercel must never stop them
  * (#49 regression review). The value itself is not logged.
  */
-const lenientPositiveInt = (key: string, fallback: number) =>
+const lenientPositiveInt = (key: string, fallback: number, category: LogCategory = "email") =>
   z.preprocess((value) => {
     if (value === undefined || value === "") {
       return undefined;
@@ -69,7 +69,7 @@ const lenientPositiveInt = (key: string, fallback: number) =>
     if (Number.isInteger(n) && n > 0) {
       return n;
     }
-    logError(`${key} is not a positive integer; using the default`, new Error(`invalid ${key}`), { category: "email", key, fallback });
+    logError(`${key} is not a positive integer; using the default`, new Error(`invalid ${key}`), { category, key, fallback });
     return undefined;
   }, z.number().int().positive().default(fallback));
 
@@ -169,7 +169,26 @@ const mediaServingSchema = z.object({
   MEDIA_PROXY_DOWNLOAD_MAX_BYTES: blankIsUnset(z.coerce.number().int().nonnegative().default(25 * 1024 ** 2)),
 });
 
+/**
+ * Place suggestions from photo GPS (plan 2026-11-06-photo-gps-places, D7). Only Production sets `nominatim`; Preview
+ * and local runs use `stub` (no network); unset is `off`. The lookup URL is config so the service can be switched
+ * without a code change, as the Nominatim usage policy asks. The two ceilings are daily: provider calls actually sent
+ * site-wide, and incoming lookups per viewer. Every key has a default, so a deployment works with none of them set.
+ */
+const placesSchema = z.object({
+  PLACES_PROVIDER: blankIsUnset(z.enum(["nominatim", "stub", "off"]).default("off")),
+  PLACES_LOOKUP_URL: blankIsUnset(
+    z
+      .url({ protocol: /^https?$/ })
+      .transform((value) => value.replace(/\/+$/, ""))
+      .default("https://nominatim.openstreetmap.org")
+  ),
+  PLACES_DAILY_PROVIDER_CALLS: lenientPositiveInt("PLACES_DAILY_PROVIDER_CALLS", 500, "api"),
+  PLACES_VIEWER_DAILY_REQUESTS: lenientPositiveInt("PLACES_VIEWER_DAILY_REQUESTS", 60, "api"),
+});
+
 export type DbEnv = z.infer<typeof dbSchema>;
+export type PlacesEnv = z.infer<typeof placesSchema>;
 export type MediaServingEnv = z.infer<typeof mediaServingSchema>;
 export type AdminPageEnv = z.infer<typeof adminPageSchema>;
 export type AdminEnv = z.infer<typeof adminSchema>;
@@ -218,6 +237,7 @@ export const getAdminEnv = memoized("admin", adminSchema);
 export const getMcpEnv = memoized("mcp", mcpSchema);
 export const getAdminPageEnv = memoized("adminPage", adminPageSchema);
 export const getMediaServingEnv = memoized("mediaServing", mediaServingSchema);
+export const getPlacesEnv = memoized("places", placesSchema);
 
 /** Test helper: forget every parsed sub-schema so the next call re-reads `process.env`. */
 export function resetEnvCache(): void {

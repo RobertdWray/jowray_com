@@ -110,6 +110,19 @@ A wrong or missing header shows as a connection error in Claude, never a sign-in
 
 **Fallback.** The request-headers option is a beta for a limited set of organisations. If Anthropic withdraws it, or the connector is down, the skill falls back to `scripts/draft-memory.ts` on Rob's Mac with `ADMIN_API_SECRET` (above).
 
+## Place suggestions from photo GPS
+
+Place names for the "Where" buttons on `/share` and the MCP `suggest_places` tool come from OpenStreetMap Nominatim, through our own server and the `PlaceLookup` cache (`features/places/lookup-place.ts`; plan `docs/plans/2026-11-06-photo-gps-places.md`, D7–D9). Every key is optional: with none set, lookups are off.
+
+| Key | Purpose |
+|---|---|
+| `PLACES_PROVIDER` | `nominatim`, `stub` or `off` (default **off**). **Production only** sets `nominatim`: the usage policy's limit is per application, and Preview databases hold their own throttle rows, so a preview calling Nominatim would double the site's rate. Preview and local runs use `stub`, which answers "Photo location found near {lat}, {lon} (test)" without any network, so a device check shows whether a photo's GPS arrived. `off` answers `disabled`. Blank means unset. An unknown value fails the lookup (reported), never the page. |
+| `PLACES_LOOKUP_URL` | Base URL of the Nominatim instance (default `https://nominatim.openstreetmap.org`; a trailing slash is dropped, a path is kept). The usage policy asks that the service can be switched without a software update: point this at another instance (or set `PLACES_PROVIDER=off`) and redeploy. http(s) only; blank means unset. |
+| `PLACES_DAILY_PROVIDER_CALLS` | Requests actually sent to the provider site-wide per UTC day (default **500**), counted in `EgressCounter` under `places:provider` after the site-wide slot is won and a fresh cache check misses. Over it, lookups answer `daily_limit` until midnight UTC. Optional; a malformed value (`0`, `abc`) falls back to the default and is reported. |
+| `PLACES_VIEWER_DAILY_REQUESTS` | Lookups one viewer (client address, hashed in the counter's scope) may ask for per UTC day (default **60**), counted on arrival, before the cache. Over it, `/api/places/suggest` answers 429. The MCP path has no viewer and is not counted here. Optional; same fallback. |
+
+Real sends are at least 1.1 s apart site-wide whatever these values are: a lease and fence on `PlaceLookupThrottle` spaces them, by the database's clock.
+
 ## Phase 1: DNS automation
 
 | Key | Purpose |

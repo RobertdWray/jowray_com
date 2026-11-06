@@ -9,6 +9,7 @@ import {
   getDbEnv,
   getMcpEnv,
   getOutboundEnv,
+  getPlacesEnv,
   getSiteEnv,
   resetEnvCache,
   strictBoolean,
@@ -27,6 +28,10 @@ const KEYS = [
   "ADMIN_API_SECRET",
   "ADMIN_PAGE_SECRET",
   "MCP_API_SECRET",
+  "PLACES_PROVIDER",
+  "PLACES_LOOKUP_URL",
+  "PLACES_DAILY_PROVIDER_CALLS",
+  "PLACES_VIEWER_DAILY_REQUESTS",
 ] as const;
 const saved: Partial<Record<(typeof KEYS)[number], string | undefined>> = {};
 
@@ -273,5 +278,59 @@ describe("outbound ceilings and the admin hourly cap (issue #46)", () => {
     process.env.ADMIN_ALERT_HOURLY_CAP = "0";
     resetEnvCache();
     expect(getAdminAlertEnv().ADMIN_ALERT_HOURLY_CAP).toBe(20);
+  });
+});
+
+describe("getPlacesEnv (plan 2026-11-06-photo-gps-places B4)", () => {
+  it("defaults to off, the public Nominatim host, 500 provider calls and 60 viewer requests a day, so a deploy needs no new env", () => {
+    expect(getPlacesEnv()).toEqual({
+      PLACES_PROVIDER: "off",
+      PLACES_LOOKUP_URL: "https://nominatim.openstreetmap.org",
+      PLACES_DAILY_PROVIDER_CALLS: 500,
+      PLACES_VIEWER_DAILY_REQUESTS: 60,
+    });
+  });
+
+  it("reads each provider, a switchable lookup URL without its trailing slash, and the two ceilings; blank means unset", () => {
+    for (const provider of ["nominatim", "stub", "off"] as const) {
+      process.env.PLACES_PROVIDER = provider;
+      resetEnvCache();
+      expect(getPlacesEnv().PLACES_PROVIDER).toBe(provider);
+    }
+    process.env.PLACES_PROVIDER = "";
+    process.env.PLACES_LOOKUP_URL = "https://geocoder.example.org/nominatim/";
+    process.env.PLACES_DAILY_PROVIDER_CALLS = " 250 ";
+    process.env.PLACES_VIEWER_DAILY_REQUESTS = "";
+    resetEnvCache();
+    expect(getPlacesEnv()).toEqual({
+      PLACES_PROVIDER: "off",
+      PLACES_LOOKUP_URL: "https://geocoder.example.org/nominatim",
+      PLACES_DAILY_PROVIDER_CALLS: 250,
+      PLACES_VIEWER_DAILY_REQUESTS: 60,
+    });
+    process.env.PLACES_LOOKUP_URL = "";
+    resetEnvCache();
+    expect(getPlacesEnv().PLACES_LOOKUP_URL).toBe("https://nominatim.openstreetmap.org");
+  });
+
+  it("refuses an unknown provider and a lookup URL that is not http(s), naming the key", () => {
+    process.env.PLACES_PROVIDER = "google";
+    resetEnvCache();
+    expect(() => getPlacesEnv()).toThrow(/PLACES_PROVIDER/);
+    delete process.env.PLACES_PROVIDER;
+    for (const bad of ["nominatim.openstreetmap.org", "ftp://nominatim.openstreetmap.org"]) {
+      process.env.PLACES_LOOKUP_URL = bad;
+      resetEnvCache();
+      expect(() => getPlacesEnv()).toThrow(/PLACES_LOOKUP_URL/);
+    }
+  });
+
+  it("falls back to the default ceiling for zero, negatives, fractions and words, never throwing", () => {
+    for (const bad of ["0", "-1", "2.5", "lots"]) {
+      process.env.PLACES_DAILY_PROVIDER_CALLS = bad;
+      process.env.PLACES_VIEWER_DAILY_REQUESTS = bad;
+      resetEnvCache();
+      expect(getPlacesEnv()).toMatchObject({ PLACES_DAILY_PROVIDER_CALLS: 500, PLACES_VIEWER_DAILY_REQUESTS: 60 });
+    }
   });
 });
