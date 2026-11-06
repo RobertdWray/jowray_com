@@ -9,6 +9,7 @@ import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import { createLogger } from "@/lib/logger";
 import { isPlaceProviderRefusedError } from "@/lib/places/errors";
 import { placeLabels } from "@/lib/places/label";
+import { PLACE_SEND_BUDGET_MS } from "@/lib/places/timing";
 import { type PlaceLabel, type PlaceResult, placeResultSchema } from "@/lib/places/types";
 import type { Coordinates } from "@/lib/validations/memory";
 import { type PlacesEnv, getPlacesEnv } from "@/server/config/env";
@@ -56,7 +57,9 @@ export interface PlaceLookupOptions {
  * 7. Count the provider call (D9); over the day's limit releases the lease and is `daily_limit`.
  * 8. Send at once, then fence: next-allowed = the database's `now()` + 1.1 s, lease cleared. The send started before
  *    that `now()`, and the next claim needs `now()` at or past it, so real sends are at least 1.1 s apart site-wide; no
- *    transaction is held across the HTTP call [C22], and a dead holder blocks others for at most its 10 s lease.
+ *    transaction is held across the HTTP call [C22], and a dead holder blocks others for at most its 10 s lease. A send
+ *    may start only within PLACE_SEND_BUDGET_MS (3 s) of issuing the winning claim, so its fence always lands while the
+ *    lease is still held; a holder stalled past that releases the lease and answers `busy` (B4 fix round 1).
  * 9. Cache the answer (`Prisma.DbNull` when the provider had none) and return its labels with the OSM credit. A refusal
  *    is a Sentry warning and `provider_refused`; any other failure is reported and `failed` (retryable).
  */
@@ -96,11 +99,12 @@ export function createPlaceLookup({ db, geocoder, env, sleep }: PlaceLookupDeps)
       }
 
       const token = randomUUID();
-      if (!(await claimLease(db, geocoder.provider, token, deadline, sleep))) {
+      const claimIssuedAt = await claimLease(db, geocoder.provider, token, deadline, sleep);
+      if (claimIssuedAt === null) {
         log.info({ action: "place_lookup", outcome: "busy" }, "place lookup gave up waiting for the provider slot");
         return { ok: false, code: "busy" };
       }
-      return await withLease(db, geocoder.provider, token, async (send) => {
+      return await withLease(db, geocoder.provider, token, claimIssuedAt, async (send) => {
         const fresh = await readCache(db, key);
         if (fresh.hit) {
           return answered(fresh.result);
@@ -113,6 +117,12 @@ export function createPlaceLookup({ db, geocoder, env, sleep }: PlaceLookupDeps)
         try {
           result = await send(() => geocoder.reverse(point));
         } catch (error) {
+          if (error instanceof SendBudgetSpentError) {
+            // Nothing was sent; withLease releases the lease (next-allowed unchanged). The provider count above stays
+            // spent: over-counting is the safe direction for a quota. Retryable, like any wait for the slot.
+            log.warn({ action: "place_lookup", outcome: "busy", reason: "send_budget_spent" }, "place lookup held its lease too long to send");
+            return { ok: false, code: "busy" };
+          }
           if (isPlaceProviderRefusedError(error)) {
             Sentry.captureException(error, { level: "warning", tags: { step: "place_lookup", provider: geocoder.provider } });
             log.warn({ action: "place_lookup", outcome: "provider_refused", status: error.status }, "place provider refused the request");
@@ -166,13 +176,17 @@ async function readCache(db: PlaceLookupDeps["db"], key: { provider: string; lat
 /**
  * Take the site-wide lease for `provider` [C23]: one statement that inserts the row or takes it over only when the
  * fence has passed and no live lease exists, by the database's clock. Until the deadline, a refusal reads how long the
- * row stays busy and waits for that, at most 500 ms at a time. False means the deadline came first.
+ * row stays busy and waits for that, at most 500 ms at a time.
+ *
+ * Answers `performance.now()` taken just before the winning claim was issued (the lease's 10 s start no earlier than
+ * that), or null when the deadline came first.
  */
-async function claimLease(db: PlaceLookupDeps["db"], provider: string, token: string, deadline: number, sleep: PlaceLookupDeps["sleep"]): Promise<boolean> {
+async function claimLease(db: PlaceLookupDeps["db"], provider: string, token: string, deadline: number, sleep: PlaceLookupDeps["sleep"]): Promise<number | null> {
   for (;;) {
     if (Date.now() >= deadline) {
-      return false;
+      return null;
     }
+    const issuedAt = performance.now();
     const claimed = await db.$queryRaw<Array<{ leaseToken: string }>>`
       INSERT INTO "PlaceLookupThrottle" ("provider","nextAllowedAt","leaseToken","leaseUntil")
       VALUES (${provider}, now(), ${token}, now() + interval '10 seconds')
@@ -181,7 +195,7 @@ async function claimLease(db: PlaceLookupDeps["db"], provider: string, token: st
           AND ("PlaceLookupThrottle"."leaseToken" IS NULL OR "PlaceLookupThrottle"."leaseUntil" <= now())
       RETURNING "leaseToken"`;
     if (claimed.length === 1) {
-      return true;
+      return issuedAt;
     }
     // How long the row stays busy, computed by the database from nextAllowedAt, leaseUntil and now(), so the app's
     // clock (and any time-zone reading of the timestamp columns) never enters the spacing.
@@ -193,9 +207,17 @@ async function claimLease(db: PlaceLookupDeps["db"], provider: string, token: st
       FROM "PlaceLookupThrottle" WHERE "provider" = ${provider}`;
     const pause = Math.min(Math.max(Number(rows[0]?.waitMs ?? 0), MIN_PAUSE_MS), MAX_PAUSE_MS);
     if (Date.now() + pause >= deadline) {
-      return false;
+      return null;
     }
     await sleep(pause);
+  }
+}
+
+/** `send` refused to start: the send budget since the winning claim was spent (a stall between claim and send). */
+class SendBudgetSpentError extends Error {
+  constructor() {
+    super("place lookup send budget spent");
+    this.name = "SendBudgetSpentError";
   }
 }
 
@@ -205,8 +227,12 @@ async function claimLease(db: PlaceLookupDeps["db"], provider: string, token: st
  * else (the cache write) happens, so the next caller's wait starts as early as the spacing allows. Without a send the
  * lease is released (next-allowed unchanged). A give-back that fails is logged and left to the lease's 10 s expiry; it
  * never changes the answer.
+ *
+ * `send` starts the request only within PLACE_SEND_BUDGET_MS of `claimIssuedAt` (performance.now() before the winning
+ * claim), checked immediately before the request with nothing awaited between; past it, it throws
+ * SendBudgetSpentError without sending. The check lives here so no path can send on a lease too old to fence.
  */
-async function withLease<T>(db: PlaceLookupDeps["db"], provider: string, token: string, work: (send: <R>(request: () => Promise<R>) => Promise<R>) => Promise<T>): Promise<T> {
+async function withLease<T>(db: PlaceLookupDeps["db"], provider: string, token: string, claimIssuedAt: number, work: (send: <R>(request: () => Promise<R>) => Promise<R>) => Promise<T>): Promise<T> {
   let returned = false;
   const giveBack = async (afterSend: boolean): Promise<void> => {
     if (returned) {
@@ -217,7 +243,10 @@ async function withLease<T>(db: PlaceLookupDeps["db"], provider: string, token: 
       if (afterSend) {
         const fenced = await db.$executeRaw`UPDATE "PlaceLookupThrottle" SET "nextAllowedAt" = now() + interval '1100 milliseconds', "leaseToken" = NULL, "leaseUntil" = NULL WHERE "provider" = ${provider} AND "leaseToken" = ${token}`;
         if (fenced === 0) {
-          // The 10 s lease ran out during a send bounded at 5 s: should never happen; the spacing then rests on the expiry.
+          // Unreachable in practice: the send started at most 3 s (the send budget) after the claim and the provider is
+          // cut off at 5 s, so this fence is issued at least 2 s before the 10 s lease runs out. Only a fence statement
+          // delayed past that could miss, and the spacing still holds then: the next claim waited for the lease's
+          // expiry, more than 7 s after this send started.
           log.warn({ action: "place_lookup_fence_missed", provider }, "place lookup lease expired before its fence");
         }
       } else {
@@ -228,6 +257,9 @@ async function withLease<T>(db: PlaceLookupDeps["db"], provider: string, token: 
     }
   };
   const send = async <R>(request: () => Promise<R>): Promise<R> => {
+    if (performance.now() - claimIssuedAt > PLACE_SEND_BUDGET_MS) {
+      throw new SendBudgetSpentError();
+    }
     try {
       return await request();
     } finally {

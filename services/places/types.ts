@@ -14,8 +14,10 @@ export interface ReverseGeocoder {
   /** False for the stub: answered in-process, so it is never throttled, counted or cached. */
   readonly remote: boolean;
   /**
-   * The provider's answer for `point`, sent with nothing but the point (D6). Throws PlaceProviderRefusedError
-   * (lib/places/errors.ts) on a refusal; any other failure throws an error that carries neither the URL nor the point.
+   * The provider's answer for `point`, sent with nothing about the person (D6). Settles within
+   * PLACE_PROVIDER_TIMEOUT_MS (lib/places/timing.ts): the lookup's send budget assumes it. Throws
+   * PlaceProviderRefusedError (lib/places/errors.ts) on a refusal; any other failure throws an error that carries
+   * neither the URL nor the point.
    */
   reverse(point: Coordinates): Promise<PlaceResult | null>;
 }

@@ -13,12 +13,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Prisma } from "@/generated/prisma/client";
 import { PlaceProviderRefusedError } from "@/lib/places/errors";
+import { PLACE_LEASE_MS, PLACE_PROVIDER_TIMEOUT_MS, PLACE_SEND_BUDGET_MS, PLACE_SEND_SPACING_MS } from "@/lib/places/timing";
 import type { PlaceResult } from "@/lib/places/types";
 import type { Coordinates } from "@/lib/validations/memory";
 import type * as LoggerModule from "@/lib/logger";
 import type { ReverseGeocoder } from "@/services/places/types";
 
-import { createFakePlacesDb, type FakePlacesDb, type StatementKind } from "../helpers/places-fake-db";
+import { CLAIM_SQL, createFakePlacesDb, FENCE_SQL, type FakePlacesDb, type StatementKind } from "../helpers/places-fake-db";
 
 const captureExceptionMock = vi.fn();
 vi.mock("@sentry/nextjs", () => ({ captureException: (...a: unknown[]) => captureExceptionMock(...a), flush: vi.fn(async () => true) }));
@@ -256,7 +257,7 @@ describe("lookupPlace: outcomes and the counters' order (D9)", () => {
 
 describe("lookupPlace: the lease, the deadline and busy", () => {
   it("busy: the lease is held past the deadline; it waits in steps of at most 500 ms, never past the deadline, and costs nothing", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
     const start = Date.now();
     fake.throttle.set("nominatim", { nextAllowedAt: start, leaseToken: "held", leaseUntil: start + 10_000 });
     const pauses: number[] = [];
@@ -277,7 +278,7 @@ describe("lookupPlace: the lease, the deadline and busy", () => {
   });
 
   it("waits out the fence of the previous send, then claims and sends", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
     const start = Date.now();
     fake.throttle.set("nominatim", { nextAllowedAt: start + 1_100, leaseToken: null, leaseUntil: null });
     const { geocoder, sends } = fakeProvider();
@@ -288,7 +289,7 @@ describe("lookupPlace: the lease, the deadline and busy", () => {
   });
 
   it("a dead holder's lease blocks for at most its 10 s", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
     const start = Date.now();
     fake.throttle.set("nominatim", { nextAllowedAt: start - 60_000, leaseToken: "crashed", leaseUntil: start + 10_000 });
     const { geocoder, sends } = fakeProvider();
@@ -326,7 +327,7 @@ describe("lookupPlace: real sends site-wide are at least 1100 ms apart (D8)", ()
     { name: "slow claim replies only (900 ms), everything else instant", replies: (): Replies => (kind) => (kind === "claim" ? 900 : 0), late: () => 0 },
     { name: "replies alternating 0 / 900 ms by turns and late timer wakeups", replies: byTurns, late: (n: number) => [0, 350, 1_200][n % 3]! },
   ])("six concurrent lookups of six new points with $name", async ({ replies, late }) => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
     fake.replyDelayMs = replies();
     let wake = 0;
     const sleep = (ms: number) => realSleep(ms + late(wake++));
@@ -341,6 +342,65 @@ describe("lookupPlace: real sends site-wide are at least 1100 ms apart (D8)", ()
     const times = sends.map((s) => s.at).sort((a, b) => a - b);
     for (let i = 1; i < times.length; i += 1) {
       expect(times[i]! - times[i - 1]!, `send ${i} after send ${i - 1}`).toBeGreaterThanOrEqual(1_100);
+    }
+  });
+});
+
+describe("lookupPlace: a holder that stalls between its claim and its send (B4 fix round 1)", () => {
+  it("the send budget is derived from the lease, the provider timeout and the spacing, which the SQL writes the same way", () => {
+    expect(PLACE_SEND_BUDGET_MS).toBe(3_000);
+    expect(PLACE_SEND_BUDGET_MS + PLACE_PROVIDER_TIMEOUT_MS + PLACE_SEND_SPACING_MS).toBeLessThan(PLACE_LEASE_MS);
+    // The fake database accepts only the brief's SQL verbatim, so these tie the named constants to the statements sent.
+    expect(CLAIM_SQL).toContain(`now() + interval '${PLACE_LEASE_MS / 1000} seconds'`);
+    expect(FENCE_SQL).toContain(`now() + interval '${PLACE_SEND_SPACING_MS} milliseconds'`);
+  });
+
+  // The review's probe: holder A's cache re-check (the third cache read: A's first, B's first, A's re-check) is slow. On
+  // the first draft A sent late in its 10 s lease, the lease expired during A's request, B claimed and sent, and the two
+  // sends landed under 1.1 s apart. Now a holder starts its send only within the send budget (3 s after issuing its
+  // winning claim); a later one releases the lease (no fence) and answers busy.
+  it.each([
+    { name: "re-check stalls 9.5 s, provider answers in 1 s (sent 500 ms apart on the first draft)", stallMs: 9_500, latencyMs: 1_000, stalledSends: false },
+    { name: "re-check stalls 9.0 s, provider answers in 2 s (sent 1000 ms apart on the first draft)", stallMs: 9_000, latencyMs: 2_000, stalledSends: false },
+    { name: "control: re-check stalls 8.0 s, provider answers in 1 s (spaced on the first draft too)", stallMs: 8_000, latencyMs: 1_000, stalledSends: false },
+    { name: "a stall just under the budget (2.9 s) still sends, spaced", stallMs: 2_900, latencyMs: 1_000, stalledSends: true },
+  ])("$name", async ({ stallMs, latencyMs, stalledSends }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
+    let reads = 0;
+    fake.replyDelayMs = (kind) => (kind === "cache_read" && ++reads === 3 ? stallMs : 0);
+    const sends: Array<{ at: number; point: Coordinates }> = [];
+    const geocoder: ReverseGeocoder = {
+      provider: "nominatim",
+      remote: true,
+      reverse: async (point) => {
+        sends.push({ at: Date.now(), point });
+        await new Promise((resolve) => setTimeout(resolve, latencyMs));
+        return { address: { city: "Somewhere" } };
+      },
+    };
+    const start = Date.now();
+    const a = { latitude: 10, longitude: 20 };
+    const b = { latitude: 11, longitude: 21 };
+    const pending = Promise.all([lookup({ geocoder })(a, { deadline: start + 30_000 }), lookup({ geocoder })(b, { deadline: start + 30_000 })]);
+    await vi.runAllTimersAsync();
+    const [resultA, resultB] = await pending;
+
+    // The guarantee, whatever happened: consecutive real sends at least 1100 ms apart.
+    const times = sends.map((send) => send.at).sort((x, y) => x - y);
+    for (let i = 1; i < times.length; i += 1) {
+      expect(times[i]! - times[i - 1]!, `send ${i} after send ${i - 1}`).toBeGreaterThanOrEqual(1_100);
+    }
+    expect(resultB.ok).toBe(true);
+    if (stalledSends) {
+      expect(resultA.ok).toBe(true);
+      expect(sends).toHaveLength(2);
+    } else {
+      // A refused to send so late in its lease: busy (retryable), nothing sent for its point, its lease released.
+      expect(resultA).toEqual({ ok: false, code: "busy" });
+      expect(sends.map((send) => send.point)).toEqual([b]);
+      expect(fake.log.filter((statement) => statement.kind === "release")).toHaveLength(1);
+      // A's provider count was already spent and stays spent: over-counting is the safe direction for a quota.
+      expect(fake.counters.get("places:provider")).toBe(2);
     }
   });
 });

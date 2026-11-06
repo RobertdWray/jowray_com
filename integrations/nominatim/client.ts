@@ -1,19 +1,22 @@
 import "server-only";
 
 import { PlaceProviderRefusedError } from "@/lib/places/errors";
+import { PLACE_PROVIDER_TIMEOUT_MS } from "@/lib/places/timing";
 import { type PlaceResult, placeResultSchema } from "@/lib/places/types";
 import type { Coordinates } from "@/lib/validations/memory";
 import type { ReverseGeocoder } from "@/services/places/types";
 
 /** Identifies the application, as the usage policy requires; a stock HTTP-library User-Agent "will not do" [C1]. */
 export const NOMINATIM_USER_AGENT = "jowray.com family memorial (https://www.jowray.com; memories@jowray.com)";
-/** One attempt, bounded: the caller holds the site-wide lease (10 s) while this runs. No retries. */
-const TIMEOUT_MS = 5_000;
 
 /**
  * OpenStreetMap Nominatim's reverse endpoint (R2, C5): `GET {base}/reverse?format=jsonv2&lat=…&lon=…&zoom=18&
- * addressdetails=1&accept-language=en`, the point at 6 dp (D6, R5) and nothing else about the person. The answer is
- * trimmed to `PlaceResult` before it leaves this file. Errors never carry the URL or the point.
+ * addressdetails=1&accept-language=en`, the point at 6 dp (D6, R5) and nothing about the person. This file sets two
+ * headers, the identifying User-Agent and Accept; in production the server's Sentry instrumentation also adds its
+ * tracing headers (`sentry-trace`, `baggage`: trace id, release, environment, public key, org id, transaction name;
+ * no personal data), because the server init sets no `tracePropagationTargets`. One attempt, aborted after
+ * PLACE_PROVIDER_TIMEOUT_MS, while the caller holds the site-wide lease; no retries. The answer is trimmed to
+ * `PlaceResult` before it leaves this file. Errors never carry the URL or the point.
  */
 export class NominatimGeocoder implements ReverseGeocoder {
   readonly provider = "nominatim";
@@ -38,7 +41,7 @@ export class NominatimGeocoder implements ReverseGeocoder {
       response = await fetch(url, {
         method: "GET",
         headers: { "User-Agent": NOMINATIM_USER_AGENT, Accept: "application/json" },
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        signal: AbortSignal.timeout(PLACE_PROVIDER_TIMEOUT_MS),
         // Our database is the cache (PlaceLookup); every call that gets here must reach the provider.
         cache: "no-store",
       });
