@@ -87,3 +87,20 @@ export function sharePerPoint<T>(request: (point: Coordinates) => Promise<T | nu
     return pending;
   };
 }
+
+/**
+ * One photo's lookup as a queued task: the photo is always settled, with the labels or, when the lookup throws, with
+ * null (no suggestions, so it stops showing "Looking up…"), and only then does the error go on, so the limiter's
+ * `onError` still reports it.
+ */
+export async function settleLookup(lookup: () => Promise<string[] | null>, onSettled: (labels: string[] | null) => void): Promise<void> {
+  let labels: string[] | null;
+  try {
+    labels = await lookup();
+  } catch (error) {
+    onSettled(null);
+    throw error;
+  }
+  onSettled(labels);
+}
+

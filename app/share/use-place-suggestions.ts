@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { type CardsAction, gpsReadsDue, lookupsDue, type MemoryCard } from "@/lib/memory-cards";
 import type * as PhotoGps from "@/lib/photo-gps";
 import { requestPlaceLabels } from "@/lib/places/suggest-client";
-import { createTaskLimiter, sharePerPoint } from "@/lib/places/suggest-queue";
+import { createTaskLimiter, settleLookup, sharePerPoint } from "@/lib/places/suggest-queue";
 import { reportClientError } from "@/lib/sentry/report";
 
 /**
@@ -89,9 +89,12 @@ export function usePlaceSuggestions(cards: ReadonlyArray<MemoryCard>, dispatch: 
       }
       started.current.add(key);
       queues.lookups.push(
-        async () => {
-          dispatch({ type: "setMediaPlaces", id: cardId, mediaId: item.id, labels: await queues.labelsFor(point) });
-        },
+        () =>
+          // A lookup that throws still settles this photo (no buttons), then the queue reports the error.
+          settleLookup(
+            () => queues.labelsFor(point),
+            (labels) => dispatch({ type: "setMediaPlaces", id: cardId, mediaId: item.id, labels }),
+          ),
         () => lookupsDue(current.current).some((due) => due.item.id === item.id),
       );
     }

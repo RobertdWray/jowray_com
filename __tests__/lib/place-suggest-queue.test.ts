@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createTaskLimiter, pointKey, sharePerPoint } from "@/lib/places/suggest-queue";
+import { createTaskLimiter, pointKey, settleLookup, sharePerPoint } from "@/lib/places/suggest-queue";
 
 const LIBERTY = { latitude: 40.689247, longitude: -74.044502 };
 const BOLOGNA = { latitude: 44.50155, longitude: 11.33989 };
@@ -207,6 +207,30 @@ describe("sharePerPoint", () => {
     expect(await labelsFor(LIBERTY)).toEqual(["New York, New York"]);
     expect(request).toHaveBeenCalledTimes(2);
     await settle();
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+});
+
+describe("settleLookup (final review, item 6)", () => {
+  it("settles the photo with the labels the lookup answered", async () => {
+    const onSettled = vi.fn();
+    await settleLookup(async () => ["New York, New York"], onSettled);
+    expect(onSettled.mock.calls).toEqual([[["New York, New York"]]]);
+  });
+
+  it("a lookup that throws still settles the photo (no suggestions), then the error goes on to the limiter's onError", async () => {
+    const failure = new Error("reportClientError threw");
+    const onSettled = vi.fn();
+    const onError = vi.fn();
+    const limiter = createTaskLimiter(1, onError);
+    limiter.push(() =>
+      settleLookup(async () => {
+        throw failure;
+      }, onSettled),
+    );
+    await settle();
+    expect(onSettled.mock.calls).toEqual([[null]]);
+    expect(onError.mock.calls).toEqual([[failure]]);
     expect(unhandled).not.toHaveBeenCalled();
   });
 });
