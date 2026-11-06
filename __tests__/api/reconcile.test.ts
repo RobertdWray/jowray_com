@@ -7,7 +7,7 @@ const SECRET = "c".repeat(40);
 const HOUR = 60 * 60 * 1000;
 
 interface DerivedRow { kind: string; status: string; error: string | null; attempts: number; claimedAt: Date | null; storageKey: string }
-interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; purgedAt?: Date | null; reservedUntil?: Date | null; mimeType?: string; derivatives?: DerivedRow[]; memory: { deletedAt: Date | null } }
+interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; purgedAt?: Date | null; reservedUntil?: Date | null; mimeType?: string; derivatives?: DerivedRow[]; gpsCheckedAt?: Date | null; gpsAttempts?: number; memory: { deletedAt: Date | null } }
 interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
 type EmailType = "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY" | "SUBMISSION_CONFIRMATION";
 interface EmailRow { id: string; memoryId: string; emailType: EmailType; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null; uploadLeaseUntil?: Date | null } }
@@ -60,7 +60,7 @@ let onLock: ((memoryId: string) => void) | null = null;
 const lockCalls: string[] = [];
 const dbStub = {
   // Prisma always returns `derivatives` as an array when it is included, and every scalar; fixtures may omit `derivatives` and `purgedAt`.
-  media: { updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Partial<MediaRow> }) => { const rows = media.filter((m) => matches({ purgedAt: null, reservedUntil: null, ...m } as unknown as Record<string, unknown>, where)); for (const r of rows) { Object.assign(r, data); } return { count: rows.length }; }), findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => (await finder(() => media.map((m) => ({ purgedAt: null, reservedUntil: null, ...m })) as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }), findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { const m = media.find((x) => x.id === where.id); if (!m) { throw new Error("not found"); } return { purgedAt: null, reservedUntil: null, ...m }; }) },
+  media: { updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Partial<MediaRow> }) => { const rows = media.filter((m) => matches({ purgedAt: null, reservedUntil: null, ...m } as unknown as Record<string, unknown>, where)); for (const r of rows) { Object.assign(r, data); } return { count: rows.length }; }), findMany: vi.fn(async (args: { where: Record<string, unknown>; take?: number }) => (await finder(() => media.map((m) => ({ purgedAt: null, reservedUntil: null, gpsCheckedAt: null, gpsAttempts: 0, ...m })) as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }), findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { const m = media.find((x) => x.id === where.id); if (!m) { throw new Error("not found"); } return { purgedAt: null, reservedUntil: null, ...m }; }) },
   $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(String(values[0])); onLock?.(String(values[0])); return [{ id: values[0] }]; }),
   $transaction: vi.fn(async (fn: (t: typeof dbStub) => Promise<unknown>) => { inTransaction = true; try { return await fn(dbStub); } finally { inTransaction = false; } }),
   derivedMedia: { deleteMany: vi.fn(async ({ where }: { where: { mediaId: string; storageKey?: { in: string[] } } }) => { derivedDeletes.push(where); const m = media.find((x) => x.id === where.mediaId); if (m?.derivatives) { m.derivatives = m.derivatives.filter((d) => where.storageKey ? !where.storageKey.in.includes(d.storageKey) : false); } return { count: 1 }; }) },
@@ -105,6 +105,14 @@ const confirmSubmissionMock = vi.fn(async ({ anchorId }: { anchorId: string }) =
 vi.mock("@/features/memories/complete-submission", () => ({ confirmSubmission: (a: { anchorId: string }) => confirmSubmissionMock(a) }));
 const deriveMediaMock = vi.fn(async ({ mediaId }: { mediaId: string; deadlineMs: number }) => { const m = media.find((x) => x.id === mediaId)!; m.derivatives = [{ kind: "WEB_IMAGE", status: "READY", error: null, attempts: 1, claimedAt: new Date(), storageKey: "dev/derived/x/a.jpg" }, { kind: "THUMBNAIL", status: "READY", error: null, attempts: 1, claimedAt: new Date(), storageKey: "dev/derived/x/b.jpg" }]; return { WEB_IMAGE: "derived", THUMBNAIL: "derived" }; });
 vi.mock("@/features/memories/derive-media", async (importOriginal) => { const actual = await importOriginal<Record<string, unknown>>(); return { ...actual, deriveMedia: (a: { mediaId: string; deadlineMs: number }) => deriveMediaMock(a) }; });
+type GpsOutcome = "found" | "absent" | "failed" | "skipped";
+/** Like the real step: a decided outcome stamps the row (so the next run leaves it alone); failed/skipped leave it undecided. */
+function decideGps(mediaId: string, outcome: GpsOutcome): GpsOutcome {
+  if (outcome === "found" || outcome === "absent") { media.find((m) => m.id === mediaId)!.gpsCheckedAt = new Date(); }
+  return outcome;
+}
+const extractGpsMock = vi.fn(async ({ mediaId }: { mediaId: string; deadlineMs?: number }): Promise<GpsOutcome> => decideGps(mediaId, "absent"));
+vi.mock("@/features/media/extract-photo-gps", async (importOriginal) => { const actual = await importOriginal<Record<string, unknown>>(); return { ...actual, extractPhotoGps: (a: { mediaId: string; deadlineMs?: number }) => extractGpsMock(a) }; });
 // The activation cutoff is a day in the past here so the fixtures (created 2 h ago) fall after it; the real constant is the merge day.
 const ADMIN_ALERT_SINCE = vi.hoisted(() => new Date(Date.now() - 24 * 60 * 60 * 1000));
 const notifyMock = vi.fn(async ({ memoryId }: { memoryId: string }) => recordSent(memoryId, "ADMIN_NEW_MEMORY"));
@@ -228,7 +236,9 @@ beforeEach(() => {
   ];
   emails.push({ id: "log_leased", memoryId: "mem_leased_retry", emailType: "MEMORY_CONFIRMATION", status: "FAILED", attempts: 1, nextAttemptAt: old, createdAt: old, memory: { deletedAt: null, uploadLeaseUntil: new Date(Date.now() + 30 * 60 * 1000) } });
   inTransaction = false; onLock = null; lockCalls.length = 0; delMock.mockReset(); delMock.mockImplementation(async () => { if (inTransaction) { throw new Error("storage.del inside the purge transaction"); } });
-    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); confirmSubmissionMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
+    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); confirmSubmissionMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); derivedDeletes.length = 0;
+  // Reset, not clear: a test that swaps in its own implementation (the step (g) budget test advances the clock) must not leak it into the next test.
+  deriveMediaMock.mockReset(); extractGpsMock.mockReset();
   recordMediaMock.mockImplementation(async ({ mediaId }) => {
     if (mediaId === "med_orphan_finalized") {
       // head() saw nothing; a finalize from the browser lands the moment after and records the file.
@@ -355,8 +365,11 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(deriveMediaMock.mock.calls[0]![0].deadlineMs).toBeGreaterThan(25_000);
     // the staging pathname is only ever deleted for videos
     expect(delMock.mock.calls.map((c) => c[0] as string).filter((k) => k.endsWith(".upload.jpg"))).toEqual([]);
+    // (h) photo GPS: every live READY photo of this environment whose GPS is undecided, whatever state its copies are in
+    // (the done and the terminal ones included); not the deleted memories' photos, removed files, videos or production copies
+    expect(extractGpsMock.mock.calls.map((c) => c[0].mediaId).sort()).toEqual(["med_photo_done", "med_photo_new", "med_photo_nullclaim", "med_photo_stale", "med_photo_terminal"]);
     // checksumsComputed 2: med_nohash, plus the file finalized during (a), which (b) hashes in the same run.
-    expect(body.data).toMatchObject({ pendingRechecked: 7, orphansFailed: 2, checksumsComputed: 2, eventsReplayed: 1, emailsRetried: 3, confirmationsSent: 2, adminAlertsSent: 8, submissionReceiptsSent: 1, deletedBlobsRemoved: 4, derived: 3 });
+    expect(body.data).toMatchObject({ pendingRechecked: 7, orphansFailed: 2, checksumsComputed: 2, eventsReplayed: 1, emailsRetried: 3, confirmationsSent: 2, adminAlertsSent: 8, submissionReceiptsSent: 1, deletedBlobsRemoved: 4, derived: 3, gpsFound: 0, gpsAbsent: 5, gpsFailed: 0, gpsSkipped: 0, errors: 0 });
   });
 
   it("(e2) waits for a send's lease before alerting any of its memories, and (e3) emails the anchor once the lease is gone", async () => {
@@ -421,7 +434,7 @@ describe("GET /api/cron/reconcile-uploads", () => {
   it("is a no-op on a second run", async () => {
     await run(`Bearer ${SECRET}`);
   inTransaction = false; onLock = null; lockCalls.length = 0; delMock.mockReset(); delMock.mockImplementation(async () => { if (inTransaction) { throw new Error("storage.del inside the purge transaction"); } });
-    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); confirmSubmissionMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0;
+    recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); confirmSubmissionMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); deriveMediaMock.mockClear(); derivedDeletes.length = 0; extractGpsMock.mockClear();
     const res = await run(`Bearer ${SECRET}`);
     const body = (await res.json()) as { data: Record<string, number> };
     expect(checksumMock).not.toHaveBeenCalled();
@@ -434,6 +447,7 @@ describe("GET /api/cron/reconcile-uploads", () => {
       expect(media.find((m) => m.storageKey === key)).toMatchObject({ status: "FAILED", purgedAt: expect.any(Date) });
     }
     expect(deriveMediaMock).not.toHaveBeenCalled();
+    expect(extractGpsMock).not.toHaveBeenCalled();
     // Only the still-leased receipt row is retried again (and answers `leased` again).
     expect(confirmSubmissionMock.mock.calls.map((c) => c[0].anchorId)).toEqual(["mem_live0"]);
     expect(body.data.checksumsComputed).toBe(0);
@@ -481,6 +495,74 @@ describe("step (g) budget", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("step (h): photo GPS (B3)", () => {
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000);
+  const copies = (): DerivedRow[] => [
+    { kind: "WEB_IMAGE", status: "READY", error: null, attempts: 1, claimedAt: minutesAgo(120), storageKey: "dev/derived/mem_1/w.jpg" },
+    { kind: "THUMBNAIL", status: "READY", error: null, attempts: 1, claimedAt: minutesAgo(120), storageKey: "dev/derived/mem_1/t.jpg" },
+  ];
+  /** A live READY photo of this environment with its copies made, GPS undecided: (g) has nothing to do for it, (h) does. */
+  function photo(id: string, createdAt: Date, over: Partial<MediaRow> = {}): MediaRow {
+    return { id, memoryId: "mem_1", status: "READY", checksumSha256: "d".repeat(64), createdAt, storageKey: `dev/originals/mem_1/${id}.jpg`, blobUrl: "u", deletedAt: null, mimeType: "image/jpeg", derivatives: copies(), gpsCheckedAt: null, gpsAttempts: 0, memory: { deletedAt: null }, ...over };
+  }
+  beforeEach(() => {
+    events = []; emails = []; memories = [];
+    // Twelve eligible photos, oldest first (one a HEIC, one at two attempts), and every kind of row step (h) must leave alone.
+    media = [
+      ...Array.from({ length: 12 }, (_, i) => photo(`med_gps_${String(i).padStart(2, "0")}`, minutesAgo(200 - i), i === 3 ? { mimeType: "image/heic", storageKey: "dev/originals/mem_1/h.heic" } : i === 5 ? { gpsAttempts: 2 } : {})),
+      photo("med_decided", minutesAgo(500), { gpsCheckedAt: minutesAgo(400) }),
+      photo("med_capped", minutesAgo(500), { gpsAttempts: 3 }),
+      photo("med_video", minutesAgo(500), { mimeType: "video/mp4", storageKey: "dev/originals/mem_1/v.mp4" }),
+      photo("med_pending", minutesAgo(500), { status: "PENDING", derivatives: [] }),
+      photo("med_removed_gps", minutesAgo(500), { deletedAt: minutesAgo(30), reservedUntil: new Date(Date.now() + HOUR) }),
+      photo("med_memory_deleted", minutesAgo(500), { memory: { deletedAt: minutesAgo(30) } }),
+      photo("med_prod_gps", minutesAgo(500), { storageKey: "originals/mem_9/p.jpg" }),
+      // GPS decided, copies missing: step (g)'s work only. The two steps never look at each other's state.
+      photo("med_copies_only", minutesAgo(500), { gpsCheckedAt: minutesAgo(400), derivatives: [] }),
+    ];
+  });
+
+  it("takes at most 10 eligible photos per run, oldest first, counts each outcome, and the next run takes the rest", async () => {
+    const outcomes: Record<string, GpsOutcome> = { med_gps_00: "found", med_gps_01: "failed", med_gps_02: "skipped" };
+    extractGpsMock.mockImplementation(async ({ mediaId }) => decideGps(mediaId, outcomes[mediaId] ?? "absent"));
+    const first = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
+    expect(extractGpsMock.mock.calls.map((c) => c[0].mediaId)).toEqual(Array.from({ length: 10 }, (_, i) => `med_gps_${String(i).padStart(2, "0")}`));
+    expect(first.data).toMatchObject({ gpsFound: 1, gpsAbsent: 7, gpsFailed: 1, gpsSkipped: 1, errors: 0 });
+    // (g) is unchanged by GPS state: it makes the copies of the photo that lacks them, and only that one.
+    expect(deriveMediaMock.mock.calls.map((c) => c[0].mediaId)).toEqual(["med_copies_only"]);
+
+    extractGpsMock.mockClear();
+    const second = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
+    // The failed and skipped photos are still undecided (their attempts are the feature's business), then the two left over.
+    expect(extractGpsMock.mock.calls.map((c) => c[0].mediaId)).toEqual(["med_gps_01", "med_gps_02", "med_gps_10", "med_gps_11"]);
+    expect(second.data).toMatchObject({ gpsAbsent: 2, gpsFailed: 1, gpsSkipped: 1 });
+  });
+
+  it("hands each photo a read deadline within what is left of the run, and starts none once less than the minimum is left", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      extractGpsMock.mockImplementation(async ({ mediaId }) => { vi.setSystemTime(Date.now() + 10_000); return decideGps(mediaId, "absent"); });
+      const res = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
+      const deadlines = extractGpsMock.mock.calls.map((c) => c[0].deadlineMs!);
+      // 50 s of run budget at 10 s per photo: starts at 0, 10, 20, 30 and 40 s; at 50 s nothing is left to start with.
+      expect(deadlines).toHaveLength(5);
+      expect(deadlines[0]).toBeLessThanOrEqual(15_000);
+      expect(deadlines[4]).toBeLessThanOrEqual(10_000);
+      expect(deadlines.every((ms) => ms > 0)).toBe(true);
+      expect(res.data.gpsAbsent).toBe(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("counts a throw (which the step should never do) as a run error and moves on to the next photo", async () => {
+    extractGpsMock.mockImplementationOnce(async () => { throw new Error("unexpected"); });
+    const res = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
+    expect(extractGpsMock).toHaveBeenCalledTimes(10);
+    expect(res.data).toMatchObject({ errors: 1, gpsAbsent: 9 });
   });
 });
 

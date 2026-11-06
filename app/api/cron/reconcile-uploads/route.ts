@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/nextjs";
 import { type NextRequest, NextResponse } from "next/server";
 
+import { extractPhotoGps, GPS_READ_DEADLINE_MS, MAX_GPS_ATTEMPTS, type PhotoGpsOutcome } from "@/features/media/extract-photo-gps";
 import { confirmSubmission } from "@/features/memories/complete-submission";
 import { confirmMemory } from "@/features/memories/confirm";
 import { DERIVED_KINDS, deriveMedia, MAX_DECODE_ATTEMPTS, MAX_PIXELS, STALE_CLAIM_MS } from "@/features/memories/derive-media";
@@ -86,6 +87,17 @@ const DELETED_MEMORY_GRACE_MS = 30 * 24 * HOUR_MS;
 /** Step (g): a few photos per run, each decode bounded; the shared run deadline still applies. */
 const DERIVE_BATCH = 3;
 const DERIVE_DEADLINE_MS = 30_000;
+/** Step (h): photos per run. On the 10-minute schedule that is about 60 an hour, which is also the backfill rate. */
+const PHOTO_GPS_BATCH = 10;
+/** Step (h) starts a photo only with at least this much of the run left: a prefix read, perhaps a whole-original read, three queries. */
+const PHOTO_GPS_MIN_START_MS = 5_000;
+/** Step (h): the count each extraction outcome adds to. */
+const GPS_COUNT: Record<PhotoGpsOutcome, "gpsFound" | "gpsAbsent" | "gpsFailed" | "gpsSkipped"> = {
+  found: "gpsFound",
+  absent: "gpsAbsent",
+  failed: "gpsFailed",
+  skipped: "gpsSkipped",
+};
 
 interface Counts {
   pendingRechecked: number;
@@ -99,6 +111,10 @@ interface Counts {
   deletedBlobsRemoved: number;
   lateSweeps: number;
   derived: number;
+  gpsFound: number;
+  gpsAbsent: number;
+  gpsFailed: number;
+  gpsSkipped: number;
   errors: number;
 }
 
@@ -135,6 +151,10 @@ export async function GET(request: NextRequest): Promise<Response> {
       deletedBlobsRemoved: 0,
       lateSweeps: 0,
       derived: 0,
+      gpsFound: 0,
+      gpsAbsent: 0,
+      gpsFailed: 0,
+      gpsSkipped: 0,
       errors: 0,
     };
     const db = getDb();
@@ -636,6 +656,43 @@ export async function GET(request: NextRequest): Promise<Response> {
         } catch (error) {
           counts.errors += 1;
           logError("reconcile: derive failed", error, { category: "cron", mediaId: row.id });
+        }
+      });
+    }
+
+    // (h) Photo GPS (plan 2026-11-06-photo-gps-places B3): READY photos of this environment whose GPS is not decided
+    // yet and that have attempts left, oldest first. Its own state, never (g)'s: a photo with its copies made is never
+    // revisited by (g), so a failed GPS read needs this step to be retried, whatever its copies are doing [C48].
+    // Also the backfill for photos stored before the feature. extractPhotoGps claims its own attempt and never throws;
+    // a failed read is reported there and counted here, not as a run error (like (g)'s refusals).
+    const undecided = await db.media.findMany({
+      where: {
+        status: "READY",
+        deletedAt: null,
+        mimeType: { startsWith: "image/" },
+        storageKey: { startsWith: storagePrefix() },
+        memory: { deletedAt: null },
+        gpsCheckedAt: null,
+        gpsAttempts: { lt: MAX_GPS_ATTEMPTS },
+      },
+      select: { id: true },
+      orderBy: { createdAt: "asc" },
+      take: PHOTO_GPS_BATCH,
+    });
+    for (const row of undecided) {
+      // Each photo gets only what is left of the run, and none starts without room for a read.
+      const remainingMs = RUN_DEADLINE_MS - (Date.now() - now);
+      if (remainingMs < PHOTO_GPS_MIN_START_MS) {
+        break;
+      }
+      // Each item in its own isolation scope: an identity set by a shared feature cannot leak into the next item.
+      await Sentry.withIsolationScope(async () => {
+        try {
+          const outcome = await extractPhotoGps({ mediaId: row.id, deadlineMs: Math.min(GPS_READ_DEADLINE_MS, remainingMs) });
+          counts[GPS_COUNT[outcome]] += 1;
+        } catch (error) {
+          counts.errors += 1;
+          logError("reconcile: photo GPS failed", error, { category: "cron", mediaId: row.id });
         }
       });
     }

@@ -34,7 +34,9 @@ let media: MediaRow[] = [];
 let p2002Once = false;
 const memories = [{ id: "mem_1", claimTokenHash: hashClaimToken(CLAIM), deletedAt: null as Date | null, contributorNote: null as string | null, consentVersion: "2026-11-v2", submissionId: null as string | null }];
 const afterCalls: Array<() => Promise<void>> = [];
-vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (_name: string, cb: () => Promise<void>) => { afterCalls.push(cb); } }));
+/** The task name of each scheduled callback, index for index with afterCalls. */
+const afterNames: string[] = [];
+vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (name: string, cb: () => Promise<void>) => { afterNames.push(name); afterCalls.push(cb); } }));
 const identifyMock = vi.fn();
 const tagIdsMock = vi.fn();
 vi.mock("@/lib/sentry/user", () => ({ identifyContributor: (...a: unknown[]) => identifyMock(...a), tagIds: (...a: unknown[]) => tagIdsMock(...a) }));
@@ -85,6 +87,8 @@ const deriveMock = vi.fn(async (_arg: unknown) => ({ WEB_IMAGE: "derived", THUMB
 vi.mock("@/features/memories/derive-media", () => ({ deriveMedia: (arg: unknown) => deriveMock(arg) }));
 const notifyMock = vi.fn(async (_arg: unknown) => ({ sent: true, messageId: "m2" }));
 vi.mock("@/features/memories/notify-admins", () => ({ notifyAdminsOfMemory: (arg: unknown) => notifyMock(arg) }));
+const extractGpsMock = vi.fn(async (_arg: unknown) => "found");
+vi.mock("@/features/media/extract-photo-gps", () => ({ extractPhotoGps: (arg: unknown) => extractGpsMock(arg) }));
 
 import { finalizeUpload, recordMedia } from "@/features/memories/ingest-upload";
 import { SIGNATURE_PREFIX_BYTES } from "@/lib/media-types";
@@ -113,6 +117,8 @@ beforeEach(() => {
   process.env.UPLOAD_TICKET_SECRET = "s".repeat(32);
   process.env.NEXT_PUBLIC_SITE_URL = "https://www.jowray.com";
   afterCalls.length = 0;
+  afterNames.length = 0;
+  extractGpsMock.mockClear();
   notifyMock.mockClear();
   media = [row()];
   memories[0]!.contributorNote = null;
@@ -378,7 +384,7 @@ describe("finalizeUpload", () => {
     expect(result).toEqual({ status: "READY", claimLink: `https://www.jowray.com/m/${CLAIM}`, emailed: true });
     expect(confirmMock).toHaveBeenCalledWith({ memoryId: "mem_1", claimToken: CLAIM });
     expect(media[0]?.status).toBe("READY");
-    expect(afterCalls).toHaveLength(2); // admin alert, then the inline checksum for a small file
+    expect(afterNames).toEqual(["finalize.admin_alert", "finalize.checksum_and_derive", "finalize.photo_gps"]);
   });
 
   it("alerts the admins after the response (before the checksum), and a throwing alert never changes the result", async () => {
@@ -397,6 +403,19 @@ describe("finalizeUpload", () => {
     expect(deriveMock).not.toHaveBeenCalled();
     for (const cb of afterCalls) { await cb(); }
     expect(deriveMock).toHaveBeenCalledWith({ mediaId: "med_1", deadlineMs: 20_000 });
+  });
+
+  it("schedules the photo GPS step as its own after() task, apart from the derived copies, once a file is READY (B3, C41)", async () => {
+    await finalizeUpload({ ticket: mintUploadTicket(claims), claimToken: CLAIM });
+    expect(extractGpsMock).not.toHaveBeenCalled(); // nothing runs before the response
+    const gpsTask = afterCalls[afterNames.indexOf("finalize.photo_gps")]!;
+    await gpsTask();
+    expect(extractGpsMock).toHaveBeenCalledTimes(1);
+    expect(extractGpsMock).toHaveBeenCalledWith({ mediaId: "med_1" });
+    expect(deriveMock).not.toHaveBeenCalled(); // the GPS task never waits on, or runs, the derived copies
+    await afterCalls[afterNames.indexOf("finalize.checksum_and_derive")]!();
+    expect(deriveMock).toHaveBeenCalledTimes(1);
+    expect(extractGpsMock).toHaveBeenCalledTimes(1);
   });
 
   it("schedules the derivation even for files too large to hash inline", async () => {
@@ -435,6 +454,7 @@ describe("finalizeUpload", () => {
     expect(result.status).toBe("FAILED");
     expect(confirmMock).not.toHaveBeenCalled();
     expect(afterCalls).toHaveLength(0);
+    expect(extractGpsMock).not.toHaveBeenCalled();
   });
 
   it("does not schedule an inline checksum for a file over 50 MB (the admin alert is still scheduled)", async () => {
@@ -442,7 +462,7 @@ describe("finalizeUpload", () => {
     media = [row({ mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 })];
     const result = await finalizeUpload({ ticket: mintUploadTicket({ ...claims, mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 }), claimToken: CLAIM });
     expect(result.status).toBe("READY");
-    expect(afterCalls).toHaveLength(2); // the admin alert, then the derive step; the cron hashes large files
+    expect(afterNames).toEqual(["finalize.admin_alert", "finalize.checksum_and_derive", "finalize.photo_gps"]); // the cron hashes large files
     for (const cb of afterCalls) { await cb(); }
     expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_1" });
     expect(media[0]?.checksumSha256).toBeNull();
@@ -459,10 +479,11 @@ describe("finalizeUpload for a memory that belongs to a send (Task 15)", () => {
       const result = await finalizeUpload({ ticket: mintUploadTicket(claims), claimToken: CLAIM });
       expect(result).toEqual({ status: "READY", claimLink: `https://www.jowray.com/m/${CLAIM}`, emailed: false });
       expect(confirmMock).not.toHaveBeenCalled();
-      expect(afterCalls).toHaveLength(1); // the checksum and derived copies only
+      expect(afterNames).toEqual(["finalize.checksum_and_derive", "finalize.photo_gps"]); // no admin alert: completion owns it
       for (const cb of afterCalls) { await cb(); }
       expect(notifyMock).not.toHaveBeenCalled();
       expect(deriveMock).toHaveBeenCalled();
+      expect(extractGpsMock).toHaveBeenCalledWith({ mediaId: "med_1" });
     } finally {
       memories[0]!.submissionId = null;
     }

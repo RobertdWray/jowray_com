@@ -22,6 +22,8 @@ const recordMediaMock = vi.fn(async (_arg: { mediaId: string }) => ({ status: "R
 vi.mock("@/features/memories/ingest-upload", () => ({ recordMedia: (arg: { mediaId: string }) => recordMediaMock(arg) }));
 const deriveMock = vi.fn(async (_arg: unknown) => ({ WEB_IMAGE: "derived", THUMBNAIL: "derived" }));
 vi.mock("@/features/memories/derive-media", () => ({ deriveMedia: (arg: unknown) => deriveMock(arg) }));
+const extractGpsMock = vi.fn(async (_arg: unknown) => "found");
+vi.mock("@/features/media/extract-photo-gps", () => ({ extractPhotoGps: (arg: unknown) => extractGpsMock(arg) }));
 const afterCalls: Array<() => Promise<void>> = [];
 vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (_name: string, cb: () => Promise<void>) => { afterCalls.push(cb); } }));
 const identifyMock = vi.fn();
@@ -59,7 +61,7 @@ function tokenRequest(ticketOverride?: Record<string, unknown>, pathname = claim
 
 beforeEach(() => {
   media = [{ id: "med_1", status: "PENDING", deletedAt: null, memory: { deletedAt: null } }];
-  events.length = 0; afterCalls.length = 0; recordMediaMock.mockClear(); deriveMock.mockClear();
+  events.length = 0; afterCalls.length = 0; recordMediaMock.mockClear(); deriveMock.mockClear(); extractGpsMock.mockClear();
   process.env.BLOB_READ_WRITE_TOKEN = RW_TOKEN;
   process.env.UPLOAD_TICKET_SECRET = "s".repeat(32);
   process.env.NEXT_PUBLIC_SITE_URL = "https://www.jowray.com";
@@ -134,6 +136,29 @@ describe("POST /api/upload (upload completed callback)", () => {
     await afterCalls[0]!();
     expect(recordMediaMock).toHaveBeenCalledWith({ mediaId: "med_1" });
     expect(deriveMock).toHaveBeenCalledWith({ mediaId: "med_1", deadlineMs: 15_000 });
+  });
+
+  it("runs the photo GPS step after recordMedia as the closed-tab backstop, ahead of the derived copies and whatever they do (B3)", async () => {
+    deriveMock.mockRejectedValueOnce(new Error("decoder crashed"));
+    const body = JSON.stringify({ type: "blob.upload-completed", payload: { blob: { url: "u", downloadUrl: "d", pathname: claims.pathname, contentType: "audio/mp4", contentDisposition: "inline" }, tokenPayload: JSON.stringify({ mediaId: "med_1" }) } });
+    const signature = createHmac("sha256", RW_TOKEN).update(body).digest("hex");
+    await POST(new NextRequest("http://localhost:3000/api/upload", { method: "POST", body, headers: { "content-type": "application/json", "x-vercel-signature": signature } }));
+    expect(extractGpsMock).not.toHaveBeenCalled(); // nothing runs before the response
+    await afterCalls[0]!();
+    expect(extractGpsMock).toHaveBeenCalledWith({ mediaId: "med_1" });
+    expect(recordMediaMock.mock.invocationCallOrder[0]!).toBeLessThan(extractGpsMock.mock.invocationCallOrder[0]!);
+    expect(extractGpsMock.mock.invocationCallOrder[0]!).toBeLessThan(deriveMock.mock.invocationCallOrder[0]!);
+    const update = dbStub.webhookEvent.update.mock.calls.at(-1)?.[0] as unknown as { data: { processedAt?: Date; error?: string | null } };
+    expect(update.data.processedAt).toBeInstanceOf(Date);
+  });
+
+  it("does not run the photo GPS step while the blob is not recorded yet", async () => {
+    recordMediaMock.mockResolvedValueOnce({ status: "PENDING", mediaId: "med_1", memoryId: "mem_1" } as never);
+    const body = JSON.stringify({ type: "blob.upload-completed", payload: { blob: { url: "u", downloadUrl: "d", pathname: claims.pathname, contentType: "audio/mp4", contentDisposition: "inline" }, tokenPayload: JSON.stringify({ mediaId: "med_1" }) } });
+    const signature = createHmac("sha256", RW_TOKEN).update(body).digest("hex");
+    await POST(new NextRequest("http://localhost:3000/api/upload", { method: "POST", body, headers: { "content-type": "application/json", "x-vercel-signature": signature } }));
+    await afterCalls[0]!();
+    expect(extractGpsMock).not.toHaveBeenCalled();
   });
 
   it("keeps the event processed when the derived copies fail after a successful record", async () => {

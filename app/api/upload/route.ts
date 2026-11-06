@@ -1,6 +1,7 @@
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { type NextRequest, NextResponse } from "next/server";
 
+import { extractPhotoGps } from "@/features/media/extract-photo-gps";
 import { deriveMedia } from "@/features/memories/derive-media";
 import { recordMedia } from "@/features/memories/ingest-upload";
 import { createLogger, logError } from "@/lib/logger";
@@ -104,6 +105,9 @@ export async function POST(request: NextRequest): Promise<Response> {
               data: outcome.status === "PENDING" ? { attempts: 1, error: "blob not visible yet" } : { processedAt: new Date(), attempts: 1, error: null },
             });
             if (outcome.status === "READY") {
+              // Closed-tab backstop for a photo's GPS, first because it is quick and independent of the copies. It
+              // never throws; a claim on its own row makes a race with finalize harmless, and cron (h) retries (B3).
+              await extractPhotoGps({ mediaId });
               // Closed-tab backstop for the derived copies; finalize normally gets there first and the
               // claim rows make the race harmless. A failure here is not a callback failure: cron (g) retries.
               try {
