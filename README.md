@@ -33,6 +33,8 @@ The repository is also a record of **how it was built**: in three days, by Rob a
 
 ## 🧭 How a memory travels
 
+<!-- The three Mermaid diagrams in this file are also shown on /how-it-was-built. After editing one, run `npx tsx scripts/make-readme-diagrams.ts` and commit the result; __tests__/lib/readme-diagrams.test.ts fails until you do. -->
+
 ```mermaid
 sequenceDiagram
     autonumber

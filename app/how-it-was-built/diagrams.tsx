@@ -1,8 +1,10 @@
 import type { ReactNode } from "react";
 
-// The diagrams on /how-it-was-built are real text in lists, not SVG or Mermaid: a scaled SVG would shrink its
-// labels under the 17px floor on a phone (design/DESIGN.md §4), and Mermaid needs client JS. Lists reflow at any
-// width and screen readers announce them as lists. Plan: docs/plans/2026-11-06-why-and-how-built.md §5c.
+// The plain-language diagrams on /how-it-was-built are real text in lists, not SVG or Mermaid: a scaled SVG would
+// shrink its labels under the 17px floor on a phone (design/DESIGN.md §4). Lists reflow at any width and screen
+// readers announce them as lists, so these stay the accessible summary for everyone. Plan:
+// docs/plans/2026-11-06-why-and-how-built.md §5c. README.md's Mermaid diagrams appear further down, for technical
+// readers, as unscaled static SVG in sideways-scrolling regions (detailed-diagrams.tsx, ruling R9).
 //
 // `role="list"` is explicit because Safari/VoiceOver drops list semantics once the markers are styled away.
 // Number badges and the stitched connectors are aria-hidden: the list already says "1 of 5", and the lines are

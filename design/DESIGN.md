@@ -228,11 +228,12 @@ For curious visitors and the GitHub crowd; reached from the note and the footer,
 no nav entry. Padding sits on `main` and the 1200px cap on the box inside it
 (as in the header). Sections: intro with a dashed secondary "See the code on
 GitHub", four stat tiles, three diagrams, "Made for Jo's people", "Built with"
-chips, "Privacy, in plain words", and a closing primary "Leave a memory of Jo".
+chips, "Privacy, in plain words", "The detailed version" (added 2026-11-06, see
+below), and a closing primary "Leave a memory of Jo".
 
-- **Diagrams are HTML lists, never SVG or Mermaid.** A scaled SVG shrinks its
-  labels under the 17px floor on a phone, and Mermaid needs client JS.
-  `StitchedSteps` is a numbered vertical timeline (red 48px badges joined by a
+- **The plain-language diagrams are HTML lists, never SVG or Mermaid.** A scaled
+  SVG shrinks its labels under the 17px floor on a phone. They stay the
+  accessible summary for everyone. `StitchedSteps` is a numbered vertical timeline (red 48px badges joined by a
   dashed periwinkle "thread", `paper` cards); `StackDiagram` stacks tiers with
   dashed connectors and ends in a row of service cards (1, 2 or 4 columns).
 - Unstyled lists carry `role="list"` (Safari/VoiceOver drops list semantics
@@ -243,6 +244,38 @@ chips, "Privacy, in plain words", and a closing primary "Leave a memory of Jo".
   and carry code comments: "Nothing you share is public yet" (Phase 2 gallery)
   and the alpha telemetry note (update it, don't delete it, when the alpha
   settings end; replays continue at 10%).
+- **"The detailed version"** (Rob, 2026-11-06, plan ruling R9): README.md's three
+  Mermaid diagrams ("How a memory travels", "Architecture", "Data model") for
+  technical readers, after the privacy section under a walnut-soft eyebrow "For
+  the technically curious". `detailed-diagrams.tsx` gives each a `<figure>`: a
+  figcaption with an h3 (the README heading) and a one-sentence description,
+  then the image, then a quiet "Open … full size" link to the SVG.
+  - **Rendering.** `scripts/make-readme-diagrams.ts` renders the README blocks
+    once, at development time, with real Mermaid in the installed Google Chrome
+    (playwright-core), and writes `public/diagrams/<slug>.svg` plus the manifest
+    `app/how-it-was-built/readme-diagrams.ts` (sizes and source hashes). The
+    build only serves the committed files: no Mermaid in any bundle, no network,
+    the page stays `○`. Shown through `next/image` with `unoptimized`, an SVG
+    cannot run script.
+  - **Theme.** Mermaid `base` theme from the tokens: paper ground, muslin shapes
+    with `periwinkle-deep` borders, dashed `periwinkle` groups, `walnut` text
+    and lines, `wood` lifelines, `wood-light` loop and note labels, walnut
+    autonumber badges with paper digits. Atkinson Hyperlegible 18px, embedded in
+    each SVG as a data: URL (an `<img>` SVG can load no outside font).
+  - **17px floor.** Never scaled down: the script fails if any text computes
+    under 17px. Two Mermaid sizes are not configurable and are lifted in the
+    script: the `autonumber` digits (12px → 17px bold in a 13px-radius circle)
+    and ER relationship labels (14px → 18px, via `themeCSS`).
+  - **Phones.** Each image sits at natural size in a `role="region"`,
+    `tabIndex={0}` scroller with an `aria-label` ("… diagram, scrolls
+    sideways"), so the page never scrolls sideways (WCAG 1.4.10 allows 2-D
+    content to). Arrow keys scroll it once focused.
+  - **Text alternative.** `alt` names the diagram type and its parts;
+    `aria-describedby` points at the visible description.
+  - **Drift guard.** `__tests__/lib/readme-diagrams.test.ts` fails when a README
+    block's SHA-256 differs from the manifest, when a block is added or removed,
+    or when an SVG holds script, event handlers, `foreignObject` or an outside
+    URL. Fix: run `npx tsx scripts/make-readme-diagrams.ts` and commit.
 
 ## 6. Layout
 - Content max-width 1200px, 5% side padding (≥16px on phones).
@@ -270,7 +303,9 @@ cover; then write in the same register.
 - Real `<button>`, `<a href>`, `<label for>` on every control; no click
   handlers on divs.
 - Visible 3px walnut focus outline on everything focusable (`app/globals.css`;
-  goldenrod fails contrast as a focus color, so it is never the ring).
+  goldenrod fails contrast as a focus color, so it is never the ring). The rule
+  covers links, buttons, form controls and any `[tabindex="0"]` element, such
+  as the scrolling diagram regions on `/how-it-was-built`.
 - Decorative SVGs `aria-hidden="true"`; the heart mark in the header is
   decorative (the wordmark carries the name).
 - No text below 17px, no light-weight type, no text over photos.

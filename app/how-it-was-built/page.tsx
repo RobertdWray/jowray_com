@@ -5,6 +5,7 @@ import { PrimaryLink, secondaryButtonClass } from "../_components/buttons";
 import { REPO_URL, ROB_URL } from "../_components/external-links";
 import { linkClass } from "../_components/field-classes";
 import { StitchedHeart } from "../_components/hearts";
+import { DetailedDiagrams } from "./detailed-diagrams";
 import { StackDiagram, StitchedSteps, type DiagramItem } from "./diagrams";
 
 export const metadata: Metadata = {
@@ -247,6 +248,23 @@ export default function HowItWasBuiltPage() {
               sent with a problem report, can include private links.
             </li>
           </ul>
+        </section>
+
+        {/* README.md's Mermaid diagrams, for technical readers; the HTML diagrams above stay the plain summary
+            (plan R9). Rendered by scripts/make-readme-diagrams.ts; see detailed-diagrams.tsx. */}
+        <section aria-labelledby="detail-heading" className="flex flex-col gap-6">
+          <div className="flex flex-col gap-3">
+            <p className="text-body font-bold uppercase tracking-[0.08em] text-walnut-soft">For the technically curious</p>
+            <h2 id="detail-heading" className={h2Class}>
+              The detailed version
+            </h2>
+          </div>
+          <p className="max-w-[40em] text-body leading-[1.6]">
+            The pictures above are the simple version. These three are the ones the programmers use, from the
+            project&apos;s README on GitHub. They are wide: swipe or scroll sideways inside each one, or open it full
+            size.
+          </p>
+          <DetailedDiagrams />
         </section>
 
         <section aria-labelledby="open-heading" className="flex flex-col gap-6">
