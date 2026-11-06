@@ -36,7 +36,12 @@ export const mediaWordsFields = {
 export const memoryFileInputSchema = fileInputSchema.extend(mediaWordsFields);
 export type MemoryFileInput = z.infer<typeof memoryFileInputSchema>;
 
-const NEEDS_CONTENT = "Add at least one: a photo, a video, a voice recording or a few words";
+/**
+ * What a memory can be, in one phrase (Rob's ruling R1, 2026-11-06: at least one of the four). The card's helper
+ * line, the browser's empty-card message and the server's refusal below are all built from it, so they cannot drift.
+ */
+export const NEEDS_CONTENT_ITEMS = "a photo, a video, a voice recording or a few words";
+const NEEDS_CONTENT = `Add at least one: ${NEEDS_CONTENT_ITEMS}`;
 
 /**
  * Name and email are required since 2026-11-04 (Rob's items 1 and 6, ruling 2):

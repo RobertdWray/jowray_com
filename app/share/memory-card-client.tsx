@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { type CardIssue, hasContent, type CardTextField, type MemoryCard } from "@/lib/memory-cards";
+import { type CardIssue, hasContent, type CardTextField, type MemoryCard, NEEDS_CONTENT_HELPER } from "@/lib/memory-cards";
 
 import { SecondaryButton, TertiaryButton } from "../_components/buttons";
 import { errorClass, helperClass, inputClass, labelClass, textareaClass } from "../_components/field-classes";
@@ -12,6 +12,7 @@ import { CardMedia, type CardMediaRecording } from "./card-media-client";
 export function cardIds(cardId: string) {
   return {
     heading: `${cardId}-heading`,
+    helper: `${cardId}-helper`,
     date: `${cardId}-date`,
     place: `${cardId}-place`,
     note: `${cardId}-note`,
@@ -87,8 +88,8 @@ export function MemoryCardSection({
             heading
           )}
         </h2>
-        <p className={`text-small ${helperClass}`}>
-          Add at least one: a photo, a video, a voice recording or a few words. Everything else is optional.
+        <p id={ids.helper} className={`text-small ${helperClass}`}>
+          {NEEDS_CONTENT_HELPER}
         </p>
       </div>
       {/* Item 7 (2026-11-04): with room to spare (`roomy`) the card is two columns, when/where and the media on the
@@ -151,7 +152,8 @@ export function MemoryCardSection({
             className={`${textareaClass} roomy:min-h-[300px] roomy:max-h-[calc(100dvh-14rem)] roomy:flex-1`}
             placeholder="She once…"
             aria-invalid={issue ? "true" : undefined}
-            aria-describedby={issue ? ids.error : undefined}
+            // The helper line is the words box's description too: someone who tabs straight here still hears the rule.
+            aria-describedby={issue ? `${ids.helper} ${ids.error}` : ids.helper}
             disabled={disabled}
           />
           {issue && (

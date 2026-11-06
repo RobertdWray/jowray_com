@@ -1,6 +1,6 @@
 # Evidence: what a memory needs, date and words labelled optional (2026-11-06)
 
-Plan: `docs/plans/2026-11-06-photo-gps-places.md` § 6 and § 9.A (PR A, refs #58). Rob's ruling R1: "we need at least on item to complete a memory. It could be a photo, audio, video, text."
+Plan: [issue #58](https://github.com/RobertdWray/jowray_com/issues/58) and § 6 / § 9.A of `docs/plans/2026-11-06-photo-gps-places.md` (lands with the photo GPS PR). Rob's ruling R1: "we need at least on item to complete a memory. It could be a photo, audio, video, text."
 
 Runtime: `next dev -p 3108` from the worktree `jowray_wt_share_optional` (branch `fix/share-optional-labels`, base `982a141`), with `.env` and the `.env.local` Neon `dev`-branch override (host `ep-solitary-tree`) copied in for the run and deleted afterwards. `OUTBOUND_ENABLED=false`, so nothing was mailed. Chrome via the chrome-devtools MCP in an isolated context; 390×844 is device emulation (DPR 3, mobile, touch), 1280×800 is DPR 1. Values are never written here. The claim link of the test memory is not recorded; it was blanked in the DOM before the thank-you screenshot was taken. The test row is the PENDING PHOTO memory from contributor "Runtime check PR A" (`runtime-check-pr-a@example.com`), with one READY `image/jpeg` of 2068 bytes. It is safe to delete.
 
@@ -28,3 +28,14 @@ The first photo-only Send failed with a 500: `column "reservedUntil" does not ex
 | Console | Errors and warnings across all of the above: only the 500 from the send that failed before the migration; no hydration warnings | — |
 
 The server rule is unchanged: `submissionMemorySchema` still requires files or words (`__tests__/lib/validations-memory.test.ts`), and the "files or words" guards in `features/` were not touched.
+
+## Fix round 1 (review minors)
+
+`next dev -p 3108` with **no** `.env*` file: `/share` is static and the empty-card Send is refused in the browser before any server call (dev log: no `POST /share`), so no env was needed. 390×844 by device emulation. The two a11y trees above were re-taken after this round and replace the first ones.
+
+| Check | Result | File |
+|---|---|---|
+| Intro paragraph | "Tell us who you are, and roughly when the memory is from if you know — "her classroom, 1970s" or "Christmas 2019" is plenty. Then tell the story the way you'd tell it at her kitchen table, or add a photo, a video or a voice recording." (`textContent`; the Next.js dev badge was hidden for the screenshot) | `390-intro-and-helper.png` |
+| Helper line is the words box's description | Helper `<p id="c1-helper">`, text unchanged. Before Send: `aria-describedby="c1-helper"`, a11y description = the helper line (390 and 1280) | `390-a11y-tree.txt`, `1280-a11y-tree.txt` |
+| After an empty-card Send | `aria-describedby="c1-helper c1-error"` (helper first, then error); a11y description "Add at least one: … Everything else is optional. Memory 1 needs at least one: … few words."; focus `c1-note`, `aria-invalid="true"` | `390-a11y-tree-after-empty-send.txt` |
+| Console | No errors or warnings | — |

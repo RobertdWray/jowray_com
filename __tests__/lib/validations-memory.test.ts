@@ -12,6 +12,7 @@ import {
   memoryFileInputSchema,
   NAME_REQUIRED_MESSAGE,
   NAME_TOO_LONG_MESSAGE,
+  NEEDS_CONTENT_ITEMS,
   submissionIssueLocation,
   submissionMemorySchema,
   uploadTicketRequestSchema,
@@ -74,6 +75,13 @@ describe("memory file validation", () => {
   it("keeps the duration on a new memory's file", () => {
     const parsed = createSubmissionInputSchema.parse({ name: "Kay", email: "kay@example.com", memories: [{ files: [{ ...file, durationSeconds: 24 }] }] });
     expect(parsed.memories[0]?.files[0]?.durationSeconds).toBe(24);
+  });
+
+  it("names what a memory can be in one shared phrase (Rob's R1, 2026-11-06)", () => {
+    expect(NEEDS_CONTENT_ITEMS).toBe("a photo, a video, a voice recording or a few words");
+    const refused = submissionMemorySchema.safeParse({ files: [], note: "" });
+    expect(refused.success).toBe(false);
+    expect(refused.error?.issues[0]?.message).toBe(`Add at least one: ${NEEDS_CONTENT_ITEMS}`);
   });
 
   it("a card takes up to the per-memory cap of files and needs a file or a few words", () => {

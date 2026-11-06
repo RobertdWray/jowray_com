@@ -6,6 +6,7 @@ import {
   EMAIL_REQUIRED_MESSAGE,
   MAX_MEMORIES_PER_SUBMISSION,
   NAME_REQUIRED_MESSAGE,
+  NEEDS_CONTENT_ITEMS,
   type SubmissionIssueField,
 } from "@/lib/validations/memory";
 
@@ -175,6 +176,9 @@ export function validateContributor(contributor: { name: string; email: string }
   return issues;
 }
 
+/** The line under each card's heading that says what a memory needs before Send (WCAG 3.3.2; Rob's R1, 2026-11-06). */
+export const NEEDS_CONTENT_HELPER = `Add at least one: ${NEEDS_CONTENT_ITEMS}. Everything else is optional.`;
+
 /**
  * What stops a send (WCAG 3.3.1): an open card with a date or place but no
  * file and no words, or nothing at all anywhere. Empty placeholders and empty
@@ -187,7 +191,7 @@ export function validateForSend(cards: MemoryCard[]): CardIssue[] {
     const position = i + 1;
     const needsContent = card.media.length === 0 && !hasWords(card);
     if (needsContent && (hasContent(card) || (position === 1 && open.every((c) => isEmpty(c))))) {
-      issues.push({ target: "note", cardId: card.id, position, message: `Memory ${position} needs at least one: a photo, a video, a voice recording or a few words.` });
+      issues.push({ target: "note", cardId: card.id, position, message: `Memory ${position} needs at least one: ${NEEDS_CONTENT_ITEMS}.` });
     }
   });
   return issues;
