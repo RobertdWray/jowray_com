@@ -179,6 +179,7 @@ model Media {
   longitude        Float?                   // WGS 84 from the original's EXIF; never shown on the site; read through /api/mcp (CHECKs Media_coordinates_pair, Media_longitude_range)
   gpsCheckedAt     DateTime?                // found or absent decided; null = not yet (CHECK Media_coordinates_checked: coordinates only with this stamp)
   gpsAttempts      Int         @default(0)  // GPS reads claimed; extraction stops after 3 while gpsCheckedAt is still null
+  gpsClaimedAt     DateTime?                // the GPS read's lease: set with each claimed attempt, cleared by the decision (and by purge); older than GPS_STALE_CLAIM_MS = abandoned
   deletedAt        DateTime?                // soft delete: removed file, cancelled reservation or cancelled replacement; blobs purged by cron step (f)
   purgedAt         DateTime?                // set by cron step (f) before any byte is deleted; once set the removal completes even if the memory is restored; READY rows flip to FAILED at the same time
   replacesMediaId  String?                  // set on a PENDING replacement; the target is retired when this row reaches READY (one-to-many so a FAILED attempt can be retried)
@@ -255,9 +256,9 @@ model PlaceLookup {
 /// lease left by a dead holder expires at `leaseUntil` (claim + 10 s).
 model PlaceLookupThrottle {
   provider      String    @id
-  nextAllowedAt DateTime
+  nextAllowedAt DateTime  @db.Timestamptz(3) // compared with the database's now() by the claim and fence SQL, so time-zone aware
   leaseToken    String?
-  leaseUntil    DateTime?
+  leaseUntil    DateTime? @db.Timestamptz(3)
 }
 
 model Person {

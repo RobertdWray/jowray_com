@@ -1,7 +1,7 @@
 import * as Sentry from "@sentry/nextjs";
 import { type NextRequest, NextResponse } from "next/server";
 
-import { extractPhotoGps, GPS_READ_DEADLINE_MS, MAX_GPS_ATTEMPTS, type PhotoGpsOutcome } from "@/features/media/extract-photo-gps";
+import { extractPhotoGps, GPS_READ_DEADLINE_MS, GPS_STALE_CLAIM_MS, MAX_GPS_ATTEMPTS, type PhotoGpsOutcome } from "@/features/media/extract-photo-gps";
 import { confirmSubmission } from "@/features/memories/complete-submission";
 import { confirmMemory } from "@/features/memories/confirm";
 import { DERIVED_KINDS, deriveMedia, MAX_DECODE_ATTEMPTS, MAX_PIXELS, STALE_CLAIM_MS } from "@/features/memories/derive-media";
@@ -89,6 +89,8 @@ const DERIVE_BATCH = 3;
 const DERIVE_DEADLINE_MS = 30_000;
 /** Step (h): photos per run. On the 10-minute schedule that is about 60 an hour, which is also the backfill rate. */
 const PHOTO_GPS_BATCH = 10;
+/** What purge (f) writes over a photo's GPS: a purged photo keeps no location and no GPS claim (final review, item 5). */
+const PURGED_GPS = { latitude: null, longitude: null, gpsClaimedAt: null } as const;
 /** Step (h): the count each extraction outcome adds to. */
 const GPS_COUNT: Record<PhotoGpsOutcome, "gpsFound" | "gpsAbsent" | "gpsFailed" | "gpsSkipped"> = {
   found: "gpsFound",
@@ -483,8 +485,10 @@ export async function GET(request: NextRequest): Promise<Response> {
     // claim), so a finished row is never re-selected and a worker is never raced
     // for a key it is still writing. Three phases per row (admin-page plan §3.6):
     //   1. claim, in a transaction under lockMemory: re-check eligibility, set
-    //      `purgedAt` and flip READY → FAILED, commit. No storage call inside the
-    //      lock, so TX_OPTIONS is never at the mercy of the network.
+    //      `purgedAt`, flip READY → FAILED and clear the photo's GPS (the point
+    //      and any GPS claim: a purged photo keeps no location), commit. No
+    //      storage call inside the lock, so TX_OPTIONS is never at the mercy of
+    //      the network.
     //   2. bytes, no lock: delete the original, the copies and the poster staging
     //      key; every delete is idempotent.
     //   3. pointer: drop the derived rows and null `blobUrl`.
@@ -528,12 +532,14 @@ export async function GET(request: NextRequest): Promise<Response> {
             await lockMemory(tx, row.memoryId);
             const fresh = await tx.media.findUniqueOrThrow({
               where: { id: row.id },
-              select: { purgedAt: true, status: true, deletedAt: true, createdAt: true, reservedUntil: true, memory: { select: { deletedAt: true } } },
+              select: { purgedAt: true, status: true, deletedAt: true, createdAt: true, reservedUntil: true, latitude: true, gpsClaimedAt: true, memory: { select: { deletedAt: true } } },
             });
             if (fresh.purgedAt !== null) {
-              // Already claimed. A READY row with the mark must never serve again, whoever left it that way.
-              if (fresh.status === "READY") {
-                await tx.media.update({ where: { id: row.id }, data: { status: "FAILED" } });
+              // Already claimed. A READY row with the mark must never serve again, and a purged photo keeps no point,
+              // whoever left it that way.
+              const holdsGps = fresh.latitude !== null || fresh.gpsClaimedAt !== null;
+              if (fresh.status === "READY" || holdsGps) {
+                await tx.media.update({ where: { id: row.id }, data: { ...(fresh.status === "READY" && { status: "FAILED" as const }), ...(holdsGps && PURGED_GPS) } });
               }
               return true;
             }
@@ -542,7 +548,7 @@ export async function GET(request: NextRequest): Promise<Response> {
             if (!memoryGone && !fileRemoved) {
               return false;
             }
-            await tx.media.update({ where: { id: row.id }, data: { purgedAt: new Date(now), ...(fresh.status === "READY" && { status: "FAILED" as const }) } });
+            await tx.media.update({ where: { id: row.id }, data: { purgedAt: new Date(now), ...(fresh.status === "READY" && { status: "FAILED" as const }), ...PURGED_GPS } });
             return true;
           }, TX_OPTIONS);
           if (!claimed) {
@@ -659,7 +665,7 @@ export async function GET(request: NextRequest): Promise<Response> {
     }
 
     // (h) Photo GPS (plan 2026-11-06-photo-gps-places B3): READY photos of this environment whose GPS is not decided
-    // yet and that have attempts left, oldest first. Its own state, never (g)'s: a photo with its copies made is never
+    // yet, that have attempts left and that no worker holds a live claim on (final review, item 2), oldest first. Its own state, never (g)'s: a photo with its copies made is never
     // revisited by (g), so a failed GPS read needs this step to be retried, whatever its copies are doing [C48].
     // Also the backfill for photos stored before the feature. extractPhotoGps claims its own attempt and never throws;
     // a failed read is reported there and counted here, not as a run error (like (g)'s refusals).
@@ -672,6 +678,7 @@ export async function GET(request: NextRequest): Promise<Response> {
         memory: { deletedAt: null },
         gpsCheckedAt: null,
         gpsAttempts: { lt: MAX_GPS_ATTEMPTS },
+        OR: [{ gpsClaimedAt: null }, { gpsClaimedAt: { lt: new Date(now - GPS_STALE_CLAIM_MS) } }],
       },
       select: { id: true },
       orderBy: { createdAt: "asc" },

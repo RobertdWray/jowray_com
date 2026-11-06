@@ -24,6 +24,7 @@ interface MediaRow {
   longitude: number | null;
   gpsCheckedAt: Date | null;
   gpsAttempts: number;
+  gpsClaimedAt: Date | null;
   memory: { deletedAt: Date | null };
 }
 
@@ -83,12 +84,12 @@ vi.mock("@/lib/logger", async (importOriginal) => {
   return { ...mod, createLogger };
 });
 
-import { extractPhotoGps, MAX_GPS_ATTEMPTS } from "@/features/media/extract-photo-gps";
+import { extractPhotoGps, GPS_READ_DEADLINE_MS, GPS_STALE_CLAIM_MS, MAX_GPS_ATTEMPTS } from "@/features/media/extract-photo-gps";
 
 const KEY = "dev/originals/mem_1/0f6a1c7e-3f1a-4b5e-9c2d-1234567890ab.jpg";
 
 function photo(over: Partial<MediaRow> = {}): MediaRow {
-  return { id: "med_1", memoryId: "mem_1", status: "READY", mimeType: "image/jpeg", storageKey: KEY, deletedAt: null, latitude: null, longitude: null, gpsCheckedAt: null, gpsAttempts: 0, memory: { deletedAt: null }, ...over };
+  return { id: "med_1", memoryId: "mem_1", status: "READY", mimeType: "image/jpeg", storageKey: KEY, deletedAt: null, latitude: null, longitude: null, gpsCheckedAt: null, gpsAttempts: 0, gpsClaimedAt: null, memory: { deletedAt: null }, ...over };
 }
 
 function expectLibertyStored(row: MediaRow | undefined) {
@@ -132,8 +133,9 @@ describe("extractPhotoGps: outcomes", () => {
     expectLibertyStored(media[0]);
     expect(media[0]!.gpsAttempts).toBe(1);
     const write = db.media.updateMany.mock.calls.at(-1)![0];
-    expect(write.where).toEqual({ id: "med_1", gpsCheckedAt: null });
-    expect(Object.keys(write.data).sort()).toEqual(["gpsCheckedAt", "latitude", "longitude"]);
+    expect(write.where).toEqual({ id: "med_1", gpsCheckedAt: null, deletedAt: null, memory: { deletedAt: null } });
+    expect(Object.keys(write.data).sort()).toEqual(["gpsCheckedAt", "gpsClaimedAt", "latitude", "longitude"]);
+    expect(write.data.gpsClaimedAt).toBeNull();
     expect(photoGpsLines()).toEqual([{ level: "info", action: "photo_gps", mediaId: "med_1", outcome: "found", attempt: 1 }]);
     expect(captureExceptionMock).not.toHaveBeenCalled();
     expectNoCoordinatesLogged();
@@ -144,7 +146,7 @@ describe("extractPhotoGps: outcomes", () => {
     expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("absent");
     expect(getMock).not.toHaveBeenCalled();
     expect(media[0]).toMatchObject({ latitude: null, longitude: null, gpsAttempts: 1, gpsCheckedAt: expect.any(Date) });
-    expect(Object.keys(db.media.updateMany.mock.calls.at(-1)![0].data)).toEqual(["gpsCheckedAt"]);
+    expect(db.media.updateMany.mock.calls.at(-1)![0].data).toEqual({ gpsCheckedAt: expect.any(Date), gpsClaimedAt: null });
     expect(photoGpsLines()).toEqual([{ level: "info", action: "photo_gps", mediaId: "med_1", outcome: "absent", attempt: 1 }]);
   });
 
@@ -269,7 +271,10 @@ describe("extractPhotoGps: eligibility, the claim and the cap", () => {
     media = [photo({ gpsAttempts: 1 })];
     await extractPhotoGps({ mediaId: "med_1" });
     const claim = db.media.updateMany.mock.calls[0]![0];
-    expect(claim).toEqual({ where: { id: "med_1", gpsCheckedAt: null, gpsAttempts: 1 }, data: { gpsAttempts: { increment: 1 } } });
+    expect(claim).toEqual({
+      where: { id: "med_1", gpsCheckedAt: null, gpsAttempts: 1, OR: [{ gpsClaimedAt: null }, { gpsClaimedAt: { lt: expect.any(Date) } }] },
+      data: { gpsAttempts: { increment: 1 }, gpsClaimedAt: expect.any(Date) },
+    });
     expect(db.media.updateMany.mock.invocationCallOrder[0]!).toBeLessThan(readPrefixMock.mock.invocationCallOrder[0]!);
     expect(photoGpsLines()[0]).toMatchObject({ attempt: 2 });
   });
@@ -318,10 +323,12 @@ describe("extractPhotoGps: eligibility, the claim and the cap", () => {
       }
     };
     expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("failed");
-    expect(media[0]).toMatchObject({ gpsAttempts: 1, gpsCheckedAt: null, latitude: null, longitude: null });
+    expect(media[0]).toMatchObject({ gpsAttempts: 1, gpsCheckedAt: null, latitude: null, longitude: null, gpsClaimedAt: expect.any(Date) });
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     expect(captureExceptionMock.mock.calls[0]![1]).toMatchObject({ tags: { step: "photo_gps" } });
 
+    // The failed attempt's claim is left to expire; once it is stale, the next run takes it over.
+    media[0]!.gpsClaimedAt = new Date(Date.now() - GPS_STALE_CLAIM_MS - 1_000);
     expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("found");
     expect(media[0]!.gpsAttempts).toBe(2);
     expectLibertyStored(media[0]);
@@ -332,3 +339,85 @@ describe("extractPhotoGps: eligibility, the claim and the cap", () => {
     expectNoCoordinatesLogged();
   });
 });
+
+describe("extractPhotoGps: the claim is a lease (final review, item 2)", () => {
+  it("the stale window outlasts a whole read: a live worker's claim is never taken over while its deadline runs", () => {
+    expect(GPS_STALE_CLAIM_MS).toBeGreaterThanOrEqual(GPS_READ_DEADLINE_MS + 15_000);
+  });
+
+  it("a worker starting while another holds a live claim is skipped: no download, no attempt spent, nothing written", async () => {
+    blobs.set(KEY, await jpegWithGps(liberty()));
+    const held = new Date(Date.now() - 5_000);
+    media = [photo({ gpsAttempts: 1, gpsClaimedAt: held })];
+    expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("skipped");
+    expect(readPrefixMock).not.toHaveBeenCalled();
+    expect(getMock).not.toHaveBeenCalled();
+    expect(db.media.updateMany).not.toHaveBeenCalled();
+    expect(media[0]).toMatchObject({ gpsAttempts: 1, gpsClaimedAt: held, gpsCheckedAt: null });
+    expect(photoGpsLines()).toEqual([expect.objectContaining({ outcome: "skipped", reason: "claimed_elsewhere" })]);
+  });
+
+  it("a claim taken by another worker after this one read the row makes the conditional claim match nothing: skipped, no read", async () => {
+    blobs.set(KEY, await jpegWithGps(liberty()));
+    beforeUpdate = ({ data }) => {
+      if ("gpsAttempts" in data && beforeUpdate) {
+        Object.assign(media[0]!, { gpsClaimedAt: new Date(), gpsAttempts: 1 }); // the other worker's claim lands first
+        beforeUpdate = null;
+      }
+    };
+    expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("skipped");
+    expect(readPrefixMock).not.toHaveBeenCalled();
+    expect(media[0]!.gpsAttempts).toBe(1);
+  });
+
+  it("a stale claim (a worker that died) is taken over: the attempt is spent, the point read and the claim cleared", async () => {
+    blobs.set(KEY, await jpegWithGps(liberty()));
+    media = [photo({ gpsAttempts: 1, gpsClaimedAt: new Date(Date.now() - GPS_STALE_CLAIM_MS - 1_000) })];
+    expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("found");
+    expect(media[0]!.gpsAttempts).toBe(2);
+    expect(media[0]!.gpsClaimedAt).toBeNull();
+    expectLibertyStored(media[0]);
+  });
+
+  it("every decision clears the claim; a failure leaves it to expire, so an immediate retry is skipped without spending an attempt", async () => {
+    blobs.set(KEY, await jpegWithGps(liberty()));
+    expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("found");
+    expect(media[0]!.gpsClaimedAt).toBeNull();
+
+    blobs.set(KEY, await jpegWithGps(null));
+    media = [photo()];
+    expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("absent");
+    expect(media[0]).toMatchObject({ gpsClaimedAt: null, gpsCheckedAt: expect.any(Date) });
+
+    blobs.set(KEY, new TextEncoder().encode("not an image"));
+    media = [photo()];
+    expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("failed");
+    expect(media[0]).toMatchObject({ gpsAttempts: 1, gpsClaimedAt: expect.any(Date), gpsCheckedAt: null });
+    readPrefixMock.mockClear();
+    getMock.mockClear();
+    expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("skipped");
+    expect(readPrefixMock).not.toHaveBeenCalled();
+    expect(getMock).not.toHaveBeenCalled();
+    expect(media[0]!.gpsAttempts).toBe(1);
+  });
+});
+
+describe("extractPhotoGps: no decision for a photo removed while it was read (final review, item 5)", () => {
+  it.each([
+    { name: "the file was removed", remove: (row: MediaRow) => Object.assign(row, { deletedAt: new Date() }) },
+    { name: "its memory was deleted", remove: (row: MediaRow) => Object.assign(row, { memory: { deletedAt: new Date() } }) },
+  ])("$name between the claim and the decision: nothing is stored and the run is skipped", async ({ remove }) => {
+    blobs.set(KEY, await jpegWithGps(liberty()));
+    beforeUpdate = ({ data }) => {
+      if ("gpsCheckedAt" in data) {
+        remove(media[0]!);
+      }
+    };
+    expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("skipped");
+    expect(media[0]).toMatchObject({ latitude: null, longitude: null, gpsCheckedAt: null });
+    const decision = db.media.updateMany.mock.calls.at(-1)![0];
+    expect(decision.where).toEqual({ id: "med_1", gpsCheckedAt: null, deletedAt: null, memory: { deletedAt: null } });
+    expectNoCoordinatesLogged();
+  });
+});
+

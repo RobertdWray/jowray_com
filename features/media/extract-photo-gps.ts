@@ -22,6 +22,12 @@ export const GPS_PREFIX_BYTES = 128 * 1024;
  * one of its attempts.
  */
 export const GPS_READ_DEADLINE_MS = 15_000;
+/**
+ * A GPS claim (`gpsClaimedAt`) older than this is presumed abandoned (the function died mid-read) and may be taken
+ * over, as with deriveMedia's STALE_CLAIM_MS. It outlasts a whole read (GPS_READ_DEADLINE_MS) plus the claim and the
+ * decision writes, so a live worker's claim is never taken over; cron step (h) runs every 10 minutes anyway.
+ */
+export const GPS_STALE_CLAIM_MS = 60_000;
 
 class OriginalMissingError extends Error {
   constructor() {
@@ -35,16 +41,22 @@ class OriginalMissingError extends Error {
  *
  * Runs on its own, never through the derived copies: those are stripped, and cron step (g) never revisits a photo
  * that has them [C41, C48]. The outcome is durable on the row: `gpsCheckedAt` set means decided (found or absent),
- * null means not yet, and `gpsAttempts` counts claimed reads up to MAX_GPS_ATTEMPTS (D3).
+ * null means not yet, and `gpsAttempts` counts claimed reads up to MAX_GPS_ATTEMPTS (D3). `gpsClaimedAt` is the read's
+ * lease, like deriveMedia's `claimedAt` (final review, item 2).
  *
- * 1. Eligible: READY, `image/*`, not removed, its memory not deleted, undecided, under the cap, and stored by this
- *    environment (`storagePrefix()`). Anything else is `skipped`.
- * 2. Claim an attempt with a conditional update on the count just read; losing it means another worker has the row.
+ * 1. Eligible: READY, `image/*`, not removed, its memory not deleted, undecided, under the cap, stored by this
+ *    environment (`storagePrefix()`), and not under a live claim (`gpsClaimedAt` null or older than
+ *    GPS_STALE_CLAIM_MS). Anything else is `skipped`, with no read and no attempt spent.
+ * 2. Claim: one conditional update that moves `gpsAttempts` from the count just read and sets `gpsClaimedAt`, only
+ *    while the row is undecided and unclaimed (or its claim is stale). While a claim is live no other worker reads the
+ *    bytes; one that loses the update is `skipped`.
  * 3. Read: a JPEG's 128 KiB prefix first, the whole original only when the prefix found nothing and its metadata
  *    continues past it; any other image whole.
- * 4. Record: found sets the pair and the stamp, absent only the stamp; both only while the row is still undecided.
- *    A failure (unreadable bytes, a missing original, any throw) leaves the row undecided for a later attempt and is
- *    reported to Sentry with `step: photo_gps` [C32].
+ * 4. Record: found sets the pair and the stamp, absent only the stamp, and both clear the claim; only while the row is
+ *    still undecided, the file not removed and its memory not deleted, so a photo removed while it was read keeps no
+ *    point (final review, item 5). A failure (unreadable bytes, a missing original, any throw) leaves the row
+ *    undecided and its claim in place to expire, for a later attempt, and is reported to Sentry with `step: photo_gps`
+ *    [C32].
  * 5. Log the outcome and the attempt, never a coordinate [C44].
  *
  * Never throws.
@@ -55,8 +67,10 @@ export async function extractPhotoGps({ mediaId, deadlineMs = GPS_READ_DEADLINE_
     const db = getDb();
     const row = await db.media.findUnique({
       where: { id: mediaId },
-      select: { status: true, mimeType: true, storageKey: true, deletedAt: true, gpsCheckedAt: true, gpsAttempts: true, memory: { select: { deletedAt: true } } },
+      select: { status: true, mimeType: true, storageKey: true, deletedAt: true, gpsCheckedAt: true, gpsAttempts: true, gpsClaimedAt: true, memory: { select: { deletedAt: true } } },
     });
+    const now = new Date();
+    const staleBefore = new Date(now.getTime() - GPS_STALE_CLAIM_MS);
     if (
       !row ||
       row.status !== "READY" ||
@@ -69,12 +83,17 @@ export async function extractPhotoGps({ mediaId, deadlineMs = GPS_READ_DEADLINE_
     ) {
       return skipped(mediaId, "not_eligible");
     }
+    if (row.gpsClaimedAt !== null && row.gpsClaimedAt >= staleBefore) {
+      // Another worker holds a live claim and is reading the bytes: no read here, no attempt spent.
+      return skipped(mediaId, "claimed_elsewhere");
+    }
 
-    // Equality with the count read (already under the cap) makes the claim a compare-and-set: of two workers that read
-    // the same row, exactly one moves the count and reads the bytes.
+    // A compare-and-set on the count read (already under the cap) and on the claim being free or stale: of two workers
+    // that read the same row, exactly one moves the count and sets the claim. While that claim is live, no other worker
+    // reads the bytes; it lapses only after GPS_STALE_CLAIM_MS, when the holder is presumed dead.
     const claimed = await db.media.updateMany({
-      where: { id: mediaId, gpsCheckedAt: null, gpsAttempts: row.gpsAttempts },
-      data: { gpsAttempts: { increment: 1 } },
+      where: { id: mediaId, gpsCheckedAt: null, gpsAttempts: row.gpsAttempts, OR: [{ gpsClaimedAt: null }, { gpsClaimedAt: { lt: staleBefore } }] },
+      data: { gpsAttempts: { increment: 1 }, gpsClaimedAt: now },
     });
     if (claimed.count === 0) {
       return skipped(mediaId, "claimed_elsewhere");
@@ -85,13 +104,14 @@ export async function extractPhotoGps({ mediaId, deadlineMs = GPS_READ_DEADLINE_
     if (read.status === "failed") {
       return failed(mediaId, attempt, read.error);
     }
+    // The decision clears the claim. A photo removed (or whose memory was deleted) while it was read keeps no point.
     const decided = await db.media.updateMany({
-      where: { id: mediaId, gpsCheckedAt: null },
-      data: read.status === "found" ? { ...read.coordinates, gpsCheckedAt: new Date() } : { gpsCheckedAt: new Date() },
+      where: { id: mediaId, gpsCheckedAt: null, deletedAt: null, memory: { deletedAt: null } },
+      data: read.status === "found" ? { ...read.coordinates, gpsCheckedAt: new Date(), gpsClaimedAt: null } : { gpsCheckedAt: new Date(), gpsClaimedAt: null },
     });
     if (decided.count === 0) {
-      // Another worker decided while this one read; its decision stands.
-      return skipped(mediaId, "decided_elsewhere", attempt);
+      // Another worker decided while this one read (its decision stands), or the photo was removed meanwhile.
+      return skipped(mediaId, "decided_elsewhere_or_removed", attempt);
     }
     log.info({ action: "photo_gps", mediaId, outcome: read.status, attempt }, "photo GPS recorded");
     return read.status;
@@ -127,7 +147,7 @@ async function readWhole(storageKey: string, signal: AbortSignal): Promise<Uint8
   return file === null ? null : new Uint8Array(await new Response(file.stream).arrayBuffer());
 }
 
-function skipped(mediaId: string, reason: "not_eligible" | "claimed_elsewhere" | "decided_elsewhere", attempt?: number): PhotoGpsOutcome {
+function skipped(mediaId: string, reason: "not_eligible" | "claimed_elsewhere" | "decided_elsewhere_or_removed", attempt?: number): PhotoGpsOutcome {
   log.debug({ action: "photo_gps", mediaId, outcome: "skipped", reason, attempt }, "photo GPS skipped");
   return "skipped";
 }

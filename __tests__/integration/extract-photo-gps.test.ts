@@ -27,9 +27,14 @@ let current: Tx | null = null;
 vi.mock("@/server/db/client", () => ({ getDb: () => current }));
 
 const blobs = new Map<string, Uint8Array>();
+/** Runs inside the first read, after the claim and before the decision (to remove the photo while it is being read). */
+let onRead: (() => Promise<void>) | null = null;
 vi.mock("@/services/storage", () => ({
   createStorageService: () => ({
-    readPrefix: async (pathname: string, maxBytes: number) => blobs.get(pathname)?.subarray(0, maxBytes) ?? null,
+    readPrefix: async (pathname: string, maxBytes: number) => {
+      await onRead?.();
+      return blobs.get(pathname)?.subarray(0, maxBytes) ?? null;
+    },
     get: async (pathname: string) => {
       const bytes = blobs.get(pathname);
       return bytes ? { stream: new Blob([new Uint8Array(bytes)]).stream(), contentType: "image/jpeg", contentLength: bytes.byteLength } : null;
@@ -39,7 +44,7 @@ vi.mock("@/services/storage", () => ({
 const captureExceptionMock = vi.fn();
 vi.mock("@sentry/nextjs", () => ({ captureException: (...a: unknown[]) => captureExceptionMock(...a), flush: async () => true }));
 
-import { extractPhotoGps } from "@/features/media/extract-photo-gps";
+import { extractPhotoGps, GPS_STALE_CLAIM_MS } from "@/features/media/extract-photo-gps";
 
 /** Thrown to end a transaction that succeeded, so its writes are never committed. */
 class RolledBack extends Error {}
@@ -75,13 +80,14 @@ async function freshPhoto(tx: Tx, bytes: Uint8Array): Promise<string> {
   return media.id;
 }
 
-const select = { latitude: true, longitude: true, gpsCheckedAt: true, gpsAttempts: true } as const;
+const select = { latitude: true, longitude: true, gpsCheckedAt: true, gpsAttempts: true, gpsClaimedAt: true } as const;
 
 describe.skipIf(!client)("extractPhotoGps on real Postgres", () => {
   beforeEach(() => {
     delete process.env.VERCEL_ENV;
     resetEnvCache();
     blobs.clear();
+    onRead = null;
     captureExceptionMock.mockClear();
   });
   afterAll(async () => {
@@ -119,9 +125,57 @@ describe.skipIf(!client)("extractPhotoGps on real Postgres", () => {
     });
     expect(error).toBeNull();
     expect(seen[0]).toBe("absent");
-    expect(seen[1]).toEqual({ latitude: null, longitude: null, gpsCheckedAt: expect.any(Date), gpsAttempts: 1 });
+    expect(seen[1]).toEqual({ latitude: null, longitude: null, gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null });
     expect(seen[2]).toBe("failed");
-    expect(seen[3]).toEqual({ latitude: null, longitude: null, gpsCheckedAt: null, gpsAttempts: 1 });
+    // A failure leaves its claim in place, to expire (final review, item 2).
+    expect(seen[3]).toEqual({ latitude: null, longitude: null, gpsCheckedAt: null, gpsAttempts: 1, gpsClaimedAt: expect.any(Date) });
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
   });
+
+  it("the claim is a lease (final review, item 2): a live claim is skipped with no read and no attempt spent; a stale one is taken over and cleared", async () => {
+    const seen: unknown[] = [];
+    const error = await rolledBack(async (tx) => {
+      const mediaId = await freshPhoto(tx, await jpegWithGps(liberty()));
+      const live = new Date(Date.now() - 5_000);
+      await tx.media.update({ where: { id: mediaId }, data: { gpsAttempts: 1, gpsClaimedAt: live } });
+      seen.push(await extractPhotoGps({ mediaId }), await tx.media.findUniqueOrThrow({ where: { id: mediaId }, select }));
+      await tx.media.update({ where: { id: mediaId }, data: { gpsClaimedAt: new Date(Date.now() - GPS_STALE_CLAIM_MS - 1_000) } });
+      seen.push(await extractPhotoGps({ mediaId }), await tx.media.findUniqueOrThrow({ where: { id: mediaId }, select }));
+    });
+    expect(error).toBeNull();
+    expect(seen[0]).toBe("skipped");
+    expect(seen[1]).toMatchObject({ gpsAttempts: 1, gpsCheckedAt: null, latitude: null });
+    expect(seen[2]).toBe("found");
+    const taken = seen[3] as { latitude: number; gpsAttempts: number; gpsClaimedAt: Date | null; gpsCheckedAt: Date };
+    expect(taken.gpsAttempts).toBe(2);
+    expect(taken.gpsClaimedAt).toBeNull();
+    expect(taken.latitude).toBeCloseTo(LIBERTY.latitude, 9);
+  });
+
+  it("the decision write refuses a photo removed, or whose memory was deleted, while it was read (final review, item 5)", async () => {
+    const seen: Array<{ outcome: string; row: unknown }> = [];
+    const error = await rolledBack(async (tx) => {
+      for (const remove of ["file", "memory"] as const) {
+        const mediaId = await freshPhoto(tx, await jpegWithGps(liberty()));
+        const { memoryId } = await tx.media.findUniqueOrThrow({ where: { id: mediaId }, select: { memoryId: true } });
+        onRead = async () => {
+          onRead = null;
+          if (remove === "file") {
+            await tx.media.update({ where: { id: mediaId }, data: { deletedAt: new Date() } });
+          } else {
+            await tx.memory.update({ where: { id: memoryId }, data: { deletedAt: new Date() } });
+          }
+        };
+        const outcome = await extractPhotoGps({ mediaId });
+        seen.push({ outcome, row: await tx.media.findUniqueOrThrow({ where: { id: mediaId }, select }) });
+      }
+    });
+    expect(error).toBeNull();
+    expect(seen).toHaveLength(2);
+    for (const { outcome, row } of seen) {
+      expect(outcome).toBe("skipped");
+      expect(row).toMatchObject({ latitude: null, longitude: null, gpsCheckedAt: null, gpsAttempts: 1 });
+    }
+  });
 });
+

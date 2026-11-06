@@ -7,7 +7,7 @@ const SECRET = "c".repeat(40);
 const HOUR = 60 * 60 * 1000;
 
 interface DerivedRow { kind: string; status: string; error: string | null; attempts: number; claimedAt: Date | null; storageKey: string }
-interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; purgedAt?: Date | null; reservedUntil?: Date | null; mimeType?: string; derivatives?: DerivedRow[]; gpsCheckedAt?: Date | null; gpsAttempts?: number; memory: { deletedAt: Date | null } }
+interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; purgedAt?: Date | null; reservedUntil?: Date | null; mimeType?: string; derivatives?: DerivedRow[]; gpsCheckedAt?: Date | null; gpsAttempts?: number; gpsClaimedAt?: Date | null; latitude?: number | null; longitude?: number | null; memory: { deletedAt: Date | null } }
 interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
 type EmailType = "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY" | "SUBMISSION_CONFIRMATION";
 interface EmailRow { id: string; memoryId: string; emailType: EmailType; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null; uploadLeaseUntil?: Date | null } }
@@ -70,7 +70,7 @@ let onLock: ((memoryId: string) => void) | null = null;
 const lockCalls: string[] = [];
 const dbStub = {
   // Prisma always returns `derivatives` as an array when it is included, and every scalar; fixtures may omit `derivatives` and `purgedAt`.
-  media: { updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Partial<MediaRow> }) => { const rows = media.filter((m) => matches({ purgedAt: null, reservedUntil: null, ...m } as unknown as Record<string, unknown>, where)); for (const r of rows) { Object.assign(r, data); } return { count: rows.length }; }), findMany: vi.fn(async (args: { where: Record<string, unknown>; orderBy?: Record<string, "asc" | "desc">; take?: number }) => (await finder(() => media.map((m) => ({ purgedAt: null, reservedUntil: null, gpsCheckedAt: null, gpsAttempts: 0, ...m })) as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }), findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { const m = media.find((x) => x.id === where.id); if (!m) { throw new Error("not found"); } return { purgedAt: null, reservedUntil: null, ...m }; }) },
+  media: { updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Partial<MediaRow> }) => { const rows = media.filter((m) => matches({ purgedAt: null, reservedUntil: null, ...m } as unknown as Record<string, unknown>, where)); for (const r of rows) { Object.assign(r, data); } return { count: rows.length }; }), findMany: vi.fn(async (args: { where: Record<string, unknown>; orderBy?: Record<string, "asc" | "desc">; take?: number }) => (await finder(() => media.map((m) => ({ purgedAt: null, reservedUntil: null, gpsCheckedAt: null, gpsAttempts: 0, gpsClaimedAt: null, ...m })) as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }), findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { const m = media.find((x) => x.id === where.id); if (!m) { throw new Error("not found"); } return { purgedAt: null, reservedUntil: null, latitude: null, longitude: null, gpsClaimedAt: null, ...m }; }) },
   $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(String(values[0])); onLock?.(String(values[0])); return [{ id: values[0] }]; }),
   $transaction: vi.fn(async (fn: (t: typeof dbStub) => Promise<unknown>) => { inTransaction = true; try { return await fn(dbStub); } finally { inTransaction = false; } }),
   derivedMedia: { deleteMany: vi.fn(async ({ where }: { where: { mediaId: string; storageKey?: { in: string[] } } }) => { derivedDeletes.push(where); const m = media.find((x) => x.id === where.mediaId); if (m?.derivatives) { m.derivatives = m.derivatives.filter((d) => where.storageKey ? !where.storageKey.in.includes(d.storageKey) : false); } return { count: 1 }; }) },
@@ -579,6 +579,16 @@ describe("step (h): photo GPS (B3)", () => {
     expect(gpsQuery).toMatchObject({ orderBy: { createdAt: "asc" }, take: 10 });
   });
 
+  it("leaves a photo under a live GPS claim alone and takes one whose claim is stale (final review, item 2)", async () => {
+    media = [
+      photo("med_claim_live", minutesAgo(300), { gpsAttempts: 1, gpsClaimedAt: new Date(Date.now() - 5_000) }),
+      photo("med_claim_stale", minutesAgo(200), { gpsAttempts: 1, gpsClaimedAt: minutesAgo(30) }),
+      photo("med_unclaimed", minutesAgo(100)),
+    ];
+    await run(`Bearer ${SECRET}`);
+    expect(extractGpsMock.mock.calls.map((c) => c[0].mediaId)).toEqual(["med_claim_stale", "med_unclaimed"]);
+  });
+
   it("counts a throw (which the step should never do) as a run error and moves on to the next photo", async () => {
     extractGpsMock.mockImplementationOnce(async () => { throw new Error("unexpected"); });
     const res = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
@@ -665,7 +675,7 @@ describe("purge (f): durable intent under the memory lock (C1, C3, C5, C5b, C5c)
   it("C1: claims under lockMemory (purgedAt set, READY → FAILED, no storage call inside the transaction), then deletes the original, the copies and the poster key, drops the derived rows and nulls blobUrl", async () => {
     const res = await run(`Bearer ${SECRET}`);
     expect(lockCalls).toEqual(["mem_x"]);
-    expect(dbStub.media.update.mock.calls[0]![0]).toEqual({ where: { id: "med_x" }, data: { purgedAt: expect.any(Date), status: "FAILED" } });
+    expect(dbStub.media.update.mock.calls[0]![0]).toEqual({ where: { id: "med_x" }, data: { purgedAt: expect.any(Date), status: "FAILED", latitude: null, longitude: null, gpsClaimedAt: null } });
     expect(delMock.mock.calls.map((c) => c[0])).toEqual(["dev/originals/mem_x/o.jpg", "dev/derived/mem_x/w.jpg", "dev/derived/mem_x/o.upload.jpg"]);
     expect(derivedDeletes).toEqual([{ mediaId: "med_x", storageKey: { in: ["dev/derived/mem_x/w.jpg"] } }]);
     expect(media[0]).toMatchObject({ status: "FAILED", purgedAt: expect.any(Date), blobUrl: null, derivatives: [] });
@@ -701,6 +711,19 @@ describe("purge (f): durable intent under the memory lock (C1, C3, C5, C5b, C5c)
     expect(media[0]).toMatchObject({ blobUrl: null, derivatives: [] });
     const third = await run(`Bearer ${SECRET}`);
     expect(((await third.json()) as { data: Record<string, number> }).data).toMatchObject({ deletedBlobsRemoved: 0 });
+  });
+
+  it("a purged photo keeps no point: the claim phase clears latitude, longitude and the GPS claim with the mark (final review, item 5)", async () => {
+    Object.assign(media[0]!, { mimeType: "image/jpeg", latitude: 40.689247, longitude: -74.044502, gpsCheckedAt: old, gpsClaimedAt: null });
+    await run(`Bearer ${SECRET}`);
+    expect(media[0]).toMatchObject({ status: "FAILED", purgedAt: expect.any(Date), latitude: null, longitude: null, gpsClaimedAt: null });
+  });
+
+  it("a row marked purged earlier that still holds a point (or a GPS claim) loses it on the next pass, with no other change (final review, item 5)", async () => {
+    Object.assign(media[0]!, { status: "FAILED", purgedAt: new Date(Date.now() - HOUR), mimeType: "image/jpeg", latitude: 40.689247, longitude: -74.044502, gpsCheckedAt: old, gpsClaimedAt: old });
+    await run(`Bearer ${SECRET}`);
+    expect(dbStub.media.update.mock.calls[0]![0]).toEqual({ where: { id: "med_x" }, data: { latitude: null, longitude: null, gpsClaimedAt: null } });
+    expect(media[0]).toMatchObject({ status: "FAILED", latitude: null, longitude: null, gpsClaimedAt: null });
   });
 
   it("C7: a row already marked purgedAt but still READY is flipped to FAILED by the claim phase, whoever left it that way", async () => {
