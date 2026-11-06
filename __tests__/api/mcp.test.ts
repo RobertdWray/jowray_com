@@ -235,6 +235,7 @@ describe("tools/list contract (case 2)", () => {
                 ],
               },
               "contributor": {
+                "additionalProperties": false,
                 "properties": {
                   "email": {
                     "maxLength": 254,
@@ -830,6 +831,18 @@ describe("schema refusals and prepareInput refusals (case 5)", () => {
       { ...draftArgs, source: "EMAIL", sourceRef: "gmail:1a1a2317fba34eec" },
     ]) {
       const { status, result } = await callTool("draft_memory", args);
+      expect(status).toBe(200);
+      expect(result.isError).toBe(true);
+    }
+    expect(features.draftMemory).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unknown contributor key instead of dropping it (a typo would save the draft without that detail; review R2)", async () => {
+    for (const contributor of [
+      { ...draftArgs.contributor, relation: "Friend from church" },
+      { email: "joyce@example.com", relationship: "Friend", phoneNumber: "+14105551234" },
+    ]) {
+      const { status, result } = await callTool("draft_memory", { ...draftArgs, contributor });
       expect(status).toBe(200);
       expect(result.isError).toBe(true);
     }

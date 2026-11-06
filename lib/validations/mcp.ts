@@ -23,13 +23,19 @@ export const mcpListInputSchema = z
 /**
  * `draft_memory`: the admin draft fields with `sourceInput` in place of
  * `source` + `sourceRef`, which the server derives through lib/source-input.ts
- * so no model ever supplies its own hash. Strict, so a `source` or `sourceRef`
- * is refused rather than silently dropped. The source↔prefix refines do not
- * apply here; `draftMemory` re-validates the prepared input with the full schema.
+ * so no model ever supplies its own hash. Strict at both levels, so a `source`
+ * or `sourceRef`, or a mistyped contributor key such as `relation`, is refused
+ * rather than silently dropped (review round 1, R2; `.strict()` on the outer
+ * object does not reach the nested one). The REST draft schema is unchanged.
+ * The source↔prefix refines do not apply here; `draftMemory` re-validates the
+ * prepared input with the full schema.
  */
 export const mcpDraftInputSchema = draftMemoryObjectSchema
   .omit({ source: true, sourceRef: true })
-  .extend({ sourceInput: sourceInputSchema.describe("Where the words came from; the server turns it into the memory's source reference") })
+  .extend({
+    contributor: draftMemoryObjectSchema.shape.contributor.strict(),
+    sourceInput: sourceInputSchema.describe("Where the words came from; the server turns it into the memory's source reference"),
+  })
   .strict();
 
 export { adminCoordinatesSchema, adminDeletedSchema, adminMemoryChangesSchema, adminMemoryIdSchema, adminStatusSchema } from "@/lib/validations/admin";
