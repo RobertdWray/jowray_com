@@ -14,6 +14,14 @@ import { jpegMetadataComplete, readGpsFromBytes, readGpsFromFile, type GpsRead }
 
 import { jpegWithGps, LAT_DMS, liberty, LIBERTY, LON_DMS, PREFIX_BYTES, readFixture, withLateExif } from "../helpers/photo-gps-fixtures";
 
+/** An XMP packet whose exif:GPS* claims a different point (10 N, 20 E) than the EXIF IFD: only EXIF may decide. */
+const XMP_OTHER_POINT =
+  '<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">' +
+  '<rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="10,0.0N" exif:GPSLongitude="20,0.0E"/></rdf:RDF></x:xmpmeta><?xpacket end="w"?>';
+/** Untrusted XML that is not well-formed. */
+const XMP_MALFORMED = '<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF><rdf:Description <<< not xml &&& </x:xmpmeta>';
+const xmpTile = () => sharp({ create: { width: 16, height: 16, channels: 3, background: "#336699" } }).jpeg();
+
 type Recorded = { file: File; slices: Array<[number | undefined, number | undefined]>; wholeReads: () => number };
 
 /**
@@ -207,6 +215,9 @@ describe("readGpsFromFile", () => {
       "tiny.heic": readFixture("tiny.heic"),
       "rotated.heic": readFixture("rotated.heic"),
       "text": new TextEncoder().encode("plain text"),
+      "JPEG with EXIF GPS and an XMP packet": await xmpTile().withExif(gpsExif).withXmp(XMP_OTHER_POINT).toBuffer(),
+      "JPEG with EXIF GPS and malformed XMP": await xmpTile().withExif(gpsExif).withXmp(XMP_MALFORMED).toBuffer(),
+      "JPEG with GPS only in XMP": await xmpTile().withXmp(XMP_OTHER_POINT).toBuffer(),
     };
     const summary = (read: GpsRead) => (read.status === "found" ? { status: read.status, coordinates: read.coordinates } : { status: read.status });
     const viaFile: Record<string, unknown> = {};
@@ -217,8 +228,36 @@ describe("readGpsFromFile", () => {
     }
     expect(viaFile).toEqual(viaBytes);
     expect(Object.values(viaBytes).map((read) => (read as { status: string }).status)).toEqual([
-      "found", "absent", "found", "found", "absent", "found", "absent", "absent", "found", "absent", "absent", "failed",
+      "found", "absent", "found", "found", "absent", "found", "absent", "absent", "found", "absent", "absent", "failed", "found", "found", "absent",
     ]);
+  });
+});
+
+describe("XMP is never parsed: GPS comes only from EXIF (B2 fix round 1)", () => {
+  it("reads the EXIF point, not the XMP one, on both paths, and treats GPS that is only in XMP as absent", async () => {
+    const both = await xmpTile().withExif({ IFD3: liberty() }).withXmp(XMP_OTHER_POINT).toBuffer();
+    expectFound(readGpsFromBytes(both), LIBERTY);
+    expectFound(await readGpsFromFile(new File([new Uint8Array(both)], "both.jpg")), LIBERTY);
+    const xmpOnly = await xmpTile().withXmp(XMP_OTHER_POINT).toBuffer();
+    expect(readGpsFromBytes(xmpOnly)).toEqual({ status: "absent" });
+    expect(await readGpsFromFile(new File([new Uint8Array(xmpOnly)], "xmp-only.jpg"))).toEqual({ status: "absent" });
+  });
+
+  it("asks ExifReader to skip the XMP group on both paths, so even a malformed packet is never parsed or returned", async () => {
+    const load = vi.spyOn(ExifReader, "load"); // calls through to the real parser
+    const malformed = await xmpTile().withExif({ IFD3: liberty() }).withXmp(XMP_MALFORMED).toBuffer();
+    const wellFormed = await xmpTile().withExif({ IFD3: liberty() }).withXmp(XMP_OTHER_POINT).toBuffer();
+    for (const bytes of [malformed, wellFormed]) {
+      expectFound(readGpsFromBytes(bytes), LIBERTY);
+      expectFound(await readGpsFromFile(new File([new Uint8Array(bytes)], "photo.jpg")), LIBERTY);
+    }
+    expect(load).toHaveBeenCalledTimes(4);
+    for (const [index, call] of load.mock.calls.entries()) {
+      expect((call[1] as { excludeTags?: Record<string, unknown> } | undefined)?.excludeTags).toMatchObject({ xmp: true });
+      const tags = (await load.mock.results[index]!.value) as { xmp?: unknown; exif?: unknown };
+      expect(tags.exif).toBeDefined();
+      expect(tags.xmp).toBeUndefined();
+    }
   });
 });
 
