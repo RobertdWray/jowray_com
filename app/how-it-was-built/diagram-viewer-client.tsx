@@ -300,7 +300,7 @@ function Toolbar({
           <button
             key={arrow.direction}
             type="button"
-            aria-label={`Move the view ${arrow.direction}`}
+            aria-label={`Move the ${heading} view ${arrow.direction}`}
             aria-disabled={!zoomed}
             onClick={whenZoomed(() => panBy(arrow.dx, arrow.dy))}
             className={iconButtonClass}

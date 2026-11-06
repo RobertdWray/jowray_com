@@ -159,7 +159,7 @@ const settle = (page, ms = 450) => page.waitForTimeout(ms);
   await dlg.getByRole("button", { name: "Zoom in on Architecture" }).click();
   await settle(page);
   const fsZoom = await transformOf(page, 0, "dialog");
-  await dlg.getByRole("button", { name: "Move the view right" }).click();
+  await dlg.getByRole("button", { name: "Move the Architecture view right" }).click();
   await settle(page);
   const fsRight = await transformOf(page, 0, "dialog");
   check("desktop: full-screen arrow button pans", fsRight.x < fsZoom.x - 20, `${fsZoom.x} → ${fsRight.x}`);
@@ -506,7 +506,7 @@ const settle = (page, ms = 450) => page.waitForTimeout(ms);
       const buttons = [...group.querySelectorAll("button")];
       const fit = buttons.find((b) => b.getAttribute("aria-label") === "Fit Architecture to the screen");
       const arrows = buttons
-        .filter((b) => b.getAttribute("aria-label")?.startsWith("Move the view "))
+        .filter((b) => b.getAttribute("aria-label")?.startsWith("Move the Architecture view "))
         .map((b) => ({
           label: b.getAttribute("aria-label"),
           disabled: b.getAttribute("aria-disabled"),
@@ -519,7 +519,7 @@ const settle = (page, ms = 450) => page.waitForTimeout(ms);
     page.evaluate((label) => {
       const group = document.querySelector('main [role=group][aria-label="Architecture diagram controls"]');
       [...group.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === label)?.click();
-    }, `Move the view ${direction}`);
+    }, `Move the Architecture view ${direction}`);
 
   const atFit = await inlineControls();
   await clickInlineArrow("right");

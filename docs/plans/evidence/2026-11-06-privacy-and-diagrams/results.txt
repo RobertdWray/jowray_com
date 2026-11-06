@@ -45,7 +45,7 @@ PASS  open dialog keeps a stable scrollbar gutter  — stable
 PASS  full screen: the diagram area's focus ring is inset  — {"offset":"-4px","style":"solid","label":"Architecture diagram"}
 PASS  no role=toolbar without arrow-key movement  — 0
 PASS  inline: the three diagram wrappers are not tab stops; Tab goes from Full screen to the full-size link  — {"wrapperTabindex":[null,null,null],"afterFullScreen":"Open “Architecture” full size"}
-PASS  inline: four icon-only 44px arrow buttons, aria-disabled and inert at fit size  — {"arrows":[{"label":"Move the view left","disabled":"true","width":44,"text":""},{"label":"Move the view up","disabled":"true","width":44,"text":""},{"label":"Move the view down","disabled":"true","width":44,"text":""},{"label":"Move the view right","disabled":"true","width":44,"text":""}],"after":{"scale":1,"x":0,"y":0}}
+PASS  inline: four icon-only 44px arrow buttons, aria-disabled and inert at fit size  — {"arrows":[{"label":"Move the Architecture view left","disabled":"true","width":44,"text":""},{"label":"Move the Architecture view up","disabled":"true","width":44,"text":""},{"label":"Move the Architecture view down","disabled":"true","width":44,"text":""},{"label":"Move the Architecture view right","disabled":"true","width":44,"text":""}],"after":{"scale":1,"x":0,"y":0}}
 PASS  inline: Fit is aria-disabled at fit size  — true
 PASS  inline: after Zoom in, Fit and the arrows are enabled and the arrows pan  — {"fit":"false","arrows":["false","false","false","false"],"x":[-286.5,-406.5]}
 PASS  inline: a double-click on a fitted diagram does not zoom it  — {"scale":1,"x":0,"y":0}
