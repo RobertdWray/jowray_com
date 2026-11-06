@@ -102,7 +102,7 @@ The `jowray-draft-memory` skill saves drafts through a Claude custom connector, 
 - URL: `https://www.jowray.com/api/mcp`. Use `www`: the apex answers 308 to `www`, and a cross-origin redirect drops the `Authorization` header.
 - Authentication: **No sign-in**.
 - Request headers: name `authorization`, value `Bearer <MCP_API_SECRET>`. Claude sends the value exactly as entered and adds no scheme, so type `Bearer ` yourself.
-- Then set **requires approval** on the six tools that change data: `draft_memory`, `set_coordinates`, `update_memory`, `set_status`, `set_deleted`, `reissue_claim_link`. `draft_memory` is annotated non-destructive (it only adds a row, and a repeat answers `duplicate`), but it writes and returns a live claim link, and the two read tools bring text any visitor can submit into the same session, so it is approved per call like the other five. Repeat this after every re-add.
+- Then set **requires approval** on the six tools that change data: `draft_memory`, `set_coordinates`, `update_memory`, `set_status`, `set_deleted`, `reissue_claim_link`. `draft_memory` is annotated non-destructive (it only adds a row, and a repeat answers `duplicate`), but it writes and returns a live claim link, and the read tools bring text any visitor can submit (and `suggest_places` brings OpenStreetMap's place names) into the same session, so it is approved per call like the other five. `suggest_places` is read-only (it writes only the lookup cache) and needs no approval. Repeat this after every re-add.
 
 A wrong or missing header shows as a connection error in Claude, never a sign-in prompt: the route answers a plain 401 with no `WWW-Authenticate` challenge.
 
@@ -122,6 +122,16 @@ Place names for the "Where" buttons on `/share` and the MCP `suggest_places` too
 | `PLACES_VIEWER_DAILY_REQUESTS` | Lookups one viewer (client address, hashed in the counter's scope) may ask for per UTC day (default **60**), counted on arrival, before the cache. Over it, `/api/places/suggest` answers 429. The MCP path has no viewer and is not counted here. Optional; same fallback. |
 
 Real sends are at least 1.1 s apart site-wide whatever these values are: a lease and fence on `PlaceLookupThrottle` spaces them, by the database's clock.
+
+**Values in Vercel** (Rob sets them at step B12 of the plan; caps keep their defaults):
+
+| Environment | `PLACES_PROVIDER` | Other three keys |
+|---|---|---|
+| Production | `nominatim` | unset (defaults: the public instance, 500 provider calls and 60 per viewer per UTC day) |
+| Preview | `stub` | unset |
+| Local (`next dev`, e2e) | `stub`, passed as process env | unset |
+
+Calling the public Nominatim instance is Rob's deliberate, informed choice (plan R2, 2026-11-06), made after its [usage policy](https://operations.osmfoundation.org/policies/nominatim/) was shown to him; the operator is responsible for keeping to it. What each request carries is in [share-form.md](features/share-form.md#place-suggestions-from-photos).
 
 ## Phase 1: DNS automation
 
