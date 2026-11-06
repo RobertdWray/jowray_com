@@ -2,7 +2,6 @@ import "server-only";
 
 import { Prisma } from "@/generated/prisma/client";
 import { SendGridTransport } from "@/integrations/sendgrid";
-import { FAMILY_CONTACT_EMAIL } from "@/lib/contact";
 import { createLogger, logError } from "@/lib/logger";
 import { getAdminAlertEnv, getEmailEnv, getOutboundEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
@@ -394,7 +393,6 @@ async function deliver(delivery: Delivery): Promise<SendResult> {
     ({ messageId } = await getTransport().send({
       to: allowed,
       from: getEmailEnv().SENDGRID_FROM_EMAIL,
-      replyTo: FAMILY_CONTACT_EMAIL,
       ...rendered,
     }));
   } catch (error) {
