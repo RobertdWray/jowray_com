@@ -132,6 +132,15 @@ const adminSchema = z.object({
   ADMIN_API_SECRET: z.preprocess((value) => (value === "" ? undefined : value), z.string().min(32, "ADMIN_API_SECRET must be at least 32 characters").optional()),
 });
 
+/**
+ * Bearer secret for the MCP endpoint (/api/mcp); unset means the route answers 401 to everything.
+ * Separate from ADMIN_API_SECRET so each rotates on its own (a connector's header cannot be edited, only re-added).
+ */
+const mcpSchema = z.object({
+  // `MCP_API_SECRET=` (empty) means unset, like ADMIN_API_SECRET: the route fails closed with 401 rather than 500.
+  MCP_API_SECRET: z.preprocess((value) => (value === "" ? undefined : value), z.string().min(32, "MCP_API_SECRET must be at least 32 characters").optional()),
+});
+
 /** Shared secret behind the family admin page (/admin); unset means signed-out for everyone, never a 500. */
 const adminPageSchema = z.object({
   // `ADMIN_PAGE_SECRET=` (empty) means unset, like ADMIN_API_SECRET: every check fails closed.
@@ -164,6 +173,7 @@ export type DbEnv = z.infer<typeof dbSchema>;
 export type MediaServingEnv = z.infer<typeof mediaServingSchema>;
 export type AdminPageEnv = z.infer<typeof adminPageSchema>;
 export type AdminEnv = z.infer<typeof adminSchema>;
+export type McpEnv = z.infer<typeof mcpSchema>;
 export type CronEnv = z.infer<typeof cronSchema>;
 export type AdminAlertEnv = z.infer<typeof adminAlertSchema>;
 export type MemorialEnv = z.infer<typeof memorialSchema>;
@@ -205,6 +215,7 @@ export const getMemorialEnv = memoized("memorial", memorialSchema);
 export const getCronEnv = memoized("cron", cronSchema);
 export const getAdminAlertEnv = memoized("adminAlert", adminAlertSchema);
 export const getAdminEnv = memoized("admin", adminSchema);
+export const getMcpEnv = memoized("mcp", mcpSchema);
 export const getAdminPageEnv = memoized("adminPage", adminPageSchema);
 export const getMediaServingEnv = memoized("mediaServing", mediaServingSchema);
 
