@@ -29,6 +29,7 @@
     "@sendgrid/mail": "^8.1.6",
     "@sentry/nextjs": "^11.10.0",
     "@vercel/blob": "^2.8.2",
+    "exifreader": "4.51.0",
     "fix-webm-duration": "1.0.6",
     "heic-decode": "^2.1.0",
     "mcp-handler": "2.3.1",
