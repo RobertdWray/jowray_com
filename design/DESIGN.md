@@ -270,7 +270,7 @@ The site is about Jo, not the people who made it. Links to a person's own site
 (Rob, Tracy) use `quietLinkClass` (`app/_components/field-classes.ts`): the text
 stays the color of the sentence, with a 1px `wood` underline 4px below it, which
 darkens to walnut and thickens to 2px on hover and keyboard focus. Red (`linkClass`)
-stays for links into the site and for actions. No external-link icon: it would
+stays for every other link (pages of the site, the church, email) and for actions. No external-link icon: it would
 pull the eye back to the names. Contrast: walnut text 11.2:1 or more on every
 ground; the `wood` underline 3.37:1 on the darkest gingham square, 3.97:1 on
 muslin, 4.46:1 on paper (Rob: "noticeable but more subtle… This website isn't

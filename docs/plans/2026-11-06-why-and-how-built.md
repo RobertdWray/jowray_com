@@ -98,11 +98,11 @@ Light edits to Rob's text (the full list):
 ## 5. Footer, obituary, new page
 
 ### 5a. Footer: `app/_components/site-footer.tsx` [C6]
-- Credit line, `[APPROVED]` (R4): `Made with love by Richard, Kay, <a href={ROB_URL}>Rob</a>, <a href={TRACY_URL}>Tracy</a> and Ava.`, with `linkClass` on both links. Put `{" "}` wherever a JSX line break would otherwise drop a space; Step 9's text diff checks this.
+- Credit line, `[APPROVED]` (R4): `Made with love by Richard, Kay, <a href={ROB_URL}>Rob</a>, <a href={TRACY_URL}>Tracy</a> and Ava.`, with `linkClass` on both links (superseded by E7: `quietLinkClass`). Put `{" "}` wherever a JSX line break would otherwise drop a space; Step 9's text diff checks this.
 - Links line: `Jo's obituary · How this site was built`, with the middle dot in `<span aria-hidden="true">`.
 
 ### 5b. Obituary: `app/obituary/page.tsx:33` [C6]
-- Wrap "Robert Wray" in `<a href={ROB_URL} className={linkClass}>` and "Tracy Gold" in `<a href={TRACY_URL} className={linkClass}>` (R3).
+- Wrap "Robert Wray" in `<a href={ROB_URL} className={linkClass}>` and "Tracy Gold" in `<a href={TRACY_URL} className={linkClass}>` (R3; superseded by E7: both use `quietLinkClass`).
 - The rendered text must be byte-identical to the baseline (Step 9).
 - Edit the code comment at `:13-15` to read: words verbatim; two name links added at Rob's request on 2026-11-06.
 

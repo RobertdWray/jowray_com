@@ -41,7 +41,7 @@ Viewport `1280x900x2` (desktop, 2x for legibility), same server and browser as a
 
 | Check | Result | Evidence |
 |---|---|---|
-| Computed style of the four personal links on `/` (signature, footer Rob and Tracy) | text `rgb(46, 36, 32)` (walnut, same as the parent), `underline 1px rgb(138, 114, 89)` (wood), offset 4px; the site link "How this site was built" stays `rgb(165, 13, 38)` | — |
+| Computed style of the three personal links on `/` (signature, footer Rob and Tracy) | text `rgb(46, 36, 32)` (walnut, same as the parent), `underline 1px rgb(138, 114, 89)` (wood), offset 4px; the site link "How this site was built" stays `rgb(165, 13, 38)` | — |
 | Contrast (WCAG luminance) | walnut text 11.23:1 on the darkest gingham square, 13.22:1 muslin, 14.87:1 paper; wood underline 3.37:1 darkest gingham, 3.97:1 muslin, 4.46:1 paper | — |
 | Lighthouse accessibility | 100, 0 failed audits on `/obituary` (desktop), `/` (mobile), `/how-it-was-built` (desktop) | — |
 | Lighthouse "Agentic Browsing" on `/` mobile | CLS 0.168. Production `main` (`95f4df4`) scores the same 0.168, so it is pre-existing (plan §12 F7) | — |
