@@ -275,14 +275,20 @@ below), and a closing primary "Leave a memory of Jo".
     and lines, `wood` lifelines, `wood-light` loop and note labels, walnut
     autonumber badges with paper digits. Atkinson Hyperlegible 18px, embedded in
     each SVG as a data: URL (an `<img>` SVG can load no outside font).
-  - **17px floor.** Never scaled down: the script fails if any text computes
+  - **17px floor.** At natural size: the script fails if any text computes
     under 17px. Two Mermaid sizes are not configurable and are lifted in the
     script: the `autonumber` digits (12px → 17px bold in a 13px-radius circle)
     and ER relationship labels (14px → 18px, via `themeCSS`).
-  - **Phones.** Each image sits at natural size in a `role="region"`,
-    `tabIndex={0}` scroller with an `aria-label` ("… diagram, scrolls
-    sideways"), so the page never scrolls sideways (WCAG 1.4.10 allows 2-D
-    content to). Arrow keys scroll it once focused.
+  - **Fit, zoom and pan** (Rob, 2026-11-06; replaces R9's natural-size
+    scroller). Each image fits its card, so the page never scrolls sideways,
+    and Zoom or Full screen brings back the natural size. Above it, a toolbar:
+    Zoom in, Zoom out, Fit, ← ↑ ↓ → and Full screen, at least 44px each; Zoom
+    out, Fit and the arrows are `aria-disabled` at fit size. Dragging pans
+    once zoomed in, the arrows pan without dragging (WCAG 2.5.7), and a plain
+    wheel or swipe still scrolls the page. Full screen is a full-window
+    `<dialog>` with the same controls, every gesture and the keyboard
+    (`diagram-viewer-client.tsx`; plan
+    `docs/plans/2026-11-06-privacy-note-and-diagram-viewer.md`).
   - **Text alternative.** `alt` names the diagram type and its parts;
     `aria-describedby` points at the visible description.
   - **Drift guard.** `__tests__/lib/readme-diagrams.test.ts` fails when a README
@@ -310,6 +316,8 @@ below), and a closing primary "Leave a memory of Jo".
 - Every section is a wrapping flex row or a flex column; no fixed heights.
 - Touch targets ≥44px, inputs and buttons 56–64px.
 - No sticky header, no modals, no autoplay audio, no hover-only interactions.
+  Two modals are allowed, both at Rob's request (2026-11-06): the footer's
+  Privacy note and the full-screen view of a diagram on /how-it-was-built.
 - The page must look finished at 390px wide — most visitors arrive from a
   text-message link. `reference/home.html` at 390px is the phone comp.
 

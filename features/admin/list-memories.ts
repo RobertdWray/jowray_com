@@ -1,7 +1,9 @@
 import "server-only";
 
 import type { Prisma } from "@/generated/prisma/client";
+import type { AdminViewOptions } from "@/features/admin/get-memory";
 import { adminListQuerySchema, type AdminListQuery, type AdminMemoryStatus } from "@/lib/validations/admin";
+import { coordinatesOf, type Coordinates } from "@/lib/validations/memory";
 import { getDb } from "@/server/db/client";
 
 /** Rows per page; paging is follow-up A2. */
@@ -21,6 +23,8 @@ export interface AdminListRow {
   /** First 160 characters of the words, whitespace collapsed, with an ellipsis when cut. */
   excerpt: string;
   media: { ready: number; pending: number; failed: number; photos: number; videos: number; audios: number };
+  /** Present only when asked for (`includeCoordinates`, the MCP tools); the admin page never sees it. */
+  coordinates?: Coordinates | null;
 }
 
 export interface AdminStatusCounts {
@@ -55,9 +59,11 @@ function listWhere(query: AdminListQuery): Prisma.MemoryWhereInput {
  * The admin list (plan §3.5): live rows by default, the Deleted toggle shows
  * soft-deleted ones, an optional status and a case-insensitive search over the
  * words, the place and the contributor's name and email. Newest first, 200 at
- * a time, with the total so the page can say "Showing 200 of N".
+ * a time, with the total so the page can say "Showing 200 of N". The MCP
+ * `list_memories` tool passes `includeCoordinates`; the admin page does not, so
+ * its rows carry no coordinates.
  */
-export async function listMemoriesForAdmin(raw: unknown): Promise<AdminListResult> {
+export async function listMemoriesForAdmin(raw: unknown, options: AdminViewOptions = {}): Promise<AdminListResult> {
   const parsed = adminListQuerySchema.safeParse(raw);
   if (!parsed.success) {
     return { ok: false, code: "invalid" };
@@ -101,6 +107,7 @@ export async function listMemoriesForAdmin(raw: unknown): Promise<AdminListResul
         videos: row.media.filter((m) => m.mimeType.startsWith("video/")).length,
         audios: row.media.filter((m) => m.mimeType.startsWith("audio/")).length,
       },
+      ...(options.includeCoordinates && { coordinates: coordinatesOf(row) }),
     })),
   };
 }

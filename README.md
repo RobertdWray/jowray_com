@@ -25,7 +25,7 @@ Velma Josephine "Jo" Wray, née Hart: in the home page's own words, "teacher, qu
 
 So Phase 1 of this site does one thing well: **it collects.** A visitor opens the share page, types or records a memory, adds photos or a video, and presses Send. They get a private link to come back and edit. The family gets an email. Nothing is shown publicly yet; showing the memories back as a gallery, timeline and tag cloud is [Phase 2](#-roadmap).
 
-The design brief is one line: *"A celebration of Jo, not a memorial of her."* Warm, bright, handmade, a little cheeky. Jo's maiden name was Hart, so **the heart is the mark**, always red and always hand-stitched. Body text is Atkinson Hyperlegible with a 17 px floor, touch targets are 56 px or larger, there are no modals and nothing hides behind hover. See [`design/DESIGN.md`](design/DESIGN.md).
+The design brief is one line: *"A celebration of Jo, not a memorial of her."* Warm, bright, handmade, a little cheeky. Jo's maiden name was Hart, so **the heart is the mark**, always red and always hand-stitched. Body text is Atkinson Hyperlegible with a 17 px floor, touch targets are 56 px or larger, there are no modals (except the footer's Privacy note and the full-screen diagram view) and nothing hides behind hover. See [`design/DESIGN.md`](design/DESIGN.md).
 
 The repository is also a record of **how it was built**: in three days, by Rob and a team of AI agents (mostly Claude), through 37 merged pull requests, each with a written plan, a premortem, a ledger of decisions and a review. See [How this was built](#-how-this-was-built).
 
@@ -130,6 +130,7 @@ Each feature has a one-to-two page document: what we built, why, the decisions R
 | 🖼️ | [Media uploads](docs/features/media-uploads.md) | Files go straight to private storage on a signed ticket and are checked by their first bytes before they count as received; every photo (HEIC included) gets a web copy and a thumbnail with location data stripped; serving is metered per viewer and day; the claim page lets you add, replace or remove files. |
 | 👨‍👩‍👧 | [Admin panel](docs/features/admin-panel.md) | The family's view of every memory: search, edit the words, approve or hide, delete with a 30-day undo, draft on someone's behalf. Entered once through a link; the secret never leaves the browser. |
 | ✉️ | [Draft on behalf](docs/features/draft-on-behalf.md) | Turn a condolence email or card into a draft memory in the sender's own words (verbatim, or lightly reworded with their exact words kept in the history); the site stays silent until the sender presses Share, which is their consent. |
+| 🔌 | [MCP connector](docs/features/mcp.md) | Rob's Claude reads, drafts and edits memories through eight tools at `/api/mcp`, from the phone or any other Claude surface, behind one bearer secret; a memory can also carry map coordinates for a named place, never a home. |
 | 📬 | [Email and cron](docs/features/email-and-cron.md) | One fixed-content receipt per send with every private link and a card per file (never the visitor's words or pictures); a family alert with no links; per-inbox, hourly and daily caps; an idempotent delivery log; the ten-minute reconcile cron and the three-phase purge. |
 | 🔭 | [Sentry telemetry](docs/features/sentry-telemetry.md) | 100 % traces and unmasked replays for the alpha, with claim tokens and upload tickets scrubbed from every event by a linear-time scanner, proven by a test that runs the real SDK. |
 
@@ -137,7 +138,7 @@ Each feature has a one-to-two page document: what we built, why, the decisions R
 
 ## 🗃️ Data model
 
-Sixteen migrations, additive only. The raw claim token is never stored, only its SHA-256. No memory is hard-deleted; every edit that changes something is a `MemoryRevision`, and each memory keeps its first revision (which records consent) and the latest 199.
+Seventeen migrations, additive only. The raw claim token is never stored, only its SHA-256. No memory is hard-deleted; every edit that changes something is a `MemoryRevision`, and each memory keeps its first revision (which records consent) and the latest 199.
 
 ```mermaid
 erDiagram

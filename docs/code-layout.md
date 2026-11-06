@@ -10,7 +10,7 @@ features/       use cases (createSubmission, recordMedia, confirm); import servi
 services/       interfaces + factories (storage, email, images; the two email templates share `services/email/templates/shared.ts`); import integrations
 integrations/   vendor clients (Vercel Blob, SendGrid, sharp + libheif WASM); import nothing above them
 server/         db client, env sub-schemas (server-only leaves)
-lib/            helpers with no layer above them: logger, validations, claim tokens, media types, site URL (storage and derived prefixes), family contact address (footer, confirmation copy), derived keys, image-derive error, HEIC worker thread, email assets (generated base64 PNG brand marks; `scripts/make-email-assets.ts` regenerates them), README diagram helpers (find README.md's Mermaid blocks for `scripts/make-readme-diagrams.ts`, which renders `public/diagrams/`, and for the drift test; the SVG safety check both run) (some are server-only)
+lib/            helpers with no layer above them: logger, validations, claim tokens, media types, site URL (storage and derived prefixes), family contact address (footer, confirmation copy), the `sourceInput` → `source` + `sourceRef` derivation shared by `scripts/draft-memory.ts` and the MCP `draft_memory` tool (`lib/source-input.ts`), derived keys, image-derive error, HEIC worker thread, email assets (generated base64 PNG brand marks; `scripts/make-email-assets.ts` regenerates them), README diagram helpers (find README.md's Mermaid blocks for `scripts/make-readme-diagrams.ts`, which renders `public/diagrams/`, and for the drift test; the SVG safety check both run) (some are server-only)
 ```
 
 - `app/ → features/ → services/ → integrations/`. A layer imports only from layers below it plus `lib/` and `server/`. Nothing imports from `app/`. Pages and Server Functions call `features/`; route handlers under `app/api/` may also call `services/` directly (they are the HTTP adapter layer); nothing in `app/` imports `integrations/`. `eslint.config.mjs` enforces this with `no-restricted-imports`. One exception: `integrations/*` may import **types** from `services/*/types` (they implement those interfaces); value imports stay forbidden.
@@ -42,6 +42,8 @@ Next.js 16 with `cacheComponents: true` prerenders whatever it can at build time
 ## Checks
 
 `npm run validate` (= `next typegen && tsc --noEmit`, then `eslint`), `npm run test:run`, `npm run build:offline` (the build behind `scripts/no-network.mjs`, which refuses non-loopback sockets and DNS lookups on the main thread of every Node process in the build; worker threads and native code are outside it, so it is a strong check, not a proof — `__tests__/scripts/no-network.test.ts` pins its behaviour). All three pass with `DATABASE_URL` unset and no `.env*` file; fonts come from the Fontsource packages.
+
+`npm audit` is not clean on purpose and every `--force` fix it offers is a downgrade; the overrides in `package.json` and the accepted advisory are explained in `docs/dependencies.md`. Never run `npm audit fix --force`.
 
 ## Rules every agent follows
 
