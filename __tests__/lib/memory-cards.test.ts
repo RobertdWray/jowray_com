@@ -14,6 +14,7 @@ import {
   MAX_CARDS,
   MAX_PLACE_SUGGESTIONS,
   type MemoryCard,
+  NEEDS_CONTENT_HELPER,
   type CardMediaItem,
   placeSuggestionsFor,
   toDraftCards,
@@ -21,7 +22,7 @@ import {
   validateForSend,
 } from "@/lib/memory-cards";
 import { serializeShareDraft } from "@/lib/share-draft";
-import { EMAIL_INVALID_MESSAGE, EMAIL_REQUIRED_MESSAGE, NAME_REQUIRED_MESSAGE } from "@/lib/validations/memory";
+import { EMAIL_INVALID_MESSAGE, EMAIL_REQUIRED_MESSAGE, NAME_REQUIRED_MESSAGE, NEEDS_CONTENT_ITEMS } from "@/lib/validations/memory";
 
 const MB = 1024 * 1024;
 function file(name: string, type: string, size = 10): File {
@@ -66,12 +67,18 @@ describe("initial state and helpers", () => {
 describe("validateForSend", () => {
   it("names each card that has details but neither files nor words, and passes when every open card has content or is empty", () => {
     const cards = [card({ id: "c1", note: "words" }), card({ id: "c2", open: true, approxDateText: "1985" }), card({ id: "c3", open: true }), card({ id: "c4", open: true, media: [item()] })];
-    expect(validateForSend(cards)).toEqual([{ target: "note", cardId: "c2", position: 2, message: "Memory 2 needs a recording, a file or a few words." }]);
+    expect(validateForSend(cards)).toEqual([{ target: "note", cardId: "c2", position: 2, message: "Memory 2 needs at least one: a photo, a video, a voice recording or a few words." }]);
     expect(validateForSend([card({ id: "c1", note: "words" }), card({ id: "c2", open: true })])).toEqual([]);
   });
 
   it("asks for something when nothing at all was given, in the card's own words", () => {
-    expect(validateForSend([card()])).toEqual([{ target: "note", cardId: "c1", position: 1, message: "Memory 1 needs a recording, a file or a few words." }]);
+    expect(validateForSend([card()])).toEqual([{ target: "note", cardId: "c1", position: 1, message: "Memory 1 needs at least one: a photo, a video, a voice recording or a few words." }]);
+  });
+
+  it("says what a card needs before Send in the same list phrase the message and the server use (Rob's R1, 2026-11-06)", () => {
+    expect(NEEDS_CONTENT_HELPER).toBe("Add at least one: a photo, a video, a voice recording or a few words. Everything else is optional.");
+    expect(NEEDS_CONTENT_HELPER).toContain(NEEDS_CONTENT_ITEMS);
+    expect(validateForSend([card()])[0]?.message).toContain(NEEDS_CONTENT_ITEMS);
   });
 });
 

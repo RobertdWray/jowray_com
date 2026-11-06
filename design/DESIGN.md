@@ -62,11 +62,15 @@ never a glossy icon or emoji.
    - `name` → "Your name" (placeholder: *Jane Doe*; required since 2026-11-04)
    - `relationship` → "How you knew Jo (optional)" (placeholder: *former student*)
    - `email` → "Email" (placeholder: *your@email.com*; required since 2026-11-04: it is where the private link goes)
-   - `approxDateText` → "When is this memory from? (roughly is fine)" (placeholder: *Summer 1985*)
+   - Each memory card opens with one helper line under its heading, `text-small` in the helper style:
+     "Add at least one: a photo, a video, a voice recording or a few words. Everything else is optional."
+     (Rob, 2026-11-06: a memory needs at least one of the four; the server refuses a card with neither files nor words.)
+   - `approxDateText` → "When is this memory from? (optional, roughly is fine)" (placeholder: *Summer 1985*)
    - `place` → "Where? (optional)" (placeholder: *her classroom*)
    Placeholders are one short example each, never a sentence: they vanish on focus and a long one is cropped or read as entered text.
-   - `note` → "Your memory of Jo"
-   - `file` + recorder → the "Rather say it than type it?" periwinkle box, then the dashed file field
+   - `note` → "Your memory of Jo (optional with a photo, video or voice recording)"
+   - `file` + recorder → labelled "Add a photo, video or voice recording" (no "(optional)": the helper line says
+     what a card needs), then the "Rather say it than type it?" periwinkle box, then the dashed file field
    - `visibility` → keep as a labelled select, styled like an input, below the file field
    - `contactOptIn` → the checkbox under the submit button, with the sentence from the comp ("Memories go to Richard, Rob and Tracy first…") as its surrounding copy
    - Submit button → "Send this to Jo's family" with the solid heart icon

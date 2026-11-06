@@ -171,7 +171,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
       if (!cardId) {
         return;
       }
-      // A recording answers "needs a recording, a file or a few words" as well as typing does.
+      // A recording answers the empty-card issue (`NEEDS_CONTENT_ITEMS`, lib/validations/memory.ts) as well as typing does.
       clearFieldIssue(`note:${cardId}`);
       const item: CardMediaItem = {
         id: `${cardId}-${crypto.randomUUID()}`,

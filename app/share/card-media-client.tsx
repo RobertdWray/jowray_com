@@ -147,7 +147,7 @@ export function CardMedia({
   return (
     <div id={isFirst ? "record" : undefined} className="flex flex-col gap-3">
       <p className="text-label font-bold" id={`${idBase}-label`}>
-        Add a photo, video or voice recording <span className={helperClass}>(optional)</span>
+        Add a photo, video or voice recording
       </p>
 
       {card.media.length > 0 && (
