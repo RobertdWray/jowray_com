@@ -1,0 +1,35 @@
+PASS  desktop: no horizontal page overflow  — {"scroll":1280,"client":1280}
+PASS  desktop: all three diagrams fit their cards  — [{"w":1146,"card":1152,"ok":true},{"w":1146,"card":1152,"ok":true},{"w":1146,"card":1152,"ok":true}]
+PASS  desktop: Zoom out starts disabled at fit size
+PASS  desktop: Zoom in scales the diagram up  — {"scale":1.5,"x":-286.5,"y":-82}
+PASS  desktop: Zoom out enabled once zoomed in
+PASS  desktop: drag pans once zoomed in  — -286.5 → -573
+PASS  desktop: Fit returns to scale 1  — {"scale":1,"x":0,"y":0}
+PASS  desktop: drag does nothing at fit size  — {"scale":1,"x":0,"y":0}
+PASS  desktop: plain wheel scrolls the page, diagram stays fitted  — scrollY 5782 → 6082, scale 1
+PASS  desktop: Ctrl+wheel zooms the diagram  — {"scale":7,"x":-3438,"y":-978.09}
+PASS  desktop: Full screen opens a modal dialog that fills the window  — {"open":true,"modal":true,"rect":[0,0,1280,900],"vw":1280,"vh":900,"focus":"H2:Architecture","htmlOverflow":"hidden"}
+PASS  desktop: focus starts on the full-screen title  — H2:Architecture
+PASS  desktop: page scroll is locked behind the dialog  — hidden
+PASS  desktop: full-screen arrow button pans  — -320 → -440
+PASS  desktop: arrow keys pan in full screen  — -440 → -390
+PASS  desktop: Esc closes full screen and returns focus  — {"open":false,"focus":"Full screen: Architecture","htmlOverflow":"visible"}
+PASS  desktop: Close shuts full screen and returns focus  — {"open":false,"focus":"Full screen: Architecture"}
+PASS  desktop: Privacy button is in the footer and ≥44px tall  — {"x":770.890625,"y":807.890625,"width":55.734375,"height":44}
+PASS  desktop: Privacy note opens centred as a modal  — {"modal":true,"centreDx":0,"centreDy":0,"width":560,"focus":"H2:Privacy, the short version","label":"Privacy, the short version","describedby":null,"htmlOverflow":"hidden"}
+PASS  desktop: focus starts on the note title; no aria-describedby  — H2:Privacy, the short version
+PASS  desktop: page scroll locked while the note is open
+PASS  desktop: Tab never reaches the inert page behind the note  — ["A:true","BUTTON:true","BODY:false","A:true"]
+PASS  desktop: Esc closes the note and focus returns to Privacy  — {"open":false,"focus":"Privacy"}
+PASS  desktop: a backdrop click closes the note
+PASS  desktop: a click inside the note does not close it
+PASS  desktop: Close shuts the note
+PASS  desktop: the note's link navigates and the note is closed  — {"path":"/how-it-was-built","open":false,"htmlOverflow":"visible"}
+PASS  desktop: no console errors
+PASS  phone: no horizontal page overflow  — {"scroll":390,"client":390}
+PASS  phone: one-finger swipe over a fitted diagram scrolls the page  — scrollY 9021 → 9220, scale 1
+PASS  phone: full screen fills the window and the diagram fits  — {"w":390,"h":844,"vw":390,"vh":844,"imgW":390}
+PASS  phone: Privacy note fits with 16px gutters  — {"left":21,"right":369,"vw":390}
+PASS  phone: no console errors
+
+33/33 checks passed
