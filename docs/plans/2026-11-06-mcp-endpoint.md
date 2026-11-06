@@ -75,7 +75,7 @@ Checked on 2026-11-06 by unpacking the npm tarballs. Line numbers are in the pub
 
 ## 3. Progress ledger
 
-**Next action:** commit 1 (§4.1).
+**Next action:** commit 2 (§4.2).
 
 **Drift since `95f4df4` (2026-11-06):** `main` gained PRs #53, #54 and #57 (`982a141`). Of the files this plan cites, `AGENTS.md`, `README.md`, `docs/environment.md` and `docs/code-layout.md` changed, so their line numbers may differ: re-read before editing. `features/`, `lib/validations/`, `lib/sentry/`, `scripts/draft-memory.ts`, `prisma/`, `server/config/env.ts`, `app/api/admin/` and `docs/skills/` are unchanged.
 
@@ -83,8 +83,8 @@ Checked on 2026-11-06 by unpacking the npm tarballs. Line numbers are in the pub
 |---|---|---|---|---|
 | Plan v2 approved | Rob | done | Rob, 2026-11-06: "Execute this plan in a new worktree" | |
 | Commit 0: plan + issue copied into `docs/plans/`, branch pushed | agent | done | first commit on the branch (`docs(plans): add the MCP endpoint plan and its source issue`) | `git ls-remote --heads origin claude/affectionate-cannon-an6o5d` lists it; both files on the branch |
-| `npm ci`; Next.js docs re-read; citation drift recorded here | agent | no | | "no drift" or the diff noted |
-| Commit 1 schema + migration | agent | no | | `npx prisma validate` ok; folder `20261106120000_memory_coordinates` present |
+| `npm ci`; Next.js docs re-read; citation drift recorded here | agent | done | Node 26.13.0. **No drift**: `node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/route.md` (HTTP methods, `NextRequest`, `new Headers(request.headers)`), `02-route-segment-config/maxDuration.md`, `02-route-segment-config/index.md` (v16.0.0 row: `dynamic`, `dynamicParams`, `revalidate`, `fetchCache` removed under Cache Components) and `01-getting-started/08-caching.md` / `15-route-handlers.md` (`GET` Route Handlers follow the prerendering model of pages) say what [C6]–[C9] quote | "no drift" or the diff noted |
+| Commit 1 schema + migration | agent | done | `prisma validate` ok; `prisma generate` adds `latitude`/`longitude: number \| null`; `migrate deploy` applied all 17 migrations to a throwaway Postgres 18.6 cluster (Homebrew, TCP port 55432, scratchpad); `\d "Memory"` shows the three CHECKs; `prisma migrate diff --from-config-datasource --to-schema` against it prints "This is an empty migration" (schema and SQL agree) | `npx prisma validate` ok; folder `20261106120000_memory_coordinates` present |
 | Commit 2 coordinates features + tests | agent | no | | `test:run` green incl. new files; integration test green locally against Postgres or in CI |
 | Commit 3 `lib/source-input.ts` | agent | no | | script test green with assertions unchanged |
 | Commit 4 deps, env, auth | agent | no | | pinned versions in `package.json`; `build:offline` green |
