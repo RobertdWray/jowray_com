@@ -73,7 +73,7 @@ Every tool can also answer `internal { eventId }`. `not_found` means no such mem
 
 ### Two kinds of refusal
 
-- **Schema refusal.** The SDK checks the arguments against the tool's zod input schema before our code runs. A mismatch (a `source` or `sourceRef` on `draft_memory`, a mistyped `contributor` key, a half pair or an out-of-range coordinate, a non-uuid id, `DRAFT` as a status) is HTTP 200 with `isError: true` and the SDK's validation message as **plain text**: no `structuredContent`, no `code`, and the feature is never called. Every tool's input is strict at the top level (and `draft_memory`'s `contributor` too), so an unknown or misplaced key, such as a `note` beside `update_memory`'s `changes`, is refused rather than dropped (Team Code Review, G2).
+- **Schema refusal.** The SDK checks the arguments against the tool's zod input schema before our code runs. A mismatch (a `source` or `sourceRef` on `draft_memory`, a mistyped `contributor` key, a half pair or an out-of-range coordinate, a non-uuid id, `DRAFT` as a status) is HTTP 200 with `isError: true` and the SDK's validation message as **plain text**: no `structuredContent`, no `code`, and the feature is never called. Every tool's input is strict at the top level (and `draft_memory`'s `contributor` too), so an unknown or misplaced key, such as a `note` beside `update_memory`'s `changes`, is refused rather than dropped (Team Code Review, G2). Before any schema runs, the SDK also refuses a call whose arguments hold more than 1000 elements (array items plus object members; `maxToolInputElements`, G3), the same way and with its own message; a full `draft_memory` has about 20.
 - **Feature refusal.** The feature ran and said no. HTTP 200 with `isError: true` and JSON `{ code, ...extra }` (the feature's result without its `ok` flag) in both `structuredContent` and the text block. `prepareInput` refusals (a bad Gmail id, phone number or timestamp; an `other` email that differs from `contributor.email`) come back the same way as `invalid` with the message.
 - **Transport answers** are not tool results: `401` from the gate; `400` for a malformed 2026-07-28 request (for example without `Mcp-Method`); `405` for an authenticated `GET` on the stateless 2025-era path; `500` when the handler itself fails.
 
@@ -118,7 +118,7 @@ One stateless handler serves the 2025-era Streamable HTTP (JSON-RPC over `POST`,
 | Path | Role |
 |---|---|
 | **app** | |
-| `app/api/mcp/route.ts` | `GET` and `POST`: the gate, then `createMcpHandler` (`serverInfo` `jowray`, `listChanged: false`, `maxSubscriptions: 0`, `onEvent` → `reportHandlerEvent`); `maxDuration` 30 |
+| `app/api/mcp/route.ts` | `GET` and `POST`: the gate, then `createMcpHandler` (`serverInfo` `jowray`, `listChanged: false`, `maxSubscriptions: 0`, `maxToolInputElements: 1000`, `onEvent` → `reportHandlerEvent`); `maxDuration` 30 |
 | `app/api/mcp/tools.ts` | The eight tool definitions (`TOOLS`), `registerTools`, `toolResult`, `refusal`, the `runTool` boundary, the place rule |
 | `app/api/admin/_auth.ts` | `unauthorized(request, realm)`: one bearer gate for the `admin` and `mcp` realms; plain 401, no challenge |
 | **features** | |
@@ -136,7 +136,7 @@ One stateless handler serves the 2025-era Streamable HTTP (JSON-RPC over `POST`,
 | `docs/environment.md` | `MCP_API_SECRET` row; "MCP connector (`/api/mcp`)" setup, rotation and fallback |
 | `docs/skills/jowray-draft-memory/SKILL.md` | The skill: connector first, script as fallback; the coordinates question; `duplicate`, `stale` and `internal` handling |
 | **tests** | |
-| `__tests__/api/mcp.test.ts` | Gate; `tools/list` inline snapshot (the contract); every result row; boundary on all eight tools; schema and `prepareInput` refusals, including an unknown top-level key on every tool; no `claimToken` in any body; the 2026-07-28 era; `listChanged: false` in both eras |
+| `__tests__/api/mcp.test.ts` | Gate; `tools/list` inline snapshot (the contract); every result row; boundary on all eight tools; schema and `prepareInput` refusals, including an unknown top-level key on every tool and arguments over 1000 elements; no `claimToken` in any body; the 2026-07-28 era; `listChanged: false` in both eras |
 | `__tests__/api/mcp-handler-errors.test.ts` | A registration throw in either era reaches Sentry once and Pino with ids only; protocol rejections reported; normal calls report and log nothing |
 | `__tests__/lib/sentry-envelope.test.ts` | MCP span case with the real SDK: `mcp.tool.name` and `mcp.tool.result.content` present, no `SENTRYTEST_` token |
 | `__tests__/api/admin-auth.test.ts`, `__tests__/lib/env.test.ts` | Realms independent, fail closed, no `WWW-Authenticate`, header read before env; `getMcpEnv` |

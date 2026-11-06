@@ -894,6 +894,19 @@ describe("schema refusals and prepareInput refusals (case 5)", () => {
     }
   });
 
+  it("refuses arguments with more than 1000 elements before the schema runs (maxToolInputElements; Team Code Review G3, GHSA-46jr-4wx8-v453)", async () => {
+    // 2 members + 1001 array items: over the limit, counted by the SDK before zod sees it.
+    const { status, result } = await callTool("update_memory", { ...changeArgs, padding: Array.from({ length: 1001 }, () => 0) });
+    expect(status).toBe(200);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toBeUndefined();
+    expect(result.content[0]!.text).toBe("Invalid arguments for tool update_memory: arguments contain more than the maximum of 1000 elements");
+    // A legitimate call stays far below the limit: the largest input, a full draft, has about 20 elements.
+    features.draftMemory.mockResolvedValueOnce({ ok: true, memoryId: ID, claimToken: CLAIM_TOKEN, claimLink: CLAIM_LINK, originalNoteRecorded: false });
+    expect((await callTool("draft_memory", draftArgs)).result.isError).toBeUndefined();
+    expect(features.updateMemoryAsAdmin).not.toHaveBeenCalled();
+  });
+
   it("maps a prepareInput refusal to invalid with its message, before the feature", async () => {
     const mismatch = await callTool("draft_memory", { ...draftArgs, sourceInput: { kind: "other", email: "someone-else@example.com", originalText: "Dear Rob" } });
     expect(mismatch.result.isError).toBe(true);
