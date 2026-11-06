@@ -81,3 +81,27 @@ Also observed:
 | File | What it shows |
 |---|---|
 | `b6f1-390-readd-after-failure.png` | 390×844. The page's `fetch` was wrapped so the first `POST /api/places/suggest` answered a faked `503 busy`: no buttons. After removing the photo and picking it again, a second request answered 200 and the button appeared, as shown. A third remove and re-add sent no request: the kept answer was reused. |
+
+### B9: local end-to-end (2026-11-06, `next dev -p 3107`, `PLACES_PROVIDER=stub`)
+
+Run on the throwaway Neon branch `gps-e2e-20261106` (`br-winter-lab-bbd4405m`) in an isolated Chrome DevTools context at
+390×844. The contributor was "Runtime check PR B" with an `@example.com` address; outbound email was off. The photos were
+the generated `b6-liberty-gps.jpg` and `b6-no-gps.jpg`. A throwaway `MCP_API_SECRET` lived only in the dev process. Rows
+were read with a script that refuses any database host but the branch's endpoint and prints points at 2 dp.
+
+| File | What it shows |
+|---|---|
+| `b9-390-no-gps-nothing.png` | Step 2: the no-EXIF photo alone. There were no buttons, the live region was empty (0 px), and no `POST /api/places/suggest` was sent. |
+| `b9-390-liberty-tapped.png` | Step 1: after adding the Liberty photo, one lookup (200) gave the stub button "Photo location found near 40.69, -74.04 (test)" and the credit link. The tap filled Where and the button shows pressed. |
+| `b9-e2e-results.json` | All steps as data. **During Send**, the place button became `disabled` in the same mutation that turned Send into "Sending…" (27 ms after the click). **Step 3**, after the after-hook: the Liberty row has `gpsCheckedAt` and 40.69, -74.04; the no-GPS row has `gpsCheckedAt` and no coordinates; each took 1 attempt; the memory's own coordinates stay null (D1). **Step 4**: the cron (`GET /api/cron/reconcile-uploads`, bearer `CRON_SECRET`) answered 200 with every count 0 (`gps*` included), and the rows were unchanged. **Step 5**, MCP JSON-RPC: `tools/list` has 9 tools in both eras; `suggest_places` is `readOnlyHint` + `openWorldHint`; `get_memory` gives each file a `coordinates` key (Liberty 40.69, -74.04; null for the other); `suggest_places` returns the Liberty photo with its stub label, `pending: []` and the credit; a wrong bearer gets 401 with no `WWW-Authenticate`. |
+
+Also observed:
+- The two `photo_gps` log lines carry `mediaId`, `outcome` (`absent`, `found`) and `attempt` only. The dev log holds no coordinate.
+- Finalize sent one real `ADMIN_NEW_MEMORY` alert for this test memory. One of the two `ADMIN_ALERT_EMAILS` addresses is on
+  `OUTBOUND_ALLOWLIST`, so the guard dropped the other and sent to that one. "Outbound off" means allowlisted addresses
+  only, not no email at all.
+- The Sentry build line `[@sentry/nextjs] The tunnel route sends events through app/sentry-tunnel/route.ts. Only the event
+  payload goes to Sentry.` prints only with `CI` set (`next.config.ts` has `silent: !process.env.CI`). `CI=1 npm run
+  build:offline` printed it and exited 0. It also logged two Sentry release-creation network errors, which is the release step
+  meeting the network block, not a build failure.
+
