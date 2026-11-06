@@ -1,6 +1,6 @@
 # Share form: optional fields made clear + photo GPS, place suggestions and MCP lookup (Refs #58)
 
-**Plan revision 3 (2026-11-06).** Reviewed against `origin/main` = `982a1414c07c89afc17b4ae0637bdd18f184e68f` and PR #60 head =
+**Plan revision 3 (2026-11-06); executed 2026-11-06 (ledger §5.7, rulings §5.8).** Reviewed against `origin/main` = `982a1414c07c89afc17b4ae0637bdd18f184e68f` and PR #60 head =
 `9d841a8217c459cdfdaba662f52e286c333fd57b`.
 
 **Authoritative copy.**
@@ -207,28 +207,45 @@ The main checkout is behind `origin/main` and shared with other sessions. Never 
 
 | Step | What | Done-check | State | Commit | Evidence | Next |
 |---|---|---|---|---|---|---|
-| A0 | Worktree from `origin/main` | `git log -1` = recorded `origin/main` | implemented | `982a141` (base) | worktree `jowray_wt_share_optional`, `git log -1` = `982a1414c07c…` | A1 |
-| A1 | Tests first (messages) | RED for the right reason | todo | | | A2 |
-| A2 | Copy and DESIGN.md | tests GREEN | todo | | | A3 |
-| A3 | Checks, runtime check, docs | three checks pass; §9.A bullets pass | todo | | | A4 |
-| A4 | PR A opened ("Refs #58"), `ci` green, review sorted | PR URL; review verdict | todo | | | Rob merges |
-| B0 | Worktree from #60; plan and evidence README committed | `docs/plans/2026-11-06-photo-gps-places.md` plus `docs/plans/evidence/2026-11-photo-gps/README.md` in `git log` | implemented | base `9d841a8`; this commit | exiftool 13.55 installed (R6); local PG 18 on 127.0.0.1:55432 db `jowray_test` (scratchpad cluster, socket dir `/tmp/jwpg`), migrated, existing integration suites 37/37 | B1 |
-| B1 | Schema and migration | integration CHECK tests pass on PG 18 | todo | | | B2 |
-| B2 | `lib/photo-gps.ts` and fixtures (late-EXIF JPEG, GPS HEIC via exiftool) | unit tests GREEN | todo | | | B3 |
-| B3 | `extractPhotoGps`, after-hooks, cron step (h) | unit and route tests GREEN incl. the fail-once-then-recover test | todo | | | B4 |
-| B4 | Places: env, lib, services, Nominatim + stub, `lookupPlace` | unit tests GREEN; fake-provider timing tests; real-PG two-caller spacing test | todo | | | B5 |
-| B5 | `POST /api/places/suggest` | route tests GREEN | todo | | | B6 |
-| B6 | Share UI suggestions | lib tests GREEN; runtime check with stub shows buttons | todo | | | B7 |
-| B7 | MCP: media coordinates, `suggest_places`, skill | `mcp.test.ts` updated in all three spots; tool tests GREEN | todo | | | B8 |
-| B8 | Logger keys, docs, layout sync | grep checks in §B8 | todo | | | B9 |
-| B9 | Full checks plus local e2e (§9.B) | all bullets pass; Neon branch id recorded | todo | | | B10 |
+| A0 | Worktree from `origin/main` | `git log -1` = recorded `origin/main` | reviewed | `982a141` (base) | worktree `jowray_wt_share_optional` | A1 |
+| A1 | Tests first (messages) | RED for the right reason | reviewed | `051f043` | RED: 3 failures on the old text only | A2 |
+| A2 | Copy and DESIGN.md | tests GREEN | reviewed | `051f043`, `90e50fe` | GREEN 73/73; one shared `NEEDS_CONTENT_ITEMS` phrase after review | A3 |
+| A3 | Checks, runtime check, docs | three checks pass; §9.A bullets pass | reviewed | `96ec1cb`, `75c3819`, `86eff4d` | `docs/plans/evidence/2026-11-share-optional/` (on the PR A branch) | A4 |
+| A4 | PR A opened ("Refs #58"), `ci` green, review sorted | PR URL; review verdict | reviewed | `f2495a0` (merge of `origin/main`) | [#63](https://github.com/RobertdWray/jowray_com/pull/63); `/code-review high` + spec: Approved, fix round 1 re-reviewed clean | Rob merges |
+| B0 | Worktree from #60; plan and evidence README committed | `docs/plans/2026-11-06-photo-gps-places.md` plus `docs/plans/evidence/2026-11-photo-gps/README.md` in `git log` | reviewed | `ba9c884` (base `9d841a8`) | exiftool 13.55 (R6); local PG 18 on 127.0.0.1:55432 | B1 |
+| B1 | Schema and migration | integration CHECK tests pass on PG 18 | reviewed | `9b1d5db` | RED three ways, GREEN; `migrate diff` no drift | B2 |
+| B2 | `lib/photo-gps.ts` and fixtures (late-EXIF JPEG, GPS HEIC via exiftool) | unit tests GREEN | reviewed | `9d10cb6`, `4c81778` | 48/48; XMP excluded (ruling) | B3 |
+| B3 | `extractPhotoGps`, after-hooks, cron step (h) | unit and route tests GREEN incl. the fail-once-then-recover test | reviewed | `058c1cd`, `d63bd2f`, `a87d2e3` | 24/24 + integration; readPrefix deadline after review | B4 |
+| B4 | Places: env, lib, services, Nominatim + stub, `lookupPlace` | unit tests GREEN; fake-provider timing tests; real-PG two-caller spacing test | reviewed | `1368561`, `1302b3e` | sends ≥ 1.1 s apart (fake clock and PG 18); 3 s send budget after review | B5 |
+| B5 | `POST /api/places/suggest` | route tests GREEN | reviewed | `39d6018` | 24/24; review clean | B6 |
+| B6 | Share UI suggestions | lib tests GREEN; runtime check with stub shows buttons | reviewed | `8faf41e`, `7ca8a9c`, `8f20e67` | `b6-*` evidence; queue helper after review | B7 |
+| B7 | MCP: media coordinates, `suggest_places`, skill | `mcp.test.ts` updated in all three spots; tool tests GREEN | reviewed | `e6cd48c`, `8b2c9be`, `0b2ec46` | 9 tools both eras | B8 |
+| B8 | Logger keys, docs, layout sync | grep checks in §B8 | reviewed | `dd2aa6d`, `41a8598`, `d61e0d9` | both greps hit; AGENTS.md block identical | B9 |
+| B9 | Full checks plus local e2e (§9.B) | all bullets pass; Neon branch id recorded | reviewed | `ccae5ef` | Neon `gps-e2e-20261106` = `br-winter-lab-bbd4405m`; `b9-*` evidence | B10 |
 | B10 | PR B opened (base = #60 branch), `ci` green, review sorted | PR URL; review verdict | todo | | | B11 |
-| B11 | After #60 (and A) merge: transition per §10 | `git diff origin/main...HEAD --stat` lists only B files; `ci` green | todo | | | B12 |
+| B11 | After #60 (and A) merge: transition per §10 | `git diff origin/main...HEAD --stat` lists only B files; `ci` green | implemented (early) | `7c110d2`, `b43d1db` | #60 merged 2026-11-06 18:56 UTC as merge commit `d583308`; merged `origin/main` before B6 and again after #61; only B files in the diff | after A merges: merge again |
 | B12 | Rob: Vercel env, merge, deploy, smoke, device checks (§9.C, §9.D) | deployed SHA recorded; smoke passes | todo | | | done |
 
 ### 5.8 Rulings log (execution-time deviations: "Ruling: what — why — cost if wrong")
 
-(empty)
+- Ruling: PR A and PR B were built at the same time in their own worktrees — separate branches cannot collide; the one overlap is merged at B11 — cost if wrong: a slightly larger merge.
+- Ruling: PR A's runtime check used the Neon `dev` branch with env files copied in for the run and deleted after — §9.A names no database — cost if wrong: one throwaway row on `dev`.
+- Ruling: the Neon `dev` branch was brought up to `main` with `prisma migrate deploy` (four additive migrations already in production) — every send 500'd without them — cost if wrong: none; `dev` is meant to track `main`.
+- Ruling: the B1 migration was generated against a local PG 18 database, not a Neon branch — only a database at the latest migration is needed — cost if wrong: none.
+- Ruling: PR A's per-step review and its `/code-review high` were one reviewer — ~60 lines of copy — cost if wrong: one less pass on a copy PR.
+- Ruling: the `/share` intro now says the date is optional ("if you know") and names the non-word options — it asked everyone for a date, contradicting #58 and R1 — cost if wrong: Rob rewords one sentence.
+- Ruling: `readGpsFromFile` falls back to the bytes path when the `length: "auto"` read rejects — ExifReader rejects metadata-less WebP/HEIC with an untyped error; no message matching — cost if wrong: one extra local read for such files.
+- Ruling: GPS refs must be exactly N/S/E/W and `MetadataMissingError` is `absent` (D12) — cost if wrong: a rare lowercase-ref camera gives no suggestion.
+- Ruling: `excludeTags` gains `xmp: true` on both read paths (deviates from §B2's verbatim options) — GPS comes only from EXIF; skips parsing untrusted XML — cost if wrong: none for GPS.
+- Ruling: the GPS claim is compare-and-set on the attempt count just read, not `gpsAttempts < 3` — with `< 3` two workers can both claim — cost if wrong: none; strictly stronger.
+- Ruling: no new index for step (h) — measured 0.3 ms on 5,010 rows; a partial index needs Prisma's `partialIndexes` preview feature — cost if wrong: a slower cron query at a size this site won't reach.
+- Ruling: a `failed` GPS read is counted and sent to Sentry but does not mark the cron run errored, like (g) — cost if wrong: the failure shows in Sentry, not the check-in.
+- Ruling: with `PLACES_PROVIDER` `off` or `stub`, `lookupPlace` answers right after the viewer count without reading the cache — Preview databases copy production, so a cache read would hide whether the stub works; `off` is a total switch — cost if wrong: cached labels are not shown while `off`.
+- Ruling: a lookup that cannot send within 3 s of winning the slot releases it and answers `busy` (review finding on §B4's proof: a stall between claim and send could break the 1.1 s spacing) — cost if wrong: an occasional extra `busy`.
+- Ruling: Sentry's `sentry-trace`/`baggage` on Nominatim requests are disclosed, not changed — no personal data; `tracePropagationTargets` is a repo-wide choice — cost if wrong: OSMF sees our trace metadata; follow-up F10.
+- Ruling: B11's merge of `origin/main` ran before B6 (and again after #61) — #60 merged as a merge commit and its later commits touched files B7/B8 edit — cost if wrong: none.
+- Ruling: `suggest_places` keeps `photos[].coordinates` and its description names it as the camera point — less churn than renaming; Rob approves every save — cost if wrong: a model could conflate the points.
+- Ruling: GPS reads on /share have their own queue (cap 2), separate from lookups (cap 2) — lookups can wait seconds on the site slot — cost if wrong: up to four tasks at once on a phone.
 
 ---
 
