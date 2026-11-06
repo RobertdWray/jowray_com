@@ -12,13 +12,13 @@ import { createLogger } from "@/lib/logger";
 import { tagIds } from "@/lib/sentry/user";
 import { prepareInput } from "@/lib/source-input";
 import {
-  adminCoordinatesSchema,
-  adminDeletedSchema,
-  adminMemoryChangesSchema,
-  adminMemoryIdSchema,
-  adminStatusSchema,
+  mcpCoordinatesSchema,
+  mcpDeletedSchema,
   mcpDraftInputSchema,
   mcpListInputSchema,
+  mcpMemoryChangesSchema,
+  mcpMemoryIdSchema,
+  mcpStatusSchema,
 } from "@/lib/validations/mcp";
 
 /**
@@ -52,7 +52,7 @@ const TOOLS = {
     title: "Get a memory",
     description:
       "One memory with its contributor, files, coordinates, revision history and emails. `memoryVersion` and `contributor.contributorVersion` are what update_memory and set_coordinates need.",
-    inputSchema: adminMemoryIdSchema,
+    inputSchema: mcpMemoryIdSchema,
     annotations: { readOnlyHint: true },
   },
   draft_memory: {
@@ -64,32 +64,32 @@ const TOOLS = {
   set_coordinates: {
     title: "Set a memory's coordinates",
     description: `Sets or clears a memory's coordinates. ${PLACE_RULE} Call get_memory first for \`memoryVersion\`; \`null\` clears both; \`changed: false\` means the pair was already equal. Returns the new \`memoryVersion\` (unchanged when nothing changed): pass it to a following update_memory or set_coordinates instead of re-reading.`,
-    inputSchema: adminCoordinatesSchema,
+    inputSchema: mcpCoordinatesSchema,
     annotations: { destructiveHint: true, idempotentHint: true },
   },
   update_memory: {
     title: "Edit a memory",
     description:
       "Edits a memory's words, date, place, visibility or the contributor's name and relationship; send only the keys you change. Read `memoryVersion` and `contributor.contributorVersion` from get_memory first. On `stale`, compare `current` with the values you originally read; if a field you did not intend to change differs, stop and ask before retrying, otherwise retry from `current`.",
-    inputSchema: adminMemoryChangesSchema,
+    inputSchema: mcpMemoryChangesSchema,
     annotations: { destructiveHint: true },
   },
   set_status: {
     title: "Set a memory's status",
     description: "Moves a shared memory between PENDING, APPROVED and HIDDEN. A DRAFT is refused (`draft`): only the sender's Share leaves DRAFT.",
-    inputSchema: adminStatusSchema,
+    inputSchema: mcpStatusSchema,
     annotations: { destructiveHint: true, idempotentHint: true },
   },
   set_deleted: {
     title: "Delete or restore a memory",
     description: "Soft-deletes (`deleted: true`) or restores (`deleted: false`) a memory. On restore, `purgedFiles` counts files whose bytes are already gone.",
-    inputSchema: adminDeletedSchema,
+    inputSchema: mcpDeletedSchema,
     annotations: { destructiveHint: true, idempotentHint: true },
   },
   reissue_claim_link: {
     title: "Reissue a draft's claim link",
     description: "Mints a new claim link for a DRAFT. This revokes the link already sent; only on Rob's explicit confirmation.",
-    inputSchema: adminMemoryIdSchema,
+    inputSchema: mcpMemoryIdSchema,
     annotations: { destructiveHint: true, idempotentHint: false },
   },
 } as const;
