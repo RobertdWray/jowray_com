@@ -56,6 +56,11 @@ The Cloudflare API MCP server (`https://mcp.cloudflare.com/mcp`, [docs](https://
 dig +noall +answer A jowray.com @1.1.1.1
 dig +noall +answer www.jowray.com @1.1.1.1
 
+# Inbound email: expect route1/2/3.mx.cloudflare.net and the Cloudflare SPF include
+dig +short MX jowray.com @1.1.1.1
+dig +short TXT jowray.com @1.1.1.1
+cf email-routing rules list -z dad5b9fdb1ece5afc4a4224f61a51770
+
 # HTTP: expect 200 on www, 308 on apex
 curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' https://www.jowray.com/
 curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' https://jowray.com/
@@ -70,6 +75,7 @@ Your machine may say a host doesn't resolve for up to 30 minutes after a record 
 
 ## Not done here
 
+- **DMARC enforcement and reports.** `_dmarc` is `p=none`, so receivers don't reject mail that spoofs `@jowray.com`. Its `rua` address `dmarc@jowray.com` has no routing rule and bounces, so no aggregate reports arrive. Before tightening the policy to `quarantine` or `reject`, route `dmarc@` (or point `rua` elsewhere) and read the reports.
 - **The `vercel.app` alias.** `jowraycom.vercel.app` still serves the site instead of redirecting to `www.jowray.com`. That's harmless now. If duplicate indexing ever matters, redirect it.
 - **Absolute URLs in code.** The app doesn't build any yet. When it does (Open Graph `metadataBase`, magic-link callbacks, SMS reply links), use `https://www.jowray.com`.
 
@@ -86,7 +92,9 @@ Created by `scripts/dns-setup.ts` (idempotent; re-run it to check validation). S
 
 ## Inbound email (Cloudflare Email Routing, enabled 2026-11-06)
 
-`memories@jowray.com` is the From address of every site email, and Cloudflare Email Routing forwards it to `robwray@gmail.com` (`FAMILY_CONTACT_EMAIL` in `lib/contact.ts`). So a reader who presses Reply reaches the family, and the emails set no Reply-To. (PR #54 briefly set a gmail.com Reply-To while the zone had no MX. That costs about 2 SpamAssassin points (`FREEMAIL_FORGED_REPLYTO`), so it was removed once forwarding worked.)
+`memories@jowray.com` is the From address of every site email, and Cloudflare Email Routing forwards it to `robwray@gmail.com` (`FAMILY_CONTACT_EMAIL` in `lib/contact.ts`). So a reader who presses Reply reaches the family, and the emails set no Reply-To. PR #54 briefly set a gmail.com Reply-To while the zone had no MX; it was removed once forwarding worked, because a freemail Reply-To on a jowray.com From costs about 2 SpamAssassin points (`FREEMAIL_FORGED_REPLYTO`).
+
+The rule matches the literal address only. If `SENDGRID_FROM_EMAIL` ever changes, add a rule for the new address first, or replies bounce again. If `FAMILY_CONTACT_EMAIL` changes, update the rule's destination too, and verify the new destination in Cloudflare.
 
 | Item | Value | Id |
 |---|---|---|
@@ -106,4 +114,4 @@ Records Email Routing added on enable. Cloudflare marks the MX and DKIM records 
 
 Proven on 2026-11-06. A message from a Gmail account to `memories@jowray.com` arrived at `robwray@gmail.com` with SPF (SRS envelope `@jowray.com`), DKIM (`jowray.com`, `cloudflare-email.net`, `gmail.com`), ARC and DMARC all passing.
 
-**Managing it.** `CLOUDFLARE_DNS_ONLY_API_TOKEN` cannot manage Email Routing: `/email/routing` returns error 10000. Use the `cf` CLI (1.0.0-beta.28 or newer) after `cf auth login`, which grants the `email_routing:write` OAuth scope. Commands live under `cf email-routing` (`settings get`, `dns get`, `rules list|create`, `addresses create`, `rules catch-all get`). Pass the zone id with `-z`; the dry-run output shows a domain name left unresolved in the URL. The dashboard path is Email → Email Routing.
+**Managing it.** `CLOUDFLARE_DNS_ONLY_API_TOKEN` cannot manage Email Routing: `/email/routing` returns error 10000. Use the `cf` CLI (1.0.0-beta.28 or newer) after `cf auth login`, which grants the `email_routing:write` OAuth scope. Commands live under `cf email-routing` (`settings get`, `dns get`, `rules list|create`, `addresses create`, `rules catch-all get`). Pass the zone id (not the domain name) with `-z`. The dashboard path is Email → Email Routing.

@@ -604,10 +604,18 @@ describe("replies: memories@jowray.com is forwarded by Cloudflare Email Routing"
 
   // A freemail Reply-To on a jowray.com From costs about 2 SpamAssassin points
   // (FREEMAIL_FORGED_REPLYTO); the From address now receives mail, so none is set.
+  function expectFromWithoutReplyTo() {
+    const msg = sendMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(msg.from).toBe("memories@jowray.com");
+    // Every way the SendGrid helper can carry one: the field, the list form and a raw header.
+    expect(msg).not.toHaveProperty("replyTo");
+    expect(msg).not.toHaveProperty("replyToList");
+    expect(Object.keys((msg.headers ?? {}) as Record<string, unknown>).map((k) => k.toLowerCase())).not.toContain("reply-to");
+  }
+
   it("every email type is From the sending address and sets no Reply-To, so a reader's Reply goes to the forwarded address", async () => {
     expect((await sendMemoryConfirmation(base)).sent).toBe(true);
-    expect(lastMessage().from).toBe("memories@jowray.com");
-    expect(lastMessage()).not.toHaveProperty("replyTo");
+    expectFromWithoutReplyTo();
 
     const receipt: SubmissionConfirmationInput = {
       anchorMemoryId: "mem_anchor",
@@ -615,12 +623,10 @@ describe("replies: memories@jowray.com is forwarded by Cloudflare Email Routing"
       memories: [{ position: 1, hasWords: true, media: [], claimLink: "https://www.jowray.com/m/aaaa", missingFiles: 0 }],
     };
     expect((await sendSubmissionConfirmation(receipt)).sent).toBe(true);
-    expect(lastMessage().from).toBe("memories@jowray.com");
-    expect(lastMessage()).not.toHaveProperty("replyTo");
+    expectFromWithoutReplyTo();
 
     expect((await sendAdminNewMemory(adminContent)).sent).toBe(true);
-    expect(lastMessage().from).toBe("memories@jowray.com");
-    expect(lastMessage()).not.toHaveProperty("replyTo");
+    expectFromWithoutReplyTo();
     expect(sendMock).toHaveBeenCalledTimes(3);
   });
 });
