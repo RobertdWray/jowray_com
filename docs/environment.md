@@ -81,7 +81,7 @@ These are used by the agent running the Phase 1 plan and by GitHub Actions, neve
 |---|---|
 | `BLOB_READ_WRITE_TOKEN` | Read-write token for the private Vercel Blob store `jowray-media`; set by Vercel in all three environments when the store was connected, merged into local `.env` from a temporary env pull. |
 | `BLOB_STORE_ID` | The store id (`store_…`), the fourth `_` segment of the token. Needed by the Vercel CLI next to `VERCEL_OIDC_TOKEN`. `.env` only. |
-| `SENDGRID_FROM_EMAIL` | The confirmation email's from-address, on the authenticated domain `jowray.com`. Production + Preview + `.env`. |
+| `SENDGRID_FROM_EMAIL` | The from-address of every site email, on the authenticated domain `jowray.com`. A Cloudflare Email Routing rule for the literal address memories@jowray.com forwards replies to `FAMILY_CONTACT_EMAIL` (`lib/contact.ts`, a constant, not an env key), so no Reply-To is set. Changing this value needs a matching Cloudflare rule first; see [domain.md](domain.md#inbound-email-cloudflare-email-routing-enabled-2026-11-06). Production + Preview + `.env`. |
 | `OUTBOUND_ENABLED` | Strict `"true"`/`"false"`. When false, email goes only to `OUTBOUND_ALLOWLIST`. `true` in Production only. |
 | `OUTBOUND_ALLOWLIST` | Comma-separated addresses that may receive email even when outbound is disabled (lower-cased, trimmed). Production + Preview. |
 | `ADMIN_ALERT_EMAILS` | Comma-separated family-admin addresses that get the "new memory" alert (`ADMIN_NEW_MEMORY`), one message to all of them; trimmed, lower-cased, each validated as an address. Empty or unset turns the alert off (the reconcile cron catches up once it is set). Still subject to `OUTBOUND_ENABLED` / `OUTBOUND_ALLOWLIST`. Production + Preview + local `.env`. |

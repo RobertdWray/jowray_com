@@ -172,7 +172,7 @@ function age(ms: number) {
   }
 }
 function lastMessage() {
-  return sendMock.mock.calls.at(-1)?.[0] as { to: unknown; subject: string; html: string; text: string };
+  return sendMock.mock.calls.at(-1)?.[0] as { to: unknown; from: string; subject: string; html: string; text: string };
 }
 
 describe("sendMemoryConfirmation", () => {
@@ -593,6 +593,41 @@ describe("two email types on one memory", () => {
       expect((await sendAdminNewMemory({ ...adminContent, memoryId: `mem_${i}` })).sent).toBe(true);
     }
     expect((await sendMemoryConfirmation({ ...base, memoryId: "mem_4", to: "robwray@gmail.com" })).sent).toBe(true);
+  });
+});
+
+describe("replies: memories@jowray.com is forwarded by Cloudflare Email Routing", () => {
+  beforeEach(() => {
+    process.env.OUTBOUND_ENABLED = "true";
+    resetEnvCache();
+  });
+
+  // A freemail Reply-To on a jowray.com From costs about 2 SpamAssassin points
+  // (FREEMAIL_FORGED_REPLYTO); the From address now receives mail, so none is set.
+  function expectFromWithoutReplyTo() {
+    const msg = sendMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(msg.from).toBe("memories@jowray.com");
+    // Every way the SendGrid helper can carry one: the field, the list form and a raw header.
+    expect(msg).not.toHaveProperty("replyTo");
+    expect(msg).not.toHaveProperty("replyToList");
+    expect(Object.keys((msg.headers ?? {}) as Record<string, unknown>).map((k) => k.toLowerCase())).not.toContain("reply-to");
+  }
+
+  it("every email type is From the sending address and sets no Reply-To, so a reader's Reply goes to the forwarded address", async () => {
+    expect((await sendMemoryConfirmation(base)).sent).toBe(true);
+    expectFromWithoutReplyTo();
+
+    const receipt: SubmissionConfirmationInput = {
+      anchorMemoryId: "mem_anchor",
+      to: "person@example.com",
+      memories: [{ position: 1, hasWords: true, media: [], claimLink: "https://www.jowray.com/m/aaaa", missingFiles: 0 }],
+    };
+    expect((await sendSubmissionConfirmation(receipt)).sent).toBe(true);
+    expectFromWithoutReplyTo();
+
+    expect((await sendAdminNewMemory(adminContent)).sent).toBe(true);
+    expectFromWithoutReplyTo();
+    expect(sendMock).toHaveBeenCalledTimes(3);
   });
 });
 

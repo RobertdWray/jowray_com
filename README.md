@@ -307,7 +307,7 @@ Auth.js magic-link sign-in matched to contributors by verified email or phone; c
 | [`docs/code-layout.md`](docs/code-layout.md) | Layers, import rules, Cache Components rule, Sentry policy, the three checks |
 | [`docs/environment.md`](docs/environment.md) | Every environment variable name and purpose (never values) |
 | [`docs/admin.md`](docs/admin.md) | Operator runbook for the family admin page: getting in, rotating the secret, what "deleted" means, rollback floor |
-| [`docs/domain.md`](docs/domain.md) | DNS, redirects, certificates, SendGrid domain authentication |
+| [`docs/domain.md`](docs/domain.md) | DNS, redirects, certificates, SendGrid domain authentication, inbound email (Cloudflare Email Routing for memories@) |
 | [`docs/consent/`](docs/consent/) | The consent sentence in force, by version |
 | [`docs/skills/jowray-draft-memory/`](docs/skills/jowray-draft-memory/SKILL.md) | The Claude skill that drafts a memory from a condolence email |
 | [`docs/plans/`](docs/plans/) | Frozen plans, ledgers and decisions for every feature; [`phase1-ledger.md`](docs/plans/phase1-ledger.md) is the Phase 1 record |

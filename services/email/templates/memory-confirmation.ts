@@ -1,3 +1,4 @@
+import { FAMILY_CONTACT_EMAIL } from "../../../lib/contact";
 import type { EmailAttachment, MediaKind, MemoryConfirmationContent, ReceiptMediaSummary } from "../types";
 import {
   BODY_FONT,
@@ -57,9 +58,9 @@ export const CONFIRMATION_COPY = {
   privacy: "Keep this link private: anyone who has it can edit this memory.",
   closer: "Spelling, as promised, did not count.",
   madeWithLove: "Made with love by Richard, Rob, Tracy and Ava.",
-  questions: "Questions, or a memory that won't fit in a box? Email robwray@gmail.com.",
+  questions: `Questions, or a memory that won't fit in a box? Email ${FAMILY_CONTACT_EMAIL}.`,
   questionsHtml: (bodyFont: string, linkColor: string) =>
-    `<tr><td align="center" style="font-family:${bodyFont};font-size:17px;line-height:1.5;color:${WALNUT_SOFT};">Questions, or a memory that won&#39;t fit in a box? Email <a href="mailto:robwray@gmail.com" style="color:${linkColor};text-decoration:underline;">robwray@gmail.com</a>.</td></tr>`,
+    `<tr><td align="center" style="font-family:${bodyFont};font-size:17px;line-height:1.5;color:${WALNUT_SOFT};">Questions, or a memory that won&#39;t fit in a box? Email <a href="mailto:${FAMILY_CONTACT_EMAIL}" style="color:${linkColor};text-decoration:underline;">${FAMILY_CONTACT_EMAIL}</a>.</td></tr>`,
 } as const;
 
 const PREHEADER = CONFIRMATION_COPY.preheader;
