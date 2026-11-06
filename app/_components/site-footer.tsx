@@ -30,16 +30,20 @@ export function SiteFooter() {
         .
       </p>
       {/* A <div>, not a <p>: the Privacy note's <dialog> and its headings and paragraphs are flow content, which a
-          <p> cannot contain (React reports that nesting as a hydration error). */}
-      <div className="text-[18px] text-walnut-soft">
+          <p> cannot contain (React reports that nesting as a hydration error). A wrapping flex row: on a phone
+          "Privacy" drops to its own line, so the dot before it only shows from sm up and never dangles. The closed
+          dialog is display:none and the open one sits in the top layer, so neither takes a place in the row. */}
+      <div className="flex flex-wrap items-center justify-center gap-x-2 text-[18px] text-walnut-soft">
         <Link href="/obituary" className={linkClass}>
           Jo&apos;s obituary
         </Link>
-        <span aria-hidden="true"> · </span>
+        <span aria-hidden="true">·</span>
         <Link href="/how-it-was-built" className={linkClass}>
           How this site was built
         </Link>
-        <span aria-hidden="true"> · </span>
+        <span aria-hidden="true" className="hidden sm:inline">
+          ·
+        </span>
         <PrivacyNote />
       </div>
     </footer>

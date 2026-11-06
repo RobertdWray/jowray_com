@@ -73,7 +73,7 @@ export function PrivacyNote() {
           </p>
           <p className="text-body leading-[1.6]">
             This is just for family and friends, so I&apos;m not doing a big nutso legal disclaimer that you have
-            to click OK on. — Rob
+            to click OK on. <span className="whitespace-nowrap">— Rob</span>
           </p>
           <p className="text-body leading-[1.6]">
             To see how this site works or read the source code, go to{" "}

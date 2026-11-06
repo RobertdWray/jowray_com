@@ -1,6 +1,6 @@
-import Image from "next/image";
 import { REPO_URL } from "../_components/external-links";
 import { linkClass } from "../_components/field-classes";
+import { DiagramViewer } from "./diagram-viewer-client";
 import { README_DIAGRAMS, type ReadmeDiagramSlug } from "./readme-diagrams";
 
 // "The detailed version": README.md's three Mermaid diagrams, for technical readers. The plain-language HTML
@@ -8,10 +8,12 @@ import { README_DIAGRAMS, type ReadmeDiagramSlug } from "./readme-diagrams";
 //
 // The SVGs are rendered once, at development time, by scripts/make-readme-diagrams.ts and committed under
 // public/diagrams/; the page only points <img> at them. So: no Mermaid in any bundle, no network at build, the
-// page stays static, and an SVG shown through <img> cannot run script. Text is 17px or more at natural size
-// (the script refuses to write anything smaller), so the images are never scaled down: each sits in a
-// keyboard-focusable region that scrolls sideways (WCAG 1.4.10 allows two-dimensional content to scroll) and the
-// page itself never does. Plan: docs/plans/2026-11-06-why-and-how-built.md, ruling R9.
+// page stays static, and an SVG shown through <img> cannot run script.
+//
+// Each image fits its card (DiagramViewer, a small Client Component; this file stays a Server Component). Zoom and
+// Full screen reach the natural size, where the script still guarantees 17px or more text. This replaces ruling R9
+// of docs/plans/2026-11-06-why-and-how-built.md (natural size in a sideways scroller), which cut the diagrams off at
+// the card edge (Rob, 2026-11-06). Plan: docs/plans/2026-11-06-privacy-note-and-diagram-viewer.md.
 
 interface DiagramCopy {
   /** The image's accessible name: what kind of diagram, and what is in it. */
@@ -61,24 +63,17 @@ export function DetailedDiagrams() {
                 {description}
               </p>
             </figcaption>
-            <div
-              role="region"
-              aria-label={`${diagram.heading} diagram, scrolls sideways`}
-              tabIndex={0}
-              className="overflow-x-auto overflow-y-hidden rounded-card border-[3px] border-wood-light bg-paper shadow-card"
-            >
-              <Image
-                src={diagram.src}
-                width={diagram.width}
-                height={diagram.height}
-                alt={alt}
-                aria-describedby={descriptionId}
-                unoptimized
-                className="block max-w-none"
-              />
-            </div>
+            <DiagramViewer
+              heading={diagram.heading}
+              src={diagram.src}
+              width={diagram.width}
+              height={diagram.height}
+              alt={alt}
+              descriptionId={descriptionId}
+            />
             {/* The README section is the long description: the Mermaid source on GitHub reads as text (the
-                "Code" view of README.md) beside the prose around it. Anchors are GitHub's heading ids. */}
+                "Code" view of README.md) beside the prose around it. Anchors are GitHub's heading ids. The full-size
+                link also stays as the way to pan without dragging: the raw SVG scrolls natively (WCAG 2.5.7). */}
             <p className="flex flex-col gap-2 text-[18px] text-walnut-soft sm:flex-row sm:flex-wrap sm:gap-x-3">
               <a href={diagram.src} className={linkClass}>
                 Open &ldquo;{diagram.heading}&rdquo; full size

@@ -76,7 +76,7 @@ Two small visitor-facing changes to jowray.com, requested by Rob on 2026-11-06. 
 - **Props:** `heading`, `src`, `width`, `height`, `alt`, `descriptionId`.
 - **Inline view:**
   - `TransformWrapper` with `minScale={1}` (scale 1 means the image fits the card), `maxScale={8}` and `limitToBounds` `[C18]`.
-  - `wheel={{ activationKeys: ["Control", "Meta"] }}` `[C18]`.
+  - `wheel={{ activationKeys: withCtrlOrCmd }}`, a function returning true when Control or Meta is held `[C18]`. (Implementation note: a plain `["Control", "Meta"]` list means both keys at once, because the library checks `keys.every`; the browser check caught it.)
   - `panning={{ disabled: scale <= 1 }}`, with `scale` tracked from `onTransform` `[C18]`.
   - `doubleClick` zooms in.
   - The image is `next/image` with `unoptimized` and the intrinsic `width`/`height`, so there's no layout shift `[C23]`. Classes `block w-full h-auto`, so it can't overflow.

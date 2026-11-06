@@ -263,8 +263,8 @@ export default function HowItWasBuiltPage() {
           </div>
           <p className="max-w-[40em] text-body leading-[1.6]">
             The pictures above are the simple version. These three are the ones the programmers use, from the
-            project&apos;s README on GitHub. They are wide: swipe or scroll sideways inside each one, or open it full
-            size.
+            project&apos;s README on GitHub. Each one fits the screen: zoom in to read the small print, drag to move
+            around once zoomed in, or open it full screen.
           </p>
           <DetailedDiagrams />
         </section>
