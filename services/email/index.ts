@@ -55,8 +55,8 @@ export const DAY_MS = 24 * HOUR_MS;
 const RETRY_STEP_MS = 15 * 60 * 1000;
 /** Added to a cap's retry time so the retry lands after the oldest counted row has left the window, not on its edge. */
 const CAP_RETRY_MARGIN_MS = 60 * 1000;
-/** Statuses a new send may claim from; a SENDING row is reclaimed only once its claim is stale. */
-const CLAIMABLE = ["PENDING", "FAILED", "SKIPPED"] as const;
+/** A SKIPPED row with one of these reasons is final: no sender, request path or cron may ever claim it. */
+export const TERMINAL_SKIP_REASONS = ["admin_shared"] as const;
 /** A SENDING row older than this was abandoned by a crashed or timed-out function. */
 const STALE_CLAIM_MS = 15 * 60 * 1000;
 /**
@@ -139,18 +139,26 @@ interface LogRow {
   status: "PENDING" | "SENDING" | "SENT" | "FAILED" | "SKIPPED";
   attempts: number;
   updatedAt: Date;
+  errorMessage: string | null;
 }
 
 type Decision =
   | { outcome: "already_sent" }
   | { outcome: "in_progress" }
-  | { outcome: "skipped"; reason: "outbound_disabled" | "recipient_capped" | "admin_capped" }
+  | { outcome: "skipped"; reason: "outbound_disabled" | "recipient_capped" | "admin_capped" | (typeof TERMINAL_SKIP_REASONS)[number] }
   | { outcome: "global_capped"; retryAt: Date }
   | { outcome: "claimed"; row: LogRow; rendered: Rendered; mark: string | null };
 
-/** Rows a sender may take over: never SENT, and SENDING only once the claim is stale. */
-function claimableWhere(now: number): Prisma.EmailLogWhereInput {
-  return { OR: [{ status: { in: [...CLAIMABLE] } }, { status: "SENDING", updatedAt: { lt: new Date(now - STALE_CLAIM_MS) } }] };
+/** Rows a sender may take over: never SENT or terminal skips, and SENDING only once stale. Exported for the real-Postgres test. */
+export function claimableWhere(now: number): Prisma.EmailLogWhereInput {
+  return {
+    OR: [
+      { status: { in: ["PENDING", "FAILED"] } },
+      // SQL NOT IN does not match NULL: legacy skips without a reason remain claimable.
+      { status: "SKIPPED", OR: [{ errorMessage: null }, { errorMessage: { notIn: [...TERMINAL_SKIP_REASONS] } }] },
+      { status: "SENDING", updatedAt: { lt: new Date(now - STALE_CLAIM_MS) } },
+    ],
+  };
 }
 
 /** True while another sender's claim on this row is live. */
@@ -196,6 +204,34 @@ async function lockOutbound(tx: Tx): Promise<void> {
 async function loadOrCreate(tx: Tx, memoryId: string, emailType: EmailType, recipientEmail: string, recipientKeyField: string): Promise<LogRow> {
   const key = { memoryId_emailType: { memoryId, emailType } };
   return (await tx.emailLog.findUnique({ where: key })) ?? (await tx.emailLog.create({ data: { memoryId, emailType, recipientEmail, recipientKey: recipientKeyField, status: "PENDING" } }));
+}
+
+/**
+ * Permanently suppress the alert for an on-behalf share (R5, D11, C40).
+ * This is the one EmailLog row creation outside the outbound lock.
+ * Precondition: the caller holds the memory lock and re-reads a memory that
+ * is still a DRAFT inside the same transaction, before applying its share
+ * status change. Call this helper in that transaction before committing.
+ * No alert creator acts on a DRAFT (siteAlertsAdmins, ADMIN_ALERT_WHERE), and
+ * this row commits together with the status change: the first moment any
+ * creator can see the shared memory, the terminal row already exists.
+ * An existing terminal skip is already suppressed. Any other existing row
+ * breaks the DRAFT invariant: fail closed so the whole share rolls back,
+ * because committing could leave an alert able to send after later activity.
+ */
+export async function suppressAdminAlertForDraftShare(tx: Prisma.TransactionClient, memoryId: string): Promise<void> {
+  const emailType = "ADMIN_NEW_MEMORY";
+  const inserted = await tx.emailLog.createMany({
+    data: { memoryId, emailType, status: "SKIPPED", errorMessage: "admin_shared", recipientEmail: "", recipientKey: "" },
+    skipDuplicates: true,
+  });
+  if (inserted.count === 0) {
+    const existing = await tx.emailLog.findUnique({ where: { memoryId_emailType: { memoryId, emailType } }, select: { status: true, errorMessage: true } });
+    if (existing?.status === "SKIPPED" && TERMINAL_SKIP_REASONS.some((reason) => reason === existing.errorMessage)) {
+      return;
+    }
+    throw new Error(`admin alert row already exists for draft memory ${memoryId} (status ${existing?.status ?? "missing"}); share refused`);
+  }
 }
 
 /**
@@ -268,6 +304,10 @@ async function decide(delivery: Delivery, allowed: string[], recipientField: str
     if (row.status === "SENT") {
       return { outcome: "already_sent" };
     }
+    const terminalReason = row.status === "SKIPPED" ? TERMINAL_SKIP_REASONS.find((reason) => reason === row.errorMessage) : undefined;
+    if (terminalReason !== undefined) {
+      return { outcome: "skipped", reason: terminalReason };
+    }
     if (inFlight(row, now)) {
       return { outcome: "in_progress" };
     }
@@ -331,9 +371,10 @@ async function decide(delivery: Delivery, allowed: string[], recipientField: str
  * - Idempotent through the `(memoryId, emailType)` unique key and an atomic
  *   claim (`PENDING|FAILED|SKIPPED → SENDING`) taken under the outbound lock:
  *   two concurrent callers produce one email; a SENT row is never sent again.
- * - Skips (outbound guard, per-inbox cap, admin cap) leave a terminal SKIPPED
+ * - Ordinary skips (outbound guard, per-inbox cap, admin cap) leave a SKIPPED
  *   row with the reason, so the reconcile cron does not pick the memory up
- *   again and again; a later request-path call may still claim it.
+ *   again and again; a later request-path call may still claim it. Terminal
+ *   skips (TERMINAL_SKIP_REASONS) can never be claimed or sent again.
  * - A global-ceiling refusal leaves a FAILED row with `nextAttemptAt` at the
  *   window's end and `attempts` unchanged, so the cron sends it later.
  * - A decision that cannot be made (lock wait exhausted: `busy`; any other
@@ -497,15 +538,16 @@ export async function sendAdminNewMemory(content: AdminNewMemoryContent): Promis
 
 /**
  * Record that there is nothing to send for this memory and type, as a
- * terminal SKIPPED row, so the reconcile cron stops selecting it. A SENT row
- * and a live SENDING claim are never touched (a send of several memories
+ * SKIPPED row, so the reconcile cron stops selecting it. A terminal skip, a SENT
+ * row and a live SENDING claim are never touched (a send of several memories
  * whose anchor was removed is still emailed for its live siblings; this is
  * only for a send with no live memory at all). Taken under the outbound lock
- * like every other row creation, so no creator ever races another; a
- * decision that cannot be made is reported and answered, never thrown.
+ * like other outbound row creation (the DRAFT-guarded exception is documented
+ * in suppressAdminAlertForDraftShare); a decision that cannot be made is
+ * reported and answered, never thrown.
  */
 export async function skipDelivery({ memoryId, emailType, reason }: { memoryId: string; emailType: EmailType; reason: "nothing_to_send" }): Promise<SendResult> {
-  let outcome: "already_sent" | "in_progress" | "nothing_to_send";
+  let outcome: "already_sent" | "in_progress" | "nothing_to_send" | (typeof TERMINAL_SKIP_REASONS)[number];
   try {
     outcome = await getDb().$transaction(async (tx) => {
       await lockOutbound(tx);
@@ -516,6 +558,10 @@ export async function skipDelivery({ memoryId, emailType, reason }: { memoryId: 
       }
       if (inFlight(row, now)) {
         return "in_progress";
+      }
+      const terminalReason = row.status === "SKIPPED" ? TERMINAL_SKIP_REASONS.find((skipReason) => skipReason === row.errorMessage) : undefined;
+      if (terminalReason !== undefined) {
+        return terminalReason;
       }
       await tx.emailLog.updateMany({
         where: { memoryId, emailType, ...claimableWhere(now) },

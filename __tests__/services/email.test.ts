@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { Prisma } from "@/generated/prisma/client";
 import { resetEnvCache } from "@/server/config/env";
 
 // --- stubs -------------------------------------------------------------
@@ -33,7 +34,7 @@ interface Where {
   createdAt?: { gte: Date };
   updatedAt?: { gte?: Date; lt?: Date };
   status?: Status | { in: Status[] };
-  errorMessage?: string | null;
+  errorMessage?: string | null | { notIn: string[] };
   NOT?: { memoryId?: string; id?: string };
   OR?: Where[];
 }
@@ -49,7 +50,7 @@ function matches(r: Row, where: Where): boolean {
     (!where.updatedAt?.gte || where.updatedAt.gte <= r.updatedAt) &&
     (!where.updatedAt?.lt || r.updatedAt < where.updatedAt.lt) &&
     (!where.createdAt || where.createdAt.gte <= r.createdAt) &&
-    (where.errorMessage === undefined || r.errorMessage === where.errorMessage) &&
+    (where.errorMessage === undefined || (typeof where.errorMessage === "object" && where.errorMessage !== null ? r.errorMessage !== null && !where.errorMessage.notIn.includes(r.errorMessage) : r.errorMessage === where.errorMessage)) &&
     (!where.NOT || ((where.NOT.memoryId === undefined || r.memoryId !== where.NOT.memoryId) && (where.NOT.id === undefined || r.id !== where.NOT.id))) &&
     (!where.OR || where.OR.some((w) => matches(r, w)))
   );
@@ -91,6 +92,14 @@ const dbStub = {
       rows.push(row);
       return row;
     }),
+    createMany: vi.fn(async ({ data, skipDuplicates }: { data: Pick<Row, "memoryId" | "recipientEmail" | "emailType" | "status"> & Partial<Row>; skipDuplicates: boolean }) => {
+      if (rows.some((r) => r.memoryId === data.memoryId && r.emailType === data.emailType)) {
+        if (skipDuplicates) { return { count: 0 }; }
+        throw new Error("Unique constraint failed");
+      }
+      rows.push(newRow(data));
+      return { count: 1 };
+    }),
     update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<Row> }) => {
       const row = rows.find((r) => r.id === where.id);
       if (!row) {
@@ -112,7 +121,7 @@ const dbStub = {
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
-import { ADMIN_ALERTS_PAUSED_SUBJECT, HOUR_MS, RECIPIENT_DAILY_CAP, sendAdminNewMemory, sendMemoryConfirmation, sendSubmissionConfirmation, skipDelivery } from "@/services/email";
+import { ADMIN_ALERTS_PAUSED_SUBJECT, claimableWhere, HOUR_MS, RECIPIENT_DAILY_CAP, sendAdminNewMemory, sendMemoryConfirmation, sendSubmissionConfirmation, skipDelivery, suppressAdminAlertForDraftShare, TERMINAL_SKIP_REASONS } from "@/services/email";
 import type { AdminNewMemoryContent, MemoryConfirmationInput, SubmissionConfirmationInput } from "@/services/email/types";
 
 const base: MemoryConfirmationInput = {
@@ -860,5 +869,114 @@ describe("sendSubmissionConfirmation (Task 15)", () => {
     expect(memoryUpdateMock).not.toHaveBeenCalled();
     expect(await sendSubmissionConfirmation({ ...send, anchorMemoryId: "anchor_skip", to: "stranger@example.net", rotations })).toEqual({ sent: false, skipped: "outbound_disabled" });
     expect(memoryUpdateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("terminal admin share suppression (A1, A3)", () => {
+  const tx = dbStub as unknown as Prisma.TransactionClient;
+
+  it("A1: creates the terminal row once without taking the outbound lock", async () => {
+    expect(TERMINAL_SKIP_REASONS).toEqual(["admin_shared"]);
+    await suppressAdminAlertForDraftShare(tx, adminContent.memoryId);
+    const before = structuredClone(rows);
+    await suppressAdminAlertForDraftShare(tx, adminContent.memoryId);
+    expect(rows).toHaveLength(1);
+    expect(rows).toEqual(before);
+    expect(adminRow()).toMatchObject({ status: "SKIPPED", errorMessage: "admin_shared", recipientEmail: "", recipientKey: "", attempts: 0, nextAttemptAt: null });
+    expect(dbStub.$executeRaw).not.toHaveBeenCalled();
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["PENDING", "SENDING", "SENT", "FAILED", "SKIPPED"] as const)("A1: refuses an existing non-terminal %s admin row and leaves it unchanged", async (status) => {
+    rows.push(newRow({ memoryId: adminContent.memoryId, emailType: "ADMIN_NEW_MEMORY", recipientEmail: "admin@example.com", status, errorMessage: status === "SKIPPED" ? "outbound_disabled" : null }));
+    const before = structuredClone(rows);
+    await expect(suppressAdminAlertForDraftShare(tx, adminContent.memoryId)).rejects.toThrow(new Error(`admin alert row already exists for draft memory ${adminContent.memoryId} (status ${status}); share refused`));
+    expect(rows).toEqual(before);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("A1: accepts an existing terminal admin row and leaves it unchanged", async () => {
+    rows.push(newRow({ memoryId: adminContent.memoryId, emailType: "ADMIN_NEW_MEMORY", recipientEmail: "", recipientKey: "", status: "SKIPPED", errorMessage: "admin_shared" }));
+    const before = structuredClone(rows);
+    await expect(suppressAdminAlertForDraftShare(tx, adminContent.memoryId)).resolves.toBeUndefined();
+    expect(rows).toEqual(before);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("A3: claimableWhere selects only retryable rows, including NULL skips and stale SENDING claims", () => {
+    const now = new Date("2026-11-07T03:00:00.000Z").getTime();
+    const candidates = [
+      { id: "terminal", status: "SKIPPED", errorMessage: "admin_shared" },
+      { id: "null-skip", status: "SKIPPED", errorMessage: null },
+      { id: "ordinary-skip", status: "SKIPPED", errorMessage: "outbound_disabled" },
+      { id: "pending", status: "PENDING" },
+      { id: "failed", status: "FAILED" },
+      { id: "sent", status: "SENT" },
+      { id: "fresh-sending", status: "SENDING" },
+      { id: "stale-sending", status: "SENDING", updatedAt: new Date(now - 16 * 60_000) },
+    ] as const;
+    for (const candidate of candidates) {
+      rows.push(newRow({ memoryId: candidate.id, emailType: "ADMIN_NEW_MEMORY", recipientEmail: "", updatedAt: new Date(now), ...candidate }));
+    }
+    expect(rows.filter((row) => matches(row, claimableWhere(now) as Where)).map((row) => row.id)).toEqual([
+      "null-skip", "ordinary-skip", "pending", "failed", "stale-sending",
+    ]);
+  });
+
+  it.each([true, false])("A3: the real deliver never claims a helper-created terminal row, outbound enabled = %s", async (enabled) => {
+    process.env.OUTBOUND_ENABLED = String(enabled);
+    resetEnvCache();
+    await suppressAdminAlertForDraftShare(tx, adminContent.memoryId);
+    age(24 * HOUR_MS);
+    const before = structuredClone(rows);
+    dbStub.emailLog.updateMany.mockClear();
+    dbStub.emailLog.count.mockClear();
+    // This is the email-service entry point notifyAdminsQuietly ultimately calls after sender finalize.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(await sendAdminNewMemory({ ...adminContent, media: [{ kind: "PHOTO", durationSeconds: null, originalFilename: "later-photo.jpg", preview: null }] })).toEqual({ sent: false, skipped: "admin_shared" });
+    }
+    expect(rows).toEqual(before);
+    expect(dbStub.emailLog.updateMany).not.toHaveBeenCalled();
+    expect(dbStub.emailLog.count).not.toHaveBeenCalled();
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("A3: never reclaims a pre-existing terminal row when outbound is allowed and caps have room", async () => {
+    process.env.OUTBOUND_ENABLED = "true";
+    resetEnvCache();
+    rows.push(newRow({ memoryId: adminContent.memoryId, emailType: "ADMIN_NEW_MEMORY", recipientEmail: "", recipientKey: "", status: "SKIPPED", errorMessage: "admin_shared" }));
+    const before = structuredClone(rows);
+    expect(await sendAdminNewMemory(adminContent)).toEqual({ sent: false, skipped: "admin_shared" });
+    expect(rows).toEqual(before);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("A3: skipDelivery short-circuits a pre-existing terminal row before attempting an update", async () => {
+    rows.push(newRow({ memoryId: adminContent.memoryId, emailType: "ADMIN_NEW_MEMORY", recipientEmail: "", recipientKey: "", status: "SKIPPED", errorMessage: "admin_shared" }));
+    const before = structuredClone(rows);
+    dbStub.emailLog.updateMany.mockClear();
+    expect(await skipDelivery({ memoryId: adminContent.memoryId, emailType: "ADMIN_NEW_MEMORY", reason: "nothing_to_send" })).toEqual({ sent: false, skipped: "admin_shared" });
+    expect(dbStub.emailLog.updateMany).not.toHaveBeenCalled();
+    expect(rows).toEqual(before);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("A3: skipDelivery cannot overwrite the terminal reason", async () => {
+    await suppressAdminAlertForDraftShare(tx, adminContent.memoryId);
+    const before = structuredClone(rows);
+    dbStub.emailLog.updateMany.mockClear();
+    expect(await skipDelivery({ memoryId: adminContent.memoryId, emailType: "ADMIN_NEW_MEMORY", reason: "nothing_to_send" })).toEqual({ sent: false, skipped: "admin_shared" });
+    expect(dbStub.emailLog.updateMany).not.toHaveBeenCalled();
+    expect(rows).toEqual(before);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it.each([null, "outbound_disabled", "recipient_capped", "admin_capped", "nothing_to_send", "admin_paused"])("keeps a nonterminal SKIPPED row reclaimable (%s), including SQL NULL", async (errorMessage) => {
+    process.env.OUTBOUND_ENABLED = "true";
+    resetEnvCache();
+    rows.push(newRow({ memoryId: adminContent.memoryId, emailType: "ADMIN_NEW_MEMORY", recipientEmail: "", status: "SKIPPED", errorMessage }));
+    expect(await sendAdminNewMemory(adminContent)).toEqual({ sent: true, messageId: "msg-1" });
+    expect(adminRow()).toMatchObject({ status: "SENT", errorMessage: null });
+    expect(sendMock).toHaveBeenCalledTimes(1);
   });
 });

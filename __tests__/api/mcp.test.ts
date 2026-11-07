@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetEnvCache } from "@/server/config/env";
 
 /**
- * /api/mcp (plan 2026-11-06 §4.5, §4.6): the bearer gate, the nine tools as
+ * /api/mcp (plan 2026-11-06 §4.5, §4.6): the bearer gate, the ten tools as
  * thin adapters over the admin features, and the single error boundary. The
  * features are mocked; the route, `_auth.ts`, the env accessor, mcp-handler
  * and the MCP SDK are real.
@@ -25,6 +25,7 @@ const features = vi.hoisted(() => ({
   setMemoryCoordinatesAsAdmin: vi.fn(),
   updateMemoryAsAdmin: vi.fn(),
   setMemoryStatusAsAdmin: vi.fn(),
+  shareDraftAsAdmin: vi.fn(),
   setMemoryDeletedAsAdmin: vi.fn(),
   draftMemory: vi.fn(),
   reissueDraftClaimLink: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock("@/features/admin/list-memories", () => ({ listMemoriesForAdmin: feature
 vi.mock("@/features/admin/get-memory", () => ({ getMemoryForAdmin: features.getMemoryForAdmin }));
 vi.mock("@/features/admin/set-coordinates", () => ({ setMemoryCoordinatesAsAdmin: features.setMemoryCoordinatesAsAdmin }));
 vi.mock("@/features/admin/update-memory", () => ({ updateMemoryAsAdmin: features.updateMemoryAsAdmin }));
+vi.mock("@/features/admin/share-draft", () => ({ shareDraftAsAdmin: features.shareDraftAsAdmin }));
 vi.mock("@/features/admin/set-status", () => ({ setMemoryStatusAsAdmin: features.setMemoryStatusAsAdmin }));
 vi.mock("@/features/admin/set-deleted", () => ({ setMemoryDeletedAsAdmin: features.setMemoryDeletedAsAdmin }));
 vi.mock("@/features/memories/draft-memory", () => ({ draftMemory: features.draftMemory, reissueDraftClaimLink: features.reissueDraftClaimLink }));
@@ -123,12 +125,12 @@ describe("the bearer gate", () => {
 });
 
 describe("tools/list", () => {
-  it("lists the nine tools", async () => {
+  it("lists the ten tools", async () => {
     const response = await authed({ jsonrpc: "2.0", id: 1, method: "tools/list" });
     expect(response.status).toBe(200);
     const body = await rpcBody(response);
     const tools = (body.result?.tools ?? []) as Array<{ name: string }>;
-    expect(tools.map((t) => t.name).sort()).toEqual(["draft_memory", "get_memory", "list_memories", "reissue_claim_link", "set_coordinates", "set_deleted", "set_status", "suggest_places", "update_memory"]);
+    expect(tools.map((t) => t.name).sort()).toEqual(["draft_memory", "get_memory", "list_memories", "reissue_claim_link", "set_coordinates", "set_deleted", "set_status", "share_draft", "suggest_places", "update_memory"]);
   });
 });
 
@@ -607,7 +609,7 @@ describe("tools/list contract (case 2)", () => {
             "destructiveHint": true,
             "idempotentHint": true,
           },
-          "description": "Moves a shared memory between PENDING, APPROVED and HIDDEN. A DRAFT is refused (\`draft\`): only the sender's Share leaves DRAFT.",
+          "description": "Moves a shared memory between PENDING, APPROVED and HIDDEN. A DRAFT is refused (\`draft\`); use \`share_draft\`.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
@@ -634,6 +636,45 @@ describe("tools/list contract (case 2)", () => {
           },
           "name": "set_status",
           "title": "Set a memory's status",
+        },
+        {
+          "annotations": {
+            "destructiveHint": true,
+            "idempotentHint": true,
+          },
+          "description": "Records the sender's consent and moves a DRAFT to PENDING or APPROVED, with the same consent stamp as the sender's own Share. Call it only when Rob says in this conversation that this named sender agreed; never infer consent from a reply or a message's tone. Read \`memoryVersion\` from \`get_memory\` first. On \`stale\`, re-read and show Rob what changed before asking again. APPROVED publishes nothing public yet (the public memorial pages are not built). No admin alert is sent, now or later. The sender's preferences and claim link are unchanged.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "memoryId": {
+                "description": "The DRAFT memory to share on the sender's behalf",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+              "memoryVersion": {
+                "description": "ISO-8601 timestamp exactly as get_memory returned it",
+                "type": "string",
+              },
+              "status": {
+                "description": "The shared status; APPROVED publishes nothing public yet",
+                "enum": [
+                  "PENDING",
+                  "APPROVED",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "memoryId",
+              "memoryVersion",
+              "status",
+            ],
+            "type": "object",
+          },
+          "name": "share_draft",
+          "title": "Share a draft on the sender's behalf",
         },
         {
           "annotations": {
@@ -728,6 +769,7 @@ interface ContractRow {
 
 const memoryArgs = { memoryId: ID };
 const coordinateArgs = { memoryId: ID, memoryVersion: VERSION, coordinates: BROADMEAD };
+const shareArgs = { memoryId: ID, memoryVersion: VERSION, status: "PENDING" };
 const changeArgs = { memoryId: ID, memoryVersion: VERSION, contributorVersion: VERSION, changes: { place: "Broadmead" } };
 const draftArgs = {
   contributor: { name: "Joyce Gilley", email: "joyce@example.com", relationship: "Friend from church" },
@@ -786,6 +828,12 @@ const CONTRACT: ContractRow[] = [
   { tool: "set_status", args: { memoryId: ID, status: "APPROVED" }, feature: "setMemoryStatusAsAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
   { tool: "set_status", args: { memoryId: ID, status: "APPROVED" }, feature: "setMemoryStatusAsAdmin", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
   { tool: "set_status", args: { memoryId: ID, status: "APPROVED" }, feature: "setMemoryStatusAsAdmin", answer: { ok: false, code: "draft" }, expected: { code: "draft" }, isError: true },
+  { tool: "share_draft", args: shareArgs, feature: "shareDraftAsAdmin", answer: { ok: true, status: "PENDING", memoryVersion: "2026-11-07T03:00:00.000Z" }, expected: { status: "PENDING", memoryVersion: "2026-11-07T03:00:00.000Z" } },
+  { tool: "share_draft", args: { ...shareArgs, status: "APPROVED" }, feature: "shareDraftAsAdmin", answer: { ok: true, status: "APPROVED", memoryVersion: "2026-11-07T03:00:00.000Z" }, expected: { status: "APPROVED", memoryVersion: "2026-11-07T03:00:00.000Z" } },
+  { tool: "share_draft", args: shareArgs, feature: "shareDraftAsAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
+  { tool: "share_draft", args: shareArgs, feature: "shareDraftAsAdmin", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
+  { tool: "share_draft", args: shareArgs, feature: "shareDraftAsAdmin", answer: { ok: false, code: "not_draft" }, expected: { code: "not_draft" }, isError: true },
+  { tool: "share_draft", args: shareArgs, feature: "shareDraftAsAdmin", answer: { ok: false, code: "stale", current: { memoryVersion: "2026-11-07T03:00:00.000Z", status: "DRAFT" } }, expected: { code: "stale", current: { memoryVersion: "2026-11-07T03:00:00.000Z", status: "DRAFT" } }, isError: true },
   { tool: "set_deleted", args: { memoryId: ID, deleted: false }, feature: "setMemoryDeletedAsAdmin", answer: { ok: true, purgedFiles: 2 }, expected: { purgedFiles: 2 } },
   { tool: "set_deleted", args: { memoryId: ID, deleted: true }, feature: "setMemoryDeletedAsAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
   { tool: "set_deleted", args: { memoryId: ID, deleted: true }, feature: "setMemoryDeletedAsAdmin", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
@@ -859,6 +907,27 @@ describe("the result contract (case 3: every row of plan §4.5)", () => {
   });
 });
 
+describe("share_draft arguments (A1, A2)", () => {
+  it("hands the feature the validated version and target status", async () => {
+    features.shareDraftAsAdmin.mockResolvedValueOnce({ ok: true, status: "PENDING", memoryVersion: VERSION });
+    await callTool("share_draft", shareArgs);
+    expect(features.shareDraftAsAdmin).toHaveBeenCalledExactlyOnceWith(shareArgs);
+  });
+
+  it.each([
+    { ...shareArgs, status: "HIDDEN" },
+    { ...shareArgs, status: "DRAFT" },
+    { ...shareArgs, memoryVersion: "yesterday" },
+    { memoryId: ID, status: "PENDING" },
+    { ...shareArgs, memoryId: "not-a-uuid" },
+    { ...shareArgs, contactOptIn: true },
+  ])("refuses invalid or extra fields before the feature (%j)", async (args) => {
+    const { result } = await callTool("share_draft", args);
+    expect(result.isError).toBe(true);
+    expect(features.shareDraftAsAdmin).not.toHaveBeenCalled();
+  });
+});
+
 describe("the error boundary on every tool (case 4)", () => {
   const VALID_ARGS: Array<[string, Record<string, unknown>, keyof typeof features]> = [
     ["list_memories", {}, "listMemoriesForAdmin"],
@@ -867,6 +936,7 @@ describe("the error boundary on every tool (case 4)", () => {
     ["set_coordinates", coordinateArgs, "setMemoryCoordinatesAsAdmin"],
     ["update_memory", changeArgs, "updateMemoryAsAdmin"],
     ["set_status", { memoryId: ID, status: "PENDING" }, "setMemoryStatusAsAdmin"],
+    ["share_draft", shareArgs, "shareDraftAsAdmin"],
     ["set_deleted", { memoryId: ID, deleted: true }, "setMemoryDeletedAsAdmin"],
     ["reissue_claim_link", memoryArgs, "reissueDraftClaimLink"],
     ["suggest_places", memoryArgs, "suggestPlacesForMemory"],
@@ -991,11 +1061,11 @@ describe("the modern protocol era (case 7)", () => {
     return authed({ jsonrpc: "2.0", id: 7, method, params: { ...params, _meta: envelope } }, { "mcp-protocol-version": MODERN, "mcp-method": method, ...extraHeaders });
   }
 
-  it("lists the nine tools", async () => {
+  it("lists the ten tools", async () => {
     const response = await modern("tools/list", {});
     expect(response.status).toBe(200);
     const tools = ((await rpcBody(response)).result?.tools ?? []) as Array<{ name: string }>;
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(10);
   });
 
   it("calls a tool with the Mcp-Name header", async () => {

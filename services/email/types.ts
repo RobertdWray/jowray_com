@@ -110,6 +110,8 @@ export type SkipReason =
   | "global_capped"
   /** More admin alerts this hour than `ADMIN_ALERT_HOURLY_CAP`; a terminal SKIPPED row, the admins got one pause notice (issue #46, D4). */
   | "admin_capped"
+  /** The admin shared this draft on the sender's behalf; its alert is permanently suppressed. */
+  | "admin_shared"
   /** The outbound lock could not be taken within its bound; nothing was written, so the cron's catch-up finds the memory and tries again. */
   | "busy"
   | "no_recipients"

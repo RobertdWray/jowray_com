@@ -6,6 +6,7 @@ import { adminStatusCounts, listMemoriesForAdmin } from "@/features/admin/list-m
 import { setMemoryCoordinatesAsAdmin } from "@/features/admin/set-coordinates";
 import { setMemoryDeletedAsAdmin } from "@/features/admin/set-deleted";
 import { setMemoryStatusAsAdmin } from "@/features/admin/set-status";
+import { shareDraftAsAdmin } from "@/features/admin/share-draft";
 import { updateMemoryAsAdmin } from "@/features/admin/update-memory";
 import { draftMemory, reissueDraftClaimLink } from "@/features/memories/draft-memory";
 import { suggestPlacesForMemory } from "@/features/places/suggest-for-memory";
@@ -19,11 +20,12 @@ import {
   mcpListInputSchema,
   mcpMemoryChangesSchema,
   mcpMemoryIdSchema,
+  mcpShareDraftSchema,
   mcpStatusSchema,
 } from "@/lib/validations/mcp";
 
 /**
- * The nine MCP tools (plan 2026-11-06 §4.5, and `suggest_places` from plan
+ * The ten MCP tools (plan 2026-11-06 §4.5, and `suggest_places` from plan
  * 2026-11-06-photo-gps-places B7), each a thin adapter over an admin feature. `registerTools` runs once per request (mcp-handler builds a
  * fresh McpServer for every request), so it only registers: the schemas and
  * the tool definitions below are module constants, and nothing here reads env
@@ -77,8 +79,14 @@ const TOOLS = {
   },
   set_status: {
     title: "Set a memory's status",
-    description: "Moves a shared memory between PENDING, APPROVED and HIDDEN. A DRAFT is refused (`draft`): only the sender's Share leaves DRAFT.",
+    description: "Moves a shared memory between PENDING, APPROVED and HIDDEN. A DRAFT is refused (`draft`); use `share_draft`.",
     inputSchema: mcpStatusSchema,
+    annotations: { destructiveHint: true, idempotentHint: true },
+  },
+  share_draft: {
+    title: "Share a draft on the sender's behalf",
+    description: "Records the sender's consent and moves a DRAFT to PENDING or APPROVED, with the same consent stamp as the sender's own Share. Call it only when Rob says in this conversation that this named sender agreed; never infer consent from a reply or a message's tone. Read `memoryVersion` from `get_memory` first. On `stale`, re-read and show Rob what changed before asking again. APPROVED publishes nothing public yet (the public memorial pages are not built). No admin alert is sent, now or later. The sender's preferences and claim link are unchanged.",
+    inputSchema: mcpShareDraftSchema,
     annotations: { destructiveHint: true, idempotentHint: true },
   },
   set_deleted: {
@@ -133,7 +141,7 @@ async function runTool(tool: keyof typeof TOOLS, memoryId: string | undefined, r
   }
 }
 
-/** Registers the nine tools on a fresh server. Called by mcp-handler once per request; registration only. */
+/** Registers the ten tools on a fresh server. Called by mcp-handler once per request; registration only. */
 export function registerTools(server: McpServer): void {
   // Sentry MCP spans for this server (idempotent; @sentry/nextjs does not wrap McpServer on its own).
   Sentry.wrapMcpServerWithSentry(server);
@@ -191,6 +199,13 @@ export function registerTools(server: McpServer): void {
     runTool("set_status", args.memoryId, async () => {
       const result = await setMemoryStatusAsAdmin(args);
       return result.ok ? toolResult({}) : refusal(result);
+    })
+  );
+
+  server.registerTool("share_draft", TOOLS.share_draft, (args) =>
+    runTool("share_draft", args.memoryId, async () => {
+      const result = await shareDraftAsAdmin(args);
+      return result.ok ? toolResult({ status: result.status, memoryVersion: result.memoryVersion }) : refusal(result);
     })
   );
 
