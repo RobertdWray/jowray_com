@@ -5,9 +5,12 @@
  * The database is an in-memory table driven by the shared Prisma `where` interpreter; storage serves real fixture
  * bytes (sharp JPEGs at the Statue of Liberty, the HEIC files), so the read path runs the real lib/photo-gps.ts.
  */
+import { readFileSync } from "node:fs";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type * as LoggerModule from "@/lib/logger";
+import { RangeNotHonouredError, ShortReadError } from "@/lib/storage-errors";
 import { resetEnvCache } from "@/server/config/env";
 
 import { jpegWithGps, liberty, LIBERTY, PREFIX_BYTES, readFixture, withLateExif } from "../helpers/photo-gps-fixtures";
@@ -57,12 +60,17 @@ vi.mock("@/server/db/client", () => ({ getDb: () => db }));
 
 /** The store: pathname → bytes. */
 const blobs = new Map<string, Uint8Array>();
+const headMock = vi.fn(async (pathname: string, _options?: { signal?: AbortSignal }) => {
+  const bytes = blobs.get(pathname);
+  return bytes ? { size: bytes.byteLength } : null;
+});
+const readRangeMock = vi.fn(async (pathname: string, offset: number, length: number, _options?: { signal?: AbortSignal }): Promise<Uint8Array | null> => blobs.get(pathname)?.subarray(offset, offset + length) ?? null);
 const readPrefixMock = vi.fn(async (pathname: string, maxBytes: number, _options?: { signal?: AbortSignal }): Promise<Uint8Array | null> => blobs.get(pathname)?.subarray(0, maxBytes) ?? null);
 const getMock = vi.fn(async (pathname: string, _options?: { signal?: AbortSignal }) => {
   const bytes = blobs.get(pathname);
   return bytes ? { stream: new Blob([new Uint8Array(bytes)]).stream(), contentType: "application/octet-stream", contentLength: bytes.byteLength } : null;
 });
-vi.mock("@/services/storage", () => ({ createStorageService: () => ({ readPrefix: readPrefixMock, get: getMock, head: vi.fn(), put: vi.fn(), del: vi.fn(), presignGet: vi.fn() }) }));
+vi.mock("@/services/storage", () => ({ createStorageService: () => ({ readPrefix: readPrefixMock, readRange: readRangeMock, get: getMock, head: headMock, put: vi.fn(), del: vi.fn(), presignGet: vi.fn() }) }));
 
 const captureExceptionMock = vi.fn();
 vi.mock("@sentry/nextjs", () => ({ captureException: (...a: unknown[]) => captureExceptionMock(...a), flush: vi.fn(async () => true) }));
@@ -118,6 +126,13 @@ beforeEach(() => {
   beforeUpdate = null;
   logLines.length = 0;
   readPrefixMock.mockClear();
+  headMock.mockReset();
+  headMock.mockImplementation(async (pathname) => {
+    const bytes = blobs.get(pathname);
+    return bytes ? { size: bytes.byteLength } : null;
+  });
+  readRangeMock.mockReset();
+  readRangeMock.mockImplementation(async (pathname, offset, length) => blobs.get(pathname)?.subarray(offset, offset + length) ?? null);
   getMock.mockClear();
   captureExceptionMock.mockClear();
   db.media.findUnique.mockClear();
@@ -249,7 +264,7 @@ describe("extractPhotoGps: eligibility, the claim and the cap", () => {
     { name: "a missing row", rows: [] },
     { name: "a PENDING row", rows: [photo({ status: "PENDING" })] },
     { name: "a FAILED row", rows: [photo({ status: "FAILED" })] },
-    { name: "a video", rows: [photo({ mimeType: "video/mp4" })] },
+    { name: "a WebM video", rows: [photo({ mimeType: "video/webm" })] },
     { name: "a voice note", rows: [photo({ mimeType: "audio/mp4" })] },
     { name: "a removed file", rows: [photo({ deletedAt: new Date() })] },
     { name: "a file of a deleted memory", rows: [photo({ memory: { deletedAt: new Date() } })] },
@@ -263,6 +278,8 @@ describe("extractPhotoGps: eligibility, the claim and the cap", () => {
     expect(db.media.updateMany).not.toHaveBeenCalled();
     expect(readPrefixMock).not.toHaveBeenCalled();
     expect(getMock).not.toHaveBeenCalled();
+    expect(headMock).not.toHaveBeenCalled();
+    expect(readRangeMock).not.toHaveBeenCalled();
     expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 
@@ -337,6 +354,128 @@ describe("extractPhotoGps: eligibility, the claim and the cap", () => {
       ["info", "found", 2],
     ]);
     expectNoCoordinatesLogged();
+  });
+});
+
+describe("extractPhotoGps: video location (A20-A22)", () => {
+  const key = KEY.replace(/\.jpg$/, ".mov");
+  const videoFixture = (name: string) => new Uint8Array(readFileSync(new URL(`../fixtures/${name}`, import.meta.url)));
+
+  beforeEach(() => {
+    media = [photo({ mimeType: "video/quicktime", storageKey: key })];
+    blobs.set(key, videoFixture("location-mdta.mov"));
+  });
+
+  it.each([
+    { fixture: "location-mdta.mov", mimeType: "video/quicktime" },
+    { fixture: "location-xyz.mp4", mimeType: "video/mp4" },
+  ])("finds $fixture with bounded ranges under the head request's deadline", async ({ fixture, mimeType }) => {
+    media[0]!.mimeType = mimeType;
+    blobs.set(key, videoFixture(fixture));
+    expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("found");
+    expect(media[0]).toMatchObject({ gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null });
+    expect(media[0]!.latitude).toBeCloseTo(40.6892, 4);
+    expect(media[0]!.longitude).toBeCloseTo(-74.0445, 4);
+    expect(headMock).toHaveBeenCalledExactlyOnceWith(key, { signal: expect.any(AbortSignal) });
+    expect(readRangeMock).toHaveBeenCalled();
+    expect(db.media.updateMany.mock.invocationCallOrder[0]!).toBeLessThan(headMock.mock.invocationCallOrder[0]!);
+    for (const [pathname, offset, length, options] of readRangeMock.mock.calls) {
+      expect(pathname).toBe(key);
+      expect(offset + length).toBeLessThanOrEqual(blobs.get(key)!.length);
+      expect(options?.signal).toBe(headMock.mock.calls[0]![1]?.signal);
+    }
+    expect(readRangeMock.mock.calls.some(([, offset]) => offset > 0)).toBe(true);
+    expect(getMock).not.toHaveBeenCalled();
+    expect(readPrefixMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expectNoCoordinatesLogged();
+  });
+
+  it("stamps a fully parsed video with no location and logs its reason once, after the decision", async () => {
+    blobs.set(key, videoFixture("no-location.mov"));
+    beforeUpdate = ({ data }) => {
+      if ("gpsCheckedAt" in data) {
+        expect(photoGpsLines()).toEqual([]);
+      }
+    };
+    expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("absent");
+    expect(media[0]).toMatchObject({ latitude: null, longitude: null, gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null });
+    expect(photoGpsLines()).toEqual([{ level: "info", action: "photo_gps", mediaId: "med_1", outcome: "absent", attempt: 1, reason: "No supported location metadata" }]);
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expectNoCoordinatesLogged();
+  });
+
+  it.each(["failed", "skipped"])("does not log an absent decision when its write is %s", async (outcome) => {
+    blobs.set(key, videoFixture("no-location.mov"));
+    beforeUpdate = ({ data }) => {
+      if ("gpsCheckedAt" in data) {
+        if (outcome === "failed") { throw new Error("decision write failed"); }
+        media[0]!.deletedAt = new Date();
+      }
+    };
+    expect(await extractPhotoGps({ mediaId: "med_1" })).toBe(outcome);
+    expect(media[0]!.gpsCheckedAt).toBeNull();
+    expect(photoGpsLines().filter((line) => line.level === "info")).toEqual([]);
+    expectNoCoordinatesLogged();
+  });
+
+  it("stamps a deterministic structural limit with its reason without reading the oversized moov", async () => {
+    const size = 16 * 1024 * 1024 + 1;
+    const header = new Uint8Array(8);
+    new DataView(header.buffer).setUint32(0, size);
+    header.set(new TextEncoder().encode("moov"), 4);
+    blobs.set(key, header);
+    headMock.mockResolvedValueOnce({ size });
+    expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("absent");
+    expect(media[0]).toMatchObject({ latitude: null, longitude: null, gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null });
+    expect(readRangeMock).toHaveBeenCalledExactlyOnceWith(key, 0, 8, { signal: expect.any(AbortSignal) });
+    expect(photoGpsLines()).toEqual([{ level: "info", action: "photo_gps", mediaId: "med_1", outcome: "absent", attempt: 1, reason: "moov byte limit (maxMoovBytes) exceeded" }]);
+    expectNoCoordinatesLogged();
+  });
+
+  it.each([new RangeNotHonouredError(), new ShortReadError(), new Error("store unavailable")])("leaves a range failure undecided: $name", async (error) => {
+    readRangeMock.mockRejectedValueOnce(error);
+    expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("failed");
+    expect(media[0]).toMatchObject({ gpsCheckedAt: null, latitude: null, longitude: null, gpsAttempts: 1, gpsClaimedAt: expect.any(Date) });
+    expect(db.media.updateMany).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock).toHaveBeenCalledWith(error, expect.objectContaining({ tags: { step: "photo_gps", media_id: "med_1" }, extra: { attempt: 1 } }));
+    expectNoCoordinatesLogged();
+  });
+
+  it.each(["head", "range"])("leaves a missing object at %s undecided with an attempt counted", async (at) => {
+    if (at === "head") { blobs.delete(key); }
+    else { readRangeMock.mockResolvedValueOnce(null); }
+    expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("failed");
+    expect(media[0]).toMatchObject({ gpsCheckedAt: null, latitude: null, longitude: null, gpsAttempts: 1, gpsClaimedAt: expect.any(Date) });
+    expect(db.media.updateMany).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock.mock.calls[0]![0]).toMatchObject({ name: "OriginalMissingError" });
+    if (at === "head") { expect(readRangeMock).not.toHaveBeenCalled(); }
+  });
+
+  it.each(["head", "range"])("aborts a stalled %s and counts a failed attempt without stamping absence", async (at) => {
+    const stalled = (signal?: AbortSignal): Promise<never> => new Promise((_resolve, reject) => {
+      if (!signal) { throw new Error("missing deadline signal"); }
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+    if (at === "head") { headMock.mockImplementationOnce((_pathname, options) => stalled(options?.signal)); }
+    else { readRangeMock.mockImplementationOnce((_pathname, _offset, _length, options) => stalled(options?.signal)); }
+    expect(await extractPhotoGps({ mediaId: "med_1", deadlineMs: 20 })).toBe("failed");
+    expect(media[0]).toMatchObject({ gpsCheckedAt: null, latitude: null, longitude: null, gpsAttempts: 1, gpsClaimedAt: expect.any(Date) });
+    expect(db.media.updateMany).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock.mock.calls[0]![0]).toMatchObject({ name: "TimeoutError" });
+  });
+
+  it("retries after the failed lease expires, but reads a video at most three times", async () => {
+    readRangeMock.mockRejectedValue(new RangeNotHonouredError());
+    for (let attempt = 1; attempt <= MAX_GPS_ATTEMPTS; attempt += 1) {
+      expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("failed");
+      expect(media[0]).toMatchObject({ gpsAttempts: attempt, gpsCheckedAt: null });
+      expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("skipped");
+      media[0]!.gpsClaimedAt = new Date(Date.now() - GPS_STALE_CLAIM_MS - 1_000);
+    }
+    expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("skipped");
+    expect(headMock).toHaveBeenCalledTimes(3);
+    expect(readRangeMock).toHaveBeenCalledTimes(3);
   });
 });
 

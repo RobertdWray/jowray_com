@@ -5,6 +5,7 @@ import { extractPhotoGps } from "@/features/media/extract-photo-gps";
 import { deriveMedia } from "@/features/memories/derive-media";
 import { recordMedia } from "@/features/memories/ingest-upload";
 import { createLogger, logError } from "@/lib/logger";
+import { hasLocationReader } from "@/lib/media-location";
 import { afterWithFlush } from "@/lib/sentry/after-flush";
 import { tagIds } from "@/lib/sentry/user";
 import { getSiteUrl } from "@/lib/site-url";
@@ -105,12 +106,11 @@ export async function POST(request: NextRequest): Promise<Response> {
               data: outcome.status === "PENDING" ? { attempts: 1, error: "blob not visible yet" } : { processedAt: new Date(), attempts: 1, error: null },
             });
             if (outcome.status === "READY") {
-              // Closed-tab backstop for a photo's GPS, in a task of its own like finalize's, so it never waits on the
-              // copies or holds them up. Photos only: `contentType` is the ticket's type (the token allows only that
-              // one), and recordMedia relabels only within a kind. The step never throws. With finalize also
+              // Closed-tab backstop for photo/video GPS, in a task of its own like finalize's, so it never waits on
+              // copies or holds them up. The extractor rechecks the stored MIME type. The step never throws. With finalize also
               // scheduling it, the first worker to claim reads the bytes and the other is skipped while that claim is
               // live (`gpsClaimedAt`); cron (h) retries a failed read (final review, items 2 to 4).
-              if (blob.contentType.startsWith("image/")) {
+              if (hasLocationReader(blob.contentType)) {
                 afterWithFlush("upload.callback.photo_gps", async () => {
                   await extractPhotoGps({ mediaId });
                 });

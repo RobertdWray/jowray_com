@@ -13,6 +13,7 @@ import { ADMIN_ALERT_WHERE, SITE_EMAIL_WHERE } from "@/features/memories/site-em
 import { safeEqualHex } from "@/lib/claim-token";
 import { posterStagingKeyFor } from "@/lib/derived-keys";
 import { createLogger, logError } from "@/lib/logger";
+import { LOCATION_READER_MIME_TYPES } from "@/lib/media-location";
 import { reconcileRun } from "@/lib/sentry/metrics";
 import { storagePrefix } from "@/lib/site-url";
 import { UPLOAD_WINDOW_MS } from "@/lib/upload-ticket";
@@ -97,7 +98,7 @@ const DELETED_MEMORY_GRACE_MS = 30 * 24 * HOUR_MS;
 /** Step (g): a few photos per run, each decode bounded; the shared run deadline still applies. */
 const DERIVE_BATCH = 3;
 const DERIVE_DEADLINE_MS = 30_000;
-/** Step (h): photos per run. On the 10-minute schedule that is about 60 an hour, which is also the backfill rate. */
+/** Step (h): files per run. On the 10-minute schedule that is about 60 an hour, which is also the backfill rate. */
 const PHOTO_GPS_BATCH = 10;
 /** What purge (f) writes over a photo's GPS: a purged photo keeps no location and no GPS claim (final review, item 5). */
 const PURGED_GPS = { latitude: null, longitude: null, gpsClaimedAt: null } as const;
@@ -690,16 +691,16 @@ export async function GET(request: NextRequest): Promise<Response> {
       });
     }
 
-    // (h) Photo GPS (plan 2026-11-06-photo-gps-places B3): READY photos of this environment whose GPS is not decided
+    // (h) Media GPS (photo GPS plan B3; media plan §9): READY photos and MOV/MP4 videos whose GPS is not decided
     // yet, that have attempts left and that no worker holds a live claim on (final review, item 2), oldest first. Its own state, never (g)'s: a photo with its copies made is never
     // revisited by (g), so a failed GPS read needs this step to be retried, whatever its copies are doing [C48].
-    // Also the backfill for photos stored before the feature. extractPhotoGps claims its own attempt and never throws;
+    // Also the backfill for files stored before the feature. extractPhotoGps claims its own attempt and never throws;
     // a failed read is reported there and counted here, not as a run error (like (g)'s refusals).
     const undecided = await db.media.findMany({
       where: {
         status: "READY",
         deletedAt: null,
-        mimeType: { startsWith: "image/" },
+        mimeType: { in: [...LOCATION_READER_MIME_TYPES] },
         storageKey: { startsWith: storagePrefix() },
         memory: { deletedAt: null },
         gpsCheckedAt: null,
@@ -711,8 +712,8 @@ export async function GET(request: NextRequest): Promise<Response> {
       take: PHOTO_GPS_BATCH,
     });
     for (const row of undecided) {
-      // A photo starts only when its whole read deadline, and the margin for the database work around the read (Team
-      // Code Review #7), fit in what is left of the run: a run running out of time must never cost a photo one of its
+      // A file starts only when its whole read deadline, and the margin for the database work around the read (Team
+      // Code Review #7), fit in what is left of the run: a run running out of time must never cost a file one of its
       // three attempts (the rest wait for the next run).
       if (RUN_DEADLINE_MS - (Date.now() - now) < GPS_READ_DEADLINE_MS + GPS_DB_MARGIN_MS) {
         break;

@@ -104,7 +104,7 @@ const TOOLS = {
   },
   finalize_upload: {
     title: "Finalize a file upload",
-    description: "Call after the PUT succeeds or when `request_upload` answered `uploaded: true`. Verifies the upload and records it once. `PENDING` with `uploaded: false` means call `request_upload` again; `verifying` means retry `finalize_upload` later. `FAILED` reasons are terminal for that row and may be absent on repeat calls. `READY` includes memoryType and GPS found, none, pending or not_applicable. Never sends email or changes the memory's status or consent. See `request_upload` for the upload steps.",
+    description: "Call after the PUT succeeds or when `request_upload` answered `uploaded: true`. Verifies the upload and records it once. `PENDING` with `uploaded: false` means call `request_upload` again; `verifying` means retry `finalize_upload` later. `FAILED` reasons are terminal for that row and may be absent on repeat calls. `READY` includes memoryType and GPS found, none or pending for photos and supported videos (MOV/MP4), or not_applicable for other media. Never sends email or changes the memory's status or consent. See `request_upload` for the upload steps.",
     inputSchema: mcpFinalizeUploadSchema,
     annotations: { destructiveHint: false, idempotentHint: true },
   },
@@ -121,8 +121,8 @@ const TOOLS = {
     annotations: { destructiveHint: true, idempotentHint: false },
   },
   suggest_places: {
-    title: "Suggest places from photos",
-    description: `Place names near where each photo was taken, from the GPS saved with the photo (OpenStreetMap). Read-only. Landmark labels carry the place's own point; the photo's point (each photo's \`coordinates\`) is where the camera was. If \`pending\` is non-empty, call again at most twice (results are cached), then tell Rob which photos are still pending. ${PLACE_RULE}`,
+    title: "Suggest places from photos and videos",
+    description: `Place names near where photos and videos were taken, from their saved GPS (OpenStreetMap). Read-only. Landmark labels carry the place's own point; each item's \`coordinates\` is where the camera was. The \`photos\` list includes both photos and videos. If \`pending\` is non-empty, call again at most twice (results are cached), then tell Rob which photos or videos are still pending. ${PLACE_RULE}`,
     inputSchema: mcpMemoryIdSchema,
     // It changes no memory (only the lookup cache) and asks OpenStreetMap (C27).
     annotations: { readOnlyHint: true, openWorldHint: true },

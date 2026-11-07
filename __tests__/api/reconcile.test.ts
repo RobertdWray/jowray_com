@@ -377,11 +377,11 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(deriveMediaMock.mock.calls[0]![0].deadlineMs).toBeGreaterThan(25_000);
     // the staging pathname is only ever deleted for videos
     expect(delMock.mock.calls.map((c) => c[0] as string).filter((k) => k.endsWith(".upload.jpg"))).toEqual([]);
-    // (h) photo GPS: every live READY photo of this environment whose GPS is undecided, whatever state its copies are in
-    // (the done and the terminal ones included); not the deleted memories' photos, removed files, videos or production copies
-    expect(extractGpsMock.mock.calls.map((c) => c[0].mediaId).sort()).toEqual(["med_photo_done", "med_photo_new", "med_photo_nullclaim", "med_photo_stale", "med_photo_terminal"]);
+    // (h) GPS: every live READY photo or supported video of this environment whose GPS is undecided, whatever
+    // state its copies are in, including the video finalized by (a); not deleted memories, removed files or production copies.
+    expect(extractGpsMock.mock.calls.map((c) => c[0].mediaId).sort()).toEqual(["med_orphan_finalized", "med_photo_done", "med_photo_new", "med_photo_nullclaim", "med_photo_stale", "med_photo_terminal"]);
     // checksumsComputed 2: med_nohash, plus the file finalized during (a), which (b) hashes in the same run.
-    expect(body.data).toMatchObject({ pendingRechecked: 7, orphansFailed: 2, checksumsComputed: 2, eventsReplayed: 1, emailsRetried: 3, confirmationsSent: 2, adminAlertsSent: 8, submissionReceiptsSent: 1, deletedBlobsRemoved: 4, derived: 3, gpsFound: 0, gpsAbsent: 5, gpsFailed: 0, gpsSkipped: 0, errors: 0 });
+    expect(body.data).toMatchObject({ pendingRechecked: 7, orphansFailed: 2, checksumsComputed: 2, eventsReplayed: 1, emailsRetried: 3, confirmationsSent: 2, adminAlertsSent: 8, submissionReceiptsSent: 1, deletedBlobsRemoved: 4, derived: 3, gpsFound: 0, gpsAbsent: 6, gpsFailed: 0, gpsSkipped: 0, errors: 0 });
   });
 
   it("(e2) waits for a send's lease before alerting any of its memories, and (e3) emails the anchor once the lease is gone", async () => {
@@ -665,7 +665,7 @@ describe("step (h): photo GPS (B3)", () => {
       ...Array.from({ length: 12 }, (_, i) => photo(`med_gps_${String(i).padStart(2, "0")}`, minutesAgo(200 - i), i === 3 ? { mimeType: "image/heic", storageKey: "dev/originals/mem_1/h.heic" } : i === 5 ? { gpsAttempts: 2 } : {})),
       photo("med_decided", minutesAgo(500), { gpsCheckedAt: minutesAgo(400) }),
       photo("med_capped", minutesAgo(500), { gpsAttempts: 3 }),
-      photo("med_video", minutesAgo(500), { mimeType: "video/mp4", storageKey: "dev/originals/mem_1/v.mp4" }),
+      photo("med_video", minutesAgo(500), { mimeType: "video/webm", storageKey: "dev/originals/mem_1/v.webm" }),
       photo("med_pending", minutesAgo(500), { status: "PENDING", derivatives: [] }),
       photo("med_removed_gps", minutesAgo(500), { deletedAt: minutesAgo(30), reservedUntil: new Date(Date.now() + HOUR) }),
       photo("med_memory_deleted", minutesAgo(500), { memory: { deletedAt: minutesAgo(30) } }),
@@ -673,6 +673,30 @@ describe("step (h): photo GPS (B3)", () => {
       // GPS decided, copies missing: step (g)'s work only. The two steps never look at each other's state.
       photo("med_copies_only", minutesAgo(500), { gpsCheckedAt: minutesAgo(400), derivatives: [] }),
     ];
+  });
+
+  it("backfills READY MOV/MP4 videos ten per run in (h), while (g) remains image-only", async () => {
+    media = [
+      ...Array.from({ length: 12 }, (_, i) => photo(`med_video_${i}`, minutesAgo(200 - i), {
+        mimeType: i % 2 === 0 ? "video/quicktime" : "video/mp4",
+        storageKey: `dev/originals/mem_1/${i}.mov`, derivatives: [],
+      })),
+      photo("med_image", minutesAgo(100), { derivatives: [], gpsCheckedAt: minutesAgo(50) }),
+      photo("med_webm", minutesAgo(500), { mimeType: "video/webm", derivatives: [] }),
+      photo("med_audio", minutesAgo(500), { mimeType: "audio/mp4", derivatives: [] }),
+      photo("med_decided_video", minutesAgo(500), { mimeType: "video/mp4", gpsCheckedAt: minutesAgo(400) }),
+      photo("med_capped_video", minutesAgo(500), { mimeType: "video/quicktime", gpsAttempts: 3 }),
+      photo("med_pending_video", minutesAgo(500), { mimeType: "video/quicktime", status: "PENDING", reservedUntil: new Date(Date.now() + HOUR) }),
+    ];
+    await run(`Bearer ${SECRET}`);
+    expect(extractGpsMock.mock.calls.map(([arg]) => arg.mediaId)).toEqual(Array.from({ length: 10 }, (_, i) => `med_video_${i}`));
+    expect(deriveMediaMock.mock.calls.map(([arg]) => arg.mediaId)).toEqual(["med_image"]);
+    const queries = dbStub.media.findMany.mock.calls.map(([args]) => args);
+    expect(queries.find(({ where }) => "gpsCheckedAt" in where)).toMatchObject({ where: { status: "READY" }, take: 10 });
+    expect(queries.find(({ where }) => Array.isArray(where.OR) && JSON.stringify(where.OR).includes("derivatives"))).toMatchObject({ where: { mimeType: { startsWith: "image/" } } });
+    extractGpsMock.mockClear();
+    await run(`Bearer ${SECRET}`);
+    expect(extractGpsMock.mock.calls.map(([arg]) => arg.mediaId)).toEqual(["med_video_10", "med_video_11"]);
   });
 
   it("takes at most 10 eligible photos per run, oldest first, counts each outcome, and the next run takes the rest", async () => {

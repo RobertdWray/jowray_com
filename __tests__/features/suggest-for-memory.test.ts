@@ -10,6 +10,8 @@ import type { PlaceLookupOptions, PlaceLookupResult } from "@/features/places/lo
 import type { PlaceLabel } from "@/lib/places/types";
 import type { Coordinates } from "@/lib/validations/memory";
 
+import { matchesWhere, type Where } from "../helpers/prisma-where";
+
 const MEM = "00000000-0000-4000-8000-000000000001";
 const LIBERTY = { latitude: 40.689247, longitude: -74.044502 };
 const LANDMARK: PlaceLabel = { text: "Statue of Liberty, New York, New York", kind: "landmark", point: { latitude: 40.6892532, longitude: -74.0445482 } };
@@ -20,9 +22,13 @@ interface MediaRow {
   originalFilename: string | null;
   latitude: number;
   longitude: number;
+  mimeType: string;
 }
 let memory: { deletedAt: Date | null; media: MediaRow[] } | null = null;
-const findUnique = vi.fn(async (_args: unknown) => memory);
+const findUnique = vi.fn(async (args: { where: { id: string }; select: { media: { where: Where; orderBy: unknown } } }) => memory && ({
+  ...memory,
+  media: memory.media.filter((row) => matchesWhere({ deletedAt: null, status: "READY", ...row }, args.select.media.where)),
+}));
 vi.mock("@/server/db/client", () => ({ getDb: () => ({ memory: { findUnique } }) }));
 
 const lookupMock = vi.fn(async (_point: Coordinates, _options: PlaceLookupOptions): Promise<PlaceLookupResult> => ({ ok: true, labels: [LANDMARK, TOWN], attribution: "© OpenStreetMap contributors" }));
@@ -33,7 +39,7 @@ vi.mock("@/features/places/lookup-place", async (importOriginal) => {
 
 import { suggestPlacesForMemory } from "@/features/places/suggest-for-memory";
 
-const photo = (id: string, point: Coordinates, originalFilename: string | null = `${id}.jpg`): MediaRow => ({ id, originalFilename, latitude: point.latitude, longitude: point.longitude });
+const photo = (id: string, point: Coordinates, originalFilename: string | null = `${id}.jpg`): MediaRow => ({ id, originalFilename, latitude: point.latitude, longitude: point.longitude, mimeType: "image/jpeg" });
 
 beforeEach(() => {
   memory = { deletedAt: null, media: [photo("med_1", LIBERTY)] };
@@ -52,12 +58,27 @@ describe("suggestPlacesForMemory", () => {
     });
   });
 
-  it("reads only live, READY image files of the memory that have a point, in display order", async () => {
+  it("reads only live, READY photos and supported videos of the memory that have a point, in display order", async () => {
     await suggestPlacesForMemory(MEM);
     const args = findUnique.mock.calls[0]![0] as { where: { id: string }; select: { deletedAt: true; media: { where: Record<string, unknown>; orderBy: unknown } } };
     expect(args.where).toEqual({ id: MEM });
-    expect(args.select.media.where).toEqual({ deletedAt: null, status: "READY", mimeType: { startsWith: "image/" }, latitude: { not: null }, longitude: { not: null } });
+    expect(args.select.media.where).toEqual({ deletedAt: null, status: "READY", mimeType: { in: ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "image/gif", "video/mp4", "video/quicktime"] }, latitude: { not: null }, longitude: { not: null } });
     expect(args.select.media.orderBy).toBeDefined();
+  });
+
+  it.each(["video/quicktime", "video/mp4"])("offers labels for a %s point while excluding audio and WebM", async (mimeType) => {
+    memory = { deletedAt: null, media: [
+      { ...photo("med_video", LIBERTY, "clip.mov"), mimeType },
+      { ...photo("med_audio", LIBERTY), mimeType: "audio/mp4" },
+      { ...photo("med_webm", LIBERTY), mimeType: "video/webm" },
+    ] };
+    expect(await suggestPlacesForMemory(MEM)).toEqual({
+      ok: true,
+      photos: [{ mediaId: "med_video", originalFilename: "clip.mov", coordinates: LIBERTY, labels: [LANDMARK, TOWN] }],
+      pending: [],
+      attribution: "© OpenStreetMap contributors",
+    });
+    expect(lookupMock).toHaveBeenCalledExactlyOnceWith(LIBERTY, { deadline: expect.any(Number) });
   });
 
   it("calls the lookup once per unique point (degrees × 1e6), without a viewer key, all under one deadline 20 s from the start", async () => {

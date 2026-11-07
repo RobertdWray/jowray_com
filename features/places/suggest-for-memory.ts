@@ -2,6 +2,7 @@ import "server-only";
 
 import { LIVE_MEDIA_ORDER } from "@/features/memories/media-state";
 import { lookupPlace, PLACES_ATTRIBUTION } from "@/features/places/lookup-place";
+import { LOCATION_READER_MIME_TYPES } from "@/lib/media-location";
 import type { PlaceLabel } from "@/lib/places/types";
 import { coordinatesOf, type Coordinates } from "@/lib/validations/memory";
 import { getDb } from "@/server/db/client";
@@ -12,25 +13,26 @@ const SUGGEST_DEADLINE_MS = 20_000;
 export interface PhotoPlaces {
   mediaId: string;
   originalFilename: string | null;
-  /** Where the camera was (the photo's saved GPS), never to be proposed as the memory's coordinates (D13). */
+  /** Where the camera was (the file's saved GPS), never to be proposed as the memory's coordinates (D13). */
   coordinates: Coordinates;
   /** Labels near that point; a landmark carries the matched place's own point, the only point fit to propose (D13). */
   labels: PlaceLabel[];
 }
 
+/** Keeps the existing `photos` wire key for both photos and videos. */
 export type SuggestPlacesResult =
   | { ok: true; photos: PhotoPlaces[]; pending: string[]; attribution: string }
   | { ok: false; code: "not_found" | "disabled" | "daily_limit" | "provider_refused" };
 
 /**
- * Place labels for the photos of one memory, for the MCP `suggest_places` tool (plan 2026-11-06-photo-gps-places B7).
+ * Place labels for the photos and videos of one memory, for the MCP `suggest_places` tool.
  *
- * It reads the memory's live, READY image files that have a saved point (the server read it from the original, D2)
+ * It reads the memory's live, READY photos and supported videos with a saved point (read from the original, D2)
  * and asks lookupPlace once per unique point (degrees × 1e6), one at a time: the site-wide throttle spaces real sends
  * anyway, and repeated points are cache hits. There is no viewer key (the caller is Rob's connector, behind its
  * secret) and one deadline, 20 s from the start, covers every point.
  *
- * A point that came back `busy` or `failed` lists its photos in `pending` (retryable; results are cached, so a second
+ * A point that came back `busy` or `failed` lists its files in `pending` (retryable; results are cached, so a second
  * call is cheap). `disabled`, `daily_limit` and `provider_refused` end the call with that code. A missing or
  * soft-deleted memory is `not_found`.
  */
@@ -41,7 +43,7 @@ export async function suggestPlacesForMemory(memoryId: string): Promise<SuggestP
     select: {
       deletedAt: true,
       media: {
-        where: { deletedAt: null, status: "READY", mimeType: { startsWith: "image/" }, latitude: { not: null }, longitude: { not: null } },
+        where: { deletedAt: null, status: "READY", mimeType: { in: [...LOCATION_READER_MIME_TYPES] }, latitude: { not: null }, longitude: { not: null } },
         select: { id: true, originalFilename: true, latitude: true, longitude: true },
         orderBy: [...LIVE_MEDIA_ORDER],
       },
@@ -51,7 +53,7 @@ export async function suggestPlacesForMemory(memoryId: string): Promise<SuggestP
     return { ok: false, code: "not_found" };
   }
 
-  // Photos grouped by point, in display order of each point's first photo.
+  // Files grouped by point, in display order of each point's first file.
   const byPoint = new Map<string, { point: Coordinates; media: Array<{ id: string; originalFilename: string | null }> }>();
   for (const item of memory.media) {
     const point = coordinatesOf(item);
