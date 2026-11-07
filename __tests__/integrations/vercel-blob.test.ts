@@ -1,4 +1,7 @@
+import { issueSignedToken, presignUrl } from "@vercel/blob";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import type * as LoggerModule from "@/lib/logger";
 
 interface FakeGetResult {
   statusCode: number;
@@ -18,6 +21,16 @@ vi.mock("@vercel/blob", () => ({
   put: vi.fn(),
 }));
 vi.mock("@/server/config/env", () => ({ getBlobEnv: () => ({ BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test_token" }) }));
+
+const { logLines } = vi.hoisted(() => ({ logLines: [] as string[] }));
+vi.mock("@/lib/logger", async (importOriginal) => {
+  const actual = await importOriginal<typeof LoggerModule>();
+  const logger = actual.buildLogger({
+    level: "trace",
+    destination: { write: (line) => { logLines.push(line); } },
+  });
+  return { ...actual, createLogger: (context: Record<string, unknown>) => logger.child(context) };
+});
 
 import { VercelBlobStorageService } from "@/integrations/vercel-blob";
 
@@ -54,6 +67,54 @@ const service = new VercelBlobStorageService();
 
 beforeEach(() => {
   getMock.mockReset();
+  vi.mocked(issueSignedToken).mockReset();
+  vi.mocked(presignUrl).mockReset();
+  logLines.length = 0;
+});
+
+describe("VercelBlobStorageService.presignPut", () => {
+  it.each([
+    { pathname: "originals/m/photo.jpg", contentType: "image/jpeg", maxBytes: 2048, validUntil: 1_800_000_000_000 },
+    { pathname: "originals/m/photo.heic", contentType: "image/heic", maxBytes: 4096, validUntil: 1_800_000_060_000 },
+    { pathname: "originals/m/video.mov", contentType: "video/quicktime", maxBytes: 8192, validUntil: 1_800_000_120_000 },
+  ])("binds a private write-once PUT to $pathname, its type, size and expiry without logging the URL", async (options) => {
+    const signed = {
+      delegationToken: "test-delegation",
+      clientSigningToken: "test-signing-key",
+      validUntil: options.validUntil,
+    };
+    // An inert URL: the SDK is mocked and no upload credential is minted.
+    const url = "https://blob.example.invalid/upload";
+    vi.mocked(issueSignedToken).mockResolvedValueOnce(signed);
+    vi.mocked(presignUrl).mockResolvedValueOnce({ presignedUrl: url });
+
+    const result = await service.presignPut(options);
+
+    expect(issueSignedToken).toHaveBeenCalledExactlyOnceWith({
+      pathname: options.pathname,
+      operations: ["put"],
+      allowedContentTypes: [options.contentType],
+      maximumSizeInBytes: options.maxBytes,
+      validUntil: options.validUntil,
+      token: "vercel_blob_rw_test_token",
+    });
+    expect(presignUrl).toHaveBeenCalledExactlyOnceWith(signed, {
+      operation: "put",
+      pathname: options.pathname,
+      access: "private",
+      allowedContentTypes: [options.contentType],
+      maximumSizeInBytes: options.maxBytes,
+      addRandomSuffix: false,
+      allowOverwrite: false,
+      validUntil: options.validUntil,
+    });
+    expect(result).toEqual({
+      url,
+      expiresAt: new Date(options.validUntil),
+      headers: { "content-type": options.contentType, "x-content-type": options.contentType },
+    });
+    expect(logLines.join("\n")).not.toContain(url);
+  });
 });
 
 describe("VercelBlobStorageService.readPrefix (issue #45)", () => {

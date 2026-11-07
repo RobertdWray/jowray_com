@@ -23,6 +23,21 @@ export interface PresignGetResult {
   expiresAt: Date;
 }
 
+export interface PresignPutOptions {
+  pathname: string;
+  contentType: string;
+  maxBytes: number;
+  /** Absolute expiry, epoch milliseconds. */
+  validUntil: number;
+}
+
+export interface PresignPutResult {
+  url: string;
+  expiresAt: Date;
+  /** Exactly the headers the client must send. */
+  headers: Record<string, string>;
+}
+
 /**
  * Private object storage for original uploads. Originals are write-once:
  * `put` never overwrites. Lookups are by pathname (never by a client URL).
@@ -46,4 +61,11 @@ export interface StorageService {
   del(pathname: string): Promise<void>;
   /** Short-lived GET URL for a private blob, served by the blob host (supports Range). */
   presignGet(options: PresignGetOptions): Promise<PresignGetResult>;
+  /**
+   * Single-path, write-once, type- and size-bound PUT URL for a CLI (the MCP
+   * connector's `request_upload`). The URL is a credential: never log it;
+   * scrub it from Sentry as `presignedUrl`. `headers` are exactly what the
+   * client must send.
+   */
+  presignPut(options: PresignPutOptions): Promise<PresignPutResult>;
 }

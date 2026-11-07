@@ -7,6 +7,8 @@ import { getBlobEnv } from "@/server/config/env";
 import type {
   PresignGetOptions,
   PresignGetResult,
+  PresignPutOptions,
+  PresignPutResult,
   StorageGetOptions,
   StorageGetResult,
   StorageHeadResult,
@@ -141,5 +143,32 @@ export class VercelBlobStorageService implements StorageService {
       validUntil: options.validUntil,
     });
     return { url: presignedUrl, expiresAt: new Date(options.validUntil) };
+  }
+
+  async presignPut(options: PresignPutOptions): Promise<PresignPutResult> {
+    const signed = await issueSignedToken({
+      pathname: options.pathname,
+      operations: ["put"],
+      allowedContentTypes: [options.contentType],
+      maximumSizeInBytes: options.maxBytes,
+      validUntil: options.validUntil,
+      token: this.token(),
+    });
+    const { presignedUrl } = await presignUrl(signed, {
+      operation: "put",
+      pathname: options.pathname,
+      access: "private",
+      allowedContentTypes: [options.contentType],
+      maximumSizeInBytes: options.maxBytes,
+      addRandomSuffix: false,
+      allowOverwrite: false,
+      validUntil: options.validUntil,
+    });
+    return {
+      url: presignedUrl,
+      expiresAt: new Date(options.validUntil),
+      // The CDN enforces x-content-type; content-type also describes the HTTP body.
+      headers: { "content-type": options.contentType, "x-content-type": options.contentType },
+    };
   }
 }
