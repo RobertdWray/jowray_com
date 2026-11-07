@@ -1,13 +1,13 @@
 import { z } from "zod";
 
 import { sourceInputSchema } from "@/lib/source-input";
-import { adminCoordinatesSchema, adminDeletedSchema, adminMemoryChangesSchema, adminMemoryIdSchema, adminStatusSchema, MEMORY_STATUSES } from "@/lib/validations/admin";
+import { adminCoordinatesSchema, adminDeletedSchema, adminMemoryChangesSchema, adminMemoryIdSchema, adminShareDraftSchema, adminStatusSchema, MEMORY_STATUSES } from "@/lib/validations/admin";
 import { draftMemoryObjectSchema } from "@/lib/validations/memory";
 
 /**
  * Input schemas for the MCP tools at /api/mcp (plan 2026-11-06 §4.5). The
- * tools are thin adapters over the admin features, so six inputs are strict
- * copies of the admin schemas and two are the MCP's own. Every one is strict
+ * tools are thin adapters over the admin features, so their inputs are strict
+ * copies of the admin schemas or the MCP's own. Every one is strict
  * at the top level, so a mistyped or misplaced key is refused rather than
  * silently dropped. The SDK validates arguments against them and the features
  * parse again with their own schemas.
@@ -41,7 +41,7 @@ export const mcpDraftInputSchema = draftMemoryObjectSchema
   .strict();
 
 /*
- * Strict copies of the admin schemas behind the other six tools (Team Code
+ * Strict copies of the admin schemas behind the other tools (Team Code
  * Review, G2): a `note` beside `changes` instead of inside it, or any key a
  * tool does not take, is a schema refusal instead of a call that quietly
  * ignores it. The admin schemas themselves stay non-strict at the top level:
@@ -59,6 +59,9 @@ export const mcpMemoryChangesSchema = adminMemoryChangesSchema.strict();
 
 /** `set_status`. */
 export const mcpStatusSchema = adminStatusSchema.strict();
+
+/** `share_draft`. */
+export const mcpShareDraftSchema = adminShareDraftSchema.strict();
 
 /** `set_deleted`. */
 export const mcpDeletedSchema = adminDeletedSchema.strict();

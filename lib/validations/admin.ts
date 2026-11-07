@@ -71,11 +71,19 @@ export const adminMemoryChangesSchema = z.object({
 export type AdminMemoryChangesInput = z.infer<typeof adminMemoryChangesSchema>;
 export type AdminMemoryChanges = AdminMemoryChangesInput["changes"];
 
-/** The status buttons: never DRAFT (only the sender's Share leaves DRAFT). */
+/** The status buttons: never DRAFT (sharing on behalf uses adminShareDraftSchema). */
 export const adminStatusSchema = z.object({
   memoryId: z.uuid(),
   status: z.enum(["PENDING", "APPROVED", "HIDDEN"]),
 });
+
+/** Share on the sender's behalf, only on Rob's explicit word that this sender agreed. */
+export const adminShareDraftSchema = z.object({
+  memoryId: z.uuid().describe("The DRAFT memory to share on the sender's behalf"),
+  memoryVersion: isoDate,
+  status: z.enum(["PENDING", "APPROVED"]).describe("The shared status; APPROVED publishes nothing public yet"),
+});
+export type AdminShareDraftInput = z.infer<typeof adminShareDraftSchema>;
 
 /**
  * Set or clear a memory's coordinates (MCP `set_coordinates`; features/admin/set-coordinates.ts).

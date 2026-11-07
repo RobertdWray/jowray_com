@@ -10,7 +10,7 @@ interface DerivedRow { kind: string; status: string; error: string | null; attem
 interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; purgedAt?: Date | null; reservedUntil?: Date | null; mimeType?: string; derivatives?: DerivedRow[]; gpsCheckedAt?: Date | null; gpsAttempts?: number; gpsClaimedAt?: Date | null; latitude?: number | null; longitude?: number | null; memory: { deletedAt: Date | null } }
 interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
 type EmailType = "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY" | "SUBMISSION_CONFIRMATION";
-interface EmailRow { id: string; memoryId: string; emailType: EmailType; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null; uploadLeaseUntil?: Date | null } }
+interface EmailRow { errorMessage?: string | null; id: string; memoryId: string; emailType: EmailType; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null; uploadLeaseUntil?: Date | null } }
 interface MemoryRow { id: string; type: string; status?: "DRAFT" | "PENDING" | "APPROVED" | "HIDDEN"; source?: "WEB_UPLOAD" | "EMAIL" | "SMS" | "OTHER" | "PHONE_CALL"; deletedAt: Date | null; createdAt: Date; contributorNote?: string | null; contributor: { email: string | null } | null; media: Array<{ status: string; deletedAt: Date | null; createdAt?: Date }>; emails: EmailRow[]; submissionId?: string | null; submissionIndex?: number | null; uploadLeaseUntil?: Date | null }
 
 let media: MediaRow[] = [];
@@ -422,6 +422,32 @@ describe("GET /api/cron/reconcile-uploads", () => {
     const res = await run(`Bearer ${SECRET}`);
     expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_failed_words" });
     expect(((await res.json()) as { data: Record<string, number> }).data.adminAlertsSent).toBe(0);
+  });
+
+  it.each(["PENDING", "APPROVED"] as const)("A3: (d) and (e2) exclude a shared %s memory's terminal admin row after a later sender upload", async (status) => {
+    // This suite evaluates the actual Prisma filters, but mocks notification and transport.
+    // email.test.ts separately exercises real deliver against the helper-created row.
+    media = []; events = []; emails = []; memories = [];
+    const old = new Date(Date.now() - 2 * HOUR);
+    const terminal: EmailRow = { id: "admin_shared", memoryId: "shared", emailType: "ADMIN_NEW_MEMORY", status: "SKIPPED", errorMessage: "admin_shared", attempts: 0, nextAttemptAt: old, createdAt: old, memory: { deletedAt: null } };
+    emails.push(terminal, { ...terminal, id: "retry", memoryId: "retry", status: "FAILED", errorMessage: "temporary failure", attempts: 1 });
+    const shared: MemoryRow = { id: "shared", type: "PHOTO", status, source: "EMAIL", deletedAt: null, createdAt: old, contributor: { email: "sender@example.com" }, contributorNote: null, media: [{ status: "READY", deletedAt: null, createdAt: old }], emails: [terminal] };
+    memories.push(shared, { ...shared, id: "catchup", emails: [] });
+    const before = structuredClone(terminal);
+    const response = await run(`Bearer ${SECRET}`);
+    expect(response.status).toBe(200);
+    expect(notifyMock.mock.calls.map((call) => call[0].memoryId).sort()).toEqual(["catchup", "retry"]);
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(terminal).toEqual(before);
+    const retrySelection = await dbStub.emailLog.findMany.mock.results.at(-1)!.value;
+    expect(retrySelection.map((row: Record<string, unknown>) => row.memoryId)).toEqual(["retry"]);
+    const body = await response.json();
+    expect(body.data).toMatchObject({ emailsRetried: 1, adminAlertsSent: 1 });
+    notifyMock.mockClear();
+    const again = await run(`Bearer ${SECRET}`);
+    expect(again.status).toBe(200);
+    expect(notifyMock).not.toHaveBeenCalled();
+    expect(terminal).toEqual(before);
   });
 
   it("alerts the admins once a pending upload lands, never while it is in flight", async () => {
