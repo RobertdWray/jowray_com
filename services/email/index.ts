@@ -215,6 +215,9 @@ async function loadOrCreate(tx: Tx, memoryId: string, emailType: EmailType, reci
  * No alert creator acts on a DRAFT (siteAlertsAdmins, ADMIN_ALERT_WHERE), and
  * this row commits together with the status change: the first moment any
  * creator can see the shared memory, the terminal row already exists.
+ * An existing terminal skip is already suppressed. Any other existing row
+ * breaks the DRAFT invariant: fail closed so the whole share rolls back,
+ * because committing could leave an alert able to send after later activity.
  */
 export async function suppressAdminAlertForDraftShare(tx: Prisma.TransactionClient, memoryId: string): Promise<void> {
   const emailType = "ADMIN_NEW_MEMORY";
@@ -224,9 +227,10 @@ export async function suppressAdminAlertForDraftShare(tx: Prisma.TransactionClie
   });
   if (inserted.count === 0) {
     const existing = await tx.emailLog.findUnique({ where: { memoryId_emailType: { memoryId, emailType } }, select: { status: true, errorMessage: true } });
-    if (existing && !(existing.status === "SKIPPED" && TERMINAL_SKIP_REASONS.some((reason) => reason === existing.errorMessage))) {
-      log.warn({ action: "admin_share_alert_exists", memoryId, emailType }, "draft already has an admin alert row; left unchanged");
+    if (existing?.status === "SKIPPED" && TERMINAL_SKIP_REASONS.some((reason) => reason === existing.errorMessage)) {
+      return;
     }
+    throw new Error(`admin alert row already exists for draft memory ${memoryId} (status ${existing?.status ?? "missing"}); share refused`);
   }
 }
 

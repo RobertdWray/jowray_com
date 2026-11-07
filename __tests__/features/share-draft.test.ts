@@ -19,7 +19,7 @@ interface MemoryRow {
   claimTokenHash: string;
 }
 interface Revision { memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown> }
-interface EmailRow { memoryId: string; emailType: string; status: string; errorMessage: string; recipientEmail: string; recipientKey: string }
+interface EmailRow { memoryId: string; emailType: string; status: string; errorMessage: string | null; recipientEmail: string; recipientKey: string }
 let memory: MemoryRow | null;
 let revisions: Revision[];
 let emails: EmailRow[];
@@ -184,12 +184,26 @@ describe("shareDraftAsAdmin (A1, A2)", () => {
     expect(log.info).not.toHaveBeenCalled();
   });
 
-  it("A1: preserves an unexpected existing alert and warns with ids only", async () => {
-    emails.push({ memoryId: MEM, emailType: "ADMIN_NEW_MEMORY", status: "PENDING", errorMessage: "", recipientEmail: "admin@example.com", recipientKey: "admin@example.com" });
+  it.each(["PENDING", "FAILED", "SKIPPED", "SENT", "SENDING"] as const)("A1: refuses an unexpected %s alert and rolls back the share with an ids-only error", async (status) => {
+    emails.push({ memoryId: MEM, emailType: "ADMIN_NEW_MEMORY", status, errorMessage: status === "SKIPPED" ? "outbound_disabled" : null, recipientEmail: "admin@example.com", recipientKey: "admin@example.com" });
+    const before = structuredClone({ memory, revisions, emails });
+    await expect(shareDraftAsAdmin(input)).rejects.toThrow(new Error(`admin alert row already exists for draft memory ${MEM} (status ${status}); share refused`));
+    expect({ memory, revisions, emails }).toEqual(before);
+    expect(memory).toMatchObject({ status: "DRAFT", consentedAt: null, updatedAt: T0 });
+    expect(revisions).toEqual([]);
+    expect(log.info).not.toHaveBeenCalled();
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("A1: shares a draft whose existing admin alert is already terminal", async () => {
+    emails.push({ memoryId: MEM, emailType: "ADMIN_NEW_MEMORY", status: "SKIPPED", errorMessage: "admin_shared", recipientEmail: "", recipientKey: "" });
     const before = structuredClone(emails);
-    expect(await shareDraftAsAdmin(input)).toMatchObject({ ok: true });
+    expect(await shareDraftAsAdmin(input)).toEqual({ ok: true, status: "PENDING", memoryVersion: NOW.toISOString() });
+    expect(memory).toMatchObject({ status: "PENDING", consentedAt: NOW, consentVersion: "share-test-v2" });
+    expect(revisions).toHaveLength(1);
     expect(emails).toEqual(before);
-    expect(log.warn).toHaveBeenCalledExactlyOnceWith({ action: "admin_share_alert_exists", memoryId: MEM, emailType: "ADMIN_NEW_MEMORY" }, expect.any(String));
+    expect(log.info).toHaveBeenCalledExactlyOnceWith({ action: "admin_draft_shared", memoryId: MEM, status: "PENDING" }, expect.any(String));
+    expect(log.warn).not.toHaveBeenCalled();
   });
 
   it("A1: a failed suppression insert rolls back the consent and revision and never logs success", async () => {

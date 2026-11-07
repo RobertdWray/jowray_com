@@ -121,7 +121,7 @@ const dbStub = {
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
-import { ADMIN_ALERTS_PAUSED_SUBJECT, HOUR_MS, RECIPIENT_DAILY_CAP, sendAdminNewMemory, sendMemoryConfirmation, sendSubmissionConfirmation, skipDelivery, suppressAdminAlertForDraftShare, TERMINAL_SKIP_REASONS } from "@/services/email";
+import { ADMIN_ALERTS_PAUSED_SUBJECT, claimableWhere, HOUR_MS, RECIPIENT_DAILY_CAP, sendAdminNewMemory, sendMemoryConfirmation, sendSubmissionConfirmation, skipDelivery, suppressAdminAlertForDraftShare, TERMINAL_SKIP_REASONS } from "@/services/email";
 import type { AdminNewMemoryContent, MemoryConfirmationInput, SubmissionConfirmationInput } from "@/services/email/types";
 
 const base: MemoryConfirmationInput = {
@@ -887,12 +887,40 @@ describe("terminal admin share suppression (A1, A3)", () => {
     expect(sendMock).not.toHaveBeenCalled();
   });
 
-  it.each(["PENDING", "SENDING", "SENT", "FAILED", "SKIPPED"] as const)("A1: leaves an existing %s admin row alone", async (status) => {
+  it.each(["PENDING", "SENDING", "SENT", "FAILED", "SKIPPED"] as const)("A1: refuses an existing non-terminal %s admin row and leaves it unchanged", async (status) => {
     rows.push(newRow({ memoryId: adminContent.memoryId, emailType: "ADMIN_NEW_MEMORY", recipientEmail: "admin@example.com", status, errorMessage: status === "SKIPPED" ? "outbound_disabled" : null }));
     const before = structuredClone(rows);
-    await suppressAdminAlertForDraftShare(tx, adminContent.memoryId);
+    await expect(suppressAdminAlertForDraftShare(tx, adminContent.memoryId)).rejects.toThrow(new Error(`admin alert row already exists for draft memory ${adminContent.memoryId} (status ${status}); share refused`));
     expect(rows).toEqual(before);
     expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("A1: accepts an existing terminal admin row and leaves it unchanged", async () => {
+    rows.push(newRow({ memoryId: adminContent.memoryId, emailType: "ADMIN_NEW_MEMORY", recipientEmail: "", recipientKey: "", status: "SKIPPED", errorMessage: "admin_shared" }));
+    const before = structuredClone(rows);
+    await expect(suppressAdminAlertForDraftShare(tx, adminContent.memoryId)).resolves.toBeUndefined();
+    expect(rows).toEqual(before);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("A3: claimableWhere selects only retryable rows, including NULL skips and stale SENDING claims", () => {
+    const now = new Date("2026-11-07T03:00:00.000Z").getTime();
+    const candidates = [
+      { id: "terminal", status: "SKIPPED", errorMessage: "admin_shared" },
+      { id: "null-skip", status: "SKIPPED", errorMessage: null },
+      { id: "ordinary-skip", status: "SKIPPED", errorMessage: "outbound_disabled" },
+      { id: "pending", status: "PENDING" },
+      { id: "failed", status: "FAILED" },
+      { id: "sent", status: "SENT" },
+      { id: "fresh-sending", status: "SENDING" },
+      { id: "stale-sending", status: "SENDING", updatedAt: new Date(now - 16 * 60_000) },
+    ] as const;
+    for (const candidate of candidates) {
+      rows.push(newRow({ memoryId: candidate.id, emailType: "ADMIN_NEW_MEMORY", recipientEmail: "", updatedAt: new Date(now), ...candidate }));
+    }
+    expect(rows.filter((row) => matches(row, claimableWhere(now) as Where)).map((row) => row.id)).toEqual([
+      "null-skip", "ordinary-skip", "pending", "failed", "stale-sending",
+    ]);
   });
 
   it.each([true, false])("A3: the real deliver never claims a helper-created terminal row, outbound enabled = %s", async (enabled) => {
@@ -923,7 +951,7 @@ describe("terminal admin share suppression (A1, A3)", () => {
     expect(sendMock).not.toHaveBeenCalled();
   });
 
-  it("A3: claimableWhere prevents skipDelivery from replacing a pre-existing terminal row", async () => {
+  it("A3: skipDelivery short-circuits a pre-existing terminal row before attempting an update", async () => {
     rows.push(newRow({ memoryId: adminContent.memoryId, emailType: "ADMIN_NEW_MEMORY", recipientEmail: "", recipientKey: "", status: "SKIPPED", errorMessage: "admin_shared" }));
     const before = structuredClone(rows);
     dbStub.emailLog.updateMany.mockClear();

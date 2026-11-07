@@ -32,7 +32,7 @@ export async function shareDraftAsAdmin(raw: unknown): Promise<ShareDraftResult>
   const { memoryId, memoryVersion, status } = parsed.data;
   const result = await getDb().$transaction(async (tx): Promise<ShareDraftResult> => {
     await lockMemory(tx, memoryId);
-    const fresh = await tx.memory.findUnique({ where: { id: memoryId }, select: { status: true, deletedAt: true, updatedAt: true, consentVersion: true } });
+    const fresh = await tx.memory.findUnique({ where: { id: memoryId }, select: { status: true, deletedAt: true, updatedAt: true } });
     if (!fresh || fresh.deletedAt !== null) {
       return { ok: false, code: "not_found" };
     }
