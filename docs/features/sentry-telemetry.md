@@ -44,7 +44,7 @@ Still forbidden everywhere (§3 ruling 2): claim tokens in any form (`/m/<token>
 | Agent rulings Rob accepted: `normalizeDepth: 6` (R4), identity set in `confirmSubmission` (R6), `key` as an exact-match secret for `enterAdmin` (R8), no render tests for the browser init (R9) | [plan §16](../plans/2026-11-04-sentry-full-telemetry.md), [PR #33](https://github.com/RobertdWray/jowray_com/pull/33) |
 | Rob, 2026-11-05: sampling and Session Replay stay at 100 % "so I can check this alpha code"; existing keys are kept, no rotation or re-scoping | [phase1-ledger decisions](../plans/phase1-ledger.md), [PR #47](https://github.com/RobertdWray/jowray_com/pull/47) |
 | Issue #43 §7.1 defaults, taken in PR #47: bound input inside `scrubText` so every caller is covered; 256 KiB cap; marker `[Filtered: oversized]`; `serverActions.bodySizeLimit` left at 1 MB; no app-side ceiling on the tunnel | [PR #47](https://github.com/RobertdWray/jowray_com/pull/47) decisions table |
-| Rob, 2026-11-06: visitors are told in his words. A small "Privacy" button in the footer of every page opens a note: the site records the screen, the logs and what people click and type, and it is family-only, so there is no legal click-through. When the alpha settings end, update `app/_components/privacy-note-client.tsx` together with the "One honest note" bullet on `/how-it-was-built` | [plan](../plans/2026-11-06-privacy-note-and-diagram-viewer.md) |
+| Rob, 2026-11-06: visitors are told in his words. A small "Privacy" button in the footer of every page opens a note: the site records the screen, the logs and what people click and type, and it is family-only, so there is no legal click-through. When the alpha settings end, update `app/_components/privacy-note-client.tsx` together with the "One honest note" bullet on `/how-it-was-built` | [plan](../plans/2026-11-06-privacy-note-and-diagram-viewer.md), [Privacy note](./privacy.md) |
 
 ## How it works
 
@@ -110,6 +110,8 @@ Both inits share one `DATA_COLLECTION` object and the same `before*` hooks. The 
 
 ## Known gaps and follow-ups
 
+- PR #62 follow-up F1 (Low): `CLAIM_PATH` in `lib/sentry/scrub.ts` is case-sensitive and needs at least 16 characters, so an upper-case `/M/<token>` URL reaches Sentry unscrubbed and a short segment keeps its value; see [Vercel Web Analytics](./analytics.md#known-gaps-and-follow-ups).
+- [MCP plan follow-up 8.8](../plans/2026-11-06-mcp-endpoint.md) (Medium, open): `scrubEvent` in `lib/sentry/scrub.ts` scrubs exception stack-frame locals, but not `event.exception.values[].value`, `event.message` or `logentry`, so secrets in those message fields can leave unscrubbed.
 - M-F-01, M-H-11: sentry.io checklist (GitHub + Seer, "User Feedback received" and "Replay with error" notifications) and production smoke never run; issue #38 §2.3.
 - M-F-02: `app/admin/actions.ts` Server Functions are not wrapped; #38 §3.3.
 - M-F-03: recorder and draft-storage catches emit noise at 100 % sampling; #38 §2.9.
@@ -126,6 +128,6 @@ Both inits share one `DATA_COLLECTION` object and the same `before*` hooks. The 
 
 ## Related
 
-- Sibling feature docs: [Share form](./share-form.md), [Media uploads](./media-uploads.md), [Audio recording](./audio-recording.md), [Admin panel](./admin-panel.md), [Draft on behalf](./draft-on-behalf.md), [Email and cron](./email-and-cron.md)
+- Sibling feature docs: [Share form](./share-form.md), [Media uploads](./media-uploads.md), [Audio recording](./audio-recording.md), [Admin panel](./admin-panel.md), [Draft on behalf](./draft-on-behalf.md), [Email and cron](./email-and-cron.md), [Vercel Web Analytics](./analytics.md), [Privacy note](./privacy.md)
 - Plans: [2026-11-04 Sentry full telemetry](../plans/2026-11-04-sentry-full-telemetry.md), [Phase 1 plan](../plans/2026-11-02-phase1-database-infrastructure-memory-collection.md), [Phase 1 ledger](../plans/phase1-ledger.md), [bootstrap report](../plans/2026-11-02-bootstrap-report.md)
 - [Debt catalog section F](../2026-11-04-debt-catalog.md), [code layout](../code-layout.md), [environment](../environment.md), [admin](../admin.md)
