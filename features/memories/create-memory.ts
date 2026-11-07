@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import { BudgetBusyError, lockBudget, lockMemory, type Tx } from "@/features/memories/lock";
 import { renewUploadLease } from "@/features/memories/upload-lease";
+import type { ChangedVia } from "@/generated/prisma/client";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { extensionFor, MAX_FILES_PER_MEMORY, maxBytesFor, memoryTypeFor, normalizeMime } from "@/lib/media-types";
@@ -39,6 +40,11 @@ export interface ResolvedFile {
   caption: string | null;
   approxDateText: string | null;
   place: string | null;
+}
+
+interface MediaProvenance {
+  addedVia?: ChangedVia;
+  declaredSha256?: string;
 }
 
 export function resolveFile(file: MemoryFileInput): ResolvedFile | "unsupported_type" | "too_large" {
@@ -177,7 +183,8 @@ export async function createPendingMediaRow(
   memoryId: string,
   file: ResolvedFile,
   placement: { sortOrder: number; replacesMediaId: string | null },
-  now = Date.now()
+  now = Date.now(),
+  { addedVia, declaredSha256 }: MediaProvenance = {}
 ): Promise<{ mediaId: string; pathname: string }> {
   const pathname = `${storagePrefix()}${memoryId}/${randomUUID()}.${file.extension}`;
   const media = await tx.media.create({
@@ -195,6 +202,8 @@ export async function createPendingMediaRow(
       reservedUntil: new Date(now + UPLOAD_WINDOW_MS),
       sortOrder: placement.sortOrder,
       replacesMediaId: placement.replacesMediaId,
+      ...(addedVia !== undefined && { addedVia }),
+      ...(declaredSha256 !== undefined && { declaredSha256 }),
     },
   });
   return { mediaId: media.id, pathname };
@@ -204,11 +213,12 @@ async function createPendingMedia(
   tx: Tx,
   memoryId: string,
   file: ResolvedFile,
-  placement: { sortOrder: number; replacesMediaId: string | null }
+  placement: { sortOrder: number; replacesMediaId: string | null },
+  provenance: MediaProvenance = {}
 ): Promise<UploadGrant> {
   // One clock reading for the row and the ticket, so the window is exactly the token's last possible byte (TCR #6).
   const now = Date.now();
-  const { mediaId, pathname } = await createPendingMediaRow(tx, memoryId, file, placement, now);
+  const { mediaId, pathname } = await createPendingMediaRow(tx, memoryId, file, placement, now, provenance);
   const ticket = mintUploadTicket({ mediaId, memoryId, pathname, mimeType: file.mimeType, maxBytes: file.maxBytes }, { now });
   return { pathname, ticket };
 }
@@ -231,6 +241,32 @@ async function nextSortOrder(tx: Tx, memoryId: string): Promise<number> {
   return tx.media.count({ where: { memoryId } });
 }
 
+/**
+ * Reserve one more live file. Precondition: the caller holds the upload lease
+ * and memory lock; this helper takes the budget lock last (lease → memory →
+ * budget, C23). It uses the caller's tx and opens no transaction (C24).
+ */
+export async function reservePendingMedia(
+  tx: Tx,
+  { memoryId, file, maxBytes, addedVia, declaredSha256 }: {
+    memoryId: string;
+    file: ResolvedFile;
+    maxBytes: number;
+  } & MediaProvenance
+): Promise<UploadGrant | "too_many_files" | "budget_exceeded"> {
+  if ((await liveFileCount(tx, memoryId)) >= MAX_FILES_PER_MEMORY) {
+    return "too_many_files";
+  }
+  if (!(await withinBudget(tx, maxBytes, 0))) {
+    return "budget_exceeded";
+  }
+  return createPendingMedia(
+    tx, memoryId, { ...file, maxBytes },
+    { sortOrder: await nextSortOrder(tx, memoryId), replacesMediaId: null },
+    { addedVia, declaredSha256 }
+  );
+}
+
 /** Ticket for one more file on an existing memory, from its claim page. */
 export async function createUploadTicket(raw: unknown): Promise<UploadTicketResult> {
   const parsed = uploadTicketRequestSchema.safeParse(raw);
@@ -250,14 +286,11 @@ export async function createUploadTicket(raw: unknown): Promise<UploadTicketResu
     // Anchor first, then this memory: the one lock order every multi-memory writer shares (C25).
     await renewUploadLease(tx, memory);
     await lockMemory(tx, memory.id);
-    if ((await liveFileCount(tx, memory.id)) >= MAX_FILES_PER_MEMORY) {
-      return "too_many_files" as const;
-    }
-    if (!(await withinBudget(tx, file.maxBytes, 0))) {
-      return "budget_exceeded" as const;
-    }
     // No lease here: the memory's one email was handled with its first submission; cron must not be held off.
-    const grant = await createPendingMedia(tx, memory.id, file, { sortOrder: await nextSortOrder(tx, memory.id), replacesMediaId: null });
+    const grant = await reservePendingMedia(tx, { memoryId: memory.id, file, maxBytes: file.maxBytes });
+    if (typeof grant === "string") {
+      return grant;
+    }
     tagIds({ memoryId: memory.id, mediaId: grant.ticket.mediaId });
     return grant;
   }, TX_OPTIONS));

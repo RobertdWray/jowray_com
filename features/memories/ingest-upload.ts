@@ -314,6 +314,38 @@ export type FinalizeResult =
   | { status: "REJECTED"; reason: "malformed" | "bad_signature" | "expired" | "not_found" };
 
 /**
+ * Follow-up work for a committed READY file. A caller's absolute deadline
+ * leaves 3 s for the response/flush; derive needs at least 5 s, otherwise
+ * cron step (g) backfills it. Choose its budget after the checksum finishes.
+ */
+export function scheduleReadyFollowUps({ mediaId, mimeType, sizeBytes, deadlineAt }: {
+  mediaId: string;
+  mimeType: string;
+  sizeBytes: number;
+  deadlineAt?: number;
+}): void {
+  afterWithFlush("finalize.checksum_and_derive", async () => {
+    if (sizeBytes <= INLINE_HASH_MAX_BYTES) {
+      await computeChecksum({ mediaId });
+    }
+    const deadlineMs = deadlineAt === undefined
+      ? DERIVE_DEADLINE_FINALIZE_MS
+      : Math.min(DERIVE_DEADLINE_FINALIZE_MS, deadlineAt - Date.now() - 3_000);
+    if (deadlineMs >= 5_000) {
+      await deriveMedia({ mediaId, deadlineMs });
+    }
+  });
+  // A photo's GPS, read from the original in a task of its own: never through the derived copies, which are
+  // stripped (plan 2026-11-06-photo-gps-places B3). Photos only (the ticket's type; recordMedia relabels only within
+  // a kind), so a video or a voice note schedules nothing (final review, item 4); cron step (h) retries.
+  if (mimeType.startsWith("image/")) {
+    afterWithFlush("finalize.photo_gps", async () => {
+      await extractPhotoGps({ mediaId });
+    });
+  }
+}
+
+/**
  * Called by the browser after `upload()` resolves. Verifies the ticket and
  * that the claim token belongs to the ticket's memory, records the media
  * from `head()`, and, for files small enough to hash inside the page's
@@ -356,20 +388,7 @@ export async function finalizeUpload({
         await notifyAdminsQuietly(memory.id);
       });
     }
-    afterWithFlush("finalize.checksum_and_derive", async () => {
-      if (outcome.sizeBytes <= INLINE_HASH_MAX_BYTES) {
-        await computeChecksum({ mediaId: outcome.mediaId });
-      }
-      await deriveMedia({ mediaId: outcome.mediaId, deadlineMs: DERIVE_DEADLINE_FINALIZE_MS });
-    });
-    // A photo's GPS, read from the original in a task of its own: never through the derived copies, which are
-    // stripped (plan 2026-11-06-photo-gps-places B3). Photos only (the ticket's type; recordMedia relabels only within
-    // a kind), so a video or a voice note schedules nothing (final review, item 4); cron step (h) retries.
-    if (verified.claims.mimeType.startsWith("image/")) {
-      afterWithFlush("finalize.photo_gps", async () => {
-        await extractPhotoGps({ mediaId: outcome.mediaId });
-      });
-    }
+    scheduleReadyFollowUps({ mediaId: outcome.mediaId, mimeType: verified.claims.mimeType, sizeBytes: outcome.sizeBytes });
   }
   return { status: outcome.status, claimLink: `${getSiteUrl()}/m/${claimToken}`, emailed };
 }

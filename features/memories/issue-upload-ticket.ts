@@ -1,8 +1,9 @@
 import "server-only";
 
 import { budgetHasRoom, TX_OPTIONS, type UploadGrant } from "@/features/memories/create-memory";
-import { BudgetBusyError, lockBudget } from "@/features/memories/lock";
+import { BudgetBusyError, lockBudget, type Tx } from "@/features/memories/lock";
 import { renewUploadLease } from "@/features/memories/upload-lease";
+import type { Media } from "@/generated/prisma/client";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { tagIds } from "@/lib/sentry/user";
@@ -19,6 +20,43 @@ export type IssueTicketResult =
   | { ok: false; code: "invalid" | "not_found" | "not_pending" | "expired" | "budget_exceeded" };
 
 type Refusal = Exclude<IssueTicketResult, { ok: true }>["code"];
+
+/**
+ * Precondition: the caller holds the upload lease (and any memory lock it
+ * needs). Takes the budget lock last and opens no transaction (C23, C24).
+ * `now` is a clock, sampled after the lock and row re-read so a lock wait
+ * cannot silently extend an expired window or shorten the new ticket.
+ * The returned row and time are the claims and clock for that ticket.
+ */
+export async function renewPendingReservation(
+  tx: Tx,
+  row: Pick<Media, "id">,
+  now: () => number = Date.now
+): Promise<"expired" | "budget_exceeded" | "not_pending" | { row: Media; now: number; reservedUntil: Date }> {
+  await lockBudget(tx);
+  const current = await tx.media.findUnique({ where: { id: row.id } });
+  const stampedAt = now();
+  if (!current || current.deletedAt !== null || current.status !== "PENDING") {
+    return "not_pending";
+  }
+  if (current.createdAt.getTime() < stampedAt - RESERVATION_MAX_AGE_MS) {
+    return "expired";
+  }
+  // A row the old code wrote has no window yet; it has counted since its creation, so it is open.
+  const open = current.reservedUntil === null || current.reservedUntil.getTime() > stampedAt;
+  if (!open && !(await budgetHasRoom(tx, current.maxBytes, 0, new Date(stampedAt)))) {
+    return "budget_exceeded";
+  }
+  const reservedUntil = new Date(stampedAt + UPLOAD_WINDOW_MS);
+  const stamped = await tx.media.updateMany({
+    where: { id: current.id, status: "PENDING", deletedAt: null, reservedUntil: current.reservedUntil },
+    data: { reservedUntil },
+  });
+  if (stamped.count !== 1) {
+    return "not_pending";
+  }
+  return { row: current, now: stampedAt, reservedUntil };
+}
 
 /**
  * Mint the upload ticket for one PENDING row right before its upload, so the
@@ -76,27 +114,11 @@ export async function issueUploadTicket(raw: unknown): Promise<IssueTicketResult
       }
       tagIds({ memoryId: memory.id, mediaId: first.id });
       await renewUploadLease(tx, memory);
-      await lockBudget(tx);
-      const row = await tx.media.findUnique({ where: { id: first.id } });
-      const now = Date.now();
-      if (!row || row.deletedAt !== null || row.status !== "PENDING") {
-        return "not_pending" as const;
+      const renewed = await renewPendingReservation(tx, first, Date.now);
+      if (typeof renewed === "string") {
+        return renewed;
       }
-      if (row.createdAt.getTime() < now - RESERVATION_MAX_AGE_MS) {
-        return "expired" as const;
-      }
-      // A row the old code wrote has no window yet; it has counted since its creation, so it is open.
-      const open = row.reservedUntil === null || row.reservedUntil.getTime() > now;
-      if (!open && !(await budgetHasRoom(tx, row.maxBytes, 0, new Date(now)))) {
-        return "budget_exceeded" as const;
-      }
-      const stamped = await tx.media.updateMany({
-        where: { id: row.id, status: "PENDING", deletedAt: null, reservedUntil: row.reservedUntil },
-        data: { reservedUntil: new Date(now + UPLOAD_WINDOW_MS) },
-      });
-      if (stamped.count !== 1) {
-        return "not_pending" as const;
-      }
+      const { row, now } = renewed;
       const ticket = mintUploadTicket({ mediaId: row.id, memoryId: memory.id, pathname: row.storageKey, mimeType: row.mimeType, maxBytes: row.maxBytes }, { now });
       return { pathname: row.storageKey, ticket, memoryId: memory.id };
     }, TX_OPTIONS);
