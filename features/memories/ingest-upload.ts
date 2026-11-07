@@ -2,12 +2,12 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 
-import { extractPhotoGps } from "@/features/media/extract-photo-gps";
+import { extractPhotoGps, GPS_READ_DEADLINE_MS } from "@/features/media/extract-photo-gps";
 import { confirmMemory } from "@/features/memories/confirm";
 import { deriveMedia } from "@/features/memories/derive-media";
 import { lockMemory } from "@/features/memories/lock";
 import { notifyAdminsOfMemory } from "@/features/memories/notify-admins";
-import { appendClaimRevision, recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
+import { appendClaimRevision, appendRevision, readyLiveMediaIds, recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger, logError, logErrorAndFlush } from "@/lib/logger";
 import { detectMediaType, isAllowedMime, SIGNATURE_PREFIX_BYTES } from "@/lib/media-types";
@@ -18,6 +18,7 @@ import { getSiteUrl } from "@/lib/site-url";
 import { type UploadTicket, verifyUploadTicket } from "@/lib/upload-ticket";
 import { getDb } from "@/server/db/client";
 import { createStorageService } from "@/services/storage";
+import type { StorageHeadResult } from "@/services/storage/types";
 
 const log = createLogger({ category: "upload" });
 /** Neon computes can take a couple of seconds to wake; Prisma's defaults (2 s / 5 s) are too tight. */
@@ -28,14 +29,71 @@ export const INLINE_HASH_MAX_BYTES = 50 * 1024 * 1024;
 /** Budget for the derived copies made right after finalize (the page's Server Functions have 120 s). */
 export const DERIVE_DEADLINE_FINALIZE_MS = 20_000;
 
+/**
+ * Why a row became FAILED in this call. `size_mismatch` and `checksum_mismatch`
+ * are connector uploads only (plan 2026-11-06-mcp-attach-media §8.3). FAILED
+ * rows store no reason, so a repeat call on a FAILED row cannot say which
+ * (follow-up F9).
+ */
+export type FailedReason = "too_large" | "wrong_type" | "unrecognized_bytes" | "retired" | "size_mismatch" | "checksum_mismatch";
+
 export type RecordMediaResult =
   | { status: "READY"; mediaId: string; memoryId: string; sizeBytes: number }
-  | { status: "PENDING"; mediaId: string; memoryId: string }
-  | { status: "FAILED"; mediaId: string; memoryId: string; reason: "too_large" | "wrong_type" | "unrecognized_bytes" | "retired" }
+  /** `verifying`: head saw the bytes, but their verification did not finish before the caller's deadline. */
+  | { status: "PENDING"; mediaId: string; memoryId: string; verifying?: true }
+  | { status: "FAILED"; mediaId: string; memoryId: string; reason: FailedReason }
   | { status: "NOT_FOUND"; mediaId: string };
 
 function isPrismaCode(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === code;
+}
+
+/** True when `error` is the caller's own deadline or cancellation firing, not a failure of the store. */
+function isCallerAbort(error: unknown, signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true && (error === signal.reason || (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")));
+}
+
+/**
+ * SHA-256 of a stored blob, streamed; null when the blob is missing. The
+ * caller's `signal` aborts the request and also ends the read between chunks,
+ * so a body that stalls (no further chunk ever arrives) is abandoned at the
+ * deadline instead of holding the function open. On abort it rejects with the
+ * signal's reason (a `TimeoutError` for `AbortSignal.timeout`).
+ */
+async function hashStoredBlob(storageKey: string, signal?: AbortSignal): Promise<string | null> {
+  signal?.throwIfAborted();
+  const storage = createStorageService();
+  const file = signal ? await storage.get(storageKey, { signal }) : await storage.get(storageKey);
+  if (!file) {
+    return null;
+  }
+  const hash = createHash("sha256");
+  const reader = (file.stream as ReadableStream<Uint8Array>).getReader();
+  let onAbort: (() => void) | undefined;
+  const aborted = signal
+    ? new Promise<never>((_, reject) => {
+        onAbort = () => reject(signal.reason);
+        signal.addEventListener("abort", onAbort, { once: true });
+      })
+    : undefined;
+  try {
+    for (;;) {
+      signal?.throwIfAborted();
+      const { done, value } = await (aborted ? Promise.race([reader.read(), aborted]) : reader.read());
+      if (done) {
+        return hash.digest("hex");
+      }
+      hash.update(value);
+    }
+  } catch (error) {
+    // Stop the transfer; the read already failed, so a cancel failure adds nothing and must not replace the cause.
+    reader.cancel(error).catch(() => undefined);
+    throw error;
+  } finally {
+    if (onAbort) {
+      signal?.removeEventListener("abort", onAbort);
+    }
+  }
 }
 
 /**
@@ -46,9 +104,14 @@ function isPrismaCode(error: unknown, code: string): boolean {
  * Idempotent: READY rows return as they are (rows recorded before the byte
  * check are never re-read), FAILED rows return early (the cron's orphan
  * handling relies on that), a lost race against a concurrent writer re-reads
- * the row instead of throwing.
+ * the row instead of throwing. A connector upload (`addedVia = ADMIN`) must
+ * also arrive at exactly its declared size and, up to INLINE_HASH_MAX_BYTES,
+ * match its declared SHA-256 before READY; its READY writes an ADMIN revision
+ * (plan 2026-11-06-mcp-attach-media §8.3, D10). `signal` bounds storage reads:
+ * on abort nothing is written, and the row stays PENDING (`verifying` only
+ * when head already saw the blob).
  */
-export async function recordMedia({ mediaId }: { mediaId: string }): Promise<RecordMediaResult> {
+export async function recordMedia({ mediaId, signal }: { mediaId: string; signal?: AbortSignal }): Promise<RecordMediaResult> {
   const db = getDb();
   const row = await db.media.findUnique({
     where: { id: mediaId },
@@ -65,14 +128,22 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
   }
 
   const storage = createStorageService();
-  const head = await storage.head(row.storageKey);
+  let head: StorageHeadResult | null;
+  try {
+    head = signal ? await storage.head(row.storageKey, { signal }) : await storage.head(row.storageKey);
+  } catch (error) {
+    if (isCallerAbort(error, signal)) {
+      return { status: "PENDING", mediaId, memoryId: row.memoryId };
+    }
+    throw error;
+  }
   if (!head) {
     return { status: "PENDING", mediaId, memoryId: row.memoryId };
   }
 
   const tooLarge = head.size > row.maxBytes;
   const wrongType = head.contentType !== row.mimeType || !isAllowedMime(head.contentType);
-  const reject = async (reason: "too_large" | "wrong_type", check: "size" | "label" | "bytes"): Promise<RecordMediaResult> => {
+  const reject = async (reason: "too_large" | "wrong_type" | "size_mismatch" | "checksum_mismatch", check: "size" | "label" | "bytes" | "checksum"): Promise<RecordMediaResult> => {
     await storage.del(row.storageKey);
     await transition(row, { status: "FAILED" });
     log.warn({ action: "reject", mediaId, memoryId: row.memoryId, reason, check, size: head.size }, "upload rejected");
@@ -96,7 +167,17 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
     // Nothing to look at, and a byte range on an empty object is a 416, not a prefix.
     return keepUnrecognised();
   }
-  const prefix = await storage.readPrefix(row.storageKey, SIGNATURE_PREFIX_BYTES);
+  let prefix: Uint8Array | null;
+  try {
+    prefix = signal
+      ? await storage.readPrefix(row.storageKey, SIGNATURE_PREFIX_BYTES, { signal })
+      : await storage.readPrefix(row.storageKey, SIGNATURE_PREFIX_BYTES);
+  } catch (error) {
+    if (isCallerAbort(error, signal)) {
+      return { status: "PENDING", mediaId, memoryId: row.memoryId, verifying: true };
+    }
+    throw error;
+  }
   if (!prefix) {
     return { status: "PENDING", mediaId, memoryId: row.memoryId };
   }
@@ -108,7 +189,38 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
     log.info({ action: "relabel", mediaId, memoryId: row.memoryId, declared: row.mimeType, actual: actualType }, "upload relabelled from its bytes");
   }
 
-  const updated = await transition(row, { status: "READY", sizeBytes: head.size, blobUrl: head.url, mimeType: actualType });
+  // A file attached through the MCP connector (plan 2026-11-06-mcp-attach-media §8.3, D3, D10): it was
+  // reserved at exactly its declared size and carries the SHA-256 the session declared. Whoever completes
+  // it (finalize_upload or cron step (a)) runs these checks, before READY. Above INLINE_HASH_MAX_BYTES the
+  // hash cannot fit a request's budget; cron step (b) hashes it later and warns on a mismatch.
+  let checksumSha256: string | undefined;
+  if (row.addedVia === "ADMIN") {
+    if (head.size !== row.maxBytes) {
+      return reject("size_mismatch", "size");
+    }
+    if (head.size <= INLINE_HASH_MAX_BYTES) {
+      let digest: string | null;
+      try {
+        digest = await hashStoredBlob(row.storageKey, signal);
+      } catch (error) {
+        if (isCallerAbort(error, signal)) {
+          // Out of time, not wrong: nothing is written, and the next finalize or cron run hashes it again.
+          log.info({ action: "hash_deferred", mediaId, memoryId: row.memoryId }, "connector upload hash did not finish before the deadline");
+          return { status: "PENDING", mediaId, memoryId: row.memoryId, verifying: true };
+        }
+        throw error;
+      }
+      if (digest === null) {
+        return { status: "PENDING", mediaId, memoryId: row.memoryId };
+      }
+      if (digest !== row.declaredSha256) {
+        return reject("checksum_mismatch", "checksum");
+      }
+      checksumSha256 = digest;
+    }
+  }
+
+  const updated = await transition(row, { status: "READY", sizeBytes: head.size, blobUrl: head.url, mimeType: actualType, ...(checksumSha256 !== undefined && { checksumSha256 }) });
   if (updated === "retired") {
     // The bytes are recorded (purge deletes them) but the file was cancelled or its target removed: not a live file.
     log.info({ action: "retired", mediaId, memoryId: row.memoryId }, "upload recorded for a retired replacement");
@@ -132,11 +244,14 @@ export async function recordMedia({ mediaId }: { mediaId: string }): Promise<Rec
  * Conditional PENDING → next-state update inside a transaction that holds the
  * memory lock; P2025 (no row matched) means another writer got there first.
  * Also recomputes `Memory.type`, and when a replacement reaches READY retires
- * its target (or cancels itself if the target was removed meanwhile).
+ * its target (or cancels itself if the target was removed meanwhile). A
+ * connector upload (`addedVia = ADMIN`) reaching READY appends one ADMIN
+ * revision of the memory's READY files in the same transaction (D10), so the
+ * revision exists exactly once whoever wins: a lost race rolls back with it.
  */
 async function transition(
-  row: { id: string; memoryId: string; replacesMediaId: string | null },
-  data: { status: "READY"; sizeBytes: number; blobUrl: string; mimeType: string } | { status: "FAILED"; blobUrl?: string }
+  row: { id: string; memoryId: string; replacesMediaId: string | null; addedVia?: string | null },
+  data: { status: "READY"; sizeBytes: number; blobUrl: string; mimeType: string; checksumSha256?: string } | { status: "FAILED"; blobUrl?: string }
 ): Promise<"done" | "lost_race" | "retired"> {
   try {
     return await getDb().$transaction(async (tx) => {
@@ -144,12 +259,18 @@ async function transition(
       // Everything the swap and the type depend on is read after the lock, never from the pre-lock row.
       // A replacement that fails validation is retired at once so it never lingers on its target's card.
       const retireFailedReplacement = data.status === "FAILED" && row.replacesMediaId !== null;
+      const adminReady = data.status === "READY" && row.addedVia === "ADMIN";
+      const readyBefore = adminReady ? await readyLiveMediaIds(tx, row.memoryId, row.id) : [];
       const current = await tx.media.update({
         where: { id: row.id, status: "PENDING" },
         data: retireFailedReplacement ? { ...data, deletedAt: new Date() } : data,
       });
       const memory = await tx.memory.findUniqueOrThrow({ where: { id: row.memoryId }, select: { contributorNote: true, consentVersion: true } });
       let outcome: "done" | "retired" = "done";
+      if (adminReady) {
+        const readyAfter = await readyLiveMediaIds(tx, row.memoryId);
+        await appendRevision(tx, { memoryId: row.memoryId, changedVia: "ADMIN", before: { readyMediaIds: readyBefore }, after: { readyMediaIds: readyAfter, addedMediaId: row.id }, consentVersion: memory.consentVersion });
+      }
       if (data.status === "READY" && row.replacesMediaId !== null) {
         if (current.deletedAt !== null) {
           // Cancelled while the upload was in flight: recorded (so purge can delete the blob) but never swapped in.
@@ -182,8 +303,12 @@ async function transition(
   }
 }
 
-/** SHA-256 of a READY blob, streamed from the store; stored on the row. */
-export async function computeChecksum({ mediaId }: { mediaId: string }): Promise<string | null> {
+/**
+ * SHA-256 of a READY blob, streamed from the store; stored on the row. A
+ * caller with a deadline passes `signal`; when it fires the read stops and
+ * this rejects with its reason, storing nothing.
+ */
+export async function computeChecksum({ mediaId, signal }: { mediaId: string; signal?: AbortSignal }): Promise<string | null> {
   const db = getDb();
   const row = await db.media.findUnique({ where: { id: mediaId } });
   if (!row || row.status !== "READY") {
@@ -192,15 +317,10 @@ export async function computeChecksum({ mediaId }: { mediaId: string }): Promise
   if (row.checksumSha256) {
     return row.checksumSha256;
   }
-  const file = await createStorageService().get(row.storageKey);
-  if (!file) {
+  const digest = await hashStoredBlob(row.storageKey, signal);
+  if (digest === null) {
     return null;
   }
-  const hash = createHash("sha256");
-  for await (const chunk of file.stream as unknown as AsyncIterable<Uint8Array>) {
-    hash.update(chunk);
-  }
-  const digest = hash.digest("hex");
   try {
     await db.media.update({ where: { id: mediaId }, data: { checksumSha256: digest } });
   } catch (error) {
@@ -212,6 +332,61 @@ export async function computeChecksum({ mediaId }: { mediaId: string }): Promise
 export type FinalizeResult =
   | { status: "READY" | "PENDING" | "FAILED"; claimLink: string; emailed: boolean }
   | { status: "REJECTED"; reason: "malformed" | "bad_signature" | "expired" | "not_found" };
+
+/**
+ * Follow-up work for a committed READY file. A caller's absolute deadline
+ * leaves 3 s for the response/flush; checksum needs at least 1 s and stops
+ * at that deadline (cron step (b) backfills it). Derive needs at least 5 s, otherwise
+ * cron step (g) backfills it. Choose its budget after the checksum finishes.
+ * GPS chooses its budget when its own task starts; under 1 s, cron step (h)
+ * backfills the undecided photo instead.
+ */
+export function scheduleReadyFollowUps({ mediaId, mimeType, sizeBytes, deadlineAt }: {
+  mediaId: string;
+  mimeType: string;
+  sizeBytes: number;
+  deadlineAt?: number;
+}): void {
+  afterWithFlush("finalize.checksum_and_derive", async () => {
+    if (sizeBytes <= INLINE_HASH_MAX_BYTES) {
+      if (deadlineAt === undefined) {
+        await computeChecksum({ mediaId });
+      } else {
+        const remaining = deadlineAt - Date.now() - 3_000;
+        if (remaining >= 1_000) {
+          const signal = AbortSignal.timeout(remaining);
+          try {
+            await computeChecksum({ mediaId, signal });
+          } catch (error) {
+            if (!isCallerAbort(error, signal)) { throw error; }
+            log.info({ action: "checksum_deferred", mediaId }, "checksum did not finish before the deadline");
+          }
+        }
+      }
+    }
+    const deadlineMs = deadlineAt === undefined
+      ? DERIVE_DEADLINE_FINALIZE_MS
+      : Math.min(DERIVE_DEADLINE_FINALIZE_MS, deadlineAt - Date.now() - 3_000);
+    if (deadlineMs >= 5_000) {
+      await deriveMedia({ mediaId, deadlineMs });
+    }
+  });
+  // A photo's GPS, read from the original in a task of its own: never through the derived copies, which are
+  // stripped (plan 2026-11-06-photo-gps-places B3). Photos only (the ticket's type; recordMedia relabels only within
+  // a kind), so a video or a voice note schedules nothing (final review, item 4); cron step (h) retries.
+  if (mimeType.startsWith("image/")) {
+    afterWithFlush("finalize.photo_gps", async () => {
+      if (deadlineAt === undefined) {
+        await extractPhotoGps({ mediaId });
+        return;
+      }
+      const deadlineMs = Math.min(GPS_READ_DEADLINE_MS, deadlineAt - Date.now() - 3_000);
+      if (deadlineMs >= 1_000) {
+        await extractPhotoGps({ mediaId, deadlineMs });
+      }
+    });
+  }
+}
 
 /**
  * Called by the browser after `upload()` resolves. Verifies the ticket and
@@ -256,20 +431,7 @@ export async function finalizeUpload({
         await notifyAdminsQuietly(memory.id);
       });
     }
-    afterWithFlush("finalize.checksum_and_derive", async () => {
-      if (outcome.sizeBytes <= INLINE_HASH_MAX_BYTES) {
-        await computeChecksum({ mediaId: outcome.mediaId });
-      }
-      await deriveMedia({ mediaId: outcome.mediaId, deadlineMs: DERIVE_DEADLINE_FINALIZE_MS });
-    });
-    // A photo's GPS, read from the original in a task of its own: never through the derived copies, which are
-    // stripped (plan 2026-11-06-photo-gps-places B3). Photos only (the ticket's type; recordMedia relabels only within
-    // a kind), so a video or a voice note schedules nothing (final review, item 4); cron step (h) retries.
-    if (verified.claims.mimeType.startsWith("image/")) {
-      afterWithFlush("finalize.photo_gps", async () => {
-        await extractPhotoGps({ mediaId: outcome.mediaId });
-      });
-    }
+    scheduleReadyFollowUps({ mediaId: outcome.mediaId, mimeType: verified.claims.mimeType, sizeBytes: outcome.sizeBytes });
   }
   return { status: outcome.status, claimLink: `${getSiteUrl()}/m/${claimToken}`, emailed };
 }

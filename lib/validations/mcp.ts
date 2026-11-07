@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { sourceInputSchema } from "@/lib/source-input";
-import { adminCoordinatesSchema, adminDeletedSchema, adminMemoryChangesSchema, adminMemoryIdSchema, adminShareDraftSchema, adminStatusSchema, MEMORY_STATUSES } from "@/lib/validations/admin";
+import { adminCoordinatesSchema, adminFinalizeUploadSchema, adminRequestUploadSchema, adminDeletedSchema, adminMemoryChangesSchema, adminMemoryIdSchema, adminShareDraftSchema, adminStatusSchema, MEMORY_STATUSES } from "@/lib/validations/admin";
 import { draftMemoryObjectSchema } from "@/lib/validations/memory";
 
 /**
@@ -65,3 +65,11 @@ export const mcpShareDraftSchema = adminShareDraftSchema.strict();
 
 /** `set_deleted`. */
 export const mcpDeletedSchema = adminDeletedSchema.strict();
+
+/** `request_upload`: strict at both levels so misplaced metadata is refused. */
+export const mcpRequestUploadSchema = adminRequestUploadSchema
+  .extend({ file: adminRequestUploadSchema.shape.file.strict() })
+  .strict();
+
+/** `finalize_upload`. */
+export const mcpFinalizeUploadSchema = adminFinalizeUploadSchema.strict();

@@ -20,6 +20,8 @@ const PII_KEYS = [
   "approxDateText",
   "originalFilename",
   "claimLink",
+  // Presigned PUT/GET URLs are bearer credentials (MCP attach A19).
+  "presignedUrl",
   // Where a photo was taken (plan 2026-11-06-photo-gps-places, 2026-11-06): contributor content too. Log outcomes, not points.
   "latitude",
   "longitude",

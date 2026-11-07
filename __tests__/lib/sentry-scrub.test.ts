@@ -133,9 +133,91 @@ const FILTERED = "[Filtered]";
 
 describe("secrets constants", () => {
   it("name the bearer fields, key fragments and headers", () => {
-    expect(SECRET_FIELD_KEYS).toEqual(["claimToken", "claimTokens", "claimLink", "ticket", "clientPayload", "sig", "key"]);
+    expect(SECRET_FIELD_KEYS).toEqual(["claimToken", "claimTokens", "claimLink", "ticket", "clientPayload", "sig", "key", "presignedUrl"]);
     expect(SECRET_KEY_FRAGMENTS).toEqual(["token", "ticket"]);
     expect(SECRET_HEADER_KEYS).toEqual(["cookie", "authorization", "x-vercel-protection-bypass", "x-vercel-signature", "next-router-state-tree"]);
+  });
+});
+
+describe("presigned Blob URLs are bearer credentials (MCP attach A19)", () => {
+  // Synthetic only: the PUT shape comes from the S0.3 spike; GET uses the private Blob host.
+  const putUrl = "https://vercel.com/api/blob/?pathname=dev%2Foriginals%2Fm%2Fx.jpg&vercel-blob-delegation=SENTRYTEST_D&vercel-blob-signature=SENTRYTEST_S&vercel-blob-maximum-size-in-bytes=10";
+  const putScrubbed = "https://vercel.com/api/blob/?pathname=dev%2Foriginals%2Fm%2Fx.jpg&vercel-blob-maximum-size-in-bytes=10";
+  const getUrl = "https://test.private.blob.vercel-storage.com/dev/originals/m/x.jpg?vercel-blob-delegation=SENTRYTEST_D&vercel-blob-signature=SENTRYTEST_S";
+  const getScrubbed = "https://test.private.blob.vercel-storage.com/dev/originals/m/x.jpg";
+
+  describe.each([
+    { method: "PUT", url: putUrl, scrubbed: putScrubbed },
+    { method: "GET", url: getUrl, scrubbed: getScrubbed },
+  ])("$method", ({ url, scrubbed }) => {
+    it("removes both query credentials while preserving the path and non-secret parameters", () => {
+      expect(scrubUrl(url)).toBe(scrubbed);
+      expect(scrubSecrets(`request ${url} failed`)).toBe(`request ${scrubbed} failed`);
+    });
+
+    it("filters presignedUrl in an event and scrubs its request URL", () => {
+      const event = scrubEvent({
+        extra: { upload: { presignedUrl: url }, mediaId: "med_1" },
+        request: { url },
+      });
+      expect(event.extra).toEqual({ upload: { presignedUrl: FILTERED }, mediaId: "med_1" });
+      expect(event.request?.url).toBe(scrubbed);
+      expect(JSON.stringify(event)).not.toContain("SENTRYTEST_");
+    });
+
+    it("filters presignedUrl and serialized MCP tool output in span attributes", () => {
+      const span = scrubSpan({
+        name: "request_upload",
+        attributes: {
+          presignedUrl: { value: url, type: "string" },
+          "mcp.tool.output": { value: JSON.stringify({ upload: { presignedUrl: url }, mediaId: "med_1" }), type: "string" },
+          "url.full": { value: url, type: "string" },
+        },
+      });
+      expect(span.attributes).toEqual({
+        presignedUrl: FILTERED,
+        "mcp.tool.output": { value: '{"upload":{"presignedUrl":"[Filtered]"},"mediaId":"med_1"}', type: "string" },
+        "url.full": { value: scrubbed, type: "string" },
+      });
+      expect(JSON.stringify(span)).not.toContain("SENTRYTEST_");
+    });
+
+    it("filters presignedUrl in breadcrumb data and query credentials in its message", () => {
+      const breadcrumb = scrubBreadcrumb({ category: "fetch", data: { upload: { presignedUrl: url } }, message: `request ${url} failed` });
+      expect(breadcrumb.data).toEqual({ upload: { presignedUrl: FILTERED } });
+      expect(breadcrumb.message).toBe(`request ${scrubbed} failed`);
+      expect(JSON.stringify(breadcrumb)).not.toContain("SENTRYTEST_");
+    });
+
+    it("filters presignedUrl in Sentry log attributes and query credentials in its message", () => {
+      const log = scrubLog({ message: `request ${url} failed`, attributes: { upload: { presignedUrl: url }, mediaId: "med_1" } });
+      expect(log.attributes).toEqual({ upload: { presignedUrl: FILTERED }, mediaId: "med_1" });
+      expect(log.message).toBe(`request ${scrubbed} failed`);
+      expect(JSON.stringify(log)).not.toContain("SENTRYTEST_");
+    });
+  });
+
+  it.each(["presignedUrl", "PresignedURL", "PRESIGNEDURL"])("matches %s as a whole key, including serialized and escaped Flight members", (key) => {
+    const output = { upload: { [key]: putUrl }, presignedUrlExpiresAt: "keep" };
+    const expected = { upload: { [key]: FILTERED }, presignedUrlExpiresAt: "keep" };
+    expect(scrubSecrets(output)).toEqual(expected);
+    expect(scrubSecrets(JSON.stringify(output))).toBe(JSON.stringify(expected));
+    expect(scrubSecrets(`1:${JSON.stringify(output)}`)).toBe(`1:${JSON.stringify(expected)}`);
+    expect(scrubSecrets(`1:${JSON.stringify(JSON.stringify(output))}`)).toBe(`1:${JSON.stringify(JSON.stringify(expected))}`);
+    expect(scrubSecrets(`1:{"${key}":"${putUrl}`)).toBe(`1:{"${key}":"[Filtered]"`);
+  });
+
+  it.each(["vercel-blob-signature", "vercel-blob-delegation"])("removes %s at every query position, including repeats and bare queries", (key) => {
+    const parameter = `${key}=SENTRYTEST_QUERY`;
+    expect(scrubUrl(`/blob?${parameter}`)).toBe("/blob");
+    expect(scrubUrl(`/blob?${parameter}&pathname=keep`)).toBe("/blob?pathname=keep");
+    expect(scrubUrl(`/blob?pathname=keep&${parameter}&download=1`)).toBe("/blob?pathname=keep&download=1");
+    expect(scrubUrl(`/blob?pathname=keep&${parameter}`)).toBe("/blob?pathname=keep");
+    expect(scrubUrl(`/blob?${parameter}&${parameter}#section`)).toBe("/blob#section");
+    expect(scrubUrl(`${parameter}&pathname=keep&${parameter}`)).toBe("pathname=keep");
+    expect(scrubUrl(`/blob#${parameter}&pathname=keep`)).toBe("/blob#pathname=keep");
+    expect(scrubUrl(`/blob?${key}=&pathname=keep`)).toBe("/blob?pathname=keep");
+    expect(scrubUrl(`/blob?x-${key}=keep&${key}-suffix=keep`)).toBe(`/blob?x-${key}=keep&${key}-suffix=keep`);
   });
 });
 

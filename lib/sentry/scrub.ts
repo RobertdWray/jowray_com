@@ -27,12 +27,13 @@ export interface StreamedSpan {
 // A claim path is `/m/` followed by a base64url token (16+ chars); the token
 // may be followed by anything (slash, query, whitespace in a log message).
 const CLAIM_PATH = /\/m\/[A-Za-z0-9_-]{16,}/g;
-// Every `t=` (claim token) or `key=` (admin entry key) parameter in a full URL
+// Every `t=` (claim token), `key=` (admin entry key), or Blob presign credential
+// (`vercel-blob-signature`, `vercel-blob-delegation`) parameter in a full URL
 // (`?t=…`, `&t=…`, `#key=…`) or a bare query string (`t=…`), stopping at `&`,
 // `#` or whitespace; the delimiter is not consumed so consecutive parameters
 // are all matched. `#` is a delimiter because the admin entry link carries its
 // key in the fragment and the browser SDK records `location.href` with it.
-const TOKEN_QUERY = /(^|[?&#])(t|key)=[^&#\s]*(?=[&#\s]|$)/g;
+const TOKEN_QUERY = /(^|[?&#])(t|key|vercel-blob-signature|vercel-blob-delegation)=[^&#\s]*(?=[&#\s]|$)/g;
 
 export function scrubUrl(url: string): string {
   const withoutPath = url.replace(CLAIM_PATH, "/m/[claimToken]");

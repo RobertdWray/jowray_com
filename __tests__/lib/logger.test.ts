@@ -98,6 +98,34 @@ describe("logger redaction depth", () => {
   });
 });
 
+describe("presigned Blob URLs never reach a log line (MCP attach A19)", () => {
+  const urls = [
+    { method: "PUT", url: "https://vercel.com/api/blob/?pathname=dev%2Foriginals%2Fm%2Fx.jpg&vercel-blob-delegation=SENTRYTEST_D&vercel-blob-signature=SENTRYTEST_S&vercel-blob-maximum-size-in-bytes=10" },
+    { method: "GET", url: "https://test.private.blob.vercel-storage.com/dev/originals/m/x.jpg?vercel-blob-delegation=SENTRYTEST_D&vercel-blob-signature=SENTRYTEST_S" },
+  ];
+
+  it.each(urls)("Pino redacts a $method presignedUrl at the top level and up to three levels down", ({ url }) => {
+    const { sink, lines } = capture();
+    const log = buildLogger({ destination: sink, level: "info" });
+    log.info({ presignedUrl: url, upload: { presignedUrl: url }, result: { upload: { presignedUrl: url } }, a: { b: { upload: { presignedUrl: url } } }, mediaId: "med_1" }, "upload ready");
+    const out = lines().join("\n");
+    expect(out).not.toContain("SENTRYTEST_");
+    expect(JSON.parse(lines()[0]!)).toMatchObject({
+      presignedUrl: "[Redacted]",
+      upload: { presignedUrl: "[Redacted]" },
+      result: { upload: { presignedUrl: "[Redacted]" } },
+      a: { b: { upload: { presignedUrl: "[Redacted]" } } },
+      mediaId: "med_1",
+      msg: "upload ready",
+    });
+  });
+
+  it.each(urls)("redactPii filters a $method presignedUrl in nested Sentry extra", ({ url }) => {
+    const out = redactPii({ mediaId: "med_1", presignedUrl: url, a: { b: { c: { uploads: [{ presignedUrl: url }] } } } });
+    expect(out).toEqual({ mediaId: "med_1", presignedUrl: "[Redacted]", a: { b: { c: { uploads: [{ presignedUrl: "[Redacted]" }] } } } });
+  });
+});
+
 describe("contributor content never reaches a log line", () => {
   it("redacts the note, relationship, place, date, filename and claim link at any depth", () => {
     const out = redactPii({ memoryId: "m1", note: "secret words", relationship: "aunt", place: "Lake George", approxDateText: "1998", originalFilename: "IMG_1.jpg", claimLink: "https://x/m/tok", contributorNote: "also words", nested: { note: "deep" } }) as Record<string, unknown>;

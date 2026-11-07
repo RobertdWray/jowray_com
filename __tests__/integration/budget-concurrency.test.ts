@@ -20,6 +20,8 @@ import { readBudgetStats, TX_OPTIONS } from "@/features/memories/create-memory";
 import { BUDGET_LOCK_KEY } from "@/features/memories/lock";
 import { resetEnvCache } from "@/server/config/env";
 
+import { acquireCommittedDbLock } from "../helpers/committed-db-lock";
+
 const url = process.env.TEST_DATABASE_URL;
 if (process.env.CI && !url) {
   // Skipping silently in CI would make the workflow look green with the race unproven (TCR #8).
@@ -59,15 +61,17 @@ async function race<T>(n: number, writer: (i: number) => Promise<T>): Promise<{ 
 
 describe.skipIf(!client)("budget allocation under concurrency (real Postgres)", () => {
   const db = client!;
+  let committedLock: Awaited<ReturnType<typeof acquireCommittedDbLock>> | undefined;
 
   beforeAll(async () => {
+    committedLock = await acquireCommittedDbLock(url!);
     process.env.UPLOAD_TICKET_SECRET = "s".repeat(32);
     process.env.MEMORIAL_SLUG = SLUG;
     process.env.CONSENT_VERSION = "2026-11-v2";
     delete process.env.TOTAL_BYTE_CEILING;
     delete process.env.MAX_DECLARED_BYTES_PER_SUBMISSION;
     await db.memorial.upsert({ where: { slug: SLUG }, create: { name: "Budget test", slug: SLUG }, update: {} });
-  });
+  }, 180_000);
 
   beforeEach(async () => {
     // Contributor → Memory → Media / DerivedMedia / MemoryRevision / EmailLog all cascade from here; the memorial stays.
@@ -76,7 +80,8 @@ describe.skipIf(!client)("budget allocation under concurrency (real Postgres)", 
   });
 
   afterAll(async () => {
-    await db.$disconnect();
+    try { await db.$disconnect(); }
+    finally { await committedLock?.release(); }
   });
 
   it("exactly one of many concurrent sends wins the last memory of the day", async () => {

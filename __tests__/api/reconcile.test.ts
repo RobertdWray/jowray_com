@@ -7,7 +7,7 @@ const SECRET = "c".repeat(40);
 const HOUR = 60 * 60 * 1000;
 
 interface DerivedRow { kind: string; status: string; error: string | null; attempts: number; claimedAt: Date | null; storageKey: string }
-interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; purgedAt?: Date | null; reservedUntil?: Date | null; mimeType?: string; derivatives?: DerivedRow[]; gpsCheckedAt?: Date | null; gpsAttempts?: number; gpsClaimedAt?: Date | null; latitude?: number | null; longitude?: number | null; memory: { deletedAt: Date | null } }
+interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; purgedAt?: Date | null; reservedUntil?: Date | null; declaredSha256?: string | null; addedVia?: "ADMIN" | null; mimeType?: string; derivatives?: DerivedRow[]; gpsCheckedAt?: Date | null; gpsAttempts?: number; gpsClaimedAt?: Date | null; latitude?: number | null; longitude?: number | null; memory: { deletedAt: Date | null } }
 interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
 type EmailType = "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY" | "SUBMISSION_CONFIRMATION";
 interface EmailRow { errorMessage?: string | null; id: string; memoryId: string; emailType: EmailType; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null; uploadLeaseUntil?: Date | null } }
@@ -83,8 +83,10 @@ const dbStub = {
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 const checkInMock = vi.fn((checkIn: { status: string; checkInId?: string }) => checkIn.checkInId ?? "checkin_1");
 const isolationCalls: unknown[] = [];
+const captureMessageMock = vi.fn();
 vi.mock("@sentry/nextjs", () => ({
   captureException: vi.fn(),
+  captureMessage: (...a: unknown[]) => captureMessageMock(...a),
   flush: vi.fn(async () => true),
   captureCheckIn: (...a: unknown[]) => checkInMock(...(a as [{ status: string; checkInId?: string }])),
   withIsolationScope: (cb: (scope: unknown) => unknown) => { const scope = { id: isolationCalls.length }; isolationCalls.push(scope); return cb(scope); },
@@ -93,9 +95,9 @@ const reconcileRunMock = vi.fn();
 vi.mock("@/lib/sentry/metrics", () => ({ reconcileRun: (...a: unknown[]) => reconcileRunMock(...a) }));
 
 type RecordOutcome = { status: "READY"; mediaId: string; memoryId: string; sizeBytes: number } | { status: "PENDING"; mediaId: string; memoryId: string };
-const recordMediaMock = vi.fn(async ({ mediaId }: { mediaId: string }): Promise<RecordOutcome> => ({ status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 }));
+const recordMediaMock = vi.fn(async ({ mediaId }: { mediaId: string; signal?: AbortSignal }): Promise<RecordOutcome> => ({ status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 }));
 const checksumMock = vi.fn(async ({ mediaId }: { mediaId: string }) => { media.find((m) => m.id === mediaId)!.checksumSha256 = "a".repeat(64); return "a".repeat(64); });
-vi.mock("@/features/memories/ingest-upload", () => ({ recordMedia: (a: { mediaId: string }) => recordMediaMock(a), computeChecksum: (a: { mediaId: string }) => checksumMock(a) }));
+vi.mock("@/features/memories/ingest-upload", () => ({ recordMedia: (a: { mediaId: string; signal?: AbortSignal }) => recordMediaMock(a), computeChecksum: (a: { mediaId: string }) => checksumMock(a) }));
 /** Records a SENT row of one type for the memory (or flips its existing row of that type to SENT), like the real service. */
 function recordSent(memoryId: string, emailType: EmailType) {
   const existing = emails.find((e) => e.memoryId === memoryId && e.emailType === emailType);
@@ -450,6 +452,29 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(terminal).toEqual(before);
   });
 
+  it("(a) gives each re-record a bounded deadline signal, so a connector upload's hash cannot outrun the run (plan 2026-11-06-mcp-attach-media §8.3)", async () => {
+    await run(`Bearer ${SECRET}`);
+    expect(recordMediaMock).toHaveBeenCalled();
+    for (const [arg] of recordMediaMock.mock.calls.filter(([a]) => a.mediaId.startsWith("med_orphan") || a.mediaId === "med_stale")) {
+      expect(arg.signal).toBeInstanceOf(AbortSignal);
+      expect(arg.signal!.aborted).toBe(false);
+    }
+  });
+
+  it("(b) warns in Sentry, with ids only, when a connector upload's verified checksum differs from its declared hash (A13, > 50 MB)", async () => {
+    media = [
+      { id: "med_declared_bad", memoryId: "mem_1", status: "READY", checksumSha256: null, declaredSha256: "b".repeat(64), addedVia: "ADMIN", createdAt: new Date(Date.now() - 2 * HOUR), storageKey: "originals/mem_1/big.mov", blobUrl: "u", deletedAt: null, memory: { deletedAt: null } },
+      { id: "med_declared_ok", memoryId: "mem_1", status: "READY", checksumSha256: null, declaredSha256: "a".repeat(64), addedVia: "ADMIN", createdAt: new Date(Date.now() - 2 * HOUR), storageKey: "originals/mem_1/ok.mov", blobUrl: "u", deletedAt: null, memory: { deletedAt: null } },
+      { id: "med_site", memoryId: "mem_1", status: "READY", checksumSha256: null, createdAt: new Date(Date.now() - 2 * HOUR), storageKey: "originals/mem_1/site.mov", blobUrl: "u", deletedAt: null, memory: { deletedAt: null } },
+    ];
+    events = []; emails = []; memories = [];
+    captureMessageMock.mockClear();
+    await run(`Bearer ${SECRET}`);
+    expect(checksumMock.mock.calls.map(([a]) => a.mediaId).sort()).toEqual(["med_declared_bad", "med_declared_ok", "med_site"]);
+    expect(captureMessageMock).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("declared"), { level: "warning", tags: { media_id: "med_declared_bad", memory_id: "mem_1" } });
+    expect(JSON.stringify(captureMessageMock.mock.calls)).not.toContain("b".repeat(64));
+  });
+
   it("alerts the admins once a pending upload lands, never while it is in flight", async () => {
     await run(`Bearer ${SECRET}`);
     expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_pending_upload" });
@@ -496,6 +521,95 @@ describe("GET /api/cron/reconcile-uploads", () => {
     events[0]!.attempts = 3;
     await run(`Bearer ${SECRET}`);
     expect(events[0]?.processedAt).toBeNull();
+  });
+});
+
+describe("steps (a) and (c) record budget", () => {
+  // The 50 s run budget reserves 5 s for cleanup: 44 s elapsed leaves exactly
+  // the 1 s minimum for recording; even one millisecond more must defer work.
+  const cases = [
+    { elapsedMs: 44_000, starts: true },
+    { elapsedMs: 44_001, starts: false },
+    { elapsedMs: 45_000, starts: false },
+    { elapsedMs: 49_999, starts: false },
+  ];
+
+  it.each(cases)("(a) starts stale PENDING records only with enough budget ($elapsedMs ms elapsed)", async ({ elapsedMs, starts }) => {
+    media = media.filter((row) => row.id === "med_stale");
+    events = []; emails = []; memories = [];
+    const findMedia = dbStub.media.findMany.getMockImplementation()!;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const startedAt = Date.now();
+      dbStub.media.findMany.mockImplementation(async (args) => {
+        const rows = await findMedia(args);
+        if (args.where.status === "PENDING") {
+          vi.setSystemTime(startedAt + elapsedMs);
+        }
+        return rows;
+      });
+      const res = await run(`Bearer ${SECRET}`);
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toMatchObject({ pendingRechecked: starts ? 1 : 0, errors: 0 });
+      expect(recordMediaMock.mock.calls.map(([arg]) => arg.mediaId)).toEqual(starts ? ["med_stale"] : []);
+    } finally {
+      dbStub.media.findMany.mockImplementation(findMedia);
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(cases)("(c) preserves every event's retries unless there is enough budget ($elapsedMs ms elapsed)", async ({ elapsedMs, starts }) => {
+    media = []; emails = []; memories = [];
+    events = [1, 2].map((attempts) => ({ id: `evt_${attempts}`, attempts, processedAt: null, error: "previous failure", payload: { tokenPayload: JSON.stringify({ mediaId: `med_${attempts}` }) } }));
+    const before = structuredClone(events);
+    const findEvents = dbStub.webhookEvent.findMany.getMockImplementation()!;
+    dbStub.webhookEvent.update.mockClear();
+    recordMediaMock.mockImplementation(async ({ mediaId }) => ({ status: "PENDING", mediaId, memoryId: "mem_1" }));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const startedAt = Date.now();
+      dbStub.webhookEvent.findMany.mockImplementation(async (args) => {
+        const rows = await findEvents(args);
+        vi.setSystemTime(startedAt + elapsedMs);
+        return rows;
+      });
+      const res = await run(`Bearer ${SECRET}`);
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toMatchObject({ eventsReplayed: starts ? 2 : 0, errors: 0 });
+      expect(recordMediaMock.mock.calls.map(([arg]) => arg.mediaId)).toEqual(starts ? ["med_1", "med_2"] : []);
+      expect(dbStub.webhookEvent.update).toHaveBeenCalledTimes(starts ? 2 : 0);
+      expect(events).toEqual(starts ? before.map((event) => ({ ...event, attempts: event.attempts + 1, error: "blob not visible yet" })) : before);
+    } finally {
+      dbStub.webhookEvent.findMany.mockImplementation(findEvents);
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["a", "c"] as const)("(%s) checks the budget again before starting the next item", async (step) => {
+    const stale = media.find((row) => row.id === "med_stale")!;
+    media = step === "a" ? [stale, { ...stale, id: "med_next" }] : [];
+    events = step === "c" ? ["med_stale", "med_next"].map((mediaId) => ({ id: `evt_${mediaId}`, attempts: 2, processedAt: null, error: "previous failure", payload: { tokenPayload: JSON.stringify({ mediaId }) } })) : [];
+    emails = []; memories = [];
+    const nextEvent = structuredClone(events[1]);
+    dbStub.webhookEvent.update.mockClear();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      recordMediaMock.mockImplementation(async ({ mediaId }) => {
+        vi.setSystemTime(Date.now() + 44_001);
+        return { status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 };
+      });
+      const res = await run(`Bearer ${SECRET}`);
+      expect(res.status).toBe(200);
+      expect(recordMediaMock.mock.calls.map(([arg]) => arg.mediaId)).toEqual(["med_stale"]);
+      expect((await res.json()).data).toMatchObject({ pendingRechecked: step === "a" ? 1 : 0, eventsReplayed: step === "c" ? 1 : 0, errors: 0 });
+      if (step === "c") {
+        expect(events[0]).toMatchObject({ processedAt: expect.any(Date), attempts: 3, error: null });
+        expect(events[1]).toEqual(nextEvent);
+        expect(dbStub.webhookEvent.update).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

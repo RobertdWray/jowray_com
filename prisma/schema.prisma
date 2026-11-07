@@ -164,6 +164,8 @@ model Media {
   status           MediaStatus @default(PENDING)
   originalFilename String?
   checksumSha256   String?                  // null until the background hash or the cron runs
+  declaredSha256   String?                  // the SHA-256 a connector upload declared (request_upload); set exactly on addedVia = ADMIN rows (CHECKs Media_declared_sha256_hex, Media_admin_declared_sha256); checksumSha256 stays the verified hash and always wins
+  addedVia         ChangedVia?              // null for site uploads (claim page, /share); ADMIN for a file attached through the MCP connector: recordMedia then requires the exact declared size, hashes before READY (up to INLINE_HASH_MAX_BYTES) and writes an ADMIN revision
   mimeType         String                   // normalized, no parameters (lib/media-types.ts)
   maxBytes         Int                      // ticketed limit; summed for the daily byte budget
   sizeBytes        Int?

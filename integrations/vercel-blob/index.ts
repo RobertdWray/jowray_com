@@ -1,12 +1,14 @@
 import "server-only";
 
-import { BlobNotFoundError, del, get, head, issueSignedToken, presignUrl, put } from "@vercel/blob";
+import { BlobNotFoundError, BlobRequestAbortedError, del, get, head, issueSignedToken, presignUrl, put } from "@vercel/blob";
 
 import { createLogger } from "@/lib/logger";
 import { getBlobEnv } from "@/server/config/env";
 import type {
   PresignGetOptions,
   PresignGetResult,
+  PresignPutOptions,
+  PresignPutResult,
   StorageGetOptions,
   StorageGetResult,
   StorageHeadResult,
@@ -14,6 +16,30 @@ import type {
 } from "@/services/storage/types";
 
 const log = createLogger({ category: "upload" });
+
+/**
+ * Blob 2.8.2 retries TimeoutError but bails on AbortError. Give the SDK a
+ * default AbortError reason, then restore the caller's reason for SDK aborts.
+ * An unrelated failure racing a timeout must retain its original cause.
+ * Keep the listener for the whole operation (including readPrefix's body).
+ */
+async function withSdkSignal<T>(signal: AbortSignal | undefined, call: (abortSignal?: AbortSignal) => Promise<T>): Promise<T> {
+  if (!signal) { return call(); }
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal.aborted) { abort(); }
+  else { signal.addEventListener("abort", abort, { once: true }); }
+  try {
+    return await call(controller.signal);
+  } catch (error) {
+    if (signal.aborted && (error instanceof BlobRequestAbortedError || (error instanceof DOMException && error.name === "AbortError"))) {
+      throw signal.reason;
+    }
+    throw error;
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
 
 /** Read at most `maxBytes` from a stream, then cancel it; what was read is returned as one array. */
 async function readUpTo(stream: ReadableStream<Uint8Array>, maxBytes: number): Promise<Uint8Array> {
@@ -70,9 +96,11 @@ export class VercelBlobStorageService implements StorageService {
     return meta;
   }
 
-  async head(pathname: string): Promise<StorageHeadResult | null> {
+  async head(pathname: string, options: StorageGetOptions = {}): Promise<StorageHeadResult | null> {
     try {
-      const result = await head(pathname, { token: this.token() });
+      const result = await withSdkSignal(options.signal, (abortSignal) => head(pathname, {
+        token: this.token(), ...(abortSignal && { abortSignal }),
+      }));
       return {
         pathname: result.pathname,
         url: result.url,
@@ -89,12 +117,18 @@ export class VercelBlobStorageService implements StorageService {
   }
 
   async get(pathname: string, options: StorageGetOptions = {}): Promise<StorageGetResult | null> {
-    const result = await get(pathname, { access: "private", token: this.token(), abortSignal: options.signal });
+    const result = await withSdkSignal(options.signal, (abortSignal) => get(pathname, {
+      access: "private", token: this.token(), abortSignal,
+    }));
     if (!result || result.statusCode !== 200) {
       return null;
     }
     return {
-      stream: result.stream,
+      // Headers settle the SDK call; the stream pipe owns cancellation from here
+      // until EOF/error/cancel, including cancellation of the underlying body.
+      stream: options.signal
+        ? result.stream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(), { signal: options.signal })
+        : result.stream,
       contentType: result.blob.contentType,
       contentLength: result.blob.size,
     };
@@ -110,16 +144,18 @@ export class VercelBlobStorageService implements StorageService {
    * caller's `signal` aborts the request, body included, as for `get`.
    */
   async readPrefix(pathname: string, maxBytes: number, options: StorageGetOptions = {}): Promise<Uint8Array | null> {
-    const result = await get(pathname, {
-      access: "private",
-      token: this.token(),
-      headers: { Range: `bytes=0-${Math.max(0, maxBytes - 1)}` },
-      abortSignal: options.signal,
+    return withSdkSignal(options.signal, async (abortSignal) => {
+      const result = await get(pathname, {
+        access: "private",
+        token: this.token(),
+        headers: { Range: `bytes=0-${Math.max(0, maxBytes - 1)}` },
+        abortSignal,
+      });
+      if (!result || result.stream === null) {
+        return null;
+      }
+      return readUpTo(result.stream, maxBytes);
     });
-    if (!result || result.stream === null) {
-      return null;
-    }
-    return readUpTo(result.stream, maxBytes);
   }
 
   async del(pathname: string): Promise<void> {
@@ -141,5 +177,33 @@ export class VercelBlobStorageService implements StorageService {
       validUntil: options.validUntil,
     });
     return { url: presignedUrl, expiresAt: new Date(options.validUntil) };
+  }
+
+  async presignPut(options: PresignPutOptions): Promise<PresignPutResult> {
+    const signed = await withSdkSignal(options.signal, (abortSignal) => issueSignedToken({
+      pathname: options.pathname,
+      operations: ["put"],
+      allowedContentTypes: [options.contentType],
+      maximumSizeInBytes: options.maxBytes,
+      validUntil: options.validUntil,
+      token: this.token(),
+      ...(abortSignal && { abortSignal }),
+    }));
+    const { presignedUrl } = await presignUrl(signed, {
+      operation: "put",
+      pathname: options.pathname,
+      access: "private",
+      allowedContentTypes: [options.contentType],
+      maximumSizeInBytes: options.maxBytes,
+      addRandomSuffix: false,
+      allowOverwrite: false,
+      validUntil: options.validUntil,
+    });
+    return {
+      url: presignedUrl,
+      expiresAt: new Date(options.validUntil),
+      // The CDN enforces x-content-type; content-type also describes the HTTP body.
+      headers: { "content-type": options.contentType, "x-content-type": options.contentType },
+    };
   }
 }
