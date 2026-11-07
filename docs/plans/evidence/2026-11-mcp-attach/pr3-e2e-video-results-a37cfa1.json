@@ -136,7 +136,7 @@
  "finishedAt": "2026-11-07T16:38:58Z",
  "branchHead": "a37cfa1 (PR #82 head after TCR round-1 fixes)",
  "notes": [
-  "Re-run on a37cfa1 after the TCR fixes (zero coordinates absent, first UTF-8 data child, range guard, case-insensitive Content-Range): 8/8. The earlier 8/8 on f6a773a is in e2e-video-results-f6a773a.json with its notes (a driver field-name bug in its first attempt; three PR 2 leftover videos with deleted blobs \u2192 failed/attempt 1 per A21).",
+  "Re-run on a37cfa1 after the TCR fixes (zero coordinates absent, first UTF-8 data child, range guard, case-insensitive Content-Range): 8/8. The earlier 8/8 on f6a773a is in pr3-e2e-video-results-f6a773a.json with its notes (a driver field-name bug in its first attempt; three PR 2 leftover videos with deleted blobs \u2192 failed/attempt 1 per A21).",
   "Fixtures are the committed synthetic ones (Rob, 2026-11-07). Places provider: stub.",
   "In this run cron step (h) again met the three PR 2 leftover videos (deleted blobs): OriginalMissingError, outcome failed, attempt 2, not stamped; the counter advances toward the cap of 3 (A21)."
  ]

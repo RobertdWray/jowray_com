@@ -177,15 +177,15 @@ Columns: step · owner · status · branch @ head SHA · Astra run directory · 
 | S0.1 F1: commit the canonical plan in W1; file the issues (Appendix A, B) | orchestrator | ✅ 2026-11-06 | `mcp-attach/pr1` @ F1 commit (see `git log`) | — | — | Appendix A → [#70](https://github.com/RobertdWray/jowray_com/issues/70) (`bug`, `severity:medium`, label created); Appendix B → [#71](https://github.com/RobertdWray/jowray_com/issues/71) (`enhancement`) | Rob OK'd the names verbatim | — |
 | S0.2 W1 + `npm ci` + baseline checks | orchestrator | ✅ 2026-11-07 | W1 `/Users/rob/Documents/active_work/jowray_wt_mcp_attach` from `f909f7b` (upstream unset) | — | — | baseline `f909f7b`: validate ✅, test:run 86 files / 1653 tests ✅ (5 integration files skipped locally), build:offline ✅ | — | — |
 | S0.3 presign spike + Cowork reachability | orchestrator + Rob (Cowork) | spike ✅ 2026-11-07; Cowork check open (Rob, later) | W1 untracked: `scripts/e2e/mcp-attach/spike-presign.ts`, `docs/plans/evidence/2026-11-mcp-attach/s03-spike.md` (commit in F2) | — | — | `s03-spike.md`: host `vercel.com`; `content-type` alone works; **plain `content-type` NOT enforced, `x-content-type` is (403)** → return both headers; write-once 400; oversize 403; curl -K ok; 0 blobs left | Cowork `curl -sI` before/after allowlist (Rob) | carry both files into PR 2 F2 |
-| S0.4 Neon schema-only E2E branch | orchestrator (Rob, 2026-11-06: use the Neon CLI or MCP) | ✅ 2026-11-07: `mcp-attach-e2e-20261107` = `branch id kept out of the public repo` (endpoint `endpoint id kept out of the public repo`), from `dev`; Rob OK'd (2026-11-07) TRUNCATE of its data tables (RESTRICT, Memorial `jo-wray` kept); all migrations applied incl. `20261107000000_media_admin_upload` | — | — | — | connection details in a mode-600 scratchpad file, never in the repo | delete the branch after E2E: **Rob's OK needed** | E2E |
+| S0.4 Neon schema-only E2E branch | orchestrator (Rob, 2026-11-06: use the Neon CLI or MCP) | ✅ 2026-11-07: `mcp-attach-e2e-20261107` (branch and endpoint ids kept out of the public repo), from `dev`; Rob OK'd (2026-11-07) TRUNCATE of its data tables (RESTRICT, Memorial `jo-wray` kept); all migrations applied incl. `20261107000000_media_admin_upload` | — | — | — | connection details in a mode-600 scratchpad file, never in the repo | delete the branch after E2E: **Rob's OK needed** | delete the E2E branch after Rob's OK (§13) |
 | S0.5 iPhone fixture clip (≈1 s, Location on) | Rob | ✅ waived 2026-11-07: Rob's clip had no location key; web search found no suitable clip; Rob: "I'm fine with a synthetic version. Let's just check this off." Synthetic ffmpeg/ExifTool fixtures instead | — | — | — | `__tests__/fixtures/README.md` | real-clip check moves to Rob's device pass | — |
 | PR 1: init → P1-A ∥ P1-B (+ P1-C docs) → combined checks → citation refresh → publish → TCR → buckets → repairs → merge | orchestrator / Astra / Fable / Rob | ✅ **merged 2026-11-07 08:44Z as `59942b2`** (Rob's final-review process: one TCR round, buckets, repair `c8255ff`, Fable regression review NO SERIOUS REGRESSIONS, orchestrator approval, `ci` pass incl. 8 real-Postgres share-draft tests) | `astra-work/20261107T030729Z-00b82d37/integration` @ `c8255ff` | `/Users/rob/.local/state/astra-work/888f1417a12a/20261107T030729Z-00b82d37` | [#72](https://github.com/RobertdWray/jowray_com/pull/72) | combined checks c8255ff: validate ✅, 87 files/1712 ✅, build:offline ✅; bucket-3 comment 6704457024; follow-ups #73 (CI deadlock), #74 (F1), #75 (F5); #71 closed | Rob: connector refresh + approval on `share_draft`, skill upload | release checks |
 | PR 2 F2 foundation | orchestrator | ✅ rebased onto `59942b2` (`ec28c29`) + plan snapshot commit | `mcp-attach/pr2` | — | — | validate/test/build to re-run before init | — | Astra init for PR 2 |
-| PR 2: F2 → init → waves 1-3 → combined checks → E2E → citation refresh → publish → TCR → repairs → merge | orchestrator / Astra / Fable / Rob | ✅ **merged 2026-11-07 13:23Z as `4f0a9a2`** (head `06b3f3e`). Rob's final-review process: one TCR round (complete, cross-family), buckets B1 #1/#10 #3 #6 #8, B2 #4 #7 #9, B3 #5 + B4 #2 (comment 6707209802); repairs `tcr-fixes` (3 attempts; SDK AbortError root cause, withSdkSignal) + `cron-deadline-floor`; Fable regression review NO SERIOUS REGRESSIONS (2007 tests on PG 18); combined ✅ (92 files/1985, build ✅); E2E 13/13 on 3900a0b and on 06b3f3e; `ci` ✅ incl. attach-media/budget/share-draft integration | integration @ `06b3f3e` | `/Users/rob/.local/state/astra-work/888f1417a12a/20261107T084621Z-bd3070f9` | [#76](https://github.com/RobertdWray/jowray_com/pull/76) | prod deploy success; prod tools/list = 12; `_prisma_migrations` 20261107000000 finished; follow-ups #77-#81; evidence in scratchpad `e2e-run/` | Rob: vercel.com allowlist + Cowork curl, connector refresh, approvals (upload tools his choice), skill upload, production smoke; Neon E2E branch kept for PR 3 | PR 3 completed; clip requirement superseded (§9) |
-| PR 3: F3 → init → wave 1 (A1 ∥ A2) → wave 2 (A3 ∥ A4) → combined checks → E2E video → citation refresh → publish → TCR → repairs → merge | orchestrator / Astra / Fable / Rob | ✅ **merged 2026-11-07 16:52Z as `e7601b6`** (head `3f3827f`). F3 synthetic fixtures `d362676` (Rob waived the iPhone clip); 5 tasks + repair ingest-test-video-gps; TCR round 1 complete + cross-family, B1 #1 #6, B2 #2 #3 #4 → `tcr-fixes` `a37cfa1`; B3 #5 (comment 6709930245); Fable regression NO SERIOUS REGRESSIONS; first `ci` failed A11 (real-Postgres fake lacked readRange; old photo-only gps) → repair `a11-video-gps` `3f3827f`, reproduced 159/160 then 160/160 on local PG 18; combined ✅ 95 files / 2234; E2E video 8/8 on `f6a773a` and `a37cfa1`; `ci` ✅; #70 closed | integration @ `3f3827f` | `/Users/rob/.local/state/astra-work/888f1417a12a/20261107T154222Z-2c03a240` | [#82](https://github.com/RobertdWray/jowray_com/pull/82) | scratchpad `e2e-run/e2e-video-results*.json`; TCR log `~/Downloads/team-review-20261107-111222-jowray_com-pr82-f6a773a.md`; follow-ups #83–#87 (comment 6710205056) | Rob: device pass with a real iPhone/Android clip; OK to delete the Neon E2E branch | final docs PR |
-| Release checks per merge (§ Release) | orchestrator | PR 1 ✅ (`59942b2`, 10 tools); PR 2 ✅ (`4f0a9a2` deploy success; 12 tools incl. request_upload/finalize_upload; migration finished); PR 3 ✅ (`e7601b6` deploy success; 12 tools; suggest_places title "Suggest places from photos and videos"; unauth 401; no migration) | | | | `release.md` (PR 1 committed in `7599da0`; PR 2 entry → final docs PR) | | PR 3 after merge |
+| PR 2: F2 → init → waves 1-3 → combined checks → E2E → citation refresh → publish → TCR → repairs → merge | orchestrator / Astra / Fable / Rob | ✅ **merged 2026-11-07 13:23Z as `4f0a9a2`** (head `06b3f3e`). Rob's final-review process: one TCR round (complete, cross-family), buckets B1 #1/#10 #3 #6 #8, B2 #4 #7 #9, B3 #5 + B4 #2 (comment 6707209802); repairs `tcr-fixes` (3 attempts; SDK AbortError root cause, withSdkSignal) + `cron-deadline-floor`; Fable regression review NO SERIOUS REGRESSIONS (2007 tests on PG 18); combined ✅ (92 files/1985, build ✅); E2E 13/13 on 3900a0b and on 06b3f3e; `ci` ✅ incl. attach-media/budget/share-draft integration | integration @ `06b3f3e` | `/Users/rob/.local/state/astra-work/888f1417a12a/20261107T084621Z-bd3070f9` | [#76](https://github.com/RobertdWray/jowray_com/pull/76) | prod deploy success; prod tools/list = 12; `_prisma_migrations` 20261107000000 finished; follow-ups #77-#81; [pr2-e2e-results.json](evidence/2026-11-mcp-attach/pr2-e2e-results.json), [pr2-e2e-cleanup.json](evidence/2026-11-mcp-attach/pr2-e2e-cleanup.json), [release.md](evidence/2026-11-mcp-attach/release.md) | Rob: vercel.com allowlist + Cowork curl, connector refresh, approvals (upload tools his choice), skill upload, production smoke; Neon E2E branch kept for PR 3 | PR 3 completed; clip requirement superseded (§9) |
+| PR 3: F3 → init → wave 1 (A1 ∥ A2) → wave 2 (A3 ∥ A4) → combined checks → E2E video → citation refresh → publish → TCR → repairs → merge | orchestrator / Astra / Fable / Rob | ✅ **merged 2026-11-07 16:52Z as `e7601b6`** (head `3f3827f`). F3 synthetic fixtures `d362676` (Rob waived the iPhone clip); 5 tasks + repair ingest-test-video-gps; TCR round 1 complete + cross-family, B1 #1 #6, B2 #2 #3 #4 → `tcr-fixes` `a37cfa1`; B3 #5 (comment 6709930245); Fable regression NO SERIOUS REGRESSIONS; first `ci` failed A11 (real-Postgres fake lacked readRange; old photo-only gps) → repair `a11-video-gps` `3f3827f`, reproduced 159/160 then 160/160 on local PG 18; combined ✅ 95 files / 2234; E2E video 8/8 on `f6a773a` and `a37cfa1`; `ci` ✅; #70 closed | integration @ `3f3827f` | `/Users/rob/.local/state/astra-work/888f1417a12a/20261107T154222Z-2c03a240` | [#82](https://github.com/RobertdWray/jowray_com/pull/82) | [pr3-e2e-video-results-f6a773a.json](evidence/2026-11-mcp-attach/pr3-e2e-video-results-f6a773a.json), [pr3-e2e-video-results-a37cfa1.json](evidence/2026-11-mcp-attach/pr3-e2e-video-results-a37cfa1.json), [release.md](evidence/2026-11-mcp-attach/release.md); TCR log `~/Downloads/team-review-20261107-111222-jowray_com-pr82-f6a773a.md`; follow-ups #83–#87 (comment 6710205056) | Rob: device pass with a real iPhone/Android clip; OK to delete the Neon E2E branch | — (final docs PR #88) |
+| Release checks per merge (§ Release) | orchestrator | PR 1 ✅ (`59942b2`, 10 tools); PR 2 ✅ (`4f0a9a2` deploy success; 12 tools incl. request_upload/finalize_upload; migration finished); PR 3 ✅ (`e7601b6` deploy success; 12 tools; suggest_places title "Suggest places from photos and videos"; unauth 401; no migration) | | | | [release.md](evidence/2026-11-mcp-attach/release.md) (PR 1–3 entries) | | — |
 | Rob: allowlist, connector refresh, skill upload, production smoke | Rob | todo | | | | `smoke.md` | | |
-| Cleanup (§ Cleanup) + docs PR (evidence, ledger snapshot) + memory file | orchestrator | todo | | | | `cleanup.json` | | |
+| Cleanup (§ Cleanup) + docs PR (evidence, ledger snapshot) + memory file | orchestrator | ✅ 2026-11-07, except the Neon E2E branch. E2E blobs removed; memory file updated. Local worktrees and Astra run directories kept on purpose; nothing is cleaned up automatically | | | [#88](https://github.com/RobertdWray/jowray_com/pull/88) (final docs PR) | [pr2-e2e-cleanup.json](evidence/2026-11-mcp-attach/pr2-e2e-cleanup.json) and the `cleanup` objects in [pr3-e2e-video-results-f6a773a.json](evidence/2026-11-mcp-attach/pr3-e2e-video-results-f6a773a.json) and [pr3-e2e-video-results-a37cfa1.json](evidence/2026-11-mcp-attach/pr3-e2e-video-results-a37cfa1.json): 0 remaining | deleting the Neon E2E branch (Rob's OK) | Neon branch deletion after Rob's OK |
 
 **Session-side recovery manifest** (the real batch, after release; Bucket 2): the skill keeps `jowray-attach-manifest.json` in the session's working folder. One entry per file: local path, `sha256`, `sizeBytes`, `mimeType`, `memoryId`, `mediaId`, `stage` (`requested | uploaded | finalized | failed`), last result code. It never holds a URL. To resume, call `request_upload` again for every file that isn't `finalized` (idempotent by `sha256`) and follow the answer.
 
@@ -402,11 +402,9 @@ If the match's `maxBytes` (declared size) or kind differs from the new declarati
   - The gate becomes `hasLocationReader(mimeType)` (a new `lib/media-location.ts`): `image/*`, `video/quicktime`, `video/mp4`.
   - Videos use `readVideoLocation` over `readRange`.
   - `found`/`absent` stamp `gpsCheckedAt`; `failed` leaves it null and counts an attempt (at most 3), as photos already do. Never a permanent "absent" from a transient error.
-- **The predicate replaces the `image/` checks** in:
-  - `scheduleReadyFollowUps` (from `ingest-upload.ts:375-377`);
-  - `app/api/upload/route.ts:113` [C37];
-  - `features/places/suggest-for-memory.ts:46` [C35];
-  - cron step (h) `route.ts:694-703` [C36], which then backfills existing READY videos, 10 per run, oldest first.
+- **The location-reader helpers replace the `image/` checks.** Both come from `lib/media-location.ts`:
+  - In-memory checks use `hasLocationReader(mimeType)`: `scheduleReadyFollowUps` (from `ingest-upload.ts:375-377`) and `app/api/upload/route.ts:113` [C37].
+  - The Prisma queries use `mimeType: { in: [...LOCATION_READER_MIME_TYPES] }`: `features/places/suggest-for-memory.ts:46` [C35] and cron step (h) `route.ts:694-703` [C36], which then backfills existing READY videos, 10 per run, oldest first.
 
   Cron step (g) (derive) stays image-only.
 - **Fixtures** (repo is public; follow `gps.heic`'s policy [C44, C45]):
@@ -454,7 +452,8 @@ If the match's `maxBytes` (declared size) or kind differs from the new declarati
 1. **Per PR** in its worktree: the three checks in §0.5, and the `ci` check green (it runs the integration suites).
 2. **E2E** on the schema-only branch (§5), harness from § 8.6, before PR 2's merge (photo items) and PR 3's merge (video items). Files: `__tests__/fixtures/gps.heic`, a Liberty JPEG made with exiftool, the committed synthetic MOV/MP4 fixtures (§9, Rob’s 2026-11-07 ruling). The original real-iPhone requirement is superseded; the iPhone/Android device pass remains with Rob (§13).
    - ☐ `draft_memory`, then for each file: request → curl → finalize. All READY, the memory type is VIDEO.
-   - ☐ GPS is saved on each row; `suggest_places` returns the **stub label** "Photo location found near {lat}, {lon} (test)" for each [C27]. Real place names are checked in production.
+   - ☐ GPS is saved on each location-bearing row (the photos, `location-mdta.mov` and `location-xyz.mp4`); `suggest_places` returns the **stub label** "Photo location found near {lat}, {lon} (test)" for each [C27]. Real place names are checked in production.
+   - ☐ `no-location.mov` gives `gps: "none"`; its location is decided (`gpsCheckedAt` set, no coordinates), and `suggest_places` returns no row for it.
    - ☐ A repeat request answers `alreadyAttached`.
    - ☐ Kill the session between curl and finalize, then hit the cron route with the throwaway `CRON_SECRET`: READY, with the revision and the checksum.
    - ☐ The memory is still DRAFT with `consentedAt` null. EmailLog has no new rows, or only SKIPPED `outbound_disabled` ones.
@@ -685,7 +684,7 @@ Current repo permalinks and quotes were re-verified locally on 2026-11-07 at `e7
 ### [C5] — Project rules
 - **Relevant File(s):** all PRs (process); `docs/plans/2026-11-06-mcp-attach-media.md`
 - **Change Summary:** Branch + PR per change; red-first tests on the critical paths; the three checks.
-- **Source URL:** https://github.com/RobertdWray/jowray_com/blob/e7601b6/AGENTS.md#L71-L74 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/AGENTS.md#L65 (re-verified 2026-11-07 at e7601b6)
+- **Source URL:** https://github.com/RobertdWray/jowray_com/blob/e7601b6/AGENTS.md#L71 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/AGENTS.md#L74 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/AGENTS.md#L65 (re-verified 2026-11-07 at e7601b6)
 - **Verbatim Quote:**
   > Every change goes on a branch with a PR.
   > TDD for critical paths (upload tickets, finalize, confirmation, cron).
@@ -718,7 +717,7 @@ Current repo permalinks and quotes were re-verified locally on 2026-11-07 at `e7
 ### [C8] — Skill rules to rewrite
 - **Relevant File(s):** `docs/skills/jowray-draft-memory/SKILL.md`
 - **Change Summary:** The Share rules (PR 1) and the "no file upload" sentence (PR 2).
-- **Source URL:** Historical (superseded): https://github.com/RobertdWray/jowray_com/blob/84f7d60/docs/skills/jowray-draft-memory/SKILL.md#L42-L46 ; …/SKILL.md#L169 (refreshed 2026-11-07); current replacement: https://github.com/RobertdWray/jowray_com/blob/e7601b6/docs/skills/jowray-draft-memory/SKILL.md#L42 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/docs/skills/jowray-draft-memory/SKILL.md#L46 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/docs/skills/jowray-draft-memory/SKILL.md#L171 (re-verified 2026-11-07 at e7601b6)
+- **Source URL:** Historical (superseded): https://github.com/RobertdWray/jowray_com/blob/84f7d60/docs/skills/jowray-draft-memory/SKILL.md#L42 ; https://github.com/RobertdWray/jowray_com/blob/84f7d60/docs/skills/jowray-draft-memory/SKILL.md#L46 ; https://github.com/RobertdWray/jowray_com/blob/84f7d60/docs/skills/jowray-draft-memory/SKILL.md#L169 (refreshed 2026-11-07); current replacement: https://github.com/RobertdWray/jowray_com/blob/e7601b6/docs/skills/jowray-draft-memory/SKILL.md#L42 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/docs/skills/jowray-draft-memory/SKILL.md#L46 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/docs/skills/jowray-draft-memory/SKILL.md#L171 (re-verified 2026-11-07 at e7601b6)
 - **Verbatim Quote:**
   Historical (superseded):
   > "**Nobody presses Share.** Only the sender does, on their own claim page."
@@ -734,7 +733,7 @@ Current repo permalinks and quotes were re-verified locally on 2026-11-07 at `e7
 ### [C9] — Site limits
 - **Relevant File(s):** `features/admin/attach-media.ts`, `lib/validations/admin.ts`
 - **Change Summary:** `request_upload` enforces the claim page's size and count limits.
-- **Source URL:** https://github.com/RobertdWray/jowray_com/blob/e7601b6/lib/media-types.ts#L18-L25 (re-verified 2026-11-07 at e7601b6)
+- **Source URL:** https://github.com/RobertdWray/jowray_com/blob/e7601b6/lib/media-types.ts#L18-L22 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/lib/media-types.ts#L25 (re-verified 2026-11-07 at e7601b6)
 - **Verbatim Quote:**
   > ```ts
   > export const MAX_BYTES: Record<MediaKind, number> = {
@@ -762,7 +761,7 @@ Current repo permalinks and quotes were re-verified locally on 2026-11-07 at `e7
   > ```ts
   > const TOKEN_QUERY = /(^|[?&#])(t|key|vercel-blob-signature|vercel-blob-delegation)=[^&#\s]*(?=[&#\s]|$)/g;
   > ```
-- **Justification:** A presigned PUT URL is an upload credential, and neither the key list nor the regex matches it today.
+- **Justification:** A presigned PUT URL is an upload credential. At `84f7d60`, neither the key list nor the regex matched it; PR #76 added the `vercel-blob-signature` and `vercel-blob-delegation` parameters and the `presignedUrl` key.
 
 ### [C11] — ExifReader formats
 - **Relevant File(s):** `lib/video-gps.ts` (new)
@@ -862,10 +861,17 @@ Current repo permalinks and quotes were re-verified locally on 2026-11-07 at `e7
 ### [C18] — computeChecksum has no deadline
 - **Relevant File(s):** `features/memories/ingest-upload.ts`
 - **Change Summary:** Add `{ signal }` to the hash read.
-- **Source URL:** Historical (superseded): https://github.com/RobertdWray/jowray_com/blob/84f7d60/features/memories/ingest-upload.ts#L195-L202; current replacement: https://github.com/RobertdWray/jowray_com/blob/e7601b6/features/memories/ingest-upload.ts#L64-L67 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/features/memories/ingest-upload.ts#L307-L321 (re-verified 2026-11-07 at e7601b6)
+- **Source URL:** Historical (superseded): https://github.com/RobertdWray/jowray_com/blob/84f7d60/features/memories/ingest-upload.ts#L195 ; https://github.com/RobertdWray/jowray_com/blob/84f7d60/features/memories/ingest-upload.ts#L200-L202; current replacement: https://github.com/RobertdWray/jowray_com/blob/e7601b6/features/memories/ingest-upload.ts#L64-L67 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/features/memories/ingest-upload.ts#L307-L312 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/features/memories/ingest-upload.ts#L321 (re-verified 2026-11-07 at e7601b6)
 - **Verbatim Quote:**
   Historical (superseded):
-  > `const file = await createStorageService().get(row.storageKey);` … `for await (const chunk of file.stream as unknown as AsyncIterable<Uint8Array>) { hash.update(chunk); }`
+  > ```ts
+  >   const file = await createStorageService().get(row.storageKey);
+  > ```
+  > ```ts
+  >   for await (const chunk of file.stream as unknown as AsyncIterable<Uint8Array>) {
+  >     hash.update(chunk);
+  >   }
+  > ```
 
   Current replacement (re-verified 2026-11-07 at e7601b6):
   > ```ts
@@ -935,7 +941,7 @@ Current repo permalinks and quotes were re-verified locally on 2026-11-07 at `e7
 ### [C23] — Lock order and the renewal logic
 - **Relevant File(s):** `features/memories/create-memory.ts`, `features/memories/issue-upload-ticket.ts`, `features/admin/attach-media.ts`
 - **Change Summary:** Extract `reservePendingMedia` and `renewPendingReservation` as tx-taking helpers; admin request order lease → memory → budget.
-- **Source URL:** Historical (superseded): https://github.com/RobertdWray/jowray_com/blob/84f7d60/features/memories/create-memory.ts#L250-L258 ; https://github.com/RobertdWray/jowray_com/blob/84f7d60/features/memories/issue-upload-ticket.ts#L78-L97; current replacement: https://github.com/RobertdWray/jowray_com/blob/e7601b6/features/memories/create-memory.ts#L286-L288 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/features/memories/issue-upload-ticket.ts#L116-L117 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/features/memories/issue-upload-ticket.ts#L25-L36 (re-verified 2026-11-07 at e7601b6)
+- **Source URL:** Historical (superseded): https://github.com/RobertdWray/jowray_com/blob/84f7d60/features/memories/create-memory.ts#L250-L258 ; https://github.com/RobertdWray/jowray_com/blob/84f7d60/features/memories/issue-upload-ticket.ts#L78-L97; current replacement: https://github.com/RobertdWray/jowray_com/blob/e7601b6/features/memories/create-memory.ts#L286-L288 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/features/memories/issue-upload-ticket.ts#L116-L117 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/features/memories/issue-upload-ticket.ts#L25-L26 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/features/memories/issue-upload-ticket.ts#L36 (re-verified 2026-11-07 at e7601b6)
 - **Verbatim Quote:**
   Historical (superseded):
   > "// Anchor first, then this memory: the one lock order every multi-memory writer shares (C25)." `await renewUploadLease(tx, memory); await lockMemory(tx, memory.id);`
@@ -1049,7 +1055,7 @@ Current repo permalinks and quotes were re-verified locally on 2026-11-07 at `e7
 ### [C34] — The cron emails memories that become "ready"
 - **Relevant File(s):** `features/admin/attach-media.ts` (`not_ready`)
 - **Change Summary:** D7 refuses uploads that would flip a non-DRAFT memory to ready.
-- **Source URL:** https://github.com/RobertdWray/jowray_com/blob/e7601b6/app/api/cron/reconcile-uploads/route.ts#L341-L347 (re-verified 2026-11-07 at e7601b6)
+- **Source URL:** https://github.com/RobertdWray/jowray_com/blob/e7601b6/app/api/cron/reconcile-uploads/route.ts#L341-L342 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/app/api/cron/reconcile-uploads/route.ts#L347 (re-verified 2026-11-07 at e7601b6)
 - **Verbatim Quote:**
   > ```ts
   >     // (e) Memories with an address and something READY (or TEXT) that were never
@@ -1062,7 +1068,7 @@ Current repo permalinks and quotes were re-verified locally on 2026-11-07 at `e7
 
 ### [C35] — Place suggestions read photos only
 - **Relevant File(s):** `features/places/suggest-for-memory.ts`
-- **Change Summary:** Use `hasLocationReader` instead of the `image/` filter.
+- **Change Summary:** The Prisma query uses `mimeType: { in: [...LOCATION_READER_MIME_TYPES] }` from `lib/media-location.ts` instead of the `image/` filter; in-memory checks use that module's `hasLocationReader(mimeType)`.
 - **Source URL:** Historical (superseded): https://github.com/RobertdWray/jowray_com/blob/84f7d60/features/places/suggest-for-memory.ts#L44; current replacement: https://github.com/RobertdWray/jowray_com/blob/e7601b6/features/places/suggest-for-memory.ts#L46 (re-verified 2026-11-07 at e7601b6)
 - **Verbatim Quote:**
   Historical (superseded):
@@ -1076,16 +1082,24 @@ Current repo permalinks and quotes were re-verified locally on 2026-11-07 at `e7
 
 ### [C36] — Cron GPS backfill is photo-only
 - **Relevant File(s):** `app/api/cron/reconcile-uploads/route.ts`
-- **Change Summary:** Step (h) uses `hasLocationReader`; step (g) stays image-only.
-- **Source URL:** Historical (superseded): https://github.com/RobertdWray/jowray_com/blob/84f7d60/app/api/cron/reconcile-uploads/route.ts#L667-L676; current replacement: https://github.com/RobertdWray/jowray_com/blob/e7601b6/app/api/cron/reconcile-uploads/route.ts#L694-L703 (re-verified 2026-11-07 at e7601b6)
+- **Change Summary:** Step (h)'s Prisma query uses `mimeType: { in: [...LOCATION_READER_MIME_TYPES] }` from `lib/media-location.ts`; in-memory checks use that module's `hasLocationReader(mimeType)`. Step (g) stays image-only.
+- **Source URL:** Historical (superseded): https://github.com/RobertdWray/jowray_com/blob/84f7d60/app/api/cron/reconcile-uploads/route.ts#L667-L669 ; https://github.com/RobertdWray/jowray_com/blob/84f7d60/app/api/cron/reconcile-uploads/route.ts#L676; current replacement: https://github.com/RobertdWray/jowray_com/blob/e7601b6/app/api/cron/reconcile-uploads/route.ts#L694-L696 ; https://github.com/RobertdWray/jowray_com/blob/e7601b6/app/api/cron/reconcile-uploads/route.ts#L703 (re-verified 2026-11-07 at e7601b6)
 - **Verbatim Quote:**
   Historical (superseded):
-  > "// (h) Photo GPS (plan 2026-11-06-photo-gps-places B3): READY photos of this environment whose GPS is not decided" … `mimeType: { startsWith: "image/" },`
+  > ```ts
+  >     // (h) Photo GPS (plan 2026-11-06-photo-gps-places B3): READY photos of this environment whose GPS is not decided
+  >     // yet, that have attempts left and that no worker holds a live claim on (final review, item 2), oldest first. Its own state, never (g)'s: a photo with its copies made is never
+  >     // revisited by (g), so a failed GPS read needs this step to be retried, whatever its copies are doing [C48].
+  > ```
+  > ```ts
+  >         mimeType: { startsWith: "image/" },
+  > ```
 
   Current replacement (re-verified 2026-11-07 at e7601b6):
   > ```ts
   >     // (h) Media GPS (photo GPS plan B3; media plan §9): READY photos and MOV/MP4 videos whose GPS is not decided
   >     // yet, that have attempts left and that no worker holds a live claim on (final review, item 2), oldest first. Its own state, never (g)'s: a photo with its copies made is never
+  >     // revisited by (g), so a failed GPS read needs this step to be retried, whatever its copies are doing [C48].
   > ```
   > ```ts
   >         mimeType: { in: [...LOCATION_READER_MIME_TYPES] },
@@ -1095,7 +1109,7 @@ Current repo permalinks and quotes were re-verified locally on 2026-11-07 at `e7
 ### [C37] — Webhook GPS is photo-only
 - **Relevant File(s):** `app/api/upload/route.ts`
 - **Change Summary:** Schedule location for videos.
-- **Source URL:** Historical (superseded): https://github.com/RobertdWray/jowray_com/blob/84f7d60/app/api/upload/route.ts#L113-L115; current replacement: https://github.com/RobertdWray/jowray_com/blob/e7601b6/app/api/upload/route.ts#L113-L115 (re-verified 2026-11-07 at e7601b6)
+- **Source URL:** Historical (superseded): https://github.com/RobertdWray/jowray_com/blob/84f7d60/app/api/upload/route.ts#L113 ; https://github.com/RobertdWray/jowray_com/blob/84f7d60/app/api/upload/route.ts#L115; current replacement: https://github.com/RobertdWray/jowray_com/blob/e7601b6/app/api/upload/route.ts#L113-L115 (re-verified 2026-11-07 at e7601b6)
 - **Verbatim Quote:**
   Historical (superseded):
   > `if (blob.contentType.startsWith("image/")) {` … `await extractPhotoGps({ mediaId });`
@@ -1140,7 +1154,7 @@ Current repo permalinks and quotes were re-verified locally on 2026-11-07 at `e7
 ### [C40] — Row creation normally happens under the outbound lock
 - **Relevant File(s):** `services/email/index.ts` (`suppressAdminAlertForDraftShare`)
 - **Change Summary:** Document the one exception and why it's safe.
-- **Source URL:** Historical (superseded): https://github.com/RobertdWray/jowray_com/blob/84f7d60/services/email/index.ts#L497-L503; current replacement: https://github.com/RobertdWray/jowray_com/blob/e7601b6/services/email/index.ts#L540-L547 (re-verified 2026-11-07 at e7601b6)
+- **Source URL:** Historical (superseded): https://github.com/RobertdWray/jowray_com/blob/84f7d60/services/email/index.ts#L499-L500 ; https://github.com/RobertdWray/jowray_com/blob/84f7d60/services/email/index.ts#L503-L504; current replacement: https://github.com/RobertdWray/jowray_com/blob/e7601b6/services/email/index.ts#L540-L547 (re-verified 2026-11-07 at e7601b6)
 - **Verbatim Quote:**
   Historical (superseded):
   > "Record that there is nothing to send for this memory and type, as a terminal SKIPPED row, so the reconcile cron stops selecting it. … Taken under the outbound lock like every other row creation, so no creator ever races another"
@@ -1186,10 +1200,10 @@ Current repo permalinks and quotes were re-verified locally on 2026-11-07 at `e7
 - **Relevant File(s):** `lib/logger/logger.ts`
 - **Change Summary:** Add `presignedUrl` to the redacted keys.
 - **Source URL:** https://github.com/RobertdWray/jowray_com/blob/e7601b6/AGENTS.md#L41 (re-verified 2026-11-07 at e7601b6)
-- **Verbatim Quote:**
-  > Server code logs with Pino (`lib/logger`), never `console.log`.
-  > the bearer link (`claimLink`)
-  > Log ids (`memoryId`, `mediaId`), never Prisma rows or people.
+- **Verbatim Quote** (excerpts of line 41):
+  > Server code logs with Pino (`lib/logger`), never `console.log`. …
+  > … the bearer link (`claimLink`) …
+  > … Log ids (`memoryId`, `mediaId`), never Prisma rows or people.
 - **Justification:** A bearer upload URL gets the same treatment as the bearer claim link.
 
 ### [C44] — Evidence and fixture policy
@@ -1213,7 +1227,7 @@ Current repo permalinks and quotes were re-verified locally on 2026-11-07 at `e7
 ### [C46] — Astra runs start from committed HEAD; workers have no network
 - **Relevant File(s):** §3 Execution model, §0.4, §0.10, S0.1, S0.2 (process; no product file)
 - **Change Summary:** Foundation work is committed in W1 before `init`; the orchestrator does every network step and installs dependencies; at most two workers at once.
-- **Source URL:** `/Users/rob/.claude/skills/astra-work/references/runner.md` § Prepare (L10-L17); `/Users/rob/.claude/skills/astra-work/SKILL.md` § Establish the task (L33-L35, L41-L43)
+- **Source URL:** `/Users/rob/.claude/skills/astra-work/references/runner.md` L14; `/Users/rob/.claude/skills/astra-work/SKILL.md` L29-L30; `/Users/rob/.claude/skills/astra-work/SKILL.md` L36-L37
 - **Verbatim Quote:**
   > "The starting commit is the current checkout's HEAD, not uncommitted files."
   > "**More than two concurrent workers requires an explicit user reply approving the count.** Waiting is not approval."
@@ -1223,7 +1237,7 @@ Current repo permalinks and quotes were re-verified locally on 2026-11-07 at `e7
 ### [C47] — Rob's plan-to-ship loop
 - **Relevant File(s):** §3 Execution model (roles, review loop, parking lot)
 - **Change Summary:** Astra builds the independent tasks; deep-context tasks stay with the orchestrator; TCR reviews each PR; four buckets; 1–3 repair cycles; Rob ships.
-- **Source URL:** `/Users/rob/Documents/active_work/TrayVerify/sales-mid-market-scoring/docs/workflows/orchestration.md` § Rules (L157-L167)
+- **Source URL:** `/Users/rob/Documents/active_work/TrayVerify/sales-mid-market-scoring/docs/workflows/orchestration.md` L160; `/Users/rob/Documents/active_work/TrayVerify/sales-mid-market-scoring/docs/workflows/orchestration.md` L162; `/Users/rob/Documents/active_work/TrayVerify/sales-mid-market-scoring/docs/workflows/orchestration.md` L165
 - **Verbatim Quote:**
   > "The plan marks each task Astra or linear. Deep-context tasks stay in the orchestrator and run one after another."
   > "Astra workers run two at a time, one owner per file, with no network, so the orchestrator runs every step that needs one."
