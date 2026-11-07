@@ -76,6 +76,17 @@ describe("the member scanner is linear on adversarial text (issue #43, T3)", () 
     expect(value.endsWith(`,"claimToken":"${FILTERED}","ok":1`)).toBe(true);
     expect(ms).toBeLessThan(BUDGET_MS);
   });
+
+  it.each(["vercel-blob-signature", "vercel-blob-delegation"])("scrubs long and repeated %s query values within the linear scanner budget", (key) => {
+    const longValue = `/blob?${key}=${repeatTo("SENTRYTEST_", ADVERSARIAL_LENGTH)}&pathname=keep`;
+    const repeated = `/blob?${`${key}=SENTRYTEST_QUERY&`.repeat(Math.floor(ADVERSARIAL_LENGTH / 50))}pathname=keep`;
+    const nearMisses = repeatTo(`?${key}-suffix=keep&`, ADVERSARIAL_LENGTH);
+    for (const [text, expected] of [[longValue, "/blob?pathname=keep"], [repeated, "/blob?pathname=keep"], [nearMisses, nearMisses]]) {
+      const { ms, value } = fastest(() => scrubString(text));
+      expect(value).toBe(expected);
+      expect(ms).toBeLessThan(BUDGET_MS);
+    }
+  });
 });
 
 describe("oversized text is bounded before scanning", () => {
