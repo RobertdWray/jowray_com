@@ -14,8 +14,13 @@ vi.mock("@/features/media/extract-photo-gps", async (importOriginal) => ({
   ...await importOriginal<typeof PhotoGpsModule>(),
   extractPhotoGps: (input: { mediaId: string; deadlineMs?: number }) => gpsMock(input),
 }));
-const findMediaMock = vi.fn(async () => ({ status: "READY", checksumSha256: "a".repeat(64) }));
-vi.mock("@/server/db/client", () => ({ getDb: () => ({ media: { findUnique: findMediaMock } }) }));
+const findMediaMock = vi.fn<() => Promise<{ status: string; checksumSha256: string | null; storageKey?: string }>>(async () => ({ status: "READY", checksumSha256: "a".repeat(64) }));
+const updateMediaMock = vi.fn();
+vi.mock("@/server/db/client", () => ({ getDb: () => ({ media: { findUnique: findMediaMock, update: updateMediaMock } }) }));
+const getMock = vi.fn();
+vi.mock("@/services/storage", () => ({ createStorageService: () => ({ get: getMock }) }));
+const { infoMock, logErrorMock } = vi.hoisted(() => ({ infoMock: vi.fn(), logErrorMock: vi.fn() }));
+vi.mock("@/lib/logger", () => ({ createLogger: () => ({ info: infoMock }), logError: logErrorMock, logErrorAndFlush: logErrorMock }));
 
 const now = new Date("2026-11-07T12:00:00Z").getTime();
 
@@ -24,9 +29,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
   vi.setSystemTime(now);
+  vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
+    return controller.signal;
+  });
 });
 
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("scheduleReadyFollowUps with a caller deadline", () => {
   it.each([
@@ -52,11 +62,15 @@ describe("scheduleReadyFollowUps with a caller deadline", () => {
     { remainingMs: 3_999, gpsDeadlineMs: null },
     { remainingMs: 3_000, gpsDeadlineMs: null },
     { remainingMs: -1, gpsDeadlineMs: null },
-  ])("leaves derive to cron with only $remainingMs ms left, while keeping checksum and budgeting photo GPS", async ({ remainingMs, gpsDeadlineMs }) => {
+  ])("leaves derive to cron with only $remainingMs ms left, budgeting checksum and photo GPS", async ({ remainingMs, gpsDeadlineMs }) => {
     scheduleReadyFollowUps({ mediaId: "med_admin", mimeType: "image/jpeg", sizeBytes: 1024, deadlineAt: now + remainingMs });
     for (const task of tasks) { await task.run(); }
 
-    expect(findMediaMock).toHaveBeenCalledWith({ where: { id: "med_admin" } });
+    if (remainingMs >= 4_000) {
+      expect(findMediaMock).toHaveBeenCalledWith({ where: { id: "med_admin" } });
+    } else {
+      expect(findMediaMock).not.toHaveBeenCalled();
+    }
     expect(deriveMock).not.toHaveBeenCalled();
     if (gpsDeadlineMs === null) {
       expect(gpsMock).not.toHaveBeenCalled();
@@ -104,6 +118,47 @@ describe("scheduleReadyFollowUps with a caller deadline", () => {
 
     expect(deriveMock).not.toHaveBeenCalled();
   });
+
+  it("bounds a stalled checksum using the time left when its deferred task starts", async () => {
+    findMediaMock.mockResolvedValueOnce({ status: "READY", checksumSha256: null, storageKey: "originals/m/a.jpg" });
+    const cancel = vi.fn();
+    getMock.mockImplementationOnce(async (_key: string, options?: { signal?: AbortSignal }) => {
+      if (!options?.signal) { throw new Error("checksum missing deadline"); }
+      return { stream: new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => {}), cancel }) };
+    });
+    scheduleReadyFollowUps({ mediaId: "med_admin", mimeType: "image/jpeg", sizeBytes: 1024, deadlineAt: now + 25_000 });
+    vi.setSystemTime(now + 10_000);
+    const completed = expect(tasks[0]!.run()).resolves.toBeUndefined();
+    await Promise.all([completed, vi.advanceTimersByTimeAsync(12_000)]);
+    expect(AbortSignal.timeout).toHaveBeenCalledExactlyOnceWith(12_000);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(updateMediaMock).not.toHaveBeenCalled();
+    expect(deriveMock).not.toHaveBeenCalled();
+    expect(infoMock).toHaveBeenCalledWith({ action: "checksum_deferred", mediaId: "med_admin" }, expect.any(String));
+    expect(logErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("does not start a checksum if waiting for after consumes its minimum window", async () => {
+    scheduleReadyFollowUps({ mediaId: "med_admin", mimeType: "image/jpeg", sizeBytes: 1024, deadlineAt: now + 25_000 });
+    vi.setSystemTime(now + 21_001);
+    await tasks[0]!.run();
+    expect(findMediaMock).not.toHaveBeenCalled();
+    expect(getMock).not.toHaveBeenCalled();
+    expect(deriveMock).not.toHaveBeenCalled();
+  });
+
+  it("propagates a checksum storage failure even if the deadline has also fired", async () => {
+    findMediaMock.mockResolvedValueOnce({ status: "READY", checksumSha256: null, storageKey: "originals/m/a.jpg" });
+    getMock.mockImplementationOnce(async () => {
+      await vi.advanceTimersByTimeAsync(12_000);
+      throw new Error("storage unavailable");
+    });
+    scheduleReadyFollowUps({ mediaId: "med_admin", mimeType: "image/jpeg", sizeBytes: 1024, deadlineAt: now + 15_000 });
+    await expect(tasks[0]!.run()).rejects.toThrow("storage unavailable");
+    expect(infoMock).not.toHaveBeenCalled();
+    expect(updateMediaMock).not.toHaveBeenCalled();
+    expect(deriveMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("scheduleReadyFollowUps without a caller deadline", () => {
@@ -114,5 +169,19 @@ describe("scheduleReadyFollowUps without a caller deadline", () => {
 
     expect(deriveMock).toHaveBeenCalledExactlyOnceWith({ mediaId: "med_claim", deadlineMs: 20_000 });
     expect(gpsMock).toHaveBeenCalledExactlyOnceWith({ mediaId: "med_claim" });
+    expect(AbortSignal.timeout).not.toHaveBeenCalled();
+  });
+  it("hashes without a signal and keeps the full derive budget even after a long checksum", async () => {
+    findMediaMock.mockResolvedValueOnce({ status: "READY", checksumSha256: null, storageKey: "originals/m/a.jpg" });
+    getMock.mockImplementationOnce(async () => {
+      vi.setSystemTime(now + 60_000);
+      return { stream: new Blob(["abc"]).stream() };
+    });
+    scheduleReadyFollowUps({ mediaId: "med_claim", mimeType: "image/jpeg", sizeBytes: 3 });
+    await tasks[0]!.run();
+    expect(getMock).toHaveBeenCalledExactlyOnceWith("originals/m/a.jpg");
+    expect(updateMediaMock).toHaveBeenCalledExactlyOnceWith({ where: { id: "med_claim" }, data: { checksumSha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" } });
+    expect(deriveMock).toHaveBeenCalledExactlyOnceWith({ mediaId: "med_claim", deadlineMs: 20_000 });
+    expect(AbortSignal.timeout).not.toHaveBeenCalled();
   });
 });

@@ -86,7 +86,7 @@ export async function requestUploadAsAdmin(raw: unknown): Promise<RequestUploadR
         if (renewed === "not_pending") { return { ok: false, code: "conflict", mediaId: pending.id }; }
         if (renewed !== "expired") {
           // Do not change the words when renewal is refused. The existing pathname and type stay pinned.
-          await tx.media.update({ where: { id: pending.id }, data: { caption: file.caption, approxDateText: file.approxDateText, place: file.place } });
+          await tx.media.update({ where: { id: pending.id }, data: { caption: file.caption, approxDateText: file.approxDateText, place: file.place, durationSeconds: file.durationSeconds } });
           return { ok: true, status: "PENDING", mediaId: pending.id, storageKey: renewed.row.storageKey, mimeType: renewed.row.mimeType, now: renewed.now, reused: true };
         }
         // The 24-hour boundary passed while waiting on the budget lock: this is now a new reservation.
@@ -107,7 +107,7 @@ export async function requestUploadAsAdmin(raw: unknown): Promise<RequestUploadR
   if (result.reused && await storage.head(result.storageKey)) {
     return { ok: true, status: "PENDING", mediaId: result.mediaId, uploaded: true };
   }
-  const signed = await storage.presignPut({ pathname: result.storageKey, contentType: result.mimeType, maxBytes: declared.size, validUntil: result.now + BLOB_TOKEN_LIFETIME_MS });
+  const signed = await storage.presignPut({ pathname: result.storageKey, contentType: result.mimeType, maxBytes: declared.size, validUntil: result.now + BLOB_TOKEN_LIFETIME_MS, signal: AbortSignal.timeout(15_000) });
   return { ok: true, status: "PENDING", mediaId: result.mediaId, upload: { method: "PUT", presignedUrl: signed.url, headers: signed.headers, expiresAt: signed.expiresAt } };
 }
 
@@ -131,12 +131,16 @@ export async function finalizeUploadAsAdmin(raw: unknown): Promise<FinalizeAdmin
   const { memoryId, mediaId } = parsed.data;
   const db = getDb();
   const row = await db.media.findUnique({ where: { id: mediaId }, include: { memory: true } });
-  if (!row || row.memoryId !== memoryId || row.deletedAt !== null || row.memory.deletedAt !== null) {
+  if (!row || row.memoryId !== memoryId || row.addedVia !== "ADMIN" || row.deletedAt !== null || row.memory.deletedAt !== null) {
     return { ok: false, code: "not_found" };
   }
   tagIds({ memoryId, mediaId });
-  // Even an exhausted call can read an already READY result. A zero timeout aborts new hash work.
-  const signal = AbortSignal.timeout(Math.max(0, Math.min(15_000, deadlineAt - Date.now() - 5_000)));
+  // Even an exhausted call can read an already READY result. Abort synchronously
+  // when there is no hash budget: timeout(0) would still allow a download to start.
+  const hashBudget = Math.min(15_000, deadlineAt - Date.now() - 5_000);
+  const signal = hashBudget <= 0
+    ? AbortSignal.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"))
+    : AbortSignal.timeout(hashBudget);
   const outcome = await recordMedia({ mediaId, signal });
   if (outcome.status === "NOT_FOUND") { return { ok: false, code: "not_found" }; }
   if (outcome.status === "FAILED") {
@@ -144,7 +148,19 @@ export async function finalizeUploadAsAdmin(raw: unknown): Promise<FinalizeAdmin
     return { ok: true, status: "FAILED", ...(row.status !== "FAILED" && { reason: outcome.reason }) };
   }
   if (outcome.status === "PENDING") {
-    const uploaded = outcome.verifying === true || await createStorageService().head(row.storageKey) !== null;
+    let uploaded = outcome.verifying === true;
+    const remaining = deadlineAt - Date.now();
+    if (!uploaded && remaining > 0) {
+      const headSignal = AbortSignal.timeout(remaining);
+      try {
+        uploaded = await createStorageService().head(row.storageKey, { signal: headSignal }) !== null;
+      } catch (error) {
+        if (!(headSignal.aborted && (error === headSignal.reason || (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))))) {
+          throw error;
+        }
+        // Unknown after a timeout: request_upload can re-check the committed row's blob.
+      }
+    }
     return { ok: true, status: "PENDING", uploaded, ...(outcome.verifying && { verifying: true }) };
   }
   const ready = await db.media.findUnique({ where: { id: mediaId }, include: { memory: true } });

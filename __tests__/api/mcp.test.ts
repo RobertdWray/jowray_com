@@ -684,7 +684,7 @@ describe("tools/list contract (case 2)", () => {
             "destructiveHint": false,
             "idempotentHint": true,
           },
-          "description": "Reserves one file on a memory without changing its status or consent and without sending email. A non-DRAFT memory with no words or READY file is refused (not_ready). Retry by the same hash for a fresh URL within 24 hours; metadata on an already attached file is ignored. Use original files on disk (a mounted folder in Cowork or Claude Code on Rob's Mac), not files pasted into chat. Compute the exact size, MIME type and \`shasum -a 256\` locally; call request_upload. On \`alreadyAttached\`, skip the upload; on \`uploaded: true\`, just call finalize_upload. Otherwise write the returned URL into a mode-600 curl config file (\`url = "..."\`), then run \`curl -sS --fail -X PUT -K <config> -H "content-type: <type>" -H "x-content-type: <type>" --data-binary @<file>\` with exactly the returned headers, delete the config file, and call finalize_upload with memoryId and mediaId. The URL is a credential: never write it into chat, a reply, a log or any other file. The upload host is vercel.com; if this session cannot reach it, run the same steps from Claude Code on Rob's Mac. A Live Photo is two files (the HEIC and the MOV) on the same memory; at most 10 files per memory.",
+          "description": "Reserves one file on a memory without changing its status or consent and without sending email. A non-DRAFT memory with no words or READY file is refused (not_ready). Retry by the same hash for a fresh URL within 24 hours; metadata on an already attached file is ignored. Use original files on disk (a mounted folder in Cowork or Claude Code on Rob's Mac), not files pasted into chat. Compute the exact size, MIME type and \`shasum -a 256\` locally; call request_upload. On \`alreadyAttached\`, skip the upload; on \`uploaded: true\`, just call finalize_upload. Otherwise write the returned URL into a mode-600 curl config file (\`url = "..."\`), then run \`curl --disable -sS --fail -X PUT -K <config> -H "content-type: <type>" -H "x-content-type: <type>" --data-binary @<file> --output /dev/null\` with exactly the returned headers, delete the config file, and call finalize_upload with memoryId and mediaId. The URL is a credential: never write it into chat, a reply, a log or any other file. The upload host is vercel.com; if this session cannot reach it, run the same steps from Claude Code on Rob's Mac. A Live Photo is two files (the HEIC and the MOV) on the same memory; at most 10 files per memory.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
@@ -1265,6 +1265,16 @@ const FINALIZE_ARGS = { memoryId: ID, mediaId: PHOTO_ID };
 const UPLOAD = { method: "PUT", presignedUrl: "https://upload.example.invalid/synthetic", headers: { "content-type": "image/jpeg", "x-content-type": "image/jpeg" }, expiresAt: "2026-11-07T09:00:00.000Z" };
 
 describe("request_upload and finalize_upload tool contracts", () => {
+  it("reports a presign timeout as a tool error and accepts a retry", async () => {
+    features.requestUploadAsAdmin.mockRejectedValueOnce(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+    const { result } = await callTool("request_upload", UPLOAD_ARGS);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toEqual({ code: "internal", eventId: expect.stringMatching(/^[0-9a-f]{32}$/) });
+    features.requestUploadAsAdmin.mockResolvedValueOnce({ ok: true, status: "PENDING", mediaId: PHOTO_ID, upload: UPLOAD });
+    const retry = await callTool("request_upload", UPLOAD_ARGS);
+    expect(retry.result.isError).toBeUndefined();
+    expect(retry.result.structuredContent).toEqual({ status: "PENDING", mediaId: PHOTO_ID, upload: UPLOAD });
+  });
   it.each([
     { status: "PENDING", mediaId: PHOTO_ID, upload: UPLOAD },
     { status: "PENDING", mediaId: PHOTO_ID, uploaded: true },

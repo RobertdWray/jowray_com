@@ -29,6 +29,8 @@ export interface PresignPutOptions {
   maxBytes: number;
   /** Absolute expiry, epoch milliseconds. */
   validUntil: number;
+  /** Aborts token issuance if it cannot finish within the caller's deadline. */
+  signal?: AbortSignal;
 }
 
 export interface PresignPutResult {
@@ -49,7 +51,7 @@ export interface StorageGetOptions {
 
 export interface StorageService {
   put(pathname: string, body: ReadableStream | Blob | Buffer, contentType: string): Promise<StorageHeadResult>;
-  head(pathname: string): Promise<StorageHeadResult | null>;
+  head(pathname: string, options?: StorageGetOptions): Promise<StorageHeadResult | null>;
   get(pathname: string, options?: StorageGetOptions): Promise<StorageGetResult | null>;
   /**
    * The first `maxBytes` bytes of a blob (fewer when the blob is shorter), or

@@ -219,7 +219,7 @@ describe("requestUploadAsAdmin", () => {
     expect(result).toEqual({ ok: true, status: "PENDING", mediaId: media[0]!.id, upload: { method: "PUT", presignedUrl: PUT_URL, headers: { "content-type": "image/jpeg", "x-content-type": "image/jpeg" }, expiresAt: new Date(NOW + 3_600_000) } });
     expect(media).toHaveLength(1);
     expect(media[0]).toMatchObject({ addedVia: "ADMIN", declaredSha256: HASH, maxBytes: BYTES.length, caption: "caption", approxDateText: "1970", place: "Park" });
-    expect(storage.presignPut).toHaveBeenCalledExactlyOnceWith({ pathname: expect.stringMatching(new RegExp(`^dev/originals/${ID}/[0-9a-f-]+\\.jpg$`)), contentType: "image/jpeg", maxBytes: BYTES.length, validUntil: NOW + 3_600_000 });
+    expect(storage.presignPut).toHaveBeenCalledExactlyOnceWith({ pathname: expect.stringMatching(new RegExp(`^dev/originals/${ID}/[0-9a-f-]+\\.jpg$`)), contentType: "image/jpeg", maxBytes: BYTES.length, validUntil: NOW + 3_600_000, signal: expect.any(AbortSignal) });
     expect(locks).toEqual(["lease", "memory", "budget"]);
     expect(db.$transaction).toHaveBeenCalledTimes(1);
     expect(revisions).toEqual([]);
@@ -227,7 +227,7 @@ describe("requestUploadAsAdmin", () => {
   it.each(["preview", "production"])("A4: uses the %s storage prefix and normalizes an untyped HEIC", async (env) => {
     vi.stubEnv("VERCEL_ENV", env); resetEnvCache();
     await requestUploadAsAdmin({ ...INPUT, file: { ...FILE, name: "original.HEIC", type: "" } });
-    expect(storage.presignPut).toHaveBeenCalledWith({ pathname: expect.stringMatching(env === "preview" ? /^preview\/originals\// : /^originals\//), contentType: "image/heic", maxBytes: BYTES.length, validUntil: NOW + 3_600_000 });
+    expect(storage.presignPut).toHaveBeenCalledWith({ pathname: expect.stringMatching(env === "preview" ? /^preview\/originals\// : /^originals\//), contentType: "image/heic", maxBytes: BYTES.length, validUntil: NOW + 3_600_000, signal: expect.any(AbortSignal) });
   });
   it.each([false, true])("A5: READY match uses %s verified checksum, actual size, ignores metadata and writes nothing", async (verified) => {
     media = [mediaRow({ status: "READY", sizeBytes: BYTES.length, maxBytes: 25 * 1024 ** 2, checksumSha256: verified ? HASH : null, addedVia: verified ? null : "ADMIN", declaredSha256: verified ? null : HASH, caption: "old" })];
@@ -260,6 +260,33 @@ describe("requestUploadAsAdmin", () => {
       expect(await requestUploadAsAdmin(INPUT)).toEqual({ ok: false, code: "conflict", mediaId: MID });
     }
     expect(db.media.create).not.toHaveBeenCalled(); expect(storage.presignPut).not.toHaveBeenCalled();
+  });
+  it.each([
+    { durationSeconds: 42, expected: 42 },
+    { durationSeconds: 0, expected: null },
+    { durationSeconds: undefined, expected: null },
+  ])("replaces a reused PENDING video's stale duration with $expected", async ({ durationSeconds, expected }) => {
+    media = [mediaRow({ mimeType: "video/mp4", durationSeconds: 7 })];
+    await requestUploadAsAdmin({ ...INPUT, file: { ...FILE, name: "clip.mp4", type: "video/mp4" }, durationSeconds });
+    expect(media).toHaveLength(1);
+    expect(media[0]).toMatchObject({ id: MID, durationSeconds: expected });
+  });
+  it("bounds a stalled presign after commit; retry reuses the durable reservation", async () => {
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    const spy = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => timeout(20));
+    storage.presignPut.mockImplementationOnce(({ signal }: { signal?: AbortSignal }) => {
+      expect(inTransaction).toBe(false);
+      expect(media).toHaveLength(1);
+      if (!signal) { throw new Error("presign missing deadline"); }
+      return new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    });
+    await expect(requestUploadAsAdmin(INPUT)).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(spy).toHaveBeenCalledExactlyOnceWith(15_000);
+    const id = media[0]!.id;
+    expect(await requestUploadAsAdmin(INPUT)).toMatchObject({ ok: true, mediaId: id, upload: { presignedUrl: PUT_URL } });
+    expect(media).toHaveLength(1);
+    expect(db.media.create).toHaveBeenCalledOnce();
+    expect(revisions).toEqual([]);
   });
   it("A16: a lost reservation response and a presign failure retry the same durable row", async () => {
     failAfterCommit = true;
@@ -338,6 +365,19 @@ describe("finalizeUploadAsAdmin", () => {
     expect(await finalizeUploadAsAdmin(args)).toEqual({ ok: false, code: "not_found" });
     expect(storage.head).not.toHaveBeenCalled();
   });
+  it.each(["PENDING", "READY", "FAILED"] as const)("refuses a site-reserved %s row before recordMedia or storage access", async (status) => {
+    Object.assign(media[0]!, { addedVia: null, declaredSha256: null, status });
+    land();
+    const before = structuredClone({ media, memory });
+    expect(await finalizeUploadAsAdmin(args)).toEqual({ ok: false, code: "not_found" });
+    expect(db.media.findUnique).toHaveBeenCalledExactlyOnceWith({ where: { id: MID }, include: { memory: true } });
+    for (const call of Object.values(storage)) { expect(call).not.toHaveBeenCalled(); }
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(db.media.update).not.toHaveBeenCalled();
+    expect({ media, memory }).toEqual(before);
+    expect(revisions).toEqual([]);
+    expect(tasks).toEqual([]);
+  });
   it("reports PENDING uploaded false when the blob is absent, true when present but prefix is unavailable", async () => {
     expect(await finalizeUploadAsAdmin(args)).toEqual({ ok: true, status: "PENDING", uploaded: false });
     land(); storage.readPrefix.mockResolvedValue(null);
@@ -397,6 +437,71 @@ describe("finalizeUploadAsAdmin", () => {
     expect(await finalizeUploadAsAdmin(args)).toEqual({ ok: true, status: "PENDING", uploaded: true, verifying: true });
     expect(spy).toHaveBeenCalledExactlyOnceWith(15_000);
     expect(media[0]!.status).toBe("PENDING"); expect(revisions).toHaveLength(0); expect(storage.del).not.toHaveBeenCalled();
+  });
+  it("starts no blob download when the initial row read exhausts the hash budget", async () => {
+    land();
+    db.media.findUnique.mockImplementationOnce(async () => {
+      vi.mocked(Date.now).mockReturnValue(NOW + 20_000);
+      return { ...structuredClone(media[0]!), memory: structuredClone(memory) };
+    });
+    expect(await finalizeUploadAsAdmin(args)).toEqual({ ok: true, status: "PENDING", uploaded: true, verifying: true });
+    expect(storage.get).not.toHaveBeenCalled();
+    expect(media[0]!.status).toBe("PENDING");
+    expect(revisions).toEqual([]);
+  });
+  it.each(["head", "readPrefix"] as const)("bounds a stalled %s through finalize without writing", async (method) => {
+    land();
+    const before = structuredClone(media);
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    const spy = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => timeout(20));
+    storage[method].mockImplementation((...args: unknown[]) => {
+      const options = args.at(-1) as { signal?: AbortSignal } | undefined;
+      const signal = options?.signal;
+      if (!signal) { throw new Error(`${method} missing deadline`); }
+      return new Promise((_, reject) => signal.addEventListener("abort", () => {
+        vi.mocked(Date.now).mockReturnValue(NOW + 25_000);
+        reject(signal.reason);
+      }, { once: true }));
+    });
+    expect(await finalizeUploadAsAdmin(args)).toEqual(method === "head"
+      ? { ok: true, status: "PENDING", uploaded: false }
+      : { ok: true, status: "PENDING", uploaded: true, verifying: true });
+    expect(spy).toHaveBeenCalledExactlyOnceWith(15_000);
+    expect(storage.head).toHaveBeenCalledOnce();
+    expect(storage.get).not.toHaveBeenCalled();
+    expect(storage.del).not.toHaveBeenCalled();
+    expect(media).toEqual(before);
+    expect(revisions).toEqual([]);
+  });
+  it("skips the extra uploaded probe when the deadline has passed", async () => {
+    storage.head.mockImplementationOnce(async () => {
+      vi.mocked(Date.now).mockReturnValue(NOW + 25_000);
+      return null;
+    });
+    expect(await finalizeUploadAsAdmin(args)).toEqual({ ok: true, status: "PENDING", uploaded: false });
+    expect(storage.head).toHaveBeenCalledOnce();
+    expect(db.media.update).not.toHaveBeenCalled();
+  });
+  it("bounds the extra uploaded probe by the remaining deadline and lets an unknown upload retry", async () => {
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    const spy = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => timeout(20));
+    storage.head.mockImplementationOnce(async () => {
+      vi.mocked(Date.now).mockReturnValue(NOW + 24_000);
+      return null;
+    }).mockImplementationOnce((_pathname: string, options?: { signal?: AbortSignal }) => {
+      const signal = options?.signal;
+      if (!signal) { throw new Error("uploaded probe missing deadline"); }
+      return new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    });
+    expect(await finalizeUploadAsAdmin(args)).toEqual({ ok: true, status: "PENDING", uploaded: false });
+    expect(spy.mock.calls).toEqual([[15_000], [1_000]]);
+    expect(storage.head).toHaveBeenCalledTimes(2);
+    expect(db.media.update).not.toHaveBeenCalled();
+  });
+  it("propagates storage errors from the extra uploaded probe", async () => {
+    storage.head.mockResolvedValueOnce(null).mockRejectedValueOnce(new Error("head unavailable"));
+    await expect(finalizeUploadAsAdmin(args)).rejects.toThrow("head unavailable");
+    expect(db.media.update).not.toHaveBeenCalled();
   });
   it("A16: a lost READY commit response retries without a second revision", async () => {
     land(); failAfterCommit = true;

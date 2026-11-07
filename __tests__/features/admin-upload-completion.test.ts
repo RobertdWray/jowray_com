@@ -11,9 +11,10 @@
  */
 import { createHash } from "node:crypto";
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SIGNATURE_SAMPLES } from "../fixtures/signatures";
+import type * as CommittedDbLockModule from "../helpers/committed-db-lock";
 
 type Status = "PENDING" | "READY" | "FAILED";
 interface MediaRow {
@@ -318,5 +319,50 @@ describe("computeChecksum({ signal })", () => {
     getMock.mockImplementation(async () => ({ stream: stalledStream(), contentType: "image/jpeg", contentLength: BYTES.byteLength }));
     await expect(computeChecksum({ mediaId: "med_admin", signal: AbortSignal.timeout(30) })).rejects.toMatchObject({ name: "TimeoutError" });
     expect(media[0]!.checksumSha256).toBeNull();
+  });
+});
+
+describe("committed-row suite lock", () => {
+  const holder = { $executeRaw: vi.fn(), $queryRaw: vi.fn(), $disconnect: vi.fn() };
+  const adapter = vi.fn();
+  let acquire: typeof CommittedDbLockModule.acquireCommittedDbLock;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    holder.$executeRaw.mockReset().mockResolvedValue(1);
+    holder.$queryRaw.mockReset().mockResolvedValue([{ unlocked: true }]);
+    holder.$disconnect.mockReset().mockResolvedValue(undefined);
+    vi.doMock("@prisma/adapter-pg", () => ({ PrismaPg: class { constructor(options: unknown) { adapter(options); } } }));
+    vi.doMock("@/generated/prisma/client", () => ({ PrismaClient: class { constructor() { return holder; } } }));
+    acquire = (await import("../helpers/committed-db-lock")).acquireCommittedDbLock;
+  });
+  afterEach(() => {
+    vi.doUnmock("@prisma/adapter-pg");
+    vi.doUnmock("@/generated/prisma/client");
+    vi.resetModules();
+  });
+
+  it("keeps its sole session alive through suite idle time and checks the unlock result", async () => {
+    const lock = await acquire("postgresql://example.invalid/test");
+    expect(adapter).toHaveBeenCalledExactlyOnceWith({ connectionString: "postgresql://example.invalid/test", max: 1, idleTimeoutMillis: 0 });
+    expect(holder.$executeRaw.mock.calls[0]![0].join("?")).toBe("SELECT pg_advisory_lock(?::bigint)");
+    expect(holder.$disconnect).not.toHaveBeenCalled();
+    await lock.release();
+    expect(holder.$queryRaw.mock.calls[0]![0].join("?")).toBe("SELECT pg_advisory_unlock(?::bigint) AS unlocked");
+    expect(holder.$disconnect).toHaveBeenCalledOnce();
+  });
+
+  it.each([{ rows: [{ unlocked: false }] }, { rows: [] }])("fails loudly if the held lock was lost: %j", async ({ rows }) => {
+    holder.$queryRaw.mockResolvedValue(rows);
+    const lock = await acquire("postgresql://example.invalid/test");
+    await expect(lock.release()).rejects.toThrow("Committed database suite lock was lost");
+    expect(holder.$disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("disconnects even when the unlock query fails", async () => {
+    const lock = await acquire("postgresql://example.invalid/test");
+    holder.$queryRaw.mockRejectedValue(new Error("connection lost"));
+    await expect(lock.release()).rejects.toThrow("connection lost");
+    expect(holder.$disconnect).toHaveBeenCalledOnce();
   });
 });

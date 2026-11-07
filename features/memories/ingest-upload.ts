@@ -18,6 +18,7 @@ import { getSiteUrl } from "@/lib/site-url";
 import { type UploadTicket, verifyUploadTicket } from "@/lib/upload-ticket";
 import { getDb } from "@/server/db/client";
 import { createStorageService } from "@/services/storage";
+import type { StorageHeadResult } from "@/services/storage/types";
 
 const log = createLogger({ category: "upload" });
 /** Neon computes can take a couple of seconds to wake; Prisma's defaults (2 s / 5 s) are too tight. */
@@ -38,7 +39,7 @@ export type FailedReason = "too_large" | "wrong_type" | "unrecognized_bytes" | "
 
 export type RecordMediaResult =
   | { status: "READY"; mediaId: string; memoryId: string; sizeBytes: number }
-  /** `verifying`: the bytes are there, but the connector upload's hash did not finish before the caller's deadline. */
+  /** `verifying`: head saw the bytes, but their verification did not finish before the caller's deadline. */
   | { status: "PENDING"; mediaId: string; memoryId: string; verifying?: true }
   | { status: "FAILED"; mediaId: string; memoryId: string; reason: FailedReason }
   | { status: "NOT_FOUND"; mediaId: string };
@@ -106,8 +107,9 @@ async function hashStoredBlob(storageKey: string, signal?: AbortSignal): Promise
  * the row instead of throwing. A connector upload (`addedVia = ADMIN`) must
  * also arrive at exactly its declared size and, up to INLINE_HASH_MAX_BYTES,
  * match its declared SHA-256 before READY; its READY writes an ADMIN revision
- * (plan 2026-11-06-mcp-attach-media §8.3, D10). `signal` bounds that hash: when
- * it fires the row stays PENDING (`verifying`) with nothing written.
+ * (plan 2026-11-06-mcp-attach-media §8.3, D10). `signal` bounds storage reads:
+ * on abort nothing is written, and the row stays PENDING (`verifying` only
+ * when head already saw the blob).
  */
 export async function recordMedia({ mediaId, signal }: { mediaId: string; signal?: AbortSignal }): Promise<RecordMediaResult> {
   const db = getDb();
@@ -126,7 +128,15 @@ export async function recordMedia({ mediaId, signal }: { mediaId: string; signal
   }
 
   const storage = createStorageService();
-  const head = await storage.head(row.storageKey);
+  let head: StorageHeadResult | null;
+  try {
+    head = signal ? await storage.head(row.storageKey, { signal }) : await storage.head(row.storageKey);
+  } catch (error) {
+    if (isCallerAbort(error, signal)) {
+      return { status: "PENDING", mediaId, memoryId: row.memoryId };
+    }
+    throw error;
+  }
   if (!head) {
     return { status: "PENDING", mediaId, memoryId: row.memoryId };
   }
@@ -157,7 +167,17 @@ export async function recordMedia({ mediaId, signal }: { mediaId: string; signal
     // Nothing to look at, and a byte range on an empty object is a 416, not a prefix.
     return keepUnrecognised();
   }
-  const prefix = await storage.readPrefix(row.storageKey, SIGNATURE_PREFIX_BYTES);
+  let prefix: Uint8Array | null;
+  try {
+    prefix = signal
+      ? await storage.readPrefix(row.storageKey, SIGNATURE_PREFIX_BYTES, { signal })
+      : await storage.readPrefix(row.storageKey, SIGNATURE_PREFIX_BYTES);
+  } catch (error) {
+    if (isCallerAbort(error, signal)) {
+      return { status: "PENDING", mediaId, memoryId: row.memoryId, verifying: true };
+    }
+    throw error;
+  }
   if (!prefix) {
     return { status: "PENDING", mediaId, memoryId: row.memoryId };
   }
@@ -315,7 +335,8 @@ export type FinalizeResult =
 
 /**
  * Follow-up work for a committed READY file. A caller's absolute deadline
- * leaves 3 s for the response/flush; derive needs at least 5 s, otherwise
+ * leaves 3 s for the response/flush; checksum needs at least 1 s and stops
+ * at that deadline (cron step (b) backfills it). Derive needs at least 5 s, otherwise
  * cron step (g) backfills it. Choose its budget after the checksum finishes.
  * GPS chooses its budget when its own task starts; under 1 s, cron step (h)
  * backfills the undecided photo instead.
@@ -328,7 +349,20 @@ export function scheduleReadyFollowUps({ mediaId, mimeType, sizeBytes, deadlineA
 }): void {
   afterWithFlush("finalize.checksum_and_derive", async () => {
     if (sizeBytes <= INLINE_HASH_MAX_BYTES) {
-      await computeChecksum({ mediaId });
+      if (deadlineAt === undefined) {
+        await computeChecksum({ mediaId });
+      } else {
+        const remaining = deadlineAt - Date.now() - 3_000;
+        if (remaining >= 1_000) {
+          const signal = AbortSignal.timeout(remaining);
+          try {
+            await computeChecksum({ mediaId, signal });
+          } catch (error) {
+            if (!isCallerAbort(error, signal)) { throw error; }
+            log.info({ action: "checksum_deferred", mediaId }, "checksum did not finish before the deadline");
+          }
+        }
+      }
     }
     const deadlineMs = deadlineAt === undefined
       ? DERIVE_DEADLINE_FINALIZE_MS
