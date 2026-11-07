@@ -165,7 +165,17 @@ describe("POST /api/upload (upload completed callback)", () => {
     expect(extractGpsMock).toHaveBeenCalledWith({ mediaId: "med_1" });
   });
 
-  it.each(["audio/mp4", "video/mp4"])("schedules no photo GPS step for a blob of type %s (final review, item 4)", async (contentType) => {
+  it.each(["video/quicktime", "video/mp4"])("schedules the GPS task after recording a %s video", async (contentType) => {
+    await completed(contentType);
+    expect(extractGpsMock).not.toHaveBeenCalled();
+    await afterCalls[0]!();
+    expect(afterNames).toEqual(["upload.callback", "upload.callback.photo_gps"]);
+    expect(extractGpsMock).not.toHaveBeenCalled();
+    await afterCalls[1]!();
+    expect(extractGpsMock).toHaveBeenCalledExactlyOnceWith({ mediaId: "med_1" });
+  });
+
+  it.each(["audio/mp4", "video/webm"])("schedules no photo GPS step for a blob of type %s (final review, item 4)", async (contentType) => {
     await completed(contentType);
     await afterCalls[0]!();
     expect(afterNames).toEqual(["upload.callback"]);

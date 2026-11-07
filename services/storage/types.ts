@@ -60,6 +60,16 @@ export interface StorageService {
    * GPS step's first read, which passes a deadline `signal` like `get`.
    */
   readPrefix(pathname: string, maxBytes: number, options?: StorageGetOptions): Promise<Uint8Array | null>;
+  /**
+   * Exactly `length` bytes at `offset` (fewer only at EOF, as the server's
+   * Content-Range says), or null when the object is missing. Throws
+   * RangeNotHonouredError when the answer is not the requested range, or
+   * ShortReadError when the body is shorter than its Content-Range promised.
+   * The caller's signal aborts both the request and the body.
+   * An offset at or past EOF returns HTTP 416 and surfaces as the SDK's
+   * BlobError, so callers must clamp requests to the size from `head`.
+   */
+  readRange(pathname: string, offset: number, length: number, options?: StorageGetOptions): Promise<Uint8Array | null>;
   del(pathname: string): Promise<void>;
   /** Short-lived GET URL for a private blob, served by the blob host (supports Range). */
   presignGet(options: PresignGetOptions): Promise<PresignGetResult>;

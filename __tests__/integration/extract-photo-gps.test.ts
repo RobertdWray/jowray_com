@@ -6,6 +6,8 @@
  * Like the other integration suites, this runs only when TEST_DATABASE_URL names a database at the latest migration,
  * and every case runs inside a transaction that is always rolled back: `getDb()` is pointed at that transaction.
  */
+import { readFileSync } from "node:fs";
+
 import { PrismaPg } from "@prisma/adapter-pg";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -31,6 +33,14 @@ const blobs = new Map<string, Uint8Array>();
 let onRead: (() => Promise<void>) | null = null;
 vi.mock("@/services/storage", () => ({
   createStorageService: () => ({
+    head: async (pathname: string) => {
+      const bytes = blobs.get(pathname);
+      return bytes ? { size: bytes.byteLength } : null;
+    },
+    readRange: async (pathname: string, offset: number, length: number) => {
+      await onRead?.();
+      return blobs.get(pathname)?.subarray(offset, offset + length) ?? null;
+    },
     readPrefix: async (pathname: string, maxBytes: number) => {
       await onRead?.();
       return blobs.get(pathname)?.subarray(0, maxBytes) ?? null;
@@ -130,6 +140,29 @@ describe.skipIf(!client)("extractPhotoGps on real Postgres", () => {
     // A failure leaves its claim in place, to expire (final review, item 2).
     expect(seen[3]).toEqual({ latitude: null, longitude: null, gpsCheckedAt: null, gpsAttempts: 1, gpsClaimedAt: expect.any(Date) });
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { fixture: "location-mdta.mov", mimeType: "video/quicktime", outcome: "found" },
+    { fixture: "location-xyz.mp4", mimeType: "video/mp4", outcome: "found" },
+    { fixture: "no-location.mov", mimeType: "video/quicktime", outcome: "absent" },
+  ])("video $fixture satisfies the coordinate CHECKs and stamps $outcome", async ({ fixture, mimeType, outcome }) => {
+    const error = await rolledBack(async (tx) => {
+      const mediaId = await freshPhoto(tx, new Uint8Array(readFileSync(new URL(`../fixtures/${fixture}`, import.meta.url))));
+      await tx.media.update({ where: { id: mediaId }, data: { mimeType } });
+      expect(await extractPhotoGps({ mediaId })).toBe(outcome);
+      const row = await tx.media.findUniqueOrThrow({ where: { id: mediaId }, select });
+      expect(row).toMatchObject({ gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null });
+      if (outcome === "found") {
+        expect(row.latitude).toBeCloseTo(40.6892, 4);
+        expect(row.longitude).toBeCloseTo(-74.0445, 4);
+      } else {
+        expect(row).toMatchObject({ latitude: null, longitude: null });
+      }
+      expect(await extractPhotoGps({ mediaId })).toBe("skipped");
+    });
+    expect(error).toBeNull();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 
   it("the claim is a lease (final review, item 2): a live claim is skipped with no read and no attempt spent; a stale one is taken over and cleared", async () => {

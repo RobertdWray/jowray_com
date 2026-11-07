@@ -427,17 +427,23 @@ describe("finalizeUpload", () => {
   });
 
   it.each([
-    { kind: "a video", mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 },
-    { kind: "a voice note", mimeType: "audio/mp4", maxBytes: 100 * 1024 * 1024 },
-  ])("never schedules the photo GPS step for $kind: only image tickets get it (final review, item 4)", async ({ mimeType, maxBytes }) => {
+    { kind: "a MOV video", mimeType: "video/quicktime", maxBytes: 500 * 1024 * 1024, locationTasks: 1 },
+    { kind: "an MP4 video", mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024, locationTasks: 1 },
+    { kind: "a voice note", mimeType: "audio/mp4", maxBytes: 100 * 1024 * 1024, locationTasks: 0 },
+    { kind: "a WebM video", mimeType: "video/webm", maxBytes: 500 * 1024 * 1024, locationTasks: 0 },
+  ])("schedules location for MOV/MP4 but not audio/WebM: $kind (final review, item 4; plan §9, R2)", async ({ mimeType, maxBytes, locationTasks }) => {
     headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 1234, contentType: mimeType, uploadedAt: new Date() });
     media = [row({ mimeType, maxBytes })];
     const result = await finalizeUpload({ ticket: mintUploadTicket({ ...claims, mimeType, maxBytes }), claimToken: CLAIM });
     expect(result.status).toBe("READY");
     expect(afterNames).toContain("finalize.checksum_and_derive");
-    expect(afterNames).not.toContain("finalize.photo_gps");
-    for (const cb of afterCalls) { await cb(); }
+    expect(afterNames.filter((name) => name === "finalize.photo_gps")).toHaveLength(locationTasks);
     expect(extractGpsMock).not.toHaveBeenCalled();
+    for (const cb of afterCalls) { await cb(); }
+    expect(extractGpsMock).toHaveBeenCalledTimes(locationTasks);
+    if (locationTasks > 0) {
+      expect(extractGpsMock).toHaveBeenCalledWith({ mediaId: "med_1" });
+    }
   });
 
   it("rejects a tampered ticket, a mismatched claim token, and does not touch the row", async () => {
@@ -476,7 +482,7 @@ describe("finalizeUpload", () => {
     media = [row({ mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 })];
     const result = await finalizeUpload({ ticket: mintUploadTicket({ ...claims, mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024 }), claimToken: CLAIM });
     expect(result.status).toBe("READY");
-    expect(afterNames).toEqual(["finalize.admin_alert", "finalize.checksum_and_derive"]); // the cron hashes large files; a video gets no GPS task
+    expect(afterNames).toEqual(["finalize.admin_alert", "finalize.checksum_and_derive", "finalize.photo_gps"]); // the cron hashes large files; MP4 still gets a location task
     for (const cb of afterCalls) { await cb(); }
     expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_1" });
     expect(media[0]?.checksumSha256).toBeNull();

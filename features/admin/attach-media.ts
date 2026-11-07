@@ -9,6 +9,7 @@ import { hasWords, type MemoryType } from "@/features/memories/media-state";
 import { renewUploadLease } from "@/features/memories/upload-lease";
 import type { Memory } from "@/generated/prisma/client";
 import { createLogger } from "@/lib/logger";
+import { hasLocationReader } from "@/lib/media-location";
 import { memoryTypeFor } from "@/lib/media-types";
 import { tagIds } from "@/lib/sentry/user";
 import { BLOB_TOKEN_LIFETIME_MS, TICKET_TTL_MS } from "@/lib/upload-ticket";
@@ -166,7 +167,7 @@ export async function finalizeUploadAsAdmin(raw: unknown): Promise<FinalizeAdmin
   const ready = await db.media.findUnique({ where: { id: mediaId }, include: { memory: true } });
   if (!ready || ready.deletedAt !== null || ready.memory.deletedAt !== null) { return { ok: false, code: "not_found" }; }
   let gps: Gps = "not_applicable";
-  if (ready.mimeType.startsWith("image/")) {
+  if (hasLocationReader(ready.mimeType)) {
     gps = decidedGps(ready);
     const deadlineMs = Math.min(5_000, deadlineAt - Date.now() - 3_000);
     if (gps === "pending" && deadlineMs > 0) {

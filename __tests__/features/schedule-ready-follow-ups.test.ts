@@ -162,6 +162,19 @@ describe("scheduleReadyFollowUps with a caller deadline", () => {
 });
 
 describe("scheduleReadyFollowUps without a caller deadline", () => {
+  it.each(["video/quicktime", "video/mp4"])("schedules a location read for %s", async (mimeType) => {
+    scheduleReadyFollowUps({ mediaId: "med_video", mimeType, sizeBytes: 1024 });
+    expect(tasks.map((task) => task.name)).toEqual(["finalize.checksum_and_derive", "finalize.photo_gps"]);
+    await tasks[1]!.run();
+    expect(gpsMock).toHaveBeenCalledExactlyOnceWith({ mediaId: "med_video" });
+  });
+
+  it.each(["audio/mp4", "video/webm"])("does not schedule a location read for %s", (mimeType) => {
+    scheduleReadyFollowUps({ mediaId: "med_other", mimeType, sizeBytes: 1024 });
+    expect(tasks.map((task) => task.name)).toEqual(["finalize.checksum_and_derive"]);
+    expect(gpsMock).not.toHaveBeenCalled();
+  });
+
   it("preserves the claim page's derive budget and photo GPS call", async () => {
     scheduleReadyFollowUps({ mediaId: "med_claim", mimeType: "image/jpeg", sizeBytes: 1024 });
     vi.setSystemTime(now + 60_000);

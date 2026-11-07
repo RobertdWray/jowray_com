@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Media, Memory } from "@/generated/prisma/client";
+import { RangeNotHonouredError } from "@/lib/storage-errors";
 import { resetEnvCache } from "@/server/config/env";
 
 import { SIGNATURE_SAMPLES } from "../fixtures/signatures";
@@ -127,7 +128,7 @@ const db = {
   },
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => db }));
-const storage = { head: vi.fn(), readPrefix: vi.fn(), get: vi.fn(), del: vi.fn(), presignPut: vi.fn() };
+const storage = { head: vi.fn(), readPrefix: vi.fn(), readRange: vi.fn(), get: vi.fn(), del: vi.fn(), presignPut: vi.fn() };
 vi.mock("@/services/storage", () => ({ createStorageService: () => storage }));
 const log = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }));
 vi.mock("@/lib/logger", () => ({ createLogger: () => log, logError: vi.fn(), logErrorAndFlush: vi.fn() }));
@@ -154,6 +155,7 @@ function land(row = media[0]!, bytes = BYTES): void {
     return { pathname, url: "https://blob.example.invalid/photo", size: bytes.length, contentType: row.mimeType, uploadedAt: new Date(NOW) };
   });
   storage.readPrefix.mockResolvedValue(bytes);
+  storage.readRange.mockImplementation(async (_pathname: string, offset: number, length: number) => bytes.subarray(offset, offset + length));
   storage.get.mockImplementation(async () => ({ stream: new Blob([new Uint8Array(bytes)]).stream(), contentLength: bytes.length, contentType: row.mimeType }));
 }
 
@@ -417,12 +419,56 @@ describe("finalizeUploadAsAdmin", () => {
     expect(storage.del).toHaveBeenCalledWith(media[0]!.storageKey); expect(revisions).toHaveLength(0);
     expect(await finalizeUploadAsAdmin(args)).toEqual({ ok: true, status: "FAILED" });
   });
-  it("A13: a large video becomes READY unhashed for the cron, GPS not_applicable", async () => {
+  it("A13: a large video becomes READY unhashed for the cron, with GPS pending after a range failure", async () => {
     media[0]!.mimeType = "video/quicktime"; media[0]!.maxBytes = INLINE_HASH_MAX_BYTES + 1;
     land(); storage.head.mockResolvedValue({ size: INLINE_HASH_MAX_BYTES + 1, contentType: "video/quicktime", url: "https://blob.example.invalid/movie" });
     storage.readPrefix.mockResolvedValue(SIGNATURE_SAMPLES["video/quicktime"]!);
-    expect(await finalizeUploadAsAdmin(args)).toEqual({ ok: true, status: "READY", mediaId: MID, memoryType: "VIDEO", gps: "not_applicable" });
+    storage.readRange.mockRejectedValue(new RangeNotHonouredError());
+    expect(await finalizeUploadAsAdmin(args)).toEqual({ ok: true, status: "READY", mediaId: MID, memoryType: "VIDEO", gps: "pending" });
+    expect(media[0]).toMatchObject({ gpsCheckedAt: null, gpsAttempts: 1 });
     expect(media[0]!.checksumSha256).toBeNull(); expect(storage.get).not.toHaveBeenCalled(); expect(revisions).toHaveLength(1);
+  });
+
+  it.each([
+    { fixture: "location-mdta.mov", gps: "found" },
+    { fixture: "no-location.mov", gps: "none" },
+  ])("finalizes a MOV with inline GPS $gps from $fixture and reuses its durable result", async ({ fixture, gps }) => {
+    const bytes = new Uint8Array(readFileSync(new URL(`../fixtures/${fixture}`, import.meta.url)));
+    Object.assign(media[0]!, {
+      mimeType: "video/quicktime", storageKey: `dev/originals/${ID}/clip.mov`, originalFilename: "clip.mov",
+      maxBytes: bytes.length, declaredSha256: createHash("sha256").update(bytes).digest("hex"),
+    });
+    land(media[0], bytes);
+    const spy = vi.spyOn(AbortSignal, "timeout");
+    expect(await finalizeUploadAsAdmin(args)).toEqual({ ok: true, status: "READY", mediaId: MID, memoryType: "VIDEO", gps });
+    expect(media[0]).toMatchObject({ gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null });
+    expect(storage.readRange).toHaveBeenCalled();
+    expect(spy).toHaveBeenCalledWith(5_000);
+    expect(tasks).toHaveLength(2);
+    storage.readRange.mockClear(); storage.head.mockClear();
+    expect(await finalizeUploadAsAdmin(args)).toMatchObject({ status: "READY", gps });
+    expect(storage.readRange).not.toHaveBeenCalled(); expect(storage.head).not.toHaveBeenCalled();
+    expect(revisions).toHaveLength(1);
+  });
+
+  it.each(["audio/mp4", "video/webm"])("keeps GPS not_applicable for %s", async (mimeType) => {
+    media[0] = mediaRow({ status: "READY", mimeType, sizeBytes: BYTES.length });
+    expect(await finalizeUploadAsAdmin(args)).toMatchObject({ status: "READY", gps: "not_applicable" });
+    expect(media[0]!.gpsAttempts).toBe(0);
+    expect(storage.head).not.toHaveBeenCalled(); expect(storage.readRange).not.toHaveBeenCalled();
+  });
+
+  it("leaves a MOV location pending without spending an attempt when finalize's budget is exhausted", async () => {
+    const bytes = new Uint8Array(readFileSync(new URL("../fixtures/location-mdta.mov", import.meta.url)));
+    Object.assign(media[0]!, { mimeType: "video/quicktime", maxBytes: bytes.length, declaredSha256: createHash("sha256").update(bytes).digest("hex") });
+    land(media[0], bytes);
+    storage.get.mockImplementationOnce(async () => {
+      vi.mocked(Date.now).mockReturnValue(NOW + 23_000);
+      return { stream: new Blob([bytes]).stream(), contentLength: bytes.length, contentType: "video/quicktime" };
+    });
+    expect(await finalizeUploadAsAdmin(args)).toMatchObject({ status: "READY", gps: "pending" });
+    expect(media[0]!.gpsAttempts).toBe(0);
+    expect(storage.readRange).not.toHaveBeenCalled();
   });
   it("A14: wrong size fails before hashing with size_mismatch", async () => {
     land(); media[0]!.maxBytes += 1;

@@ -3,6 +3,7 @@ import type * as BlobModule from "@vercel/blob";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type * as LoggerModule from "@/lib/logger";
+import { RangeNotHonouredError, ShortReadError } from "@/lib/storage-errors";
 
 interface FakeGetResult {
   statusCode: number;
@@ -197,6 +198,216 @@ describe("VercelBlobStorageService.readPrefix deadline (B3 fix round 1)", () => 
     getMock.mockResolvedValueOnce(result(200, stream, 16));
     await service.readPrefix("k", 128);
     expect(getMock.mock.calls[0]![1]).toMatchObject({ abortSignal: undefined });
+  });
+});
+
+function rangeResult(stream: ReadableStream<Uint8Array> | null, contentRange: string | null): FakeGetResult {
+  const response = result(200, stream, 128);
+  if (contentRange !== null) {
+    response.headers.set("content-range", contentRange);
+  }
+  return response;
+}
+
+describe("VercelBlobStorageService.readRange", () => {
+  it.each([
+    { offset: -1, length: 4 },
+    { offset: 0.5, length: 4 },
+    { offset: NaN, length: 4 },
+    { offset: Infinity, length: 4 },
+    { offset: -Infinity, length: 4 },
+    { offset: Number.MAX_SAFE_INTEGER + 1, length: 4 },
+    { offset: Number.MAX_SAFE_INTEGER, length: 2 },
+    { offset: 0, length: 0 },
+    { offset: 0, length: -1 },
+    { offset: 0, length: 1.5 },
+    { offset: 0, length: NaN },
+    { offset: 0, length: Infinity },
+    { offset: 0, length: -Infinity },
+    { offset: 0, length: Number.MAX_SAFE_INTEGER + 1 },
+  ])("throws synchronously before calling the SDK for offset $offset and length $length", ({ offset, length }) => {
+    getMock.mockResolvedValueOnce(null);
+    expect(() => service.readRange("k", offset, length)).toThrow(RangeError);
+    expect(getMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { offset: 0, range: "bytes=0-3", contentRange: "bytes 0-3/128" },
+    { offset: 100, range: "bytes=100-103", contentRange: "bytes 100-103/128" },
+    { offset: 100, range: "bytes=100-103", contentRange: "Bytes 100-103/128" },
+  ])("requests the exact range at $offset and returns only its bytes across chunks", async ({ offset, range, contentRange }) => {
+    const cancel = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([10, 11]));
+        controller.enqueue(new Uint8Array([12, 13, 14, 15]));
+      },
+      cancel,
+    });
+    getMock.mockResolvedValueOnce(rangeResult(stream, contentRange));
+
+    await expect(service.readRange("originals/m/a.mp4", offset, 4)).resolves.toEqual(new Uint8Array([10, 11, 12, 13]));
+    expect(getMock).toHaveBeenCalledExactlyOnceWith("originals/m/a.mp4", {
+      access: "private",
+      token: "vercel_blob_rw_test_token",
+      headers: { Range: range },
+      abortSignal: undefined,
+    });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("accepts a shorter range only at EOF and stops at the header's promised length", async () => {
+    const cancel = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array([20, 21, 22, 23])); },
+      cancel,
+    });
+    getMock.mockResolvedValueOnce(rangeResult(stream, "bytes 100-101/102"));
+
+    await expect(service.readRange("k", 100, 8)).resolves.toEqual(new Uint8Array([20, 21]));
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("cancels after the promised bytes without draining a larger body", async () => {
+    const { stream, state } = countingStream(10 * 1024 * 1024, 4096);
+    getMock.mockResolvedValueOnce(rangeResult(stream, "bytes 100-103/10485760"));
+
+    await expect(service.readRange("k", 100, 4)).resolves.toEqual(new Uint8Array([0xab, 0xab, 0xab, 0xab]));
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBeLessThanOrEqual(2 * 4096);
+  });
+
+  it.each([
+    { reason: "missing Content-Range", contentRange: null },
+    { reason: "mismatched start", contentRange: "bytes 0-3/128" },
+    { reason: "end beyond the request", contentRange: "bytes 100-104/128" },
+    { reason: "shorter range before EOF", contentRange: "bytes 100-102/128" },
+    { reason: "reversed range", contentRange: "bytes 100-99/128" },
+    { reason: "end beyond the file", contentRange: "bytes 100-103/103" },
+    { reason: "zero total", contentRange: "bytes 100-103/0" },
+    { reason: "unsatisfied range", contentRange: "bytes */128" },
+    { reason: "unknown total", contentRange: "bytes 100-103/*" },
+    { reason: "negative start", contentRange: "bytes -100-103/128" },
+    { reason: "wrong unit", contentRange: "items 100-103/128" },
+    { reason: "trailing text", contentRange: "bytes 100-103/128 extra" },
+    { reason: "fractional end", contentRange: "bytes 100-103.5/128" },
+    { reason: "unsafe integer total", contentRange: "bytes 100-103/9007199254740993" },
+  ])("rejects $reason and cancels without reading the body", async ({ contentRange }) => {
+    const cancel = vi.fn();
+    const pull = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({ pull, cancel }, { highWaterMark: 0 });
+    getMock.mockResolvedValueOnce(rangeResult(stream, contentRange));
+
+    const pending = service.readRange("originals/m/a.mp4", 100, 4);
+    await expect(pending).rejects.toBeInstanceOf(RangeNotHonouredError);
+    await expect(pending).rejects.toMatchObject({ name: "RangeNotHonouredError" });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(pull).not.toHaveBeenCalled();
+  });
+
+  it("preserves RangeNotHonouredError when cancelling a refused response rejects", async () => {
+    const cancel = vi.fn().mockRejectedValueOnce(new Error("cancellation failed"));
+    const stream = new ReadableStream<Uint8Array>({ cancel });
+    getMock.mockResolvedValueOnce(rangeResult(stream, null));
+
+    await expect(service.readRange("k", 100, 4)).rejects.toBeInstanceOf(RangeNotHonouredError);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a 200 whole-file answer even at offset zero, unlike readPrefix", async () => {
+    const { stream, state } = countingStream(10 * 1024 * 1024, 4096);
+    getMock.mockResolvedValueOnce(result(200, stream, 10 * 1024 * 1024));
+
+    await expect(service.readRange("k", 0, 4)).rejects.toBeInstanceOf(RangeNotHonouredError);
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBeLessThanOrEqual(4096);
+  });
+
+  it.each([
+    { contentRange: "bytes 100-103/128", length: 4, bodyLength: 3 },
+    { contentRange: "bytes 100-101/102", length: 8, bodyLength: 1 },
+    { contentRange: "bytes 100-103/128", length: 4, bodyLength: 0 },
+  ])("rejects a $bodyLength-byte body shorter than $contentRange promised", async ({ contentRange, length, bodyLength }) => {
+    const { stream } = countingStream(bodyLength, 1);
+    getMock.mockResolvedValueOnce(rangeResult(stream, contentRange));
+
+    const pending = service.readRange("originals/m/a.mp4", 100, length);
+    await expect(pending).rejects.toBeInstanceOf(ShortReadError);
+    await expect(pending).rejects.toMatchObject({ name: "ShortReadError" });
+  });
+
+  it("returns null for a missing object", async () => {
+    getMock.mockResolvedValueOnce(null);
+    await expect(service.readRange("k", 100, 4)).resolves.toBeNull();
+  });
+
+  it("rejects a response without a body instead of reporting the object missing", async () => {
+    getMock.mockResolvedValueOnce(result(304, null, null));
+    await expect(service.readRange("k", 100, 4)).rejects.toBeInstanceOf(RangeNotHonouredError);
+  });
+
+  it("adapts a caller timeout to SDK AbortError and restores the caller's exact reason", async () => {
+    getMock.mockImplementationOnce((_pathname, options) => sdkAbortOnly(options.abortSignal as AbortSignal));
+    const signal = AbortSignal.timeout(20);
+    const add = vi.spyOn(signal, "addEventListener");
+    const remove = vi.spyOn(signal, "removeEventListener");
+
+    const pending = withinHalfSecond(service.readRange("k", 100, 4, { signal }));
+    await expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
+    await expect(pending).rejects.toBe(signal.reason);
+    const sdkSignal = getMock.mock.calls[0]![1].abortSignal as AbortSignal;
+    expect(sdkSignal).not.toBe(signal);
+    expect(sdkSignal.reason).toBeInstanceOf(DOMException);
+    expect(sdkSignal.reason.name).toBe("AbortError");
+    expect(remove).toHaveBeenCalledExactlyOnceWith("abort", add.mock.calls[0]![1]);
+  });
+
+  it("keeps the SDK signal active until the body finishes, restoring a timeout during a stalled read", async () => {
+    getMock.mockImplementationOnce(async (_pathname, options) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array([10]));
+          void sdkAbortOnly(options.abortSignal as AbortSignal).catch((error: unknown) => controller.error(error));
+        },
+      });
+      return rangeResult(stream, "bytes 100-103/128");
+    });
+    const signal = AbortSignal.timeout(20);
+    const remove = vi.spyOn(signal, "removeEventListener");
+
+    const pending = withinHalfSecond(service.readRange("k", 100, 4, { signal }));
+    await expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
+    await expect(pending).rejects.toBe(signal.reason);
+    expect(remove).toHaveBeenCalledOnce();
+  });
+
+  it("adapts an already-aborted caller without waiting for a new abort event", async () => {
+    getMock.mockImplementationOnce((_pathname, options) => sdkAbortOnly(options.abortSignal as AbortSignal));
+    const reason = new DOMException("Already timed out", "TimeoutError");
+    const signal = AbortSignal.abort(reason);
+    await expect(withinHalfSecond(service.readRange("k", 100, 4, { signal }))).rejects.toBe(reason);
+  });
+
+  it("removes the caller's listener after a successful body read", async () => {
+    const { stream } = countingStream(4, 2);
+    getMock.mockResolvedValueOnce(rangeResult(stream, "bytes 100-103/128"));
+    const controller = new AbortController();
+    const add = vi.spyOn(controller.signal, "addEventListener");
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+
+    await expect(service.readRange("k", 100, 4, { signal: controller.signal })).resolves.toHaveLength(4);
+    expect(remove).toHaveBeenCalledExactlyOnceWith("abort", add.mock.calls[0]![1]);
+    controller.abort();
+    expect((getMock.mock.calls[0]![1].abortSignal as AbortSignal).aborted).toBe(false);
+  });
+
+  it("preserves an unrelated SDK failure racing the caller's timeout", async () => {
+    const error = new Error("storage unavailable");
+    getMock.mockRejectedValueOnce(error);
+    const controller = new AbortController();
+    const pending = service.readRange("k", 100, 4, { signal: controller.signal });
+    controller.abort(new DOMException("Timed out", "TimeoutError"));
+    await expect(pending).rejects.toBe(error);
   });
 });
 

@@ -10,6 +10,7 @@ import { notifyAdminsOfMemory } from "@/features/memories/notify-admins";
 import { appendClaimRevision, appendRevision, readyLiveMediaIds, recomputeMemoryType, visibleMediaIds } from "@/features/memories/media-state";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger, logError, logErrorAndFlush } from "@/lib/logger";
+import { hasLocationReader } from "@/lib/media-location";
 import { detectMediaType, isAllowedMime, SIGNATURE_PREFIX_BYTES } from "@/lib/media-types";
 import { afterWithFlush } from "@/lib/sentry/after-flush";
 import { uploadFinalized } from "@/lib/sentry/metrics";
@@ -371,10 +372,9 @@ export function scheduleReadyFollowUps({ mediaId, mimeType, sizeBytes, deadlineA
       await deriveMedia({ mediaId, deadlineMs });
     }
   });
-  // A photo's GPS, read from the original in a task of its own: never through the derived copies, which are
-  // stripped (plan 2026-11-06-photo-gps-places B3). Photos only (the ticket's type; recordMedia relabels only within
-  // a kind), so a video or a voice note schedules nothing (final review, item 4); cron step (h) retries.
-  if (mimeType.startsWith("image/")) {
+  // Location is read from the original in its own task; derived photos are stripped. The extractor rechecks
+  // the stored MIME type and claims its own attempt; cron step (h) retries and backfills photos and MOV/MP4.
+  if (hasLocationReader(mimeType)) {
     afterWithFlush("finalize.photo_gps", async () => {
       if (deadlineAt === undefined) {
         await extractPhotoGps({ mediaId });
