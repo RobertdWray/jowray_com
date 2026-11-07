@@ -59,6 +59,8 @@ const CHECKSUM_DEADLINE_MS = 40_000;
  */
 const ADMIN_HASH_TIMEOUT_MS = 15_000;
 const ADMIN_HASH_MARGIN_MS = 5_000;
+/** Steps (a) and (c) defer items below this budget so time pressure alone cannot burn event retries. */
+const MIN_RECORD_BUDGET_MS = 1_000;
 /** Steps (e), (e2) and (e3) leave very new memories to the request path (finalize or completion may still be running). */
 const CONFIRM_MIN_AGE_MS = 30 * MINUTE_MS;
 /** Step (e3): sends of several memories whose receipt never went out; the lease check keeps it from racing an open browser. */
@@ -180,8 +182,12 @@ export async function GET(request: NextRequest): Promise<Response> {
     // deleted. Step (a0) repeats the delete for a while in case a request that began
     // before the token expired finishes after it.
     const outOfTime = (): boolean => Date.now() - now > RUN_DEADLINE_MS;
-    // Every recordMedia call gets one: only a connector upload (addedVia ADMIN) hashes inside it, and this bounds that read.
-    const recordSignal = (): AbortSignal => AbortSignal.timeout(Math.max(1, Math.min(ADMIN_HASH_TIMEOUT_MS, RUN_DEADLINE_MS - (Date.now() - now) - ADMIN_HASH_MARGIN_MS)));
+    // Bound Blob reads and connector hashing with the same budget check: below the
+    // floor, leave the remaining items untouched for the next 10-minute run.
+    const recordSignal = (): AbortSignal | null => {
+      const budgetMs = Math.min(ADMIN_HASH_TIMEOUT_MS, RUN_DEADLINE_MS - (Date.now() - now) - ADMIN_HASH_MARGIN_MS);
+      return budgetMs < MIN_RECORD_BUDGET_MS ? null : AbortSignal.timeout(budgetMs);
+    };
 
     // (a0) Rows this environment retired in earlier runs ((a), (f2), or (f) with nothing
     // left to point at): delete their pathname again. A Blob request that started before
@@ -219,13 +225,14 @@ export async function GET(request: NextRequest): Promise<Response> {
       take: 100,
     });
     for (const row of stale) {
-      if (outOfTime()) {
+      const signal = recordSignal();
+      if (signal === null) {
         break;
       }
       // Each item in its own isolation scope: an identity set by a shared feature cannot leak into the next item.
       await Sentry.withIsolationScope(async () => {
         try {
-          const outcome = await recordMedia({ mediaId: row.id, signal: recordSignal() });
+          const outcome = await recordMedia({ mediaId: row.id, signal });
           counts.pendingRechecked += 1;
           if (outcome.status === "PENDING" && row.createdAt.getTime() < now - RESERVATION_MAX_AGE_MS && uploadWindowClosed(row, now)) {
             // recordMedia also answers PENDING for a blob that EXISTS but whose first bytes it could not
@@ -259,7 +266,8 @@ export async function GET(request: NextRequest): Promise<Response> {
       take: 50,
     });
     for (const event of events) {
-      if (outOfTime()) {
+      const signal = recordSignal();
+      if (signal === null) {
         break;
       }
       const attempts = event.attempts + 1;
@@ -270,7 +278,7 @@ export async function GET(request: NextRequest): Promise<Response> {
           if (!mediaId) {
             throw new Error("event has no mediaId");
           }
-          const outcome = await recordMedia({ mediaId, signal: recordSignal() });
+          const outcome = await recordMedia({ mediaId, signal });
           await db.webhookEvent.update({
             where: { id: event.id },
             data: outcome.status === "PENDING" ? { attempts, error: "blob not visible yet" } : { processedAt: new Date(), attempts, error: null },

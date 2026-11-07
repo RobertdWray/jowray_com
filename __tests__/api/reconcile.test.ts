@@ -524,6 +524,95 @@ describe("GET /api/cron/reconcile-uploads", () => {
   });
 });
 
+describe("steps (a) and (c) record budget", () => {
+  // The 50 s run budget reserves 5 s for cleanup: 44 s elapsed leaves exactly
+  // the 1 s minimum for recording; even one millisecond more must defer work.
+  const cases = [
+    { elapsedMs: 44_000, starts: true },
+    { elapsedMs: 44_001, starts: false },
+    { elapsedMs: 45_000, starts: false },
+    { elapsedMs: 49_999, starts: false },
+  ];
+
+  it.each(cases)("(a) starts stale PENDING records only with enough budget ($elapsedMs ms elapsed)", async ({ elapsedMs, starts }) => {
+    media = media.filter((row) => row.id === "med_stale");
+    events = []; emails = []; memories = [];
+    const findMedia = dbStub.media.findMany.getMockImplementation()!;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const startedAt = Date.now();
+      dbStub.media.findMany.mockImplementation(async (args) => {
+        const rows = await findMedia(args);
+        if (args.where.status === "PENDING") {
+          vi.setSystemTime(startedAt + elapsedMs);
+        }
+        return rows;
+      });
+      const res = await run(`Bearer ${SECRET}`);
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toMatchObject({ pendingRechecked: starts ? 1 : 0, errors: 0 });
+      expect(recordMediaMock.mock.calls.map(([arg]) => arg.mediaId)).toEqual(starts ? ["med_stale"] : []);
+    } finally {
+      dbStub.media.findMany.mockImplementation(findMedia);
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(cases)("(c) preserves every event's retries unless there is enough budget ($elapsedMs ms elapsed)", async ({ elapsedMs, starts }) => {
+    media = []; emails = []; memories = [];
+    events = [1, 2].map((attempts) => ({ id: `evt_${attempts}`, attempts, processedAt: null, error: "previous failure", payload: { tokenPayload: JSON.stringify({ mediaId: `med_${attempts}` }) } }));
+    const before = structuredClone(events);
+    const findEvents = dbStub.webhookEvent.findMany.getMockImplementation()!;
+    dbStub.webhookEvent.update.mockClear();
+    recordMediaMock.mockImplementation(async ({ mediaId }) => ({ status: "PENDING", mediaId, memoryId: "mem_1" }));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const startedAt = Date.now();
+      dbStub.webhookEvent.findMany.mockImplementation(async (args) => {
+        const rows = await findEvents(args);
+        vi.setSystemTime(startedAt + elapsedMs);
+        return rows;
+      });
+      const res = await run(`Bearer ${SECRET}`);
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toMatchObject({ eventsReplayed: starts ? 2 : 0, errors: 0 });
+      expect(recordMediaMock.mock.calls.map(([arg]) => arg.mediaId)).toEqual(starts ? ["med_1", "med_2"] : []);
+      expect(dbStub.webhookEvent.update).toHaveBeenCalledTimes(starts ? 2 : 0);
+      expect(events).toEqual(starts ? before.map((event) => ({ ...event, attempts: event.attempts + 1, error: "blob not visible yet" })) : before);
+    } finally {
+      dbStub.webhookEvent.findMany.mockImplementation(findEvents);
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["a", "c"] as const)("(%s) checks the budget again before starting the next item", async (step) => {
+    const stale = media.find((row) => row.id === "med_stale")!;
+    media = step === "a" ? [stale, { ...stale, id: "med_next" }] : [];
+    events = step === "c" ? ["med_stale", "med_next"].map((mediaId) => ({ id: `evt_${mediaId}`, attempts: 2, processedAt: null, error: "previous failure", payload: { tokenPayload: JSON.stringify({ mediaId }) } })) : [];
+    emails = []; memories = [];
+    const nextEvent = structuredClone(events[1]);
+    dbStub.webhookEvent.update.mockClear();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      recordMediaMock.mockImplementation(async ({ mediaId }) => {
+        vi.setSystemTime(Date.now() + 44_001);
+        return { status: "READY", mediaId, memoryId: "mem_1", sizeBytes: 5 };
+      });
+      const res = await run(`Bearer ${SECRET}`);
+      expect(res.status).toBe(200);
+      expect(recordMediaMock.mock.calls.map(([arg]) => arg.mediaId)).toEqual(["med_stale"]);
+      expect((await res.json()).data).toMatchObject({ pendingRechecked: step === "a" ? 1 : 0, eventsReplayed: step === "c" ? 1 : 0, errors: 0 });
+      if (step === "c") {
+        expect(events[0]).toMatchObject({ processedAt: expect.any(Date), attempts: 3, error: null });
+        expect(events[1]).toEqual(nextEvent);
+        expect(dbStub.webhookEvent.update).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("purge drains a backlog and never re-selects a tombstone", () => {
   it("51 removed files: 50 on the first run, 1 on the second, 0 on the third", async () => {
     const old = new Date(Date.now() - 2 * HOUR);
