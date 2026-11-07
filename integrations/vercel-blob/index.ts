@@ -160,11 +160,11 @@ export class VercelBlobStorageService implements StorageService {
   }
 
   readRange(pathname: string, offset: number, length: number, options: StorageGetOptions = {}): Promise<Uint8Array | null> {
-    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1) {
-      throw new RangeError("Storage range requires a nonnegative safe integer offset and a positive safe integer length.");
+    const requestedEnd = offset + (length - 1);
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1 || !Number.isSafeInteger(requestedEnd)) {
+      throw new RangeError("Storage range requires a nonnegative safe integer offset, a positive safe integer length and a safe integer end.");
     }
     return withSdkSignal(options.signal, async (abortSignal) => {
-      const requestedEnd = offset + length - 1;
       const result = await get(pathname, {
         access: "private",
         token: this.token(),
@@ -177,7 +177,7 @@ export class VercelBlobStorageService implements StorageService {
 
       // The SDK reports 206 as 200; only Content-Range establishes which bytes
       // this body contains. A truncated range is valid only at the file's end.
-      const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(result.headers.get("content-range") ?? "");
+      const match = /^bytes (\d+)-(\d+)\/(\d+)$/i.exec(result.headers.get("content-range") ?? "");
       const start = Number(match?.[1]);
       const end = Number(match?.[2]);
       const total = Number(match?.[3]);

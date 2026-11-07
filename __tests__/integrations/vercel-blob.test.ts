@@ -217,6 +217,7 @@ describe("VercelBlobStorageService.readRange", () => {
     { offset: Infinity, length: 4 },
     { offset: -Infinity, length: 4 },
     { offset: Number.MAX_SAFE_INTEGER + 1, length: 4 },
+    { offset: Number.MAX_SAFE_INTEGER, length: 2 },
     { offset: 0, length: 0 },
     { offset: 0, length: -1 },
     { offset: 0, length: 1.5 },
@@ -233,6 +234,7 @@ describe("VercelBlobStorageService.readRange", () => {
   it.each([
     { offset: 0, range: "bytes=0-3", contentRange: "bytes 0-3/128" },
     { offset: 100, range: "bytes=100-103", contentRange: "bytes 100-103/128" },
+    { offset: 100, range: "bytes=100-103", contentRange: "Bytes 100-103/128" },
   ])("requests the exact range at $offset and returns only its bytes across chunks", async ({ offset, range, contentRange }) => {
     const cancel = vi.fn();
     const stream = new ReadableStream<Uint8Array>({

@@ -274,14 +274,12 @@ class Movie {
       return;
     }
     const item = this.child(list, locationIndex);
-    const data = item && this.child(item, DATA);
-    return data ? this.dataValue(data) : undefined;
+    return item ? this.locationValue(item) : undefined;
   }
 
   xyzValue(xyz: Box): string | undefined {
     if (this.isNestedData(xyz)) {
-      const data = this.child(xyz, DATA);
-      return data ? this.dataValue(data, true) : undefined;
+      return this.locationValue(xyz, true);
     }
     return this.internationalText(xyz.payload, xyz.end);
   }
@@ -290,17 +288,27 @@ class Movie {
     return box.end - box.payload >= 8 && this.view.getUint32(box.payload + 4) === DATA;
   }
 
-  private dataValue(data: Box, allowInternationalText = false): string {
-    this.requireBytes(data, 8, "data");
-    if (this.view.getUint32(data.payload) !== 1) {
+  private locationValue(item: Box, allowInternationalText = false): string | undefined {
+    let hasData = false;
+    for (const data of this.children(item)) {
+      if (data.type !== DATA) {
+        continue;
+      }
+      hasData = true;
+      this.requireBytes(data, 8, "data");
+      if (this.view.getUint32(data.payload) !== 1) {
+        continue;
+      }
+      const start = data.payload + 8;
+      // ©xyz writers use either UTF-8 directly or wrap its length/language text.
+      if (allowInternationalText && start < data.end && this.bytes[start] !== 0x2b && this.bytes[start] !== 0x2d) {
+        return this.internationalText(start, data.end);
+      }
+      return this.utf8(start, data.end);
+    }
+    if (hasData) {
       throw new AbsentLocation("Unsupported location data encoding: expected UTF-8 type 1");
     }
-    const start = data.payload + 8;
-    // ©xyz writers use either UTF-8 directly or wrap its length/language text.
-    if (allowInternationalText && start < data.end && this.bytes[start] !== 0x2b && this.bytes[start] !== 0x2d) {
-      return this.internationalText(start, data.end);
-    }
-    return this.utf8(start, data.end);
   }
 
   private internationalText(start: number, end: number): string {
@@ -375,8 +383,7 @@ function parseMovie(bytes: Uint8Array, maxDepth: number): VideoLocationResult {
 }
 
 function parseIso6709(value: string): VideoLocationResult {
-  // (?![\s\S]) is an absolute end assertion: `$` also permits a final newline.
-  const match = /^([+-]\d{1,2}(?:\.\d+)?)([+-]\d{1,3}(?:\.\d+)?)(?:[+-]\d+(?:\.\d+)?)?(?:CRS[A-Za-z0-9_]+)?\/?(?![\s\S])/.exec(value);
+  const match = /^([+-]\d{1,2}(?:\.\d+)?)([+-]\d{1,3}(?:\.\d+)?)(?:[+-]\d+(?:\.\d+)?)?(?:CRS[A-Za-z0-9_]+)?\/?$/.exec(value);
   if (!match) {
     return { status: "absent", reason: "Invalid ISO 6709 location coordinates" };
   }
@@ -384,6 +391,9 @@ function parseIso6709(value: string): VideoLocationResult {
   const longitude = Number(match[2]);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
     return { status: "absent", reason: "Location coordinates out of range" };
+  }
+  if (latitude === 0 && longitude === 0) {
+    return { status: "absent", reason: "Zero location coordinates" };
   }
   return { status: "found", coordinates: { latitude, longitude } };
 }

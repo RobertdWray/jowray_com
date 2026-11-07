@@ -51,14 +51,21 @@ function mdta(value = LOCATION, options: {
   keys?: Array<{ name: string; namespace?: string }>;
   itemIndex?: number;
   indicator?: number;
+  dataBoxes?: Uint8Array[];
 } = {}): Buffer {
   const entries = (options.keys ?? [{ name: LOCATION_KEY }]).map(({ name, namespace = "mdta" }) => box(namespace, text(name)));
   return box("meta",
     ...(options.fullBox ? [uint32(0)] : []),
     box("hdlr", uint32(0), uint32(0), text(options.handler ?? "mdta"), Buffer.alloc(12)),
     box("keys", uint32(0), uint32(entries.length), ...entries),
-    box("ilst", box(options.itemIndex ?? 1, data(text(value), options.indicator))),
+    box("ilst", box(options.itemIndex ?? 1, ...(options.dataBoxes ?? [data(text(value), options.indicator)]))),
   );
+}
+
+function locationDataMovie(layout: "mdta" | "©xyz", ...dataBoxes: Uint8Array[]): Buffer {
+  return box("moov", layout === "mdta"
+    ? mdta(LOCATION, { dataBoxes })
+    : box("udta", box("©xyz", ...dataBoxes)));
 }
 
 /** Real byte slices with a ledger: accidental media reads and exceeded budgets are observable. */
@@ -315,6 +322,38 @@ describe("metadata lookup", () => {
     expectAbsent(await parse(box("moov", mdta(LOCATION, { indicator: 21 }))), /encoding|type|UTF/i);
   });
 
+  it.each(["mdta", "©xyz"] as const)("uses the first UTF-8 data child after unsupported encodings in %s", async (layout) => {
+    expectFound(await parse(locationDataMovie(layout,
+      data(text("+10+020/"), 21),
+      data(text(LOCATION)),
+      data(text("+30+040/")),
+    )));
+  });
+
+  it("reads wrapped international text in the first supported ©xyz data child", async () => {
+    expectFound(await parse(locationDataMovie("©xyz",
+      data(text("+10+020/"), 21), data(internationalText(LOCATION)),
+    )));
+  });
+
+  it.each(["mdta", "©xyz"] as const)("reports unsupported encoding when no %s data child is UTF-8", async (layout) => {
+    expect(await parse(locationDataMovie(layout, data(text(LOCATION), 21), data(text(LOCATION), 2)))).toEqual({
+      status: "absent", reason: "Unsupported location data encoding: expected UTF-8 type 1",
+    });
+  });
+
+  it.each(["mdta", "©xyz"] as const)("does not skip an invalid first UTF-8 location in %s", async (layout) => {
+    expectAbsent(await parse(locationDataMovie(layout, data(text("+91-074/")), data(text(LOCATION)))), /range/i);
+  });
+
+  it.each(["mdta", "©xyz"] as const)("rejects a truncated data payload before a supported %s value", async (layout) => {
+    expectAbsent(await parse(locationDataMovie(layout, box("data", uint32(21)), data(text(LOCATION)))), /malformed.*truncated data payload/i);
+  });
+
+  it.each(["mdta", "©xyz"] as const)("still validates data box bounds after a supported %s value", async (layout) => {
+    expectAbsent(await parse(locationDataMovie(layout, data(text(LOCATION)), uint32(99), text("data"))), /malformed.*enclosing bounds/i);
+  });
+
   it.each([
     { name: "key size below its header", change: (b: Buffer) => b.writeUInt32BE(4, b.indexOf("keys") + 12) },
     { name: "key count above available entries", change: (b: Buffer) => b.writeUInt32BE(100, b.indexOf("keys") + 8) },
@@ -372,9 +411,20 @@ describe("ISO 6709 decimal degrees", () => {
     { value: "-1.5+2.25/", expected: { latitude: -1.5, longitude: 2.25 } },
     { value: "+90+180/", expected: { latitude: 90, longitude: 180 } },
     { value: "-90-180/", expected: { latitude: -90, longitude: -180 } },
-    { value: "+0+0/", expected: { latitude: 0, longitude: 0 } },
+    { value: "+0+1/", expected: { latitude: 0, longitude: 1 } },
+    { value: "+0.0001+0/", expected: { latitude: 0.0001, longitude: 0 } },
+    { value: "-0+5/", expected: { latitude: -0, longitude: 5 } },
   ])("parses $value", async ({ value, expected }) => {
     expectFound(await parse(box("moov", mdta(value))), expected);
+  });
+
+  it.each([
+    "+0+0/", "-0+0/", "+0-0/", "-0-0/",
+    "+00.0000+000.0000/", "-00.000000-000.000000/", "+00-000", "+0+0+10CRSWGS_84/",
+  ])("reports zero location coordinates as absent for %s", async (value) => {
+    const expected = { status: "absent", reason: "Zero location coordinates" };
+    expect(await parse(box("moov", mdta(value)))).toEqual(expected);
+    expect(await parse(box("moov", xyz(value)))).toEqual(expected);
   });
 
   it.each(["+90.0001+000/", "-90.1+000/", "+10+180.0001/", "+10-180.1/"])("reports out-of-range %s", async (value) => {
