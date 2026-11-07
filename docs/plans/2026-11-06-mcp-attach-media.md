@@ -173,11 +173,12 @@ Columns: step · owner · status · branch @ head SHA · Astra run directory · 
 | Step | Owner | Status | Branch @ SHA | Astra run dir | PR | Evidence | Open decisions | Next action |
 |---|---|---|---|---|---|---|---|---|
 | S0.1 F1: commit the canonical plan in W1; file the issues (Appendix A, B) | orchestrator | ✅ 2026-11-06 | `mcp-attach/pr1` @ F1 commit (see `git log`) | — | — | Appendix A → [#70](https://github.com/RobertdWray/jowray_com/issues/70) (`bug`, `severity:medium`, label created); Appendix B → [#71](https://github.com/RobertdWray/jowray_com/issues/71) (`enhancement`) | Rob OK'd the names verbatim | — |
-| S0.2 W1 + `npm ci` + baseline checks | orchestrator | in progress | W1 `/Users/rob/Documents/active_work/jowray_wt_mcp_attach` from `f909f7b` (upstream unset) | — | — | baseline SHA `f909f7b`; `npm ci` ok (Node v26.13.0) | — | record the three baseline checks |
-| S0.3 presign spike + Cowork reachability | orchestrator + Rob (Cowork) | todo | — | — | — | `docs/plans/evidence/2026-11-mcp-attach/s03-spike.md` | header set | — |
-| S0.4 Neon schema-only E2E branch | Rob or orchestrator (API) | todo | — | — | — | branch id in `README.md` | — | — |
-| S0.5 iPhone fixture clip (≈1 s, Location on) | Rob | todo | — | — | — | fixture README | — | gates F3 |
-| PR 1: init → P1-A ∥ P1-B → combined checks → citation refresh → publish → TCR → buckets → repairs → merge | orchestrator / Astra / Fable / Rob | todo | | | | | | |
+| S0.2 W1 + `npm ci` + baseline checks | orchestrator | ✅ 2026-11-07 | W1 `/Users/rob/Documents/active_work/jowray_wt_mcp_attach` from `f909f7b` (upstream unset) | — | — | baseline `f909f7b`: validate ✅, test:run 86 files / 1653 tests ✅ (5 integration files skipped locally), build:offline ✅ | — | — |
+| S0.3 presign spike + Cowork reachability | orchestrator + Rob (Cowork) | spike ✅ 2026-11-07; Cowork check open (Rob, later) | W1 untracked: `scripts/e2e/mcp-attach/spike-presign.ts`, `docs/plans/evidence/2026-11-mcp-attach/s03-spike.md` (commit in F2) | — | — | `s03-spike.md`: host `vercel.com`; `content-type` alone works; **plain `content-type` NOT enforced, `x-content-type` is (403)** → return both headers; write-once 400; oversize 403; curl -K ok; 0 blobs left | Cowork `curl -sI` before/after allowlist (Rob) | carry both files into PR 2 F2 |
+| S0.4 Neon schema-only E2E branch | orchestrator (Rob, 2026-11-06: use the Neon CLI or MCP) | todo (when PR 2 is ready) | — | — | — | branch id in `README.md` | — | create via Neon API/connector |
+| S0.5 iPhone fixture clip (≈1 s, Location on) | Rob | todo (Rob: later) | — | — | — | fixture README | — | gates F3 |
+| PR 1: init → P1-A ∥ P1-B (+ P1-C docs) → combined checks → citation refresh → publish → TCR → buckets → repairs → merge | orchestrator / Astra / Fable / Rob | ✅ **merged 2026-11-07 08:44Z as `59942b2`** (Rob's final-review process: one TCR round, buckets, repair `c8255ff`, Fable regression review NO SERIOUS REGRESSIONS, orchestrator approval, `ci` pass incl. 8 real-Postgres share-draft tests) | `astra-work/20261107T030729Z-00b82d37/integration` @ `c8255ff` | `/Users/rob/.local/state/astra-work/888f1417a12a/20261107T030729Z-00b82d37` | [#72](https://github.com/RobertdWray/jowray_com/pull/72) | combined checks c8255ff: validate ✅, 87 files/1712 ✅, build:offline ✅; bucket-3 comment 6704457024; follow-ups #73 (CI deadlock), #74 (F1), #75 (F5); #71 closed | Rob: connector refresh + approval on `share_draft`, skill upload | release checks |
+| PR 2 F2 foundation | orchestrator | ✅ rebased onto `59942b2` (`ec28c29`) + plan snapshot commit | `mcp-attach/pr2` | — | — | validate/test/build to re-run before init | — | Astra init for PR 2 |
 | PR 2: F2 → init → wave 1 (A1 ∥ A2) → wave 2 (A3 ∥ A4) → wave 3 (A5 ∥ A6) → combined checks → E2E photo → citation refresh → publish → TCR → repairs → merge | orchestrator / Astra / Fable / Rob | todo | | | | | | |
 | PR 3: F3 → init → wave 1 (A1 ∥ A2) → wave 2 (A3 ∥ A4) → combined checks → E2E video → citation refresh → publish → TCR → repairs → merge | orchestrator / Astra / Fable / Rob | todo | | | | | | |
 | Release checks per merge (§ Release) | orchestrator | todo | | | | `release.md` | | |
@@ -235,6 +236,7 @@ Columns: step · owner · status · branch @ head SHA · Astra run directory · 
      - **Precondition:** the caller holds the memory lock and the memory is still a DRAFT.
      - **Why it's race-free without the outbound lock:** every alert creator skips a DRAFT [C7], and the row commits together with the status.
      - **Doc comment:** must say why this is the one row creation outside the outbound lock [C40].
+     - **Fail closed (TCR round 1, #4; 2026-11-07):** if a row already exists and is not the terminal `admin_shared` skip (any status, including SENT or SENDING), the helper throws, so the whole share rolls back and the tool answers `internal { eventId }`. No legitimate path creates such a row for a DRAFT; this surfaces a broken invariant instead of committing a share that could still alert.
 - **Returns** `{ ok: true, status, memoryVersion }`. Log `{ action: "admin_draft_shared", memoryId, status }` (ids only [C10]).
 - **Confirmations:** drafts never get one (source ≠ `WEB_UPLOAD`) [C7]. The cron still skips them, so the link Rob sent is never rotated.
 
@@ -627,7 +629,7 @@ Repo permalinks are pinned to `84f7d60`. Web quotes were fetched live on 2026-11
 ### [C2] — Share stamps consent
 - **Relevant File(s):** `features/admin/share-draft.ts`
 - **Change Summary:** `share_draft` writes the same consent stamp as the sender's Share (R6).
-- **Source URL:** https://github.com/RobertdWray/jowray_com/blob/84f7d60/features/memories/claim.ts#L170-L172
+- **Source URL:** https://github.com/RobertdWray/jowray_com/blob/84f7d60/features/memories/claim.ts#L170-L174 ; https://github.com/RobertdWray/jowray_com/blob/84f7d60/features/memories/claim.ts#L232 (refreshed 2026-11-07)
 - **Verbatim Quote:**
   > "`share` on a DRAFT (a memory the family admin saved on this person's behalf) is the act of sharing: the memory becomes PENDING and `consentedAt` / `consentVersion` are stamped then, under the same lock."
   > `const consent = sharing ? { consentedAt: new Date(), consentVersion: getMemorialEnv().CONSENT_VERSION } : null;`
@@ -642,6 +644,7 @@ Repo permalinks are pinned to `84f7d60`. Web quotes were fetched live on 2026-11
   > "allowedContentTypes rejects requests whose Content-Type header is not in the list." … "maximumSizeInBytes rejects requests larger than the configured size."
   > "webhookPublicKey | No | The public key used to verify the onUploadCompleted callback. Defaults to process.env.BLOB_WEBHOOK_PUBLIC_KEY."
 - **Justification:** It supports D1 (a CLI upload by URL), D3 (CDN-enforced type and size) and D5 (a callback needs a new key).
+- **Correction (S0.3 spike, 2026-11-07, `docs/plans/evidence/2026-11-mcp-attach/s03-spike.md`):** the CDN checks `allowedContentTypes` against the SDK's `x-content-type` request header, not `Content-Type`; a wrong `content-type` alone was accepted (200) and the blob typed from the pathname extension. `request_upload` therefore returns both `content-type` and `x-content-type`.
 
 ### [C4] — Multipart above 100 MB
 - **Relevant File(s):** tool descriptions in `app/api/mcp/tools.ts`; follow-up F2
@@ -654,7 +657,7 @@ Repo permalinks are pinned to `84f7d60`. Web quotes were fetched live on 2026-11
 ### [C5] — Project rules
 - **Relevant File(s):** all PRs (process); `docs/plans/2026-11-06-mcp-attach-media.md`
 - **Change Summary:** Branch + PR per change; red-first tests on the critical paths; the three checks.
-- **Source URL:** https://github.com/RobertdWray/jowray_com/blob/84f7d60/AGENTS.md#rules-every-agent-follows
+- **Source URL:** https://github.com/RobertdWray/jowray_com/blob/84f7d60/AGENTS.md#rules-every-agent-follows ; https://github.com/RobertdWray/jowray_com/blob/84f7d60/AGENTS.md#checks (refreshed 2026-11-07)
 - **Verbatim Quote:**
   > "Every change goes on a branch with a PR." … "TDD for critical paths (upload tickets, finalize, confirmation, cron)."
   > "`npm run validate` (= `next typegen && tsc --noEmit`, then `eslint`), `npm run test:run`, `npm run build:offline`"
@@ -681,7 +684,7 @@ Repo permalinks are pinned to `84f7d60`. Web quotes were fetched live on 2026-11
 ### [C8] — Skill rules to rewrite
 - **Relevant File(s):** `docs/skills/jowray-draft-memory/SKILL.md`
 - **Change Summary:** The Share rules (PR 1) and the "no file upload" sentence (PR 2).
-- **Source URL:** https://github.com/RobertdWray/jowray_com/blob/84f7d60/docs/skills/jowray-draft-memory/SKILL.md#L42-L46
+- **Source URL:** https://github.com/RobertdWray/jowray_com/blob/84f7d60/docs/skills/jowray-draft-memory/SKILL.md#L42-L46 ; …/SKILL.md#L169 (refreshed 2026-11-07)
 - **Verbatim Quote:**
   > "**Nobody presses Share.** Only the sender does, on their own claim page."
   > "**Rob never presses Share, and never edits a draft on its page.** The only button on a draft's page is Share, and Share is the sender's consent."
@@ -822,6 +825,7 @@ Repo permalinks are pinned to `84f7d60`. Web quotes were fetched live on 2026-11
 - **Verbatim Quote:**
   > "Do not open a second transaction inside the helper, because calling db.transaction(...) again inside a callback does not nest: the inner call is a separate transaction that commits or rolls back on its own, and the outer one cannot roll it back."
 - **Justification:** It's the rule behind D12's "one owner" design.
+- **Correction (PR #72 research, 2026-11-07):** this quote is from the Prisma ORM 8 docs. On the installed Prisma 7.10 (since 7.5.0), `tx.$transaction` inside a transaction nests as a savepoint (confirmed in the runtime and the captured SQL `SAVEPOINT prisma_sp_0`). D12's rule still stands for clarity and lock order: helpers take `tx`, only top-level features open a transaction, and a helper must never call `getDb()` inside one (that query would run outside the transaction and block on the held row lock until `P2028`).
 
 ### [C25] — Approving doesn't publish
 - **Relevant File(s):** `app/api/mcp/tools.ts` (`share_draft` description), `SKILL.md`, `docs/features/mcp.md`
@@ -944,7 +948,7 @@ Repo permalinks are pinned to `84f7d60`. Web quotes were fetched live on 2026-11
 ### [C39] — MCP feature doc approvals
 - **Relevant File(s):** `docs/features/mcp.md`
 - **Change Summary:** The tool count, approvals, upload flow and R4a.
-- **Source URL:** https://github.com/RobertdWray/jowray_com/blob/84f7d60/docs/features/mcp.md
+- **Source URL:** https://github.com/RobertdWray/jowray_com/blob/f909f7b/docs/features/mcp.md#L16 (re-pinned 2026-11-07: PR #69 changed the file; the quoted sentence is unchanged, its suffix now reads "it writes cache, quota and throttle rows")
 - **Verbatim Quote:**
   > "In Claude, Rob sets **requires approval** on the six tools that write, so Claude asks before each call: the five annotated `destructiveHint: true` and `draft_memory`."
 - **Justification:** `share_draft` makes seven, and the doc must say so.
