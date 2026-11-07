@@ -1,0 +1,143 @@
+{
+ "startedAt": "2026-11-07T16:38:46Z",
+ "checks": {
+  "tools_list_12": {
+   "pass": true,
+   "detail": {
+    "count": 12
+   }
+  },
+  "videos_ready": {
+   "pass": true,
+   "detail": {
+    "location-mdta.mov": {
+     "put": "200",
+     "status": "READY",
+     "gps": "found",
+     "memoryType": "VIDEO",
+     "mediaId": "44b8f38a-ac66-4021-9b59-0401e5ca2c7e"
+    },
+    "location-xyz.mp4": {
+     "put": "200",
+     "status": "READY",
+     "gps": "found",
+     "memoryType": "VIDEO",
+     "mediaId": "dc8036bb-c028-41ed-9123-3d748ec540ca"
+    },
+    "no-location.mov": {
+     "put": "200",
+     "status": "READY",
+     "gps": "none",
+     "memoryType": "VIDEO",
+     "mediaId": "f5a9c889-04a9-4114-a5d7-e4880b1e99cc"
+    }
+   }
+  },
+  "video_gps_found_found_none": {
+   "pass": true,
+   "detail": {
+    "location-mdta.mov": "found",
+    "location-xyz.mp4": "found",
+    "no-location.mov": "none"
+   }
+  },
+  "suggest_places_videos_stub_labels": {
+   "pass": true,
+   "detail": {
+    "videoRows": 2,
+    "points": [
+     [
+      40.69,
+      -74.04
+     ],
+     [
+      40.69,
+      -74.04
+     ]
+    ]
+   }
+  },
+  "cron_h_backfills_video_gps": {
+   "pass": true,
+   "detail": {
+    "cron": 200,
+    "lat2": 40.69,
+    "lon2": -74.04
+   }
+  },
+  "memory_type_video_and_draft_silent": {
+   "pass": true,
+   "detail": {
+    "type": "VIDEO",
+    "status": "DRAFT",
+    "emails": []
+   }
+  },
+  "points_rounded_liberty": {
+   "pass": true,
+   "detail": {
+    "points": [
+     [
+      40.69,
+      -74.04
+     ],
+     [
+      40.69,
+      -74.04
+     ],
+     [
+      null,
+      null
+     ]
+    ]
+   }
+  },
+  "dev_log_has_no_presign_signature": {
+   "pass": true
+  }
+ },
+ "memories": {
+  "V": "38f982d0-224e-40f0-bcfe-3e14de4a6abc"
+ },
+ "readbackV": {
+  "media": [
+   {
+    "id": "44b8f38a-ac66-4021-9b59-0401e5ca2c7e",
+    "status": "READY",
+    "mimeType": "video/quicktime",
+    "coordinates": {
+     "latitude": 40.69,
+     "longitude": -74.04
+    }
+   },
+   {
+    "id": "dc8036bb-c028-41ed-9123-3d748ec540ca",
+    "status": "READY",
+    "mimeType": "video/mp4",
+    "coordinates": {
+     "latitude": 40.69,
+     "longitude": -74.04
+    }
+   },
+   {
+    "id": "f5a9c889-04a9-4114-a5d7-e4880b1e99cc",
+    "status": "READY",
+    "mimeType": "video/quicktime",
+    "coordinates": null
+   }
+  ]
+ },
+ "cleanup": {
+  "38f982d0-224e-40f0-bcfe-3e14de4a6abc": {
+   "deleted": 3,
+   "remaining": 0
+  }
+ },
+ "finishedAt": "2026-11-07T16:38:58Z",
+ "branchHead": "a37cfa1 (PR #82 head after TCR round-1 fixes)",
+ "notes": [
+  "Re-run on a37cfa1 after the TCR fixes (zero coordinates absent, first UTF-8 data child, range guard, case-insensitive Content-Range): 8/8. The earlier 8/8 on f6a773a is in e2e-video-results-f6a773a.json with its notes (a driver field-name bug in its first attempt; three PR 2 leftover videos with deleted blobs \u2192 failed/attempt 1 per A21).",
+  "Fixtures are the committed synthetic ones (Rob, 2026-11-07). Places provider: stub.",
+  "In this run cron step (h) again met the three PR 2 leftover videos (deleted blobs): OriginalMissingError, outcome failed, attempt 2, not stamped; the counter advances toward the cap of 3 (A21)."
+ ]
+}

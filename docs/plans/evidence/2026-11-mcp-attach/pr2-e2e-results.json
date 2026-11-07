@@ -1,0 +1,179 @@
+{
+ "plan": "docs/plans/2026-11-06-mcp-attach-media.md \u00a711.2",
+ "head": "06b3f3e (PR 2 after the TCR repairs; re-run)",
+ "environment": {
+  "server": "local next dev, port 3311",
+  "database": "Neon branch mcp-attach-e2e-20261107 (branch id kept out of the public repo), data tables truncated with Rob's OK, all migrations applied",
+  "outbound": "OUTBOUND_ENABLED=false, allowlist empty, ADMIN_ALERT_EMAILS synthetic",
+  "places": "stub",
+  "secrets": "throwaway MCP/cron/admin secrets; Blob token from the main checkout's .env (never printed)",
+  "blobPrefix": "dev/originals/<testMemoryId>/"
+ },
+ "fixtures": {
+  "liberty.heic": "__tests__/fixtures/gps.heic (Liberty point)",
+  "liberty.jpg": "ffmpeg testsrc + exiftool GPS (Liberty point)",
+  "clip.mov": "ffmpeg testsrc, 1 s, video/quicktime, no location",
+  "lost.jpg": "ffmpeg testsrc2"
+ },
+ "startedAt": "2026-11-07T13:20:08Z",
+ "finishedAt": "2026-11-07T13:20:30Z",
+ "memories": {
+  "A": "19683241-0dcd-410a-9e1a-4e819dae8a9a",
+  "B": "7da11606-47ef-45d5-b67d-df98b04fc57a",
+  "C": "50af2de0-cf89-49d5-aa6f-037fe96e24e3"
+ },
+ "checks": {
+  "tools_list_12": {
+   "pass": true,
+   "detail": {
+    "count": 12
+   }
+  },
+  "attach_three_files_ready": {
+   "pass": true,
+   "detail": {
+    "liberty.heic": {
+     "request": "PENDING",
+     "put": "200",
+     "finalize": "READY",
+     "gps": "found",
+     "memoryType": "PHOTO",
+     "mediaId": "6e326aa4-932f-4865-8abf-3bf01fca136f"
+    },
+    "liberty.jpg": {
+     "request": "PENDING",
+     "put": "200",
+     "finalize": "READY",
+     "gps": "found",
+     "memoryType": "PHOTO",
+     "mediaId": "b3a0ce2a-b373-46b7-a48c-c96b39fb17ab"
+    },
+    "clip.mov": {
+     "request": "PENDING",
+     "put": "200",
+     "finalize": "READY",
+     "gps": "not_applicable",
+     "memoryType": "VIDEO",
+     "mediaId": "e4fd3caa-dfd4-4c42-9745-8cfe1981980a"
+    }
+   }
+  },
+  "memory_type_video": {
+   "pass": true,
+   "detail": {
+    "memoryType": "VIDEO"
+   }
+  },
+  "gps_photos_found_video_not_applicable": {
+   "pass": true,
+   "detail": {
+    "liberty.heic": "found",
+    "liberty.jpg": "found",
+    "clip.mov": "not_applicable"
+   }
+  },
+  "suggest_places_stub_labels": {
+   "pass": true,
+   "detail": {
+    "photos": 2,
+    "pending": 0,
+    "points": [
+     [
+      40.69,
+      -74.04
+     ],
+     [
+      40.69,
+      -74.04
+     ]
+    ]
+   }
+  },
+  "repeat_request_already_attached": {
+   "pass": true,
+   "detail": {
+    "status": "READY",
+    "alreadyAttached": true
+   }
+  },
+  "cron_completes_lost_response": {
+   "pass": true,
+   "detail": {
+    "cron": 200,
+    "row": "READY",
+    "checksumEqualsDeclared": true,
+    "adminRevisionsAddingIt": 1,
+    "finalizeAfter": "READY"
+   }
+  },
+  "draft_unchanged_no_email": {
+   "pass": true,
+   "detail": {
+    "status": "DRAFT",
+    "consentedAt": false,
+    "emails": []
+   }
+  },
+  "approved_attach_keeps_status_and_consent": {
+   "pass": true,
+   "detail": {
+    "share": "APPROVED",
+    "finalize": "READY",
+    "status": "APPROVED",
+    "consentedAt": true,
+    "emails": [
+     {
+      "type": "ADMIN_NEW_MEMORY",
+      "status": "SKIPPED",
+      "errorMessage": "admin_shared"
+     }
+    ]
+   }
+  },
+  "approved_alert_terminal_admin_shared": {
+   "pass": true,
+   "detail": {
+    "emails": [
+     {
+      "type": "ADMIN_NEW_MEMORY",
+      "status": "SKIPPED",
+      "errorMessage": "admin_shared"
+     }
+    ]
+   }
+  },
+  "approved_alert_still_terminal_after_cron": {
+   "pass": true,
+   "detail": {
+    "emails": [
+     {
+      "type": "ADMIN_NEW_MEMORY",
+      "status": "SKIPPED",
+      "errorMessage": "admin_shared"
+     }
+    ]
+   }
+  },
+  "not_ready_refused_nothing_written": {
+   "pass": true,
+   "detail": {
+    "code": "not_ready",
+    "media": 0
+   }
+  },
+  "dev_log_has_no_presign_signature": {
+   "pass": true,
+   "detail": {
+    "occurrences": 0
+   }
+  }
+ },
+ "notRun": [
+  "Adding a file through the claim page in a browser after share_draft (plan \u00a711.2 bullet 7): covered by PR #72's real-Postgres lifecycle test (__tests__/integration/share-draft.test.ts, run in CI); here the APPROVED memory's alert row stayed SKIPPED/admin_shared through a connector attach and a cron run",
+  "Video location (PR 3)"
+ ],
+ "previousRun": {
+  "head": "3900a0b",
+  "result": "13/13 (one check re-evaluated after a driver key fix)"
+ }
+}
