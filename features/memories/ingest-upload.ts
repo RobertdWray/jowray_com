@@ -2,7 +2,7 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 
-import { extractPhotoGps } from "@/features/media/extract-photo-gps";
+import { extractPhotoGps, GPS_READ_DEADLINE_MS } from "@/features/media/extract-photo-gps";
 import { confirmMemory } from "@/features/memories/confirm";
 import { deriveMedia } from "@/features/memories/derive-media";
 import { lockMemory } from "@/features/memories/lock";
@@ -317,6 +317,8 @@ export type FinalizeResult =
  * Follow-up work for a committed READY file. A caller's absolute deadline
  * leaves 3 s for the response/flush; derive needs at least 5 s, otherwise
  * cron step (g) backfills it. Choose its budget after the checksum finishes.
+ * GPS chooses its budget when its own task starts; under 1 s, cron step (h)
+ * backfills the undecided photo instead.
  */
 export function scheduleReadyFollowUps({ mediaId, mimeType, sizeBytes, deadlineAt }: {
   mediaId: string;
@@ -340,7 +342,14 @@ export function scheduleReadyFollowUps({ mediaId, mimeType, sizeBytes, deadlineA
   // a kind), so a video or a voice note schedules nothing (final review, item 4); cron step (h) retries.
   if (mimeType.startsWith("image/")) {
     afterWithFlush("finalize.photo_gps", async () => {
-      await extractPhotoGps({ mediaId });
+      if (deadlineAt === undefined) {
+        await extractPhotoGps({ mediaId });
+        return;
+      }
+      const deadlineMs = Math.min(GPS_READ_DEADLINE_MS, deadlineAt - Date.now() - 3_000);
+      if (deadlineMs >= 1_000) {
+        await extractPhotoGps({ mediaId, deadlineMs });
+      }
     });
   }
 }
