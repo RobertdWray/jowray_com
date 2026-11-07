@@ -21,7 +21,7 @@
 | Production deploy | Vercel status `success` for `4f0a9a2` |
 | Migration | `20261107000000_media_admin_upload` finished in production (`_prisma_migrations`) |
 | `tools/list` against `https://www.jowray.com/api/mcp` | **12 tools**: the PR 1 list plus `request_upload` and `finalize_upload`; both have annotations `{ destructiveHint: false, idempotentHint: true }` |
-| E2E | **13/13** on the schema-only Neon branch: tool count, three READY attachments and VIDEO type, photo GPS and stub place labels, dedupe, cron recovery with hash and one ADMIN revision, unchanged draft/consent and no email, APPROVED attach and terminal alert suppression through cron, `not_ready` refusal and no presign signature in the dev log; [results](pr2-e2e-results.json), [cleanup](pr2-e2e-cleanup.json) (5 blobs deleted, 0 remaining across the three test memories) |
+| E2E | **13/13** on the E2E Neon branch (copied from `dev`, data tables truncated; no copied rows): tool count, three READY attachments and VIDEO type, photo GPS and stub place labels, dedupe, cron recovery with hash and one ADMIN revision, unchanged draft/consent and no email, APPROVED attach and terminal alert suppression through cron, `not_ready` refusal and no presign signature in the dev log; [results](pr2-e2e-results.json), [cleanup](pr2-e2e-cleanup.json) (5 blobs deleted, 0 remaining across the three test memories) |
 | E2E limits | The claim-page browser upload after `share_draft` was not run here; the results point to PR #72's real-Postgres lifecycle test in CI. Video location belongs to PR 3. |
 | Rob | add `vercel.com` to the allowed domains, then run the Cowork `curl -sI` check; refresh the connector (upload-tool approvals at his choice); upload the skill; run the production smoke |
 | Follow-ups filed | [#77](https://github.com/RobertdWray/jowray_com/issues/77), [#78](https://github.com/RobertdWray/jowray_com/issues/78), [#79](https://github.com/RobertdWray/jowray_com/issues/79), [#80](https://github.com/RobertdWray/jowray_com/issues/80), [#81](https://github.com/RobertdWray/jowray_com/issues/81) |
@@ -31,7 +31,7 @@
 | Check | Result |
 |---|---|
 | Merge | 2026-11-07 16:52Z, merge commit `e7601b6` (head `3f3827f`) |
-| First `ci` run | `a37cfa1` failed real-Postgres A11 in `attach-media.test.ts`: the storage fake had no `readRange` and still expected the photo-only `gps`. Reproduced on local Postgres 18 (159/160); repair `3f3827f` passed (160/160). |
+| `ci` failures before the fix | `f6a773a` and `a37cfa1` failed real-Postgres A11 in `attach-media.test.ts`: the storage fake had no `readRange` and still expected the photo-only `gps`. Reproduced on local Postgres 18 (159/160); repair `3f3827f` passed (160/160). |
 | `ci` on the PR head | pass on `3f3827f` |
 | Production deploy | Vercel status `success` for `e7601b6` |
 | Production MCP | `tools/list`: **12 tools**; `suggest_places` is titled "Suggest places from photos and videos"; an unauthenticated POST gets 401 |
