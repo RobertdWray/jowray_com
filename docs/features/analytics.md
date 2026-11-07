@@ -1,6 +1,6 @@
 # Vercel Web Analytics
 
-Page-view analytics for Rob in the Vercel project dashboard. `SiteAnalytics` in `app/layout.tsx` covers every page, with URL scrubbing and event dropping to protect private claim links.
+Page-view analytics for Rob in the Vercel project dashboard. `SiteAnalytics` in `app/layout.tsx` covers every page the root layout renders (not the root error page, `app/global-error.tsx`, which has its own `<html>`), with URL scrubbing and event dropping to protect private claim links.
 
 **Status:** [PR #62](https://github.com/RobertdWray/jowray_com/pull/62) delivered analytics (merged 2026-11-06 as `73ac034`); [PR #64](https://github.com/RobertdWray/jowray_com/pull/64) added protection for token-bearing unmatched routes (merged into #62 on 2026-11-06 as `bb4a2e2`). There is no feature plan; the PR descriptions are the record. Deployment evidence is limited: `/_vercel/insights/script.js` answered 200 at 2026-11-07 01:07 UTC (404 in PR #62); at 2026-11-07 02:29 UTC both it and the per-project path the pages loaded, `/57754c27654861f8/script.js`, answered 200 with identical bytes; intake payload not checked. Page views arriving and use with real data are not verified.
 
