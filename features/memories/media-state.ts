@@ -23,6 +23,22 @@ export async function visibleMediaIds(tx: Tx, memoryId: string): Promise<string[
 }
 
 /**
+ * Live READY files of a memory, in display order, optionally leaving one row
+ * out: the snapshot an admin upload's revision records (plan
+ * 2026-11-06-mcp-attach-media §8.3, D10). Unlike `visibleMediaIds` it filters
+ * on READY, so a PENDING → READY transition changes it. Run inside the
+ * transaction that holds `lockMemory`.
+ */
+export async function readyLiveMediaIds(tx: Tx, memoryId: string, excludeId?: string): Promise<string[]> {
+  const rows = await tx.media.findMany({
+    where: { memoryId, status: "READY", deletedAt: null, replacesMediaId: null, ...(excludeId !== undefined && { NOT: { id: excludeId } }) },
+    select: { id: true },
+    orderBy: [...LIVE_MEDIA_ORDER],
+  });
+  return rows.map((r) => r.id);
+}
+
+/**
  * Recompute `Memory.type` from the live READY media and the note (plan P8):
  * VIDEO > VOICE > PHOTO, TEXT with words, otherwise the provisional type is
  * kept (the invariants in claim.ts stop that state from being created).

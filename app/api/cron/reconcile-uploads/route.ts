@@ -51,6 +51,14 @@ const CHECKSUM_BATCH = 20;
 const RUN_DEADLINE_MS = 50_000;
 /** Step (b) stops starting new files after this. */
 const CHECKSUM_DEADLINE_MS = 40_000;
+/**
+ * Step (a): the most a single re-record may spend hashing a connector upload
+ * before READY (plan 2026-11-06-mcp-attach-media §8.3); a hash cut short leaves
+ * the row PENDING for the next run, never FAILED. The margin keeps the last item
+ * clear of the run's own deadline.
+ */
+const ADMIN_HASH_TIMEOUT_MS = 15_000;
+const ADMIN_HASH_MARGIN_MS = 5_000;
 /** Steps (e), (e2) and (e3) leave very new memories to the request path (finalize or completion may still be running). */
 const CONFIRM_MIN_AGE_MS = 30 * MINUTE_MS;
 /** Step (e3): sends of several memories whose receipt never went out; the lease check keeps it from racing an open browser. */
@@ -172,6 +180,8 @@ export async function GET(request: NextRequest): Promise<Response> {
     // deleted. Step (a0) repeats the delete for a while in case a request that began
     // before the token expired finishes after it.
     const outOfTime = (): boolean => Date.now() - now > RUN_DEADLINE_MS;
+    // Every recordMedia call gets one: only a connector upload (addedVia ADMIN) hashes inside it, and this bounds that read.
+    const recordSignal = (): AbortSignal => AbortSignal.timeout(Math.max(1, Math.min(ADMIN_HASH_TIMEOUT_MS, RUN_DEADLINE_MS - (Date.now() - now) - ADMIN_HASH_MARGIN_MS)));
 
     // (a0) Rows this environment retired in earlier runs ((a), (f2), or (f) with nothing
     // left to point at): delete their pathname again. A Blob request that started before
@@ -215,7 +225,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       // Each item in its own isolation scope: an identity set by a shared feature cannot leak into the next item.
       await Sentry.withIsolationScope(async () => {
         try {
-          const outcome = await recordMedia({ mediaId: row.id });
+          const outcome = await recordMedia({ mediaId: row.id, signal: recordSignal() });
           counts.pendingRechecked += 1;
           if (outcome.status === "PENDING" && row.createdAt.getTime() < now - RESERVATION_MAX_AGE_MS && uploadWindowClosed(row, now)) {
             // recordMedia also answers PENDING for a blob that EXISTS but whose first bytes it could not
@@ -260,7 +270,7 @@ export async function GET(request: NextRequest): Promise<Response> {
           if (!mediaId) {
             throw new Error("event has no mediaId");
           }
-          const outcome = await recordMedia({ mediaId });
+          const outcome = await recordMedia({ mediaId, signal: recordSignal() });
           await db.webhookEvent.update({
             where: { id: event.id },
             data: outcome.status === "PENDING" ? { attempts, error: "blob not visible yet" } : { processedAt: new Date(), attempts, error: null },
@@ -467,8 +477,16 @@ export async function GET(request: NextRequest): Promise<Response> {
       // Each item in its own isolation scope: an identity set by a shared feature cannot leak into the next item.
       await Sentry.withIsolationScope(async () => {
         try {
-          if (await computeChecksum({ mediaId: row.id })) {
+          const digest = await computeChecksum({ mediaId: row.id });
+          if (digest) {
             counts.checksumsComputed += 1;
+            // A connector upload too large to hash before READY (> INLINE_HASH_MAX_BYTES): its declared hash is
+            // only now checked. The verified checksum already wins in dedupe, so this is a signal, not a repair
+            // (plan 2026-11-06-mcp-attach-media §8.3 step 4; quarantine is follow-up F10).
+            if (row.declaredSha256 !== null && row.declaredSha256 !== undefined && digest !== row.declaredSha256) {
+              Sentry.captureMessage("connector upload checksum differs from its declared hash", { level: "warning", tags: { media_id: row.id, memory_id: row.memoryId } });
+              log.warn({ action: "declared_checksum_mismatch", mediaId: row.id, memoryId: row.memoryId }, "connector upload checksum differs from its declared hash");
+            }
           }
         } catch (error) {
           counts.errors += 1;
