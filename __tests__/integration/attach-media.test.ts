@@ -65,6 +65,7 @@ vi.mock("@/services/storage", () => ({
       return blob ? { pathname, url: `https://blob.example.invalid/${pathname}`, size: blob.bytes.length, contentType: blob.contentType, uploadedAt: new Date() } : null;
     },
     async readPrefix(pathname: string, maxBytes: number) { return blobs.get(pathname)?.bytes.subarray(0, maxBytes) ?? null; },
+    async readRange(pathname: string, offset: number, length: number) { return blobs.get(pathname)?.bytes.subarray(offset, offset + length) ?? null; },
     async get(pathname: string) {
       const blob = blobs.get(pathname);
       return blob ? { stream: new Blob([new Uint8Array(blob.bytes)]).stream(), contentType: blob.contentType, contentLength: blob.bytes.length } : null;
@@ -186,9 +187,9 @@ describe.skipIf(!client)("attach-media concurrency (real Postgres)", () => {
       recordMedia({ mediaId: row.id, signal: AbortSignal.timeout(15_000) }),
     ]);
     expect(readers).toBe(2);
-    expect(finalized).toEqual({ ok: true, status: "READY", mediaId: row.id, memoryType: "VIDEO", gps: "not_applicable" });
+    expect(finalized).toEqual({ ok: true, status: "READY", mediaId: row.id, memoryType: "VIDEO", gps: "none" });
     expect(cron.status).toBe("READY");
-    expect(await db.media.findUniqueOrThrow({ where: { id: row.id } })).toMatchObject({ status: "READY", checksumSha256: HASH, sizeBytes: BYTES.length });
+    expect(await db.media.findUniqueOrThrow({ where: { id: row.id } })).toMatchObject({ status: "READY", checksumSha256: HASH, sizeBytes: BYTES.length, gpsCheckedAt: expect.any(Date), latitude: null, longitude: null });
     const revisions = await db.memoryRevision.findMany({ where: { memoryId: memory.id } });
     expect(revisions).toHaveLength(1);
     expect(revisions[0]).toMatchObject({ changedVia: "ADMIN", before: { readyMediaIds: [] }, after: { readyMediaIds: [row.id], addedMediaId: row.id, consentVersion: "attach-test" } });
