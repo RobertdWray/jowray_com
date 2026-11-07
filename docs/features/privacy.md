@@ -17,7 +17,7 @@ A small **Privacy** button in every page's footer opens Rob's plain-language not
 
    "To see how this site works or read the source code, go to **How this site was built**."
 
-3. **Close**, Esc, or a press and click both on the backdrop close it; native dialog behaviour returns focus to **Privacy**. Clicking inside or on the border, or selecting text and releasing outside, keeps it open. The page behind cannot scroll or receive keyboard focus; Tab may reach browser chrome.
+3. **Close**, Esc, or a press and click both on the backdrop close it; native dialog behaviour returns focus to the element that had it when the note opened: **Privacy** in Chromium and when opened from the keyboard. After a mouse or touch open in Safari or macOS Firefox, which do not focus a clicked button, focus return is unverified (see **NOT RUN**). Clicking inside or on the border, or selecting text and releasing outside, keeps it open. The page behind cannot scroll or receive keyboard focus; Tab may reach browser chrome.
 4. **How this site was built** closes the note before navigating to `/how-it-was-built`, including closing it on a modified click that opens a new tab. The footer survives client navigation.
 5. The note is at most 560px wide, with 16px side gutters on the 390px phone check. On short screens, text scrolls above a separate Close row. The saved 375×480 and 844×390 checks show the focused link clear of that row.
 
@@ -35,7 +35,7 @@ The [plan's Context A](../plans/2026-11-06-privacy-note-and-diagram-viewer.md#co
 
 ## How it works
 
-`SiteFooter` stays a Server Component; `PrivacyNote` owns the button and native `<dialog>`. `showModal()` supplies the top layer and inert background. `aria-labelledby` names it from the focused title; there is no `aria-describedby` for the multi-paragraph note. `html:has(dialog:modal)` locks page scroll. `open:flex` keeps the closed dialog hidden; the footer uses a wrapping `<div>`, since a `<p>` cannot contain the dialog's headings and paragraphs. [Plan citations C1–C15](../plans/2026-11-06-privacy-note-and-diagram-viewer.md#citations) record these choices. [Design §6](../../design/DESIGN.md#6-layout) records the 2026-11-06 exception to "no modals".
+`SiteFooter` stays a Server Component; `PrivacyNote` owns the button and native `<dialog>`. The browser's `showModal()` supplies the top layer, inert page and Esc; the component focuses the title with `titleRef.current?.focus()` on a `tabIndex={-1}` heading, and the `html:has(dialog:modal)` CSS rule locks page scroll. `aria-labelledby` names it from the focused title; there is no `aria-describedby` for the multi-paragraph note. `open:flex` keeps the closed dialog hidden; the footer uses a wrapping `<div>`, since a `<p>` cannot contain the dialog's headings and paragraphs. [Plan citations C1–C15](../plans/2026-11-06-privacy-note-and-diagram-viewer.md#citations) record these choices. [Design §6](../../design/DESIGN.md#6-layout) records the 2026-11-06 exception to "no modals".
 
 The note adds no storage, consent record or telemetry switch. Opening or closing it does not start or stop collection. "Everything" is Rob's wording: [Sentry's scrubber and accepted residuals](./sentry-telemetry.md#why-we-built-it) still apply to bearer secrets and protected headers.
 
