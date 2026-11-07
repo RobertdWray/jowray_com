@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetEnvCache } from "@/server/config/env";
 
 /**
- * /api/mcp (plan 2026-11-06 §4.5, §4.6): the bearer gate, the ten tools as
+ * /api/mcp (plan 2026-11-06 §4.5, §4.6): the bearer gate, the twelve tools as
  * thin adapters over the admin features, and the single error boundary. The
  * features are mocked; the route, `_auth.ts`, the env accessor, mcp-handler
  * and the MCP SDK are real.
@@ -26,6 +26,8 @@ const features = vi.hoisted(() => ({
   updateMemoryAsAdmin: vi.fn(),
   setMemoryStatusAsAdmin: vi.fn(),
   shareDraftAsAdmin: vi.fn(),
+  requestUploadAsAdmin: vi.fn(),
+  finalizeUploadAsAdmin: vi.fn(),
   setMemoryDeletedAsAdmin: vi.fn(),
   draftMemory: vi.fn(),
   reissueDraftClaimLink: vi.fn(),
@@ -35,6 +37,7 @@ vi.mock("@/features/admin/list-memories", () => ({ listMemoriesForAdmin: feature
 vi.mock("@/features/admin/get-memory", () => ({ getMemoryForAdmin: features.getMemoryForAdmin }));
 vi.mock("@/features/admin/set-coordinates", () => ({ setMemoryCoordinatesAsAdmin: features.setMemoryCoordinatesAsAdmin }));
 vi.mock("@/features/admin/update-memory", () => ({ updateMemoryAsAdmin: features.updateMemoryAsAdmin }));
+vi.mock("@/features/admin/attach-media", () => ({ requestUploadAsAdmin: features.requestUploadAsAdmin, finalizeUploadAsAdmin: features.finalizeUploadAsAdmin }));
 vi.mock("@/features/admin/share-draft", () => ({ shareDraftAsAdmin: features.shareDraftAsAdmin }));
 vi.mock("@/features/admin/set-status", () => ({ setMemoryStatusAsAdmin: features.setMemoryStatusAsAdmin }));
 vi.mock("@/features/admin/set-deleted", () => ({ setMemoryDeletedAsAdmin: features.setMemoryDeletedAsAdmin }));
@@ -125,12 +128,12 @@ describe("the bearer gate", () => {
 });
 
 describe("tools/list", () => {
-  it("lists the ten tools", async () => {
+  it("lists the twelve tools", async () => {
     const response = await authed({ jsonrpc: "2.0", id: 1, method: "tools/list" });
     expect(response.status).toBe(200);
     const body = await rpcBody(response);
     const tools = (body.result?.tools ?? []) as Array<{ name: string }>;
-    expect(tools.map((t) => t.name).sort()).toEqual(["draft_memory", "get_memory", "list_memories", "reissue_claim_link", "set_coordinates", "set_deleted", "set_status", "share_draft", "suggest_places", "update_memory"]);
+    expect(tools.map((t) => t.name).sort()).toEqual(["draft_memory", "finalize_upload", "get_memory", "list_memories", "reissue_claim_link", "request_upload", "set_coordinates", "set_deleted", "set_status", "share_draft", "suggest_places", "update_memory"]);
   });
 });
 
@@ -678,6 +681,139 @@ describe("tools/list contract (case 2)", () => {
         },
         {
           "annotations": {
+            "destructiveHint": false,
+            "idempotentHint": true,
+          },
+          "description": "Reserves one file on a memory without changing its status or consent and without sending email. A non-DRAFT memory with no words or READY file is refused (not_ready). Retry by the same hash for a fresh URL within 24 hours; metadata on an already attached file is ignored. Use original files on disk (a mounted folder in Cowork or Claude Code on Rob's Mac), not files pasted into chat. Compute the exact size, MIME type and \`shasum -a 256\` locally; call request_upload. On \`alreadyAttached\`, skip the upload; on \`uploaded: true\`, just call finalize_upload. Otherwise write the returned URL into a mode-600 curl config file (\`url = "..."\`), then run \`curl -sS --fail -X PUT -K <config> -H "content-type: <type>" -H "x-content-type: <type>" --data-binary @<file>\` with exactly the returned headers, delete the config file, and call finalize_upload with memoryId and mediaId. The URL is a credential: never write it into chat, a reply, a log or any other file. The upload host is vercel.com; if this session cannot reach it, run the same steps from Claude Code on Rob's Mac. A Live Photo is two files (the HEIC and the MOV) on the same memory; at most 10 files per memory.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "approxDateText": {
+                "anyOf": [
+                  {
+                    "maxLength": 120,
+                    "type": "string",
+                  },
+                  {
+                    "type": "null",
+                  },
+                ],
+                "description": "Optional approximate date for this file, at most 120 characters",
+              },
+              "caption": {
+                "anyOf": [
+                  {
+                    "maxLength": 2000,
+                    "type": "string",
+                  },
+                  {
+                    "type": "null",
+                  },
+                ],
+                "description": "Optional caption for this file, at most 2000 characters",
+              },
+              "durationSeconds": {
+                "description": "Optional audio or video duration in whole seconds",
+                "maximum": 86400,
+                "minimum": 0,
+                "type": "integer",
+              },
+              "file": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "description": "Original filename, including its extension",
+                    "maxLength": 255,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "sha256": {
+                    "description": "Lowercase SHA-256 of the original bytes, computed locally with shasum -a 256",
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string",
+                  },
+                  "size": {
+                    "description": "Exact size of the original file on disk, in bytes",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991,
+                    "type": "integer",
+                  },
+                  "type": {
+                    "description": "MIME type; an empty or generic type falls back to the filename extension",
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "name",
+                  "type",
+                  "size",
+                  "sha256",
+                ],
+                "type": "object",
+              },
+              "memoryId": {
+                "description": "The memory to attach this original file to",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+              "place": {
+                "anyOf": [
+                  {
+                    "maxLength": 200,
+                    "type": "string",
+                  },
+                  {
+                    "type": "null",
+                  },
+                ],
+                "description": "Optional place for this file, at most 200 characters",
+              },
+            },
+            "required": [
+              "memoryId",
+              "file",
+            ],
+            "type": "object",
+          },
+          "name": "request_upload",
+          "title": "Request a file upload",
+        },
+        {
+          "annotations": {
+            "destructiveHint": false,
+            "idempotentHint": true,
+          },
+          "description": "Call after the PUT succeeds or when \`request_upload\` answered \`uploaded: true\`. Verifies the upload and records it once. \`PENDING\` with \`uploaded: false\` means call \`request_upload\` again; \`verifying\` means retry \`finalize_upload\` later. \`FAILED\` reasons are terminal for that row and may be absent on repeat calls. \`READY\` includes memoryType and GPS found, none, pending or not_applicable. Never sends email or changes the memory's status or consent. See \`request_upload\` for the upload steps.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "mediaId": {
+                "description": "The mediaId returned by request_upload; reuse it when retrying finalize_upload",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+              "memoryId": {
+                "description": "The memory passed to request_upload",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+            },
+            "required": [
+              "memoryId",
+              "mediaId",
+            ],
+            "type": "object",
+          },
+          "name": "finalize_upload",
+          "title": "Finalize a file upload",
+        },
+        {
+          "annotations": {
             "destructiveHint": true,
             "idempotentHint": true,
           },
@@ -1061,11 +1197,11 @@ describe("the modern protocol era (case 7)", () => {
     return authed({ jsonrpc: "2.0", id: 7, method, params: { ...params, _meta: envelope } }, { "mcp-protocol-version": MODERN, "mcp-method": method, ...extraHeaders });
   }
 
-  it("lists the ten tools", async () => {
+  it("lists the twelve tools", async () => {
     const response = await modern("tools/list", {});
     expect(response.status).toBe(200);
     const tools = ((await rpcBody(response)).result?.tools ?? []) as Array<{ name: string }>;
-    expect(tools).toHaveLength(10);
+    expect(tools).toHaveLength(12);
   });
 
   it("calls a tool with the Mcp-Name header", async () => {
@@ -1120,5 +1256,64 @@ describe("advertised capabilities (review R8)", () => {
     expect(response.status).toBe(200);
     const result = (await rpcBody(response)).result as { capabilities?: { tools?: { listChanged?: boolean } } };
     expect(result.capabilities?.tools).toEqual({ listChanged: false });
+  });
+});
+
+
+const UPLOAD_ARGS = { memoryId: ID, file: { name: "photo.jpg", type: "image/jpeg", size: 1024, sha256: "a".repeat(64) } };
+const FINALIZE_ARGS = { memoryId: ID, mediaId: PHOTO_ID };
+const UPLOAD = { method: "PUT", presignedUrl: "https://upload.example.invalid/synthetic", headers: { "content-type": "image/jpeg", "x-content-type": "image/jpeg" }, expiresAt: "2026-11-07T09:00:00.000Z" };
+
+describe("request_upload and finalize_upload tool contracts", () => {
+  it.each([
+    { status: "PENDING", mediaId: PHOTO_ID, upload: UPLOAD },
+    { status: "PENDING", mediaId: PHOTO_ID, uploaded: true },
+    { status: "READY", mediaId: PHOTO_ID, alreadyAttached: true },
+    { status: "READY", mediaId: PHOTO_ID, alreadyAttached: true, metadataIgnored: true },
+  ])("request_upload maps success fields only: %j", async (expected) => {
+    features.requestUploadAsAdmin.mockResolvedValueOnce({ ok: true, ...expected, storageKey: "private-key", blobUrl: "private-blob", ...(expected.upload && { upload: { ...expected.upload, internal: "private-value" } }) });
+    const { result } = await callTool("request_upload", UPLOAD_ARGS);
+    expect(features.requestUploadAsAdmin).toHaveBeenCalledWith(UPLOAD_ARGS);
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toEqual(expected);
+    expect(JSON.parse(result.content[0]!.text)).toEqual(expected);
+  });
+  it.each(["invalid", "not_found", "not_ready", "unsupported_type", "too_large", "too_many_files", "budget_exceeded", "conflict"])("request_upload maps refusal %s", async (code) => {
+    const expected = { code, ...(code === "conflict" && { mediaId: PHOTO_ID }) };
+    features.requestUploadAsAdmin.mockResolvedValueOnce({ ok: false, ...expected });
+    const { result } = await callTool("request_upload", UPLOAD_ARGS);
+    expect(result.isError).toBe(true); expect(result.structuredContent).toEqual(expected);
+    expect(JSON.parse(result.content[0]!.text)).toEqual(expected);
+  });
+  it.each([
+    { status: "PENDING", uploaded: false }, { status: "PENDING", uploaded: true }, { status: "PENDING", uploaded: true, verifying: true },
+    { status: "FAILED" }, { status: "FAILED", reason: "checksum_mismatch" }, { status: "FAILED", reason: "size_mismatch" },
+    ...["found", "none", "pending", "not_applicable"].map((gps) => ({ status: "READY", mediaId: PHOTO_ID, memoryType: "PHOTO", gps })),
+  ])("finalize_upload maps success fields only: %j", async (expected) => {
+    features.finalizeUploadAsAdmin.mockResolvedValueOnce({ ok: true, ...expected, storageKey: "private-key", blobUrl: "private-blob" });
+    const { result } = await callTool("finalize_upload", FINALIZE_ARGS);
+    expect(features.finalizeUploadAsAdmin).toHaveBeenCalledWith(FINALIZE_ARGS);
+    expect(result.isError).toBeUndefined(); expect(result.structuredContent).toEqual(expected);
+    expect(JSON.parse(result.content[0]!.text)).toEqual(expected);
+  });
+  it.each(["invalid", "not_found"])("finalize_upload maps refusal %s", async (code) => {
+    features.finalizeUploadAsAdmin.mockResolvedValueOnce({ ok: false, code });
+    const { result } = await callTool("finalize_upload", FINALIZE_ARGS);
+    expect(result.isError).toBe(true); expect(result.structuredContent).toEqual({ code });
+  });
+  it.each([
+    ["request_upload", { ...UPLOAD_ARGS, typo: true }],
+    ["request_upload", { ...UPLOAD_ARGS, file: { ...UPLOAD_ARGS.file, caption: "misplaced" } }],
+    ["request_upload", { ...UPLOAD_ARGS, file: { ...UPLOAD_ARGS.file, sha256: "A".repeat(64) } }],
+    ["request_upload", { ...UPLOAD_ARGS, file: { ...UPLOAD_ARGS.file, size: 0 } }],
+    ["request_upload", { ...UPLOAD_ARGS, durationSeconds: 86_401 }],
+    ["request_upload", { ...UPLOAD_ARGS, durationSeconds: 2 ** 31 }],
+    ["finalize_upload", { ...FINALIZE_ARGS, ticket: "not accepted" }],
+    ["finalize_upload", { ...FINALIZE_ARGS, mediaId: "bad" }],
+  ] as const)("%s refuses malformed or unknown fields before the feature", async (tool, args) => {
+    const { result } = await callTool(tool, args);
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("validation");
+    expect(features.requestUploadAsAdmin).not.toHaveBeenCalled(); expect(features.finalizeUploadAsAdmin).not.toHaveBeenCalled();
   });
 });

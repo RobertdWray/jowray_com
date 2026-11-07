@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { coordinatesSchema } from "@/lib/validations/memory";
+import { coordinatesSchema, MAX_DURATION_SECONDS, mediaWordsFields } from "@/lib/validations/memory";
 
 /**
  * Input schemas for the family admin page (docs/plans/2026-11-04-admin-page.md §3.5).
@@ -123,3 +123,24 @@ export type AdminDraftFormInput = z.infer<typeof adminDraftFormSchema>;
 
 /** The entry step's one parameter: the key from the link's fragment or the paste box. */
 export const adminEnterSchema = z.object({ key: z.string().max(256) });
+
+/** A connector upload declares the original bytes before reserving a write-once pathname. */
+export const adminRequestUploadSchema = z.object({
+  memoryId: z.uuid().describe("The memory to attach this original file to"),
+  file: z.object({
+    name: z.string().min(1).max(255).describe("Original filename, including its extension"),
+    type: z.string().describe("MIME type; an empty or generic type falls back to the filename extension"),
+    size: z.number().int().positive().describe("Exact size of the original file on disk, in bytes"),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/).describe("Lowercase SHA-256 of the original bytes, computed locally with shasum -a 256"),
+  }),
+  caption: mediaWordsFields.caption.describe("Optional caption for this file, at most 2000 characters"),
+  approxDateText: mediaWordsFields.approxDateText.describe("Optional approximate date for this file, at most 120 characters"),
+  place: mediaWordsFields.place.describe("Optional place for this file, at most 200 characters"),
+  durationSeconds: z.number().int().nonnegative().max(MAX_DURATION_SECONDS).optional().describe("Optional audio or video duration in whole seconds"),
+});
+
+/** Finish the upload by ids; MCP bearer authentication replaces the claim-page ticket. */
+export const adminFinalizeUploadSchema = z.object({
+  memoryId: z.uuid().describe("The memory passed to request_upload"),
+  mediaId: z.uuid().describe("The mediaId returned by request_upload; reuse it when retrying finalize_upload"),
+});

@@ -29,6 +29,17 @@ vi.mock("@/features/memories/draft-memory", () => ({
   reissueDraftClaimLink: async () => ({ ok: true, memoryId: "00000000-0000-4000-8000-000000000001", claimLink: `https://preview.test/m/${MCP_REISSUE_TOKEN}` }),
 }));
 
+// A19: synthetic credentials only, returned through the actual MCP span wrapper.
+const { PUT_SIGNATURE, PUT_DELEGATION, PUT_URL } = vi.hoisted(() => {
+  const PUT_SIGNATURE = "SENTRYTEST_signature";
+  const PUT_DELEGATION = "SENTRYTEST_delegation";
+  return { PUT_SIGNATURE, PUT_DELEGATION, PUT_URL: `https://vercel.com/api/blob/?vercel-blob-signature=${PUT_SIGNATURE}&vercel-blob-delegation=${PUT_DELEGATION}` };
+});
+vi.mock("@/features/admin/attach-media", () => ({
+  requestUploadAsAdmin: async () => ({ ok: true, status: "PENDING", mediaId: "00000000-0000-4000-8000-000000000002", upload: { method: "PUT", presignedUrl: PUT_URL, headers: { "content-type": "image/jpeg", "x-content-type": "image/jpeg" }, expiresAt: new Date("2026-11-07T09:00:00Z") } }),
+  finalizeUploadAsAdmin: vi.fn(),
+}));
+
 /**
  * The decisive gate for the expanded data policy (plan §7.4): the real server
  * SDK, the production `dataCollection` and the production `before*` hooks,
@@ -235,6 +246,35 @@ describe("MCP tool spans (plan 2026-11-06 §4.6)", () => {
       expect(envelope).not.toContain(MCP_TOKEN);
       expect(envelope).not.toContain(MCP_REISSUE_TOKEN);
       expect(envelope).not.toContain("SENTRYTEST_");
+    }
+  });
+});
+
+
+describe("MCP presigned upload result (A19)", () => {
+  it("the caller gets the credential, but neither query secret nor presignedUrl reaches any envelope", async () => {
+    const before = sent.length;
+    const server = new McpServer({ name: "jowray", version: "1" });
+    registerTools(server);
+    const [client, serverSide] = InMemoryTransport.createLinkedPair();
+    const responses: Array<{ id?: unknown; result?: { structuredContent?: { upload?: { presignedUrl?: string } } } }> = [];
+    client.onmessage = (message) => { responses.push(message as (typeof responses)[number]); };
+    await server.connect(serverSide); await client.start();
+    try {
+      await client.send({ jsonrpc: "2.0", id: 19, method: "tools/call", params: { name: "request_upload", arguments: { memoryId: "00000000-0000-4000-8000-000000000001", file: { name: "photo.jpg", type: "image/jpeg", size: 1024, sha256: "a".repeat(64) } } } });
+      await vi.waitFor(() => expect(responses.some((r) => r.id === 19)).toBe(true));
+      expect(responses.find((r) => r.id === 19)?.result?.structuredContent?.upload?.presignedUrl).toBe(PUT_URL);
+      // Also pin scrubUrl independently of the secret field name, on a real SDK span.
+      await Sentry.startSpan({ name: "upload.request", op: "http.client", attributes: { "url.full": PUT_URL } }, async () => undefined);
+    } finally { await server.close(); }
+    await Sentry.flush(5000);
+    const envelopes = sent.slice(before);
+    expect(envelopes.some((item) => item.includes('"mcp.tool.name":"request_upload"') || item.includes('"mcp.tool.name":{"value":"request_upload"'))).toBe(true);
+    expect(envelopes.some((item) => item.includes("mcp.tool.result.content"))).toBe(true);
+    expect(envelopes.some((item) => item.includes("url.full"))).toBe(true);
+    for (const envelope of sent) {
+      expect(envelope).not.toContain(PUT_SIGNATURE); expect(envelope).not.toContain(PUT_DELEGATION);
+      expect(envelope).not.toContain(PUT_URL); expect(envelope).not.toContain("SENTRYTEST_");
     }
   });
 });
