@@ -1,0 +1,143 @@
+{
+ "startedAt": "2026-11-07T16:10:08Z",
+ "checks": {
+  "tools_list_12": {
+   "pass": true,
+   "detail": {
+    "count": 12
+   }
+  },
+  "videos_ready": {
+   "pass": true,
+   "detail": {
+    "location-mdta.mov": {
+     "put": "200",
+     "status": "READY",
+     "gps": "found",
+     "memoryType": "VIDEO",
+     "mediaId": "97e74e20-7140-4590-8da8-94eeffbed3e1"
+    },
+    "location-xyz.mp4": {
+     "put": "200",
+     "status": "READY",
+     "gps": "found",
+     "memoryType": "VIDEO",
+     "mediaId": "e4e2d5bd-425a-4315-b18a-88518c33cb8d"
+    },
+    "no-location.mov": {
+     "put": "200",
+     "status": "READY",
+     "gps": "none",
+     "memoryType": "VIDEO",
+     "mediaId": "d3af379d-510f-4a12-bb22-aa9b716a0774"
+    }
+   }
+  },
+  "video_gps_found_found_none": {
+   "pass": true,
+   "detail": {
+    "location-mdta.mov": "found",
+    "location-xyz.mp4": "found",
+    "no-location.mov": "none"
+   }
+  },
+  "suggest_places_videos_stub_labels": {
+   "pass": true,
+   "detail": {
+    "videoRows": 2,
+    "points": [
+     [
+      40.69,
+      -74.04
+     ],
+     [
+      40.69,
+      -74.04
+     ]
+    ]
+   }
+  },
+  "cron_h_backfills_video_gps": {
+   "pass": true,
+   "detail": {
+    "cron": 200,
+    "lat2": 40.69,
+    "lon2": -74.04
+   }
+  },
+  "memory_type_video_and_draft_silent": {
+   "pass": true,
+   "detail": {
+    "type": "VIDEO",
+    "status": "DRAFT",
+    "emails": []
+   }
+  },
+  "points_rounded_liberty": {
+   "pass": true,
+   "detail": {
+    "points": [
+     [
+      40.69,
+      -74.04
+     ],
+     [
+      40.69,
+      -74.04
+     ],
+     [
+      null,
+      null
+     ]
+    ]
+   }
+  },
+  "dev_log_has_no_presign_signature": {
+   "pass": true
+  }
+ },
+ "memories": {
+  "V": "1489a4c1-b073-4dad-a4c3-b55651516f54"
+ },
+ "readbackV": {
+  "media": [
+   {
+    "id": "97e74e20-7140-4590-8da8-94eeffbed3e1",
+    "status": "READY",
+    "mimeType": "video/quicktime",
+    "coordinates": {
+     "latitude": 40.69,
+     "longitude": -74.04
+    }
+   },
+   {
+    "id": "e4e2d5bd-425a-4315-b18a-88518c33cb8d",
+    "status": "READY",
+    "mimeType": "video/mp4",
+    "coordinates": {
+     "latitude": 40.69,
+     "longitude": -74.04
+    }
+   },
+   {
+    "id": "d3af379d-510f-4a12-bb22-aa9b716a0774",
+    "status": "READY",
+    "mimeType": "video/quicktime",
+    "coordinates": null
+   }
+  ]
+ },
+ "cleanup": {
+  "1489a4c1-b073-4dad-a4c3-b55651516f54": {
+   "deleted": 3,
+   "remaining": 0
+  }
+ },
+ "finishedAt": "2026-11-07T16:10:19Z",
+ "branchHead": "f6a773a (PR 3 integration)",
+ "notes": [
+  "Run 1 (16:09Z) failed cron_h_backfills_video_gps and points_rounded_liberty only because driver3.py read media latitude/longitude while readback reports a rounded coordinates object; the driver was fixed and run 2 (16:10Z) passed 8/8. Run 1's test memory was cleaned up (3 blobs deleted, 0 remaining).",
+  "During run 1's cron call, step (h) also picked up three READY video rows left by the PR 2 E2E (clip.mov; their blobs were removed by that run's cleanup, rows kept on the throwaway branch). Each logged 'media GPS could not be read' with OriginalMissingError, outcome failed, attempt 1, not stamped: the A21 transient path (cap 3), and a preview of the production backfill over existing READY videos.",
+  "Fixtures are the committed synthetic ones (Rob, 2026-11-07: synthetic accepted). Places provider: stub."
+ ]
+}

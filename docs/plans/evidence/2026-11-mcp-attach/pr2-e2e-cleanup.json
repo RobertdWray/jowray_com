@@ -1,0 +1,17 @@
+{
+ "plan": "\u00a712 Cleanup",
+ "cleanup": {
+  "19683241-0dcd-410a-9e1a-4e819dae8a9a": {
+   "deleted": 4,
+   "remaining": 0
+  },
+  "7da11606-47ef-45d5-b67d-df98b04fc57a": {
+   "deleted": 1,
+   "remaining": 0
+  },
+  "50af2de0-cf89-49d5-aa6f-037fe96e24e3": {
+   "deleted": 0,
+   "remaining": 0
+  }
+ }
+}
