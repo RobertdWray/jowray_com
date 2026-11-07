@@ -17,6 +17,33 @@ House rules for every feature document:
 - **Index it.** Add a row to [`docs/features/README.md`](./README.md) (emoji, link, what it covers, the delivering PRs) and one sentence to the Features table in the root [`README.md`](../../README.md). Editing a `mermaid` block in the root README also needs `npx tsx scripts/make-readme-diagrams.ts` and the regenerated `public/diagrams/` in the same commit, or `__tests__/lib/readme-diagrams.test.ts` fails.
 - **Checks.** Run `npm run validate` and `npm run test:run` even for a docs-only change, with no `.env*` file present.
 
+How to write one:
+
+1. **Decide whether it needs its own document.** One feature, one document. When sibling documents already cover a feature that spans several of them, add a short pointer section to [`docs/features/README.md`](./README.md) instead of a new file. Rob, 2026-11-06: "I don't want documents just to create documents." Photo GPS is the example: [Media uploads](./media-uploads.md#photo-gps) covers reading it from photos, and [Share form](./share-form.md#place-suggestions-from-photos) and [MCP connector](./mcp.md) cover the place lookups.
+2. **Gather sources, in this order.**
+   - The code at `HEAD`: routes, features, validations, migrations and tests. Where a source disagrees, the code wins.
+   - Merge commits: `git log --merges --oneline --grep "#62"` gives a PR's merge SHA, and `git log -1 --format=%cs <sha>` gives its date.
+   - The plan and its ledger in `docs/plans/`, and its folder under `docs/plans/evidence/`.
+   - The PR description and comments (`gh pr view <N> --comments`), only where no plan exists. They are then the only record of the steps left for Rob, the follow-ups and the check results.
+   - Runbooks for operations: `docs/environment.md`, `docs/domain.md`, `docs/admin.md`, `docs/dependencies.md`. Link the section; don't copy its tables.
+   - Sibling feature documents, so you link to what they already say instead of repeating it.
+3. **Verify every claim before you write it.** Every path in backticks exists, and every function, env key and route you name is found by `git grep`. Each PR number matches its title. Each quote is copied from its source, not paraphrased. Limits, timeouts and counts come from the code, not the plan. To list backticked paths that don't exist (any missing path is a lead to check, not always an error):
+
+   ```sh
+   grep -o '`[^` ]*/[^` ]*`' docs/features/<name>.md | tr -d '`' | grep -v -E '^(/|https?:|<)' | sort -u \
+     | while read -r p; do git --literal-pathspecs ls-files --error-unmatch "$p" >/dev/null 2>&1 || echo "missing: $p"; done
+   ```
+
+4. **Review it before the PR.**
+   - [ ] Every `>` block and this section are deleted, and the headings are in order.
+   - [ ] Status keeps implemented, tested, merged, deployed and exercised apart, and names what is still Rob's.
+   - [ ] Tests and evidence ends with a **NOT RUN** line.
+   - [ ] No secret value, token, claim link or private family detail.
+   - [ ] Every relative link resolves and every path in backticks exists.
+   - [ ] One to two pages; [MCP connector](./mcp.md) is the upper bound.
+   - [ ] A reviewer can trace each claim to a file, a plan section or a PR.
+   - [ ] It is indexed, as the house rules above say.
+
 **Status:** [PR #N](https://github.com/RobertdWray/jowray_com/pull/N) (what it delivered; merged YYYY-MM-DD, or open). Plan: [`docs/plans/<plan>.md`](../plans/). Then where it stands.
 
 > **Write:** every delivering PR with what it brought and its merge date; whether it is merged, deployed, configured (env keys by name) and used for real; what is still Rob's. **Leave out:** test counts and review rounds (they go in Tests and evidence).
