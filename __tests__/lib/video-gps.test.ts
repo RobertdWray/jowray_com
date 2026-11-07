@@ -104,6 +104,24 @@ describe("readVideoLocation fixtures", () => {
     expectFound(await readVideoLocation(source.read, bytes.length), coordinates);
     expect(source.ranges.length).toBeLessThanOrEqual(16);
     expect(source.bytesRead()).toBeLessThanOrEqual(16.5 * MIB);
+
+    // These fixtures use 32-bit top-level sizes. Derive mdat bodies from their
+    // headers so a new fixture cannot silently move media under a read range.
+    let mediaBoxes = 0;
+    for (let offset = 0; offset < bytes.length;) {
+      const size = bytes.readUInt32BE(offset);
+      expect(size).toBeGreaterThanOrEqual(8);
+      expect(offset + size).toBeLessThanOrEqual(bytes.length);
+      if (bytes.toString("latin1", offset + 4, offset + 8) === "mdat") {
+        mediaBoxes += 1;
+        expect(size).toBeGreaterThan(8);
+        for (const range of source.ranges) {
+          expect(range.offset + range.length <= offset + 8 || range.offset >= offset + size).toBe(true);
+        }
+      }
+      offset += size;
+    }
+    expect(mediaBoxes).toBeGreaterThan(0);
   });
 
   it("decides absent for the fixture with no location", async () => {
@@ -170,6 +188,28 @@ describe("box walk", () => {
     bytes.writeUInt32BE(0, 0);
     bytes.writeUInt32BE(0, 8);
     expectFound(await parse(bytes));
+  });
+
+  it("accepts a QuickTime udta null terminator alongside a valid mdta location", async () => {
+    expectFound(await parse(box("moov", mdta(), box("udta", box("©nam", internationalText("Title")), uint32(0)))));
+  });
+
+  it("accepts a QuickTime udta containing only its four-byte null terminator", async () => {
+    expectFound(await parse(box("moov", mdta(), box("udta", uint32(0)))));
+  });
+
+  it.each([1, 2, 3, 4, 5, 6, 7])("accepts %s zero padding bytes after child boxes", async (length) => {
+    const padding = Buffer.alloc(length);
+    expectFound(await parse(box("moov", mdta(), padding)));
+    expectFound(await parse(box("moov", box("udta", mdta(), padding))));
+    const metadata = mdta();
+    expectFound(await parse(box("moov", box("meta", metadata.subarray(8), padding))));
+  });
+
+  it.each([1, 2, 3, 4, 5, 6, 7])("rejects a nonzero %s-byte tail after child boxes", async (length) => {
+    const padding = Buffer.alloc(length);
+    padding[length - 1] = 1;
+    expectAbsent(await parse(box("moov", mdta(), box("udta", box("©nam", internationalText("Title")), padding))), /malformed.*truncated box header/i);
   });
 
   it("does not interpret bytes inside a size-zero mdat as another top-level box", async () => {
@@ -255,6 +295,22 @@ describe("metadata lookup", () => {
     expectAbsent(await parse(box("moov", box("trak", mdta(), xyz()))), /location/i);
   });
 
+  it.each([false, true])("ignores malformed track descendants (metadata first=%s)", async (metadataFirst) => {
+    const track = box("trak", box("edts", uint32(99), text("elst")));
+    const children = metadataFirst ? [mdta(), track] : [track, mdta()];
+    expectFound(await parse(box("moov", ...children)));
+  });
+
+  it("still validates direct moov child headers after a valid location", async () => {
+    expectAbsent(await parse(box("moov", mdta(), uint32(99), text("trak"))), /malformed.*enclosing bounds/i);
+  });
+
+  it.each([false, true])("rejects malformed meta children alongside a valid location (inside udta=%s)", async (insideUdta) => {
+    const metadata = mdta();
+    const malformed = box("meta", metadata.subarray(8), uint32(99), text("free"));
+    expectAbsent(await parse(box("moov", mdta(), insideUdta ? box("udta", malformed) : malformed)), /malformed.*enclosing bounds/i);
+  });
+
   it("does not decode non-UTF8 mdta data as a coordinate string", async () => {
     expectAbsent(await parse(box("moov", mdta(LOCATION, { indicator: 21 }))), /encoding|type|UTF/i);
   });
@@ -282,6 +338,32 @@ describe("metadata lookup", () => {
 });
 
 describe("ISO 6709 decimal degrees", () => {
+  it.each([
+    "+27.5916+086.5640+8850CRSWGS_84/",
+    "+27.5916+086.5640+8850CRSWGS_84",
+    "+27.5916+086.5640CRSWGS_84/",
+    "+27.5916+086.5640CRSwgs_84",
+  ])("parses an optional CRS suffix in %s", async (value) => {
+    expectFound(await parse(box("moov", mdta(value))), { latitude: 27.5916, longitude: 86.564 });
+    expectFound(await parse(box("moov", xyz(value))), { latitude: 27.5916, longitude: 86.564 });
+  });
+
+  it.each([
+    "+27.5916+086.5640CRS/",
+    "+27.5916+086.5640CRSWGS-84/",
+    "+27.5916+086.5640CRSWGS 84/",
+    "+27.5916+086.5640crsWGS_84/",
+    "+27.5916+086.5640/CRSWGS_84",
+    "+27.5916+086.5640CRSWGS_84/extra",
+    "+27.5916+086.5640CRSWGS_84/\n",
+  ])("rejects a malformed CRS suffix in %j", async (value) => {
+    expectAbsent(await parse(box("moov", mdta(value))), /invalid ISO 6709/i);
+  });
+
+  it("still checks coordinate bounds when a CRS suffix is present", async () => {
+    expectAbsent(await parse(box("moov", mdta("+91+086.5640CRSWGS_84/"))), /range/i);
+  });
+
   it.each([
     { value: "+40.689247-074.044502+010.000/", expected: LIBERTY },
     { value: "+40.689247-074.044502-10", expected: LIBERTY },
@@ -335,6 +417,14 @@ describe("structural budgets", () => {
 
   it("enforces a caller's smaller nesting limit on metadata data boxes", async () => {
     expectAbsent(await parse(box("moov", mdta()), { maxDepth: 4 }), /depth.*limit|maxDepth/i);
+  });
+
+  it("does not spend the depth budget on an unrelated track subtree", async () => {
+    let nested = box("free");
+    for (let i = 0; i < 6; i += 1) {
+      nested = box("trak", nested);
+    }
+    expectFound(await parse(box("moov", mdta(), nested)));
   });
 
   it("does not fetch an oversized moov body", async () => {

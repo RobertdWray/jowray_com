@@ -39,19 +39,9 @@ const UDTA = 0x75647461;
 const XYZ = 0xa978797a;
 const LOCATION_KEY = "com.apple.quicktime.location.ISO6709";
 
-// Only known plain containers are walked. Sample descriptions, compressed data
-// and other opaque payloads must never be mistaken for child box headers.
-const CONTAINERS = new Set([
-  MOOV,
-  UDTA,
-  ILST,
-  0x7472616b, // trak
-  0x6d646961, // mdia
-  0x6d696e66, // minf
-  0x7374626c, // stbl
-  0x65647473, // edts
-  0x64696e66, // dinf
-]);
+// Walk only the movie root and location metadata containers. Track contents,
+// sample descriptions and other unrelated payloads are opaque to this reader.
+const CONTAINERS = new Set([MOOV, UDTA, ILST]);
 
 /** Only deterministic parser decisions use this private error class. */
 class AbsentLocation extends Error {}
@@ -188,7 +178,16 @@ class Movie {
   }
 
   *children(parent: Box, start = parent.payload): Generator<Box> {
+    const firstChildStart = start;
     while (start < parent.end) {
+      const remaining = parent.end - start;
+      // Padding follows child boxes; QTFF also allows an otherwise empty udta
+      // to end with a four-byte zero terminator. A truncated first header fails.
+      if (remaining < 8
+        && (start > firstChildStart || (parent.type === UDTA && remaining === 4))
+        && this.bytes.subarray(start, parent.end).every((byte) => byte === 0)) {
+        return;
+      }
       const child = headerAt(this.view, start, parent.end);
       yield child;
       start = child.end;
@@ -377,7 +376,7 @@ function parseMovie(bytes: Uint8Array, maxDepth: number): VideoLocationResult {
 
 function parseIso6709(value: string): VideoLocationResult {
   // (?![\s\S]) is an absolute end assertion: `$` also permits a final newline.
-  const match = /^([+-]\d{1,2}(?:\.\d+)?)([+-]\d{1,3}(?:\.\d+)?)(?:[+-]\d+(?:\.\d+)?)?\/?(?![\s\S])/.exec(value);
+  const match = /^([+-]\d{1,2}(?:\.\d+)?)([+-]\d{1,3}(?:\.\d+)?)(?:[+-]\d+(?:\.\d+)?)?(?:CRS[A-Za-z0-9_]+)?\/?(?![\s\S])/.exec(value);
   if (!match) {
     return { status: "absent", reason: "Invalid ISO 6709 location coordinates" };
   }
