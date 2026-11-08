@@ -2,15 +2,38 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import sharp from "sharp";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { ImageDeriveError } from "@/lib/image-derive-error";
 import { SharpHeicImageService } from "@/integrations/images/sharp-heic";
-import { createImageService, DERIVE_DEFAULTS, type DeriveOptions } from "@/services/images";
+import { createImageService, DERIVE_DEFAULTS, type DeriveOptions, type DeriveSlot, type ThumbnailOptions } from "@/services/images";
 
 const fixture = (name: string) => readFile(resolve(__dirname, "../fixtures", name));
 const service = createImageService();
 const opts = (sourceMime: string, over: Partial<DeriveOptions> = {}) => ({ ...DERIVE_DEFAULTS, deadlineMs: 20_000, ...over, sourceMime });
+const thumbOpts = (sourceMime: string, over: Partial<ThumbnailOptions> = {}): ThumbnailOptions => ({
+  deadlineMs: 20_000,
+  maxPixels: DERIVE_DEFAULTS.maxPixels,
+  thumb: DERIVE_DEFAULTS.thumb,
+  ...over,
+  sourceMime,
+});
+
+/** Hold the process's decode slot for `work`, as a caller of `acquire` does, and always hand it back. */
+async function withSlot<T>(work: (slot: DeriveSlot) => Promise<T>): Promise<T> {
+  const slot = await service.acquire(20_000);
+  try {
+    return await work(slot);
+  } finally {
+    slot.release();
+  }
+}
+
+/** Channel values of one pixel of a decoded raw buffer. */
+function pixelAt(data: Buffer, info: { width: number; channels: number }, x: number, y: number): number[] {
+  const offset = (y * info.width + x) * info.channels;
+  return [...data.subarray(offset, offset + info.channels)];
+}
 
 async function meta(buf: Buffer) {
   return sharp(buf).metadata();
@@ -156,6 +179,104 @@ describe("ImageService.derive", () => {
   });
 });
 
+describe("DeriveSlot.thumbnail (video posters: the THUMBNAIL spec only, no web copy)", () => {
+  it("encodes a PNG frame as one JPEG: long edge ≤ 1000, transparency on the paper colour, metadata stripped, and no web copy", async () => {
+    // 2400×1200: opaque red on the left half, fully transparent on the right half.
+    const red = await sharp({ create: { width: 1200, height: 1200, channels: 4, background: { r: 255, g: 0, b: 0, alpha: 1 } } }).png().toBuffer();
+    const input = await sharp({ create: { width: 2400, height: 1200, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+      .composite([{ input: red, left: 0, top: 0 }])
+      .png()
+      .toBuffer();
+    // A pass-through spy (the real encoder still runs) on the private web encoder.
+    const encodeWeb = vi.spyOn(SharpHeicImageService.prototype as unknown as { encodeWeb: (...args: unknown[]) => Promise<unknown> }, "encodeWeb");
+    try {
+      const out = await withSlot((slot) => slot.thumbnail(input, thumbOpts("image/png")));
+      expect(encodeWeb).not.toHaveBeenCalled();
+      expect(Object.keys(out).sort()).toEqual(["sourceHeight", "sourceWidth", "thumb"]);
+      expect([out.sourceWidth, out.sourceHeight]).toEqual([2400, 1200]);
+      if ("failed" in out.thumb) { throw new Error("thumb failed"); }
+      expect(out.thumb.mimeType).toBe("image/jpeg");
+      expect(out.thumb.extension).toBe("jpg");
+      expect([out.thumb.width, out.thumb.height]).toEqual([1000, 500]);
+      expect(out.thumb.data.byteLength).toBeLessThanOrEqual(350_000);
+      const m = await meta(out.thumb.data);
+      expect(m.format).toBe("jpeg");
+      expect(m.exif).toBeUndefined();
+      expect(m.icc).toBeUndefined();
+      expect([m.width, m.height]).toEqual([1000, 500]);
+      const { data, info } = await sharp(out.thumb.data).raw().toBuffer({ resolveWithObject: true });
+      expect(info.channels).toBe(3);
+      // A transparent pixel lands on #fffdf8 → (255, 253, 248); JPEG may drift by a few units.
+      const paper = pixelAt(data, info, 900, 250);
+      expect(Math.abs(paper[0]! - 255)).toBeLessThanOrEqual(3);
+      expect(Math.abs(paper[1]! - 253)).toBeLessThanOrEqual(3);
+      expect(Math.abs(paper[2]! - 248)).toBeLessThanOrEqual(3);
+      // An opaque pixel keeps its colour.
+      const opaque = pixelAt(data, info, 100, 250);
+      expect(opaque[0]!).toBeGreaterThanOrEqual(240);
+      expect(opaque[1]!).toBeLessThanOrEqual(15);
+      expect(opaque[2]!).toBeLessThanOrEqual(15);
+      // Control: the spy does see the web encoder when `derive` runs, so "not called" above is not vacuous.
+      await withSlot((slot) => slot.derive(input, opts("image/png")));
+      expect(encodeWeb).toHaveBeenCalledTimes(1);
+    } finally {
+      encodeWeb.mockRestore();
+    }
+  });
+
+  it("takes every type derive takes through the same decode: an EXIF-rotated JPEG comes out upright, HEIC through the worker, a GIF as one frame", async () => {
+    // 3000×1500 with EXIF orientation 6 → upright 1500×3000.
+    const jpeg = await sharp({ create: { width: 3000, height: 1500, channels: 3, background: "#336699" } }).jpeg().withMetadata({ orientation: 6 }).toBuffer();
+    const fromJpeg = await withSlot((slot) => slot.thumbnail(jpeg, thumbOpts("image/jpeg")));
+    expect([fromJpeg.sourceWidth, fromJpeg.sourceHeight]).toEqual([1500, 3000]);
+    if ("failed" in fromJpeg.thumb) { throw new Error("thumb failed"); }
+    expect([fromJpeg.thumb.width, fromJpeg.thumb.height]).toEqual([500, 1000]);
+    const m = await meta(fromJpeg.thumb.data);
+    expect(m.orientation).toBeUndefined();
+    expect([m.width, m.height]).toEqual([500, 1000]);
+
+    const fromHeic = await withSlot(async (slot) => slot.thumbnail(await fixture("rotated.heic"), thumbOpts("image/heic")));
+    expect([fromHeic.sourceWidth, fromHeic.sourceHeight]).toEqual([48, 64]);
+    if ("failed" in fromHeic.thumb) { throw new Error("thumb failed"); }
+    expect([fromHeic.thumb.width, fromHeic.thumb.height]).toEqual([48, 64]);
+
+    const fromGif = await withSlot(async (slot) => slot.thumbnail(await fixture("anim.gif"), thumbOpts("image/gif")));
+    expect([fromGif.sourceWidth, fromGif.sourceHeight]).toEqual([32, 32]);
+    if ("failed" in fromGif.thumb) { throw new Error("thumb failed"); }
+    expect(fromGif.thumb.mimeType).toBe("image/jpeg");
+    expect((await meta(fromGif.thumb.data)).pages ?? 1).toBe(1);
+  });
+
+  it("answers too_large when even the fallback quality is over the byte budget, and uses the fallback when it fits", async () => {
+    const noise = await fixture("noise.png");
+    const over = await withSlot((slot) => slot.thumbnail(noise, thumbOpts("image/png", { thumb: { ...DERIVE_DEFAULTS.thumb, maxBytes: 50_000 } })));
+    expect(over).toEqual({ sourceWidth: 1000, sourceHeight: 1000, thumb: { failed: "too_large" } });
+    // Within the real budget: q72 of this noise is over 350 KB, q60 is under it.
+    const ok = await withSlot((slot) => slot.thumbnail(noise, thumbOpts("image/png")));
+    if ("failed" in ok.thumb) { throw new Error("thumb failed"); }
+    expect(ok.thumb.data.byteLength).toBeLessThanOrEqual(350_000);
+  });
+
+  it("rejects bytes that do not match the declared type, and types it does not take", async () => {
+    const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: "#000" } }).png().toBuffer();
+    await expect(withSlot((slot) => slot.thumbnail(png, thumbOpts("image/jpeg")))).rejects.toMatchObject({ code: "unsupported_type" });
+    const tiff = await sharp({ create: { width: 8, height: 8, channels: 3, background: "#000" } }).tiff().toBuffer();
+    await expect(withSlot((slot) => slot.thumbnail(tiff, thumbOpts("image/png")))).rejects.toMatchObject({ code: "unsupported_type" });
+    await expect(withSlot((slot) => slot.thumbnail(Buffer.from("x"), thumbOpts("image/svg+xml")))).rejects.toMatchObject({ code: "unsupported_type" });
+  });
+
+  it("refuses a frame over the pixel ceiling with the ceiling recorded, and corrupt bytes as decode_failed", async () => {
+    const big = await sharp({ create: { width: 400, height: 400, channels: 3, background: "#000" } }).png().toBuffer();
+    await expect(withSlot((slot) => slot.thumbnail(big, thumbOpts("image/png", { maxPixels: 100_000 })))).rejects.toMatchObject({ code: "too_many_pixels", limit: 100_000 });
+    await expect(withSlot((slot) => slot.thumbnail(Buffer.from("not a png"), thumbOpts("image/png")))).rejects.toMatchObject({ code: "decode_failed" });
+  });
+
+  it("holds the decoder to its deadline: a HEIC frame given 1 ms times out and the slot is still handed back", async () => {
+    await expect(withSlot(async (slot) => slot.thumbnail(await fixture("tiny.heic"), thumbOpts("image/heic", { deadlineMs: 1 })))).rejects.toMatchObject({ code: "timeout" });
+    expect(service.inFlight()).toBe(0);
+  });
+});
+
 describe("ImageService.acquire (issue #45: the slot is taken before anything is downloaded)", () => {
   it("serves waiters in order and answers busy at once beyond the waiting line, without consuming the deadline", async () => {
     const own = new SharpHeicImageService(2);
@@ -202,5 +323,13 @@ describe("ImageService.acquire (issue #45: the slot is taken before anything is 
     const slot = await own.acquire(1_000);
     slot.release();
     await expect(slot.derive(Buffer.alloc(0), opts("image/jpeg"))).rejects.toThrow(/released/);
+  });
+
+  it("a released slot cannot make a thumbnail any more", async () => {
+    const own = new SharpHeicImageService(2);
+    const slot = await own.acquire(1_000);
+    slot.release();
+    const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: "#000" } }).png().toBuffer();
+    await expect(slot.thumbnail(png, thumbOpts("image/png"))).rejects.toThrow(/released/);
   });
 });

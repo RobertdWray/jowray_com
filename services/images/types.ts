@@ -30,6 +30,12 @@ export interface DerivedSet {
   thumb: Encoded | { failed: "too_large" };
 }
 
+/** How to make the thumbnail alone (a video poster's frame): no web copy, so no web or frame-cap settings. */
+export type ThumbnailOptions = Pick<DeriveOptions, "sourceMime" | "deadlineMs" | "maxPixels" | "thumb">;
+
+/** The thumbnail alone, with the upright dimensions of what it was made from. */
+export type ThumbnailSet = Pick<DerivedSet, "sourceWidth" | "sourceHeight" | "thumb">;
+
 /**
  * The one decode slot of this process, held by whoever acquired it. The
  * holder downloads the original and decodes it while holding the slot, so
@@ -38,6 +44,11 @@ export interface DerivedSet {
 export interface DeriveSlot {
   /** Decode once, encode both copies. Throws `ImageDeriveError` when the original cannot be used at all. */
   derive(input: Buffer, options: DeriveOptions): Promise<DerivedSet>;
+  /**
+   * Decode once, encode only the thumbnail (no web copy is made). Same decode,
+   * label check and errors as `derive`; used for a video poster's frame.
+   */
+  thumbnail(input: Buffer, options: ThumbnailOptions): Promise<ThumbnailSet>;
   /** Hand the slot to the next waiter. Idempotent. */
   release(): void;
 }

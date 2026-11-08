@@ -3,7 +3,7 @@ import "server-only";
 import { SharpHeicImageService } from "@/integrations/images/sharp-heic";
 import type { DeriveOptions, ImageService } from "@/services/images/types";
 
-export type { DeriveOptions, DerivedSet, DeriveSlot, Encoded, ImageService } from "@/services/images/types";
+export type { DeriveOptions, DerivedSet, DeriveSlot, Encoded, ImageService, ThumbnailOptions, ThumbnailSet } from "@/services/images/types";
 
 /**
  * Plan P2/P3 and the email plan's thumbnail spec (≤ 1000 px, JPEG q72 mozjpeg, ≤ 350 KB, #fffdf8).
