@@ -116,6 +116,13 @@ const PHOTO_GPS_BATCH = 10;
  */
 const POSTER_BATCH = 2;
 const POSTER_STEP_MS = 20_000;
+/**
+ * Step (g2)'s order alternates by this slot, the cron's interval (every 10 minutes, vercel.json): oldest first in even
+ * slots, newest first in odd ones (TCR B2-6, amends R11). A video whose header reads stall on every run defers each
+ * time, spending no attempt, so it stays eligible; with one fixed order, two such videos at its head would hold the
+ * batch for good. Alternating lets the other end through on every other run.
+ */
+const POSTER_ORDER_SLOT_MS = 10 * MINUTE_MS;
 /** What purge (f) writes over a photo's GPS: a purged photo keeps no location and no GPS claim (final review, item 5). */
 const PURGED_GPS = { latitude: null, longitude: null, gpsClaimedAt: null } as const;
 /** Step (h): the count each extraction outcome adds to. */
@@ -758,8 +765,9 @@ export async function GET(request: NextRequest): Promise<Response> {
     // finalize, which defer below derivePoster's floor. Same eligibility as derivePoster (`isEligible(…,
     // MAX_VIDEO_PIXELS)`), written out here like (g)'s: keep the two in step. Exhausted stale claims are selected and
     // retired by derivePoster. Last in the run on what (g) and (h) left, at most POSTER_STEP_MS (ruling R11): (g) alone
-    // may take 30 s, and posters must never starve the GPS step. derivePoster never throws; a refusal or a deferral is
-    // its verdict, not a run error (like (g)'s).
+    // may take 30 s, and posters must never starve the GPS step. The order alternates by run slot (POSTER_ORDER_SLOT_MS).
+    // derivePoster never throws; a refusal or a deferral is its verdict, not a run error (like (g)'s).
+    const posterOrder = Math.floor(now / POSTER_ORDER_SLOT_MS) % 2 === 0 ? "asc" : "desc";
     const videos = await db.media.findMany({
       where: {
         status: "READY",
@@ -777,7 +785,7 @@ export async function GET(request: NextRequest): Promise<Response> {
         ],
       },
       select: { id: true },
-      orderBy: { createdAt: "asc" },
+      orderBy: { createdAt: posterOrder },
       take: POSTER_BATCH,
     });
     const posterStart = Date.now();

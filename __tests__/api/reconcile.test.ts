@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { resetEnvCache } from "@/server/config/env";
 
@@ -822,10 +822,20 @@ describe("step (g2): video posters (video-posters plan T7, ruling R11)", () => {
   /** (g2)'s read: the only media query whose OR names the POSTER kind ((g)'s names the photo copies). */
   const isPosterQuery = (where: Record<string, unknown>) => JSON.stringify(where.OR ?? []).includes("POSTER");
   const posterQuery = () => dbStub.media.findMany.mock.calls.map(([args]) => args).filter(({ where }) => isPosterQuery(where)).at(-1);
+  /** The cron's interval: (g2)'s order alternates by these slots (TCR B2-6). */
+  const SLOT_MS = 10 * 60_000;
+  /** A run start 5 s into an even slot (oldest first); `+ SLOT_MS` is the next run's, in an odd slot (newest first). */
+  const EVEN_SLOT = Math.ceil(Date.UTC(2026, 10, 8, 12) / (2 * SLOT_MS)) * 2 * SLOT_MS + 5_000;
   beforeEach(() => {
     events = []; emails = []; memories = []; media = [];
     isolationCalls.length = 0;
     dbStub.media.findMany.mockClear();
+    // Every (g2) test runs on a pinned clock, in an even slot unless it moves on; only Date is faked.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(EVEN_SLOT);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("selects exactly the rows derivePoster's isEligible would take (or retire), judged against the video pixel ceiling", async () => {
@@ -925,6 +935,38 @@ describe("step (g2): video posters (video-posters plan T7, ruling R11)", () => {
     expect(posterQuery()).toMatchObject({ orderBy: { createdAt: "asc" }, take: 2 });
   });
 
+  it("alternates its order by ten-minute slot: oldest first in even slots, newest first in odd ones (TCR B2-6, amends R11)", async () => {
+    derivePosterMock.mockImplementation(async ({ mediaId }) => makePoster(mediaId));
+    media = ["med_a", "med_b", "med_c", "med_d", "med_e"].map((id, i) => video(id, minutesAgo(500 - 100 * i)));
+    const perRun: string[][] = [];
+    const orders: unknown[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      vi.setSystemTime(EVEN_SLOT + i * SLOT_MS);
+      derivePosterMock.mockClear();
+      await run(`Bearer ${SECRET}`);
+      perRun.push(derivePosterMock.mock.calls.map(([a]) => a.mediaId));
+      orders.push(posterQuery()!.orderBy);
+    }
+    expect(perRun).toEqual([["med_a", "med_b"], ["med_e", "med_d"], ["med_c"], []]);
+    expect(orders).toEqual([{ createdAt: "asc" }, { createdAt: "desc" }, { createdAt: "asc" }, { createdAt: "desc" }]);
+  });
+
+  it("a head that defers on every run (header reads that stall: no attempt spent) no longer blocks a newer video (TCR B2-6)", async () => {
+    const stuck = new Set(["med_stuck_1", "med_stuck_2"]);
+    derivePosterMock.mockImplementation(async ({ mediaId }) => (stuck.has(mediaId) ? "deferred" : makePoster(mediaId)));
+    media = [video("med_stuck_1", minutesAgo(900)), video("med_stuck_2", minutesAgo(800)), video("med_new", minutesAgo(10))];
+    const first = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
+    expect(derivePosterMock.mock.calls.map(([a]) => a.mediaId)).toEqual(["med_stuck_1", "med_stuck_2"]);
+    expect(first.data.posters).toBe(0);
+
+    vi.setSystemTime(EVEN_SLOT + SLOT_MS);
+    derivePosterMock.mockClear();
+    const second = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
+    expect(derivePosterMock.mock.calls.map(([a]) => a.mediaId)[0]).toBe("med_new");
+    expect(second.data.posters).toBe(1);
+    expect(media.find((m) => m.id === "med_new")!.derivatives).toEqual([expect.objectContaining({ kind: "POSTER", status: "READY" })]);
+  });
+
   it("is the last step: it starts after step (h) has finished", async () => {
     derivePosterMock.mockImplementation(async ({ mediaId }) => makePoster(mediaId));
     extractGpsMock.mockImplementation(async ({ mediaId }) => decideGps(mediaId, "absent"));
@@ -947,7 +989,6 @@ describe("step (g2): video posters (video-posters plan T7, ruling R11)", () => {
     ])("$why", async ({ elapsedMs, firstTakesMs, budgets }) => {
       media = [video("med_1st", minutesAgo(200)), video("med_2nd", minutesAgo(100))];
       const findMedia = dbStub.media.findMany.getMockImplementation()!;
-      vi.useFakeTimers({ toFake: ["Date"] });
       try {
         const startedAt = Date.now();
         dbStub.media.findMany.mockImplementation(async (args) => {
@@ -964,7 +1005,6 @@ describe("step (g2): video posters (video-posters plan T7, ruling R11)", () => {
         expect(body.data).toMatchObject({ posters: budgets.length, errors: 0 });
       } finally {
         dbStub.media.findMany.mockImplementation(findMedia);
-        vi.useRealTimers();
       }
     });
   });
