@@ -284,6 +284,7 @@ Built with claude session
 ## B. Upload pipeline, storage, media derivation, cron
 
 ### M-B-01: POSTER flow for video not built (browser capture, `kind: "poster"` ticket, `attachPosterPreview`)
+- **Update 2026-11-08: DONE in [PR #99](https://github.com/RobertdWray/jowray_com/pull/99), by a different design.** Rob's ruling R-P1 (2026-11-08) supersedes R3: posters are made server-side with ffmpeg, not captured in the browser, because every live video came through MCP, where no browser exists. Every READY video gets a `POSTER` from the upload callback, MCP finalize or cron step (g2); cards, the memory page player, the admin gallery and the admin alert show it. The browser half below (capture, `kind: "poster"` ticket, F11, F12) will not be built. Claim-page posters stay open as video-posters FU-1 (M-C-20). See [`docs/features/video-posters.md`](features/video-posters.md) and [`docs/plans/2026-11-08-video-posters.md`](plans/2026-11-08-video-posters.md).
 - Sources: DOC-70, DOC-89, DOC-156, DOC-158, DOC-189, DOC-192, LEDGER-D3, PR20-4, PR20-16, PR20-17, PR25-2, PR27-2, LEDGER-X2
 - Kind: Follow-up
 - What: Email plan Task 6 (browser half): `app/share/video-poster.ts` capture with one 8 s deadline, ticket `kind: "poster"` scoped to `image/jpeg` ≤ 2 MB and the exact staging key, `finalizeUpload({ posterTicket })`; the server writes a `DerivedMedia` `POSTER` row (enum, `posterStagingKeyFor`/`isStagingKey` key scheme and purge already exist from PR #25). Also F11 posters for files added from the claim page and F12 Playwright coverage of poster capture (depends on the browser harness, M-I-01). Audio/video keep presigning the original (P17).
@@ -671,6 +672,7 @@ Built with claude session
 - Merge with: none
 
 ### M-C-20: Claim-page thumbnails/posters (F10, D9)
+- **Update 2026-11-08:** video posters now exist ([PR #99](https://github.com/RobertdWray/jowray_com/pull/99)), and the claim-link route serves a video's poster at `?v=thumb`, but the claim page does not ask for it. That stays open as video-posters FU-1 (R-P3: out of that plan's scope).
 - Sources: DOC-155, PR20-15
 - Kind: Follow-up
 - What: "The claim page does not use previews yet" (needs a tokenized derived-media route). PR #25 added `?v=thumb` to the token-gated media route and the admin gallery uses thumbs; whether the claim page now does is unrecorded.
@@ -695,6 +697,7 @@ Built with claude session
 ## D. Email
 
 ### M-D-01: Email Task 4: thumbnails for legacy `confirmMemory`; base64 budget; 30 MB transport guard
+- **Update 2026-11-08: the admin-alert half is DONE in [PR #99](https://github.com/RobertdWray/jowray_com/pull/99)** (video-posters plan D8, T13–T14). `notifyAdminsOfMemory` attaches up to 4 inline previews, each photo's READY `THUMBNAIL` and each video's READY `POSTER` (≤ `PREVIEW_MAX_BYTES` each), read by `features/memories/admin-previews.ts` within a bounded wait and read budget. The receipts carry no uploaded picture since issue #46, so the legacy `confirmMemory` half is moot. Still open: the total-bytes or 30 MB transport guard in `integrations/sendgrid/index.ts`.
 - Sources: DOC-89, DOC-90, DOC-158, DOC-189, PR20-2, PR20-8, PR20-10, PR20-22, PR25-1, PR27-2, PR28-31, LEDGER-X2, LEDGER-X3, PR20-21
 - Kind: Follow-up
 - What: Contract (PR #25): a usable thumbnail is a `DerivedMedia` row `kind = THUMBNAIL`, `status = READY`, `image/jpeg`, `sizeBytes ≤ 350000`, width/height set, key under `derivedPrefix()` and not a staging key; read with `storage.get`, attach inline as `preview-<mediaId>`, first 4, ≤ 1.5 MB total measured in base64 (4 × 350 KB raw ≈ 1.87 MB on the wire), 8 s deadline; never read PENDING/FAILED or build URLs from keys. Task 15 moved the attachment point to the send receipt (`completeSubmission`, up to 10 s wait, D16), so `confirmMemory` for legacy single memories still sends no previews. Add a transport-level 30 MB guard in `integrations/sendgrid/index.ts` `assertAttachmentContract` once previews are attached.
