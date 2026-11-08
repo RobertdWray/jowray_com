@@ -109,7 +109,8 @@ const extractMock = vi.fn(async (input: ExtractPosterInput): Promise<ExtractPost
   await input.read(0, 8, new AbortController().signal);
   return { ok: true, png: PNG, sourceBytesRead: 8, toneMapped: false, seekSeconds: 1 };
 });
-vi.mock("@/services/video-frames", () => ({ createVideoFrameService: () => ({ available: () => availableMock(), extractPoster: (input: ExtractPosterInput) => extractMock(input) }) }));
+const frameServiceMock = vi.fn(() => ({ available: () => availableMock(), extractPoster: (input: ExtractPosterInput) => extractMock(input) }));
+vi.mock("@/services/video-frames", () => ({ createVideoFrameService: () => frameServiceMock() }));
 
 const trackSpy = vi.hoisted(() => ({ calls: 0 }));
 vi.mock("@/lib/video-track", async (importOriginal) => {
@@ -140,7 +141,7 @@ vi.mock("@/lib/logger", async (importOriginal) => {
   return { ...actual, createLogger: () => ({ debug: at("debug"), info: at("info"), warn: at("warn"), error: at("error") }), logError: (...args: unknown[]) => logErrorMock(...args) };
 });
 
-import { CLAIM_MARGIN_MS, derivePoster, INSPECT_STALL_REPORT_MS, POSTER_MIN_BUDGET_MS } from "@/features/memories/derive-poster";
+import { CLAIM_MARGIN_MS, derivePoster, INSPECT_STALL_REPORT_MS, POSTER_MIN_BUDGET_MS, PUBLISH_RESERVE_MS } from "@/features/memories/derive-poster";
 import { isEligible, MAX_DECODE_ATTEMPTS, MAX_PIXELS } from "@/features/memories/derived-claims";
 
 const NOW = new Date("2026-11-08T12:00:00Z");
@@ -155,6 +156,8 @@ function poster(over: Partial<DerivedRow> = {}): DerivedRow {
   return { id: `der_${nextId++}`, mediaId: "med_v", kind: "POSTER", status: "PENDING", storageKey: "dev/derived/mem_1/previous.jpg", mimeType: null, sizeBytes: null, width: null, height: null, error: null, attempts: 1, claimedAt: NOW, ...over };
 }
 const run = (deadlineMs = 15_000) => derivePoster({ mediaId: "med_v", deadlineMs, now: NOW });
+/** What every step before the claim keeps: the poster's own budget, the write-and-publish reserve and the claim's margin. */
+const PRE_CLAIM_MS = POSTER_MIN_BUDGET_MS + PUBLISH_RESERVE_MS + CLAIM_MARGIN_MS;
 const posterRow = () => derived.find((d) => d.kind === "POSTER");
 
 /** The offset of a box's header (its size field) whose type is `type`, searched from `from`. */
@@ -418,53 +421,71 @@ describe("derivePoster", () => {
       expect(headMock).not.toHaveBeenCalled();
     });
 
-    it(`defers with less than the floor plus the claim's ${CLAIM_MARGIN_MS} ms margin, before the binary, the slot or a byte`, async () => {
+    it(`defers with less than the floor, the ${PUBLISH_RESERVE_MS} ms write-and-publish reserve and the claim's ${CLAIM_MARGIN_MS} ms margin, before the binary, the slot or a byte`, async () => {
       expect(CLAIM_MARGIN_MS).toBe(1_000);
-      expect(await run(POSTER_MIN_BUDGET_MS + CLAIM_MARGIN_MS - 1)).toBe("deferred");
+      expect(PUBLISH_RESERVE_MS).toBe(2_000);
+      expect(await run(PRE_CLAIM_MS - 1)).toBe("deferred");
       expect(availableMock).not.toHaveBeenCalled();
       expect(acquireMock).not.toHaveBeenCalled();
       expect(headMock).not.toHaveBeenCalled();
       expect(logs.lines.find((l) => l.fields.action === "poster_deferred")?.fields).toMatchObject({ code: "budget" });
     });
 
-    it("waits for the slot only while the poster's own budget and the claim's margin would stay whole", async () => {
+    it("waits for the slot only while the poster's own budget, the reserve and the claim's margin would stay whole", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(NOW);
       expect(await run(15_000)).toBe("derived");
-      expect(acquireMock.mock.calls[0]![0]).toBe(15_000 - POSTER_MIN_BUDGET_MS - CLAIM_MARGIN_MS);
+      expect(acquireMock.mock.calls[0]![0]).toBe(15_000 - PRE_CLAIM_MS);
     });
 
-    it("defers without reading when the slot leaves no inspection window (exactly the floor plus the margin)", async () => {
+    it("defers at exactly the floor, the reserve and the margin, before the binary or the slot, never waiting 0 ms for it (TCR B2-4)", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(NOW);
-      expect(await run(POSTER_MIN_BUDGET_MS + CLAIM_MARGIN_MS)).toBe("deferred");
+      expect(await run(PRE_CLAIM_MS)).toBe("deferred");
+      expect(availableMock).not.toHaveBeenCalled();
+      expect(acquireMock).not.toHaveBeenCalled();
+      expect(headMock).not.toHaveBeenCalled();
+      expect(logs.lines.find((l) => l.fields.action === "poster_deferred")?.fields).toMatchObject({ code: "budget" });
+      // One millisecond more starts the run and waits at most that millisecond for the slot.
+      expect(await run(PRE_CLAIM_MS + 1)).toBe("derived");
+      expect(acquireMock.mock.calls).toEqual([[1]]);
+    });
+
+    /** A slot that arrives `ms` after it was asked for. */
+    const slowSlot = (ms: number) => async () => {
+      vi.setSystemTime(Date.now() + ms);
+      const slot = { thumbnail: (i: Buffer, o: unknown) => thumbnailMock(i, o), derive: vi.fn(), release: vi.fn() };
+      slots.push(slot);
+      return slot;
+    };
+
+    it("defers without reading when the slot leaves no inspection window (it arrives with exactly the floor, the reserve and the margin)", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(NOW);
+      acquireMock.mockImplementationOnce(slowSlot(1_000));
+      expect(await run(PRE_CLAIM_MS + 1_000)).toBe("deferred");
       expect(headMock).not.toHaveBeenCalled();
       expect(logs.lines.find((l) => l.fields.action === "poster_deferred")?.fields).toMatchObject({ code: "budget" });
     });
 
-    it("defers without reading when the slot arrives with less than the floor left", async () => {
+    it("defers without reading when the slot arrives with less than that left", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(NOW);
-      acquireMock.mockImplementationOnce(async () => {
-        vi.setSystemTime(Date.now() + 1_500);
-        const slot = { thumbnail: (i: Buffer, o: unknown) => thumbnailMock(i, o), derive: vi.fn(), release: vi.fn() };
-        slots.push(slot);
-        return slot;
-      });
-      expect(await run(7_000)).toBe("deferred");
+      acquireMock.mockImplementationOnce(slowSlot(1_500));
+      expect(await run(PRE_CLAIM_MS + 500)).toBe("deferred");
       expect(headMock).not.toHaveBeenCalled();
       expect(derived).toHaveLength(0);
     });
 
-    it("defers without claiming when reading the headers leaves less than the floor plus the claim's margin", async () => {
+    it("defers without claiming when reading the headers leaves less than the floor, the reserve and the claim's margin", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(NOW);
       headMock.mockImplementationOnce(async (pathname: string) => {
-        // 6.5 s left: the whole floor, but not the claim's margin on top of it.
+        // 8.5 s left: the whole floor and reserve, but not the claim's margin on top of them.
         vi.setSystemTime(Date.now() + 2_500);
         return { pathname, url: "https://blob.test/x", size: original.byteLength, contentType: "video/quicktime", uploadedAt: new Date() };
       });
-      expect(await run(9_000)).toBe("deferred");
+      expect(await run(PRE_CLAIM_MS + 2_000)).toBe("deferred");
       expect(logs.lines.find((l) => l.fields.action === "poster_deferred")?.fields).toMatchObject({ code: "budget" });
       expect(derived).toHaveLength(0);
       expect(extractMock).not.toHaveBeenCalled();
@@ -588,12 +609,12 @@ describe("derivePoster", () => {
       expect(logErrorMock).toHaveBeenCalledTimes(1);
     });
 
-    it("hands ffmpeg the budget minus the encoder's reserve, and records timeout when nothing is left for the encode", async () => {
+    it("hands ffmpeg the budget minus the encoder's and the write-and-publish reserves, and records timeout when nothing is left for the encode", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(NOW);
       extractMock.mockImplementationOnce(async (input) => {
-        // Date is frozen until here: the whole budget less the encoder's 1 s reserve.
-        expect(input.deadlineMs).toBe(14_000);
+        // Date is frozen until here: the whole budget less the encoder's 1 s and the write and publish's 2 s.
+        expect(input.deadlineMs).toBe(12_000);
         vi.setSystemTime(Date.now() + 15_000);
         return { ok: true, png: PNG, sourceBytesRead: 8, toneMapped: false, seekSeconds: 1 };
       });
@@ -605,6 +626,63 @@ describe("derivePoster", () => {
   });
 
   describe("re-encode and publish", () => {
+    it("keeps the write-and-publish reserve out of sharp's deadline too", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(NOW);
+      expect(await run(15_000)).toBe("derived");
+      expect((thumbnailMock.mock.calls[0]![1] as { deadlineMs: number }).deadlineMs).toBe(15_000 - PUBLISH_RESERVE_MS);
+    });
+
+    it("records timeout, spending the attempt, when ffmpeg leaves less than the reserve: the encode would eat the write's time", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(NOW);
+      extractMock.mockImplementationOnce(async () => {
+        vi.setSystemTime(Date.now() + 15_000 - PUBLISH_RESERVE_MS);
+        return { ok: true, png: PNG, sourceBytesRead: 8, toneMapped: false, seekSeconds: 1 };
+      });
+      expect(await run(15_000)).toBe("failed");
+      expect(posterRow()).toMatchObject({ status: "FAILED", error: "timeout", attempts: 1 });
+      expect(thumbnailMock).not.toHaveBeenCalled();
+    });
+
+    it("gives the claim back, spending no attempt, when the encode leaves too little for the write and the publish (TCR B2-5)", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(NOW);
+      thumbnailMock.mockImplementationOnce(async () => {
+        // sharp overran its deadline: under the reserve is left for the write and the publish transaction.
+        vi.setSystemTime(Date.now() + 15_000 - PUBLISH_RESERVE_MS + 1);
+        return { sourceWidth: 160, sourceHeight: 90, thumb: POSTER_JPEG };
+      });
+      expect(await run(15_000)).toBe("deferred");
+      expect(derived).toHaveLength(0);
+      expect(putMock).not.toHaveBeenCalled();
+      expect(db.$transaction).not.toHaveBeenCalled();
+      // Never silent: a run that keeps ending here would otherwise defer forever with no signal.
+      expect(logErrorMock).toHaveBeenCalledTimes(1);
+      expect(logErrorMock.mock.calls[0]![2]).toMatchObject({ mediaId: "med_v", code: "publish_budget" });
+      // The next run starts from no row at all.
+      vi.useRealTimers();
+      expect(await run()).toBe("derived");
+      expect(posterRow()).toMatchObject({ status: "READY", attempts: 1 });
+    });
+
+    it("gives the claim back and deletes the written blob when the write leaves too little for the publish (TCR B2-5)", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(NOW);
+      const put = putMock.getMockImplementation()!;
+      putMock.mockImplementationOnce(async (pathname: string, data: Buffer, contentType: string) => {
+        // A slow write: 999 ms of the run's 15 s are left, under the 1 s the publish transaction keeps.
+        vi.setSystemTime(NOW.getTime() + 15_000 - 999);
+        return put(pathname, data, contentType);
+      });
+      expect(await run(15_000)).toBe("deferred");
+      expect(derived).toHaveLength(0);
+      expect(db.$transaction).not.toHaveBeenCalled();
+      expect(delMock.mock.calls).toEqual([[putMock.mock.calls[0]![0]]]);
+      expect(logErrorMock).toHaveBeenCalledTimes(1);
+      expect(logErrorMock.mock.calls[0]![2]).toMatchObject({ mediaId: "med_v", code: "publish_budget" });
+    });
+
     it("records too_large (final) when even the fallback quality is over budget, writing no blob", async () => {
       thumbnailMock.mockResolvedValueOnce({ sourceWidth: 160, sourceHeight: 90, thumb: { failed: "too_large" } });
       expect(await run()).toBe("failed");
@@ -723,8 +801,8 @@ describe("derivePoster", () => {
         const timer = setTimeout(() => resolve({ pathname, url: "https://blob.test/x", size: original.byteLength, contentType: "video/quicktime", uploadedAt: new Date() }), ms);
         options?.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("This operation was aborted")); }, { once: true });
       });
-      /** The window a run of `budgetMs` reads in: what is left over the floor and the claim's margin. */
-      const windowOf = (budgetMs: number) => budgetMs - POSTER_MIN_BUDGET_MS - CLAIM_MARGIN_MS;
+      /** The window a run of `budgetMs` reads in: what is left over the floor, the reserve and the claim's margin. */
+      const windowOf = (budgetMs: number) => budgetMs - PRE_CLAIM_MS;
       const at = async (headMs: number, budgetMs = 10_000) => {
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
         vi.setSystemTime(NOW);
@@ -735,10 +813,11 @@ describe("derivePoster", () => {
         return outcome;
       };
 
-      it("claims and extracts when the reads finish just inside the window (budget − floor − claim margin)", async () => {
+      it("claims and extracts when the reads finish just inside the window (budget − floor − reserve − claim margin)", async () => {
         expect(await at(windowOf(10_000) - 1)).toBe("derived");
         expect(posterRow()).toMatchObject({ status: "READY", attempts: 1 });
-        // ffmpeg got the whole floor and the unused claim margin less the encoder's reserve, not the remains of a long read.
+        // ffmpeg got the whole floor and the unused claim margin less the encoder's reserve (the write and publish keep
+        // theirs), not the remains of a long read.
         expect(extractMock.mock.calls[0]![0].deadlineMs).toBe(POSTER_MIN_BUDGET_MS + CLAIM_MARGIN_MS + 1 - 1_000);
       });
 
@@ -761,7 +840,7 @@ describe("derivePoster", () => {
       });
 
       it("defers reads that end inside the floor's window but within the claim's margin, before claiming", async () => {
-        expect(await at(10_000 - POSTER_MIN_BUDGET_MS - 1)).toBe("deferred");
+        expect(await at(10_000 - POSTER_MIN_BUDGET_MS - PUBLISH_RESERVE_MS - 1)).toBe("deferred");
         expect(db.derivedMedia.create).not.toHaveBeenCalled();
         expect(logs.lines.find((l) => l.fields.action === "poster_deferred")?.fields).toMatchObject({ code: "inspect_time" });
       });
@@ -791,7 +870,7 @@ describe("derivePoster", () => {
       });
 
       it("reports a window exactly at the threshold, not one just under it", async () => {
-        const budgetAt = (windowMs: number) => windowMs + POSTER_MIN_BUDGET_MS + CLAIM_MARGIN_MS;
+        const budgetAt = (windowMs: number) => windowMs + PRE_CLAIM_MS;
         expect(await at(INSPECT_STALL_REPORT_MS + 1, budgetAt(INSPECT_STALL_REPORT_MS))).toBe("deferred");
         expect(sentry.messages).toHaveLength(1);
         vi.useRealTimers();
@@ -807,7 +886,7 @@ describe("derivePoster", () => {
       });
     });
 
-    it("gives the claim back, spending no attempt, when the claim itself outlasts its margin and leaves less than the floor", async () => {
+    it("gives the claim back, spending no attempt, when the claim itself outlasts its margin and leaves less than the floor and the reserve", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(NOW);
       derived = [poster({ claimedAt: STALE, storageKey: "dev/derived/mem_1/stale.jpg" })];
@@ -818,7 +897,7 @@ describe("derivePoster", () => {
         for (const r of rows) { Object.assign(r, { ...data, attempts: r.attempts + 1 }); }
         return { count: rows.length };
       });
-      expect(await run(8_000)).toBe("deferred");
+      expect(await run(PRE_CLAIM_MS + 1_000)).toBe("deferred");
       expect(derived).toHaveLength(0);
       expect(extractMock).not.toHaveBeenCalled();
       expect(logErrorMock).not.toHaveBeenCalled();
@@ -827,6 +906,17 @@ describe("derivePoster", () => {
   });
 
   describe("never throws", () => {
+    it("a frame service that refuses to start (FFMPEG_BIN set, TCR B1-1) is reported and deferred, with nothing claimed or read", async () => {
+      const refusal = new Error("FFMPEG_BIN is set, so ffmpeg-static would hand the poster code that file instead of its own binary");
+      frameServiceMock.mockImplementationOnce(() => { throw refusal; });
+      expect(await run()).toBe("deferred");
+      expect(derived).toHaveLength(0);
+      expect(acquireMock).not.toHaveBeenCalled();
+      expect(headMock).not.toHaveBeenCalled();
+      expect(logErrorMock).toHaveBeenCalledTimes(1);
+      expect(logErrorMock.mock.calls[0]![1]).toBe(refusal);
+    });
+
     it("a database error before any claim is reported and deferred", async () => {
       db.media.findUnique.mockRejectedValueOnce(new Error("db down"));
       expect(await run()).toBe("deferred");

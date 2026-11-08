@@ -21,27 +21,45 @@ const log = createLogger({ category: "upload" });
  * The budget ffmpeg and sharp are guaranteed when a poster is claimed. Nothing is claimed with less, so no attempt is
  * spent (premortem #5): one or two ffmpeg runs and the re-encode need a few seconds, and a run that times out costs
  * the row one of its three attempts. Waiting for the image slot and reading the headers both stop while this much,
- * and the claim's margin, is still left.
+ * the write-and-publish reserve and the claim's margin are still left.
  */
 export const POSTER_MIN_BUDGET_MS = 6_000;
 
 /**
- * Kept on top of POSTER_MIN_BUDGET_MS by every step before the claim, for the claim's own latency (a reclaim deletes
- * the previous candidate first). Reads that end just inside their window therefore still hold the whole floor once
- * the row is claimed; without it they would pass the inspection check, then trip the post-claim floor and give the
- * claim back (T6 re-review). The post-claim check stays at the floor, for a claim slower than this.
+ * Kept back from ffmpeg and sharp for writing the JPEG and publishing the claim (TCR B2-5), so both finish inside the
+ * run's own deadline and its caller's margin (MCP's 3 s, R12) is left for the Sentry flush. They need only a warm
+ * store and database (the claim was written seconds earlier): one put of at most 350 KB and one short transaction.
+ * 2 s covers them with room. The transaction's own limits (`maxWait` 5 s and `timeout` 10 s in derived-claims.ts) are
+ * Neon cold-start ceilings, not a budget: no run could keep 15 s back. A run that reaches the write with less than this
+ * left, or the publish with less than PUBLISH_TX_MIN_MS, gives its claim back (deferred, no attempt spent) and reports
+ * it, rather than leave the claim PENDING for 10 minutes if the invocation is cut short.
+ */
+export const PUBLISH_RESERVE_MS = 2_000;
+
+/** The part of PUBLISH_RESERVE_MS the publish transaction must still have once the JPEG is written. */
+const PUBLISH_TX_MIN_MS = 1_000;
+
+/**
+ * Kept on top of POSTER_MIN_BUDGET_MS and PUBLISH_RESERVE_MS by every step before the claim, for the claim's own
+ * latency (a reclaim deletes the previous candidate first). Reads that end just inside their window therefore still
+ * hold the whole floor once the row is claimed; without it they would pass the inspection check, then trip the
+ * post-claim floor and give the claim back (T6 re-review). The post-claim check stays at the floor and the reserve,
+ * for a claim slower than this.
  */
 export const CLAIM_MARGIN_MS = 1_000;
 
-/** What a run must still have at every step before the claim: the poster's own budget and the claim's margin. */
-const PRE_CLAIM_BUDGET_MS = POSTER_MIN_BUDGET_MS + CLAIM_MARGIN_MS;
+/** What a run must still have right after its claim: the poster's own budget and the write-and-publish reserve. */
+const POST_CLAIM_FLOOR_MS = POSTER_MIN_BUDGET_MS + PUBLISH_RESERVE_MS;
+
+/** What a run must still have at every step before the claim: the post-claim floor and the claim's margin (9 s). */
+const PRE_CLAIM_BUDGET_MS = POST_CLAIM_FLOOR_MS + CLAIM_MARGIN_MS;
 
 /**
  * An inspection window at least this long that still runs out is a stalled object, not a busy run, and is reported
- * to Sentry; a shorter one is only warned. The cron's qualifies (its 20 s step less the floor and the margin: up to
- * 13 s), and MCP finalize's when the call left it at least 17 s; the upload callback's never does (15 s less them: at
- * most 8 s). Without the report, a video whose reads stall in every window would be deferred on every run with no
- * signal.
+ * to Sentry; a shorter one is only warned. The cron's qualifies (its 20 s step less the floor, the reserve and the
+ * margin: up to 11 s), and MCP finalize's when the call left it at least 19 s; the upload callback's never does (15 s
+ * less them: at most 6 s). Without the report, a video whose reads stall in every window would be deferred on every
+ * run with no signal.
  */
 export const INSPECT_STALL_REPORT_MS = 10_000;
 
@@ -69,7 +87,10 @@ type Inspection = { bytesRead: number } & (
   | { kind: "out_of_time" }
 );
 
-/** The environment, not the video, stopped the run (no binary, a loopback server failure); reported, never recorded. */
+/**
+ * The environment, not the video, stopped the run (no binary, a loopback server failure, too little time left to write
+ * and publish); reported, never recorded.
+ */
 class PosterEnvironmentError extends Error {
   constructor(message: string) {
     super(message);
@@ -193,29 +214,32 @@ async function inspect(storage: StorageService, storageKey: string, signal: Abor
  *    its POSTER row (if any) eligible under the video pixel ceiling. Anything else is `not_eligible` (or
  *    `claimed_elsewhere` for a live claim), with nothing read. A stale claim that has used up its attempts is retired
  *    as `abandoned` straight away: that needs no binary, slot or byte.
- * 2. Preflight, before any claim: at least POSTER_MIN_BUDGET_MS and CLAIM_MARGIN_MS left, the binary available, then
- *    the image slot, waited for only while both would remain. A miss is `deferred`: nothing is claimed, so no attempt
- *    is spent, and the cron comes back. The slot is held from here through ffmpeg AND sharp: a 4K frame costs ffmpeg
+ * 2. Preflight, before any claim: more than POSTER_MIN_BUDGET_MS, PUBLISH_RESERVE_MS and CLAIM_MARGIN_MS left (at
+ *    exactly that, the slot could only be waited for 0 ms), the binary available, then the image slot, waited for only
+ *    while all three would remain. A miss is `deferred`: nothing is claimed, so no attempt is spent, and the cron
+ *    comes back. The slot is held from here through ffmpeg AND sharp: a 4K frame costs ffmpeg
  *    about 280 MB, so one heavy decode runs per process.
  * 3. Inspect: `storage.head` for the size, the first 128 bytes for the container and, for `mov`, the first video
- *    track (pixel ceiling, HDR transfer). The reads are cut off when only the floor and the claim's margin are left, so
- *    they either finish in time to claim with the whole poster budget or are `deferred`, still unclaimed. A window that
+ *    track (pixel ceiling, HDR transfer). The reads are cut off when only the floor, the reserve and the claim's margin
+ *    are left, so they either finish in time to claim with the whole poster budget or are `deferred`, still unclaimed. A window that
  *    runs out is warned, and reported to Sentry when it was at least INSPECT_STALL_REPORT_MS long.
  * 4. Claim the POSTER row with a fresh `.jpg` key ([C35], the shared protocol). An inspection verdict is recorded on
- *    the claim. If the claim itself left less than POSTER_MIN_BUDGET_MS (it took longer than its margin), the claim is
- *    released (no attempt spent) and the run is `deferred`. Otherwise ffmpeg extracts the frame inside a
- *    `media.poster` span [C24], within the budget less the encoder's reserve, reading the original only through
- *    bounded range reads (D2).
- * 5. sharp re-encodes the frame at the thumbnail spec [C21] (D4), and the slot is released.
+ *    the claim. If the claim itself left less than the floor and the reserve (it took longer than its margin), the claim
+ *    is released (no attempt spent) and the run is `deferred`. Otherwise ffmpeg extracts the frame inside a
+ *    `media.poster` span [C24], within the budget less the encoder's reserve and the write-and-publish reserve,
+ *    reading the original only through bounded range reads (D2).
+ * 5. sharp re-encodes the frame at the thumbnail spec [C21] (D4) within the budget less the write-and-publish reserve,
+ *    and the slot is released.
  * 6. The JPEG is written to the claimed key, and the claim is published under the memory lock with no `whileLocked`:
  *    a poster never writes the Media row, whose `updatedAt` feeds `reviewVersion` (D6, [C36]). A video removed
- *    meanwhile is not resurrected.
+ *    meanwhile is not resurrected. Each starts only with its share of the reserve left; otherwise the claim is given
+ *    back (TCR B2-5).
  *
  * Attempts: a condition of the video is recorded and bounded: `no_video_stream`, `no_frame`, `source_limit`,
  * `unsupported_type`, `too_many_pixels:<n>` and `too_large` are final; `decode_failed` and `timeout` are retried up
  * to MAX_DECODE_ATTEMPTS (`isEligible`). A condition of the environment spends none: when ffmpeg cannot run after the
- * claim (the binary vanished, the loopback server failed), or the store or database fails the write or the publish,
- * our row is given back (deleted while it is still exactly our PENDING claim, its candidate blob with it) and the
+ * claim (the binary vanished, the loopback server failed), or the store or database fails the write or the publish, or
+ * too little time is left to start either, our row is given back (deleted while it is still exactly our PENDING claim, its candidate blob with it) and the
  * result is `deferred`, reported to Sentry. Never throws.
  */
 export async function derivePoster({ mediaId, deadlineMs, now = new Date() }: { mediaId: string; deadlineMs: number; now?: Date }): Promise<DeriveOutcome> {
@@ -314,8 +338,9 @@ export async function derivePoster({ mediaId, deadlineMs, now = new Date() }: { 
       return retired.outcome;
     }
 
-    // 2. Preflight: nothing below is claimed until all of it holds.
-    if (remainingMs() < PRE_CLAIM_BUDGET_MS) {
+    // 2. Preflight: nothing below is claimed until all of it holds. At exactly the threshold the slot could be waited
+    //    for 0 ms and the inspection would get no window, so that defers here too, before the binary or the slot.
+    if (remainingMs() <= PRE_CLAIM_BUDGET_MS) {
       return deferred("budget", "too little budget to start a poster; left to the cron");
     }
     const frames = createVideoFrameService();
@@ -325,7 +350,7 @@ export async function derivePoster({ mediaId, deadlineMs, now = new Date() }: { 
       return "deferred";
     }
     try {
-      // Wait only while the poster's own budget and the claim's margin would still be whole afterwards.
+      // Wait only while the poster's own budget, the reserve and the claim's margin would still be whole afterwards.
       slot = await createImageService().acquire(remainingMs() - PRE_CLAIM_BUDGET_MS);
     } catch (error) {
       if (isImageDeriveError(error) && (error.code === "busy" || error.code === "timeout")) {
@@ -333,8 +358,8 @@ export async function derivePoster({ mediaId, deadlineMs, now = new Date() }: { 
       }
       throw error;
     }
-    // 3. Inspect, cut off when only the poster budget and the claim's margin are left: it finishes in time to claim
-    //    with the whole floor, or it is deferred.
+    // 3. Inspect, cut off when only the poster budget, the reserve and the claim's margin are left: it finishes in time
+    //    to claim with the whole floor, or it is deferred.
     const inspectWindowMs = remainingMs() - PRE_CLAIM_BUDGET_MS;
     if (inspectWindowMs <= 0) {
       return deferred("budget", "the image slot arrived with too little budget left; left to the cron");
@@ -374,7 +399,7 @@ export async function derivePoster({ mediaId, deadlineMs, now = new Date() }: { 
     if (inspection.kind === "verdict") {
       return await fail(inspection.code, { detail: inspection.detail, error: inspection.error });
     }
-    if (remainingMs() < POSTER_MIN_BUDGET_MS) {
+    if (remainingMs() < POST_CLAIM_FLOOR_MS) {
       // A slow claim (a reclaim deletes the previous candidate first) is not the video's fault.
       return await release("budget", null);
     }
@@ -387,7 +412,7 @@ export async function derivePoster({ mediaId, deadlineMs, now = new Date() }: { 
           size,
           container,
           transferKind,
-          deadlineMs: remainingMs() - ENCODE_RESERVE_MS,
+          deadlineMs: remainingMs() - ENCODE_RESERVE_MS - PUBLISH_RESERVE_MS,
           read: (offset, length, signal) => readOriginal(storage, row.storageKey, size, offset, length, signal),
         });
         span.setAttributes({
@@ -409,22 +434,38 @@ export async function derivePoster({ mediaId, deadlineMs, now = new Date() }: { 
     }
     Object.assign(run, { toneMapped: extraction.toneMapped, seekSeconds: extraction.seekSeconds, warning: extraction.warning });
 
-    // 5. Re-encode while the slot is still ours (the slot does not refuse a spent deadline, so check first).
-    if (remainingMs() <= 0) {
+    // 5. Re-encode while the slot is still ours, within the budget less the write-and-publish reserve (the slot does not
+    //    refuse a spent deadline, so check first). ffmpeg ran over its own deadline to get here: a verdict on this run.
+    const encodeMs = remainingMs() - PUBLISH_RESERVE_MS;
+    if (encodeMs <= 0) {
       return await fail("timeout", { detail: "ffmpeg used the whole budget; none was left to re-encode the frame" });
     }
-    const { thumb } = await slot.thumbnail(extraction.png, { sourceMime: "image/png", deadlineMs: remainingMs(), maxPixels: MAX_VIDEO_PIXELS, thumb: DERIVE_DEFAULTS.thumb });
+    const { thumb } = await slot.thumbnail(extraction.png, { sourceMime: "image/png", deadlineMs: encodeMs, maxPixels: MAX_VIDEO_PIXELS, thumb: DERIVE_DEFAULTS.thumb });
     slot.release();
     slot = null;
 
     // 6. Write and publish. Both depend on the store and the database only, never on the video, so a failure gives the
-    //    claim back. Under the memory lock, conditional on this exact claim; no `whileLocked`, so the Media row is never
+    //    claim back, and so does too little time to start either: the frame is ready, and the next run can make it
+    //    again. Under the memory lock, conditional on this exact claim; no `whileLocked`, so the Media row is never
     //    written (D6).
+    const outOfPublishTime = (step: string, needMs: number) =>
+      release("publish_budget", new PosterEnvironmentError(`only ${remainingMs()} ms were left for ${step}, which needs ${needMs} ms of the ${PUBLISH_RESERVE_MS} ms write-and-publish reserve`));
+    if (remainingMs() < PUBLISH_RESERVE_MS) {
+      return await outOfPublishTime("the blob write and the publish", PUBLISH_RESERVE_MS);
+    }
     let outcomes: Partial<Record<"POSTER", PublishOutcome>>;
     try {
       if (!("failed" in thumb)) {
         await storage.put(claim.storageKey, thumb.data, thumb.mimeType);
       }
+    } catch (error) {
+      return await release("write", toError(error));
+    }
+    if (remainingMs() < PUBLISH_TX_MIN_MS) {
+      // releaseClaim deletes the JPEG just written along with our row.
+      return await outOfPublishTime("the publish", PUBLISH_TX_MIN_MS);
+    }
+    try {
       outcomes = await publishClaims({ mediaId, memoryId: row.memoryId, claims: [claim], now, encodedFor: () => thumb });
     } catch (error) {
       return await release("write", toError(error));
