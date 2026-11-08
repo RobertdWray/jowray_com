@@ -33,11 +33,14 @@ export interface VideoTrack {
   transferKind: TransferKind;
 }
 
-/** `absent`: no movie box, or no video track. `failed`: a malformed box, a budget overrun or a read error. */
+/**
+ * `absent`: no movie box, or no video track. `failed`: a malformed box, a budget overrun or a read error. Its `error` is
+ * what was thrown (a non-Error throw is wrapped, with the value kept in `cause`), and `reason` is that error's message.
+ */
 export type VideoTrackResult =
   | { status: "found"; track: VideoTrack }
   | { status: "absent"; reason: string }
-  | { status: "failed"; reason: string };
+  | { status: "failed"; reason: string; error: Error };
 
 const DEFAULT_LIMITS: VideoTrackLimits = {
   maxTopLevelBoxes: 64,
@@ -77,8 +80,8 @@ const PALETTE_DEPTHS = new Set([1, 2, 4, 8]);
 const SDR_TRANSFERS = new Set([1, 4, 5, 6, 7, 11, 12, 13, 14, 15]);
 
 /**
- * Never rejects. Limits are overridable nonnegative safe integers; unspecified limits retain defaults. A read error's
- * message becomes the failed reason.
+ * Never rejects. Limits are overridable nonnegative safe integers; unspecified limits retain defaults. Every failure
+ * keeps the thrown error, like `readVideoLocation`'s.
  */
 export async function readVideoTrackInfo(
   read: RangeRead,
@@ -92,8 +95,9 @@ export async function readVideoTrackInfo(
     }
     const track = firstVideoTrack(bytes);
     return track === undefined ? { status: "absent", reason: "No video track" } : { status: "found", track };
-  } catch (error) {
-    return { status: "failed", reason: error instanceof Error ? error.message : "Video range read failed" };
+  } catch (thrown) {
+    const error = thrown instanceof Error ? thrown : new Error("Video track read failed", { cause: thrown });
+    return { status: "failed", reason: error.message, error };
   }
 }
 

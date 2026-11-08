@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
+import { BoxFormatError } from "@/lib/mp4-boxes";
 import { readVideoTrackInfo, type VideoTrackLimits, type VideoTrackResult } from "@/lib/video-track";
 
 const MIB = 1024 * 1024;
@@ -128,8 +129,12 @@ function colrPayload(bytes: Buffer): string | undefined {
   return bytes.subarray(at + 4, at - 4 + bytes.readUInt32BE(at - 4)).toString("hex");
 }
 
+/** Every failure keeps what was thrown (R3a), and its reason is that error's message. */
 function expectFailed(result: VideoTrackResult, reason: RegExp) {
-  expect(result).toEqual({ status: "failed", reason: expect.stringMatching(reason) });
+  expect(result).toEqual({ status: "failed", reason: expect.stringMatching(reason), error: expect.any(Error) });
+  if (result.status === "failed") {
+    expect(result.error.message).toBe(result.reason);
+  }
 }
 
 describe("readVideoTrackInfo fixtures", () => {
@@ -429,14 +434,32 @@ describe("movie box walk and budgets", () => {
 });
 
 describe("read failures resolve as failed", () => {
-  it("resolves a thrown read error as failed with its message", async () => {
-    const result = await readVideoTrackInfo(async () => { throw new Error("network down"); }, 100);
-    expect(result).toEqual({ status: "failed", reason: "network down" });
+  it("keeps the original Error instance when a read rejects", async () => {
+    const error = new Error("network down");
+    const result = await readVideoTrackInfo(async () => { throw error; }, 100);
+    expect(result).toEqual({ status: "failed", reason: "network down", error });
+    if (result.status === "failed") {
+      expect(result.error).toBe(error);
+    }
   });
 
-  it("resolves a non-Error throw as failed", async () => {
-    const result = await readVideoTrackInfo(async () => { throw "network down"; }, 100);
-    expect(result).toEqual({ status: "failed", reason: "Video range read failed" });
+  it("wraps a non-Error throw in an Error and keeps the value as its cause", async () => {
+    const thrown = { code: "ECONNRESET" };
+    const result = await readVideoTrackInfo(async () => { throw thrown; }, 100);
+    expect(result).toEqual({ status: "failed", reason: "Video track read failed", error: expect.any(Error) });
+    if (result.status === "failed") {
+      expect(result.error.message).toBe("Video track read failed");
+      expect(result.error.cause).toBe(thrown);
+    }
+  });
+
+  it("carries the format error itself, whose message is the reason", async () => {
+    const result = await parse(movie(track("vide", box("stsd", uint32(0)))));
+    expect(result).toEqual({ status: "failed", reason: "Malformed video: truncated stsd payload", error: expect.any(BoxFormatError) });
+    if (result.status === "failed") {
+      expect(result.error).toBeInstanceOf(BoxFormatError);
+      expect(result.error.message).toBe(result.reason);
+    }
   });
 
   it("resolves a short read as failed", async () => {
