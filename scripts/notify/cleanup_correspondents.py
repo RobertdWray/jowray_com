@@ -113,6 +113,12 @@ CLUSTER_CAP = 8
 PILOT_RANDOM = 30
 PILOT_SEED = "cleanup-pilot-1"
 REMOVE_DIRECT_MAX = 5         # removing someone written to directly this often escalates
+# Removing a two-way correspondent (they also wrote back) written to directly this often
+# escalates too: missing a friend is the costly error, and in the real run whole-row
+# removals at high confidence of two-way correspondents with 2-4 direct messages slipped
+# under REMOVE_DIRECT_MAX. Escalation logic only: not in the manifest, so no cached first
+# answer goes stale.
+TWO_WAY_REMOVAL_ESCALATE_DIRECT = 2
 DEFAULT_CONCURRENCY, DEFAULT_JUDGE_CONCURRENCY = 15, 4
 DEFAULT_HAIKU_BUDGET, DEFAULT_JUDGE_BUDGET = 15.0, 40.0
 # SDK retries per request, and the request timeout. A request that ends in an error is
@@ -1381,8 +1387,12 @@ def escalation_reasons(cluster: dict, status: str, decision, members_disagree: b
     for person in decision["people"]:
         if not person["keep"]:
             touched = [r for r in cluster["rows"] if set(r["addresses"]) & set(person["addresses"])]
-            if sum(as_int(r.get("she_wrote_direct")) for r in touched) >= REMOVE_DIRECT_MAX:
+            direct = sum(as_int(r.get("she_wrote_direct")) for r in touched)
+            if direct >= REMOVE_DIRECT_MAX:
                 reasons.append("removes someone the household wrote to directly")
+                break
+            if direct >= TWO_WAY_REMOVAL_ESCALATE_DIRECT and any(two_way(r) for r in touched):
+                reasons.append("removes a two-way correspondent the household wrote to directly")
                 break
     lookalikes = lookalike_addresses(cluster)
     if any(p["keep"] and lookalikes & set(p["addresses"]) for p in decision["people"]):
@@ -1390,6 +1400,11 @@ def escalation_reasons(cluster: dict, status: str, decision, members_disagree: b
     if members_disagree:
         reasons.append("the clusters reviewed together had disagreeing first answers")
     return reasons
+
+
+def two_way(row: dict) -> bool:
+    """The harvester's "two-way": the household wrote to the row and the row wrote back."""
+    return as_int(row.get("she_wrote")) > 0 and as_int(row.get("they_wrote")) > 0
 
 
 def lookalike_addresses(cluster: dict) -> set:

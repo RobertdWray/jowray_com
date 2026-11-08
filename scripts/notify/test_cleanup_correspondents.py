@@ -699,6 +699,44 @@ class EscalationTests(unittest.TestCase):
         self.assertEqual(self.reasons(None, "budget"), [])
 
 
+class RemovalEscalationTests(unittest.TestCase):
+    """Removing a two-way correspondent written to directly twice or more goes to the judge."""
+
+    def reasons(self, she_wrote, they_wrote, direct, rows=1):
+        cluster = {"ranks": list(range(1, rows + 1)), "rows": [
+            {**row(i, "Pat", "Fiction", [f"pat{i}@example.com"], she_wrote=str(she_wrote),
+                   direct=str(direct)), "they_wrote": str(they_wrote)} for i in range(1, rows + 1)]}
+        decision, errors = cc.validate_answer(answer(person(
+            [a for r in cluster["rows"] for a in r["addresses"]], keep=False,
+            relationship="business_or_vendor", notify="unlikely")), cluster)
+        self.assertEqual(errors, [])
+        return cc.escalation_reasons(cluster, "ok", decision)
+
+    def test_two_way_with_two_direct_escalates(self):
+        self.assertEqual(self.reasons(3, 1, 2),
+                         ["removes a two-way correspondent the household wrote to directly"])
+
+    def test_one_way_below_five_direct_does_not(self):
+        for direct in (2, 4):
+            self.assertEqual(self.reasons(6, 0, direct), [])
+        self.assertEqual(self.reasons(3, 1, 1), [])  # two-way, but written to directly once
+
+    def test_five_direct_escalates_either_way(self):
+        for they_wrote in (0, 3):
+            self.assertEqual(self.reasons(8, they_wrote, 5), ["removes someone the household wrote to directly"])
+
+    def test_direct_messages_add_up_across_the_removed_persons_rows(self):
+        self.assertEqual(self.reasons(1, 1, 1, rows=2),
+                         ["removes a two-way correspondent the household wrote to directly"])
+
+    def test_the_thresholds_are_not_part_of_the_manifest(self):
+        # Escalation logic only: cached first answers (keyed by the manifest) stay valid.
+        manifest = cc.build_manifest(cc.Paths(Path("/nonexistent")), cc.render_prompts(GUIDANCE), "sdk", "head")
+        with mock.patch.multiple(cc, REMOVE_DIRECT_MAX=99, TWO_WAY_REMOVAL_ESCALATE_DIRECT=99):
+            changed = cc.build_manifest(cc.Paths(Path("/nonexistent")), cc.render_prompts(GUIDANCE), "sdk", "head")
+        self.assertEqual(cc.manifest_hash_of(changed), cc.manifest_hash_of(manifest))
+
+
 # ---- pricing and budgets ------------------------------------------------------------------------
 class PricingTests(unittest.TestCase):
     def test_iterations_price_each_attempt_at_its_model(self):
