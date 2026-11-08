@@ -70,7 +70,6 @@ PROMPT_VERSION = "2026-11-08.1"
 HAIKU_MODEL = "claude-haiku-5-5"
 JUDGE_MODEL = "claude-opus-5-5"
 EFFORT = "medium"
-JUDGE_BETAS = ("server-side-fallback-2026-07-01",)
 PHASES = ("haiku", "joint", "judge")
 
 
@@ -130,10 +129,11 @@ PRICES = {
 }
 HAIKU_LONG = Price(0.50, 0.625, 1.00, 0.05, 2.50)        # Haiku prompts over 100k tokens
 HAIKU_LONG_PROMPT = 100_000
-# A server-side fallback can run a model this table does not list; reservations and
-# accounting price it at this conservative stand-in (the table maximum).
-FALLBACK_CANDIDATE = Price(10.0, 12.5, 20.0, 1.0, 50.0)
-TABLE_MAX = max_price(*PRICES.values(), HAIKU_LONG, FALLBACK_CANDIDATE)
+# Spend accounting prices any model this table does not list (for example one that
+# usage.iterations reports unexpectedly) at this conservative stand-in, the table maximum.
+# Reservations never use it: both models are known and the judge sends no fallback.
+UNLISTED_MODEL = Price(10.0, 12.5, 20.0, 1.0, 50.0)
+TABLE_MAX = max_price(*PRICES.values(), HAIKU_LONG, UNLISTED_MODEL)
 
 
 def price_for(model: str, prompt_tokens: int):
@@ -166,7 +166,7 @@ def _count(obj, name) -> int:
 
 
 def attempts_from_usage(usage, request_model: str) -> list:
-    """One Attempt per entry of usage.iterations (refused and fallback attempts too).
+    """One Attempt per entry of usage.iterations (every attempt the API reports).
 
     Top-level usage covers only the attempt that produced the message, so it is
     used only when iterations is absent [plan C14].
@@ -200,19 +200,16 @@ def worst_case_cost(phase: str, base_tokens: int) -> float:
 
     Turn k's prompt is at most the measured first prompt, plus the tool-output and
     retry-message budgets (characters / 3), plus k replayed turns of max_tokens.
-    The judge is priced at the larger of Opus 5.5 and the fallback stand-in, doubled
-    for a refused attempt plus its fallback.
+    Each phase is priced at its own model's rates: the judge sends no server-side
+    fallback, so no other model can run (ruling P1, revised).
     """
     limits = LIMITS[phase]
     extra = math.ceil((TOOL_TOTAL_CHARS + FEEDBACK_CHARS) / 3)
     turns = [base_tokens + extra + k * limits.max_tokens for k in range(limits.max_iterations)]
-    if phase == "judge":
-        price, factor = max_price(PRICES[JUDGE_MODEL], FALLBACK_CANDIDATE), 2
-    else:
-        price, factor = price_for(HAIKU_MODEL, max(turns))[0], 1
+    model = JUDGE_MODEL if phase == "judge" else HAIKU_MODEL
+    price = price_for(model, max(turns))[0]
     input_price = max(price.input, price.write_5m, price.read)  # 5-minute cache only
-    return factor * (sum(turns) * input_price
-                     + limits.max_iterations * limits.max_tokens * price.output) / 1e6
+    return (sum(turns) * input_price + limits.max_iterations * limits.max_tokens * price.output) / 1e6
 
 
 # ---- budgets: reservations make the caps hard ceilings ------------------------------
@@ -1344,7 +1341,7 @@ def build_manifest(paths: Paths, prompts: dict, sdk_version: str, head: str) -> 
     return {
         "prompt_version": PROMPT_VERSION,
         "models": {"haiku": HAIKU_MODEL, "joint": HAIKU_MODEL, "judge": JUDGE_MODEL},
-        "effort": EFFORT, "judge_betas": list(JUDGE_BETAS), "judge_fallbacks": "default",
+        "effort": EFFORT, "judge_fallbacks": "none",
         "limits": {phase: {"max_iterations": limit.max_iterations, "max_tokens": limit.max_tokens}
                    for phase, limit in LIMITS.items()},
         "tool_caps": {"result_chars": TOOL_RESULT_CHARS, "total_chars": TOOL_TOTAL_CHARS,
@@ -1445,9 +1442,8 @@ class Reviewer:
             "output_config": {"effort": EFFORT, "format": {"type": "json_schema", "schema": OUTPUT_SCHEMA}},
             "cache_control": {"type": "ephemeral"},
         }
-        if phase == "judge":
-            params["betas"] = list(JUDGE_BETAS)
-            params["fallbacks"] = "default"
+        # No server-side fallback, for Haiku (it has none) or the judge (ruling P1, revised):
+        # a judge refusal is left for the family as needs_rob.
         return params
 
     def base_tokens(self, params: dict) -> int:
@@ -1870,6 +1866,8 @@ def unit_outcome(unit: Unit):
         if judge and judge.get("status") == "ok":
             decision = judge["decision"]
             return decision, "judge", "judge", "" if all_high(decision) else "the second review was not confident"
+        if judge and judge.get("status") == "refused":
+            return unit.entry.get("decision"), unit.phase, "model", "judge refused"
         status = judge.get("status") if judge else "not run yet"
         return unit.entry.get("decision"), unit.phase, "model", \
             f"second review {status}: " + "; ".join(unit.reasons)

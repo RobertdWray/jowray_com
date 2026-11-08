@@ -551,8 +551,10 @@ class PricingTests(unittest.TestCase):
         extra = -(-(cc.TOOL_TOTAL_CHARS + cc.FEEDBACK_CHARS) // 3)
         haiku = sum(2000 + extra + k * 6000 for k in range(6)) * 0.125 + 6 * 6000 * 0.50
         self.assertAlmostEqual(cc.worst_case_cost("haiku", 2000), haiku / 1e6)
-        judge = sum(2000 + extra + k * 10000 for k in range(8)) * 12.5 + 8 * 10000 * 50.0
-        self.assertAlmostEqual(cc.worst_case_cost("judge", 2000), 2 * judge / 1e6)
+        # Opus 5.5 rates only (cache-write input price), no doubling: the judge sends no fallback.
+        judge = sum(2000 + extra + k * 10000 for k in range(8)) * 5.0 + 8 * 10000 * 20.0
+        self.assertAlmostEqual(cc.worst_case_cost("judge", 2000), judge / 1e6)
+        self.assertLess(cc.worst_case_cost("judge", 20000), 4.0)
 
 
 class BudgetTests(unittest.TestCase):
@@ -623,10 +625,13 @@ class ReviewTests(CleanupCase):
         # Front desk (medium) and the joint (one-sided claim) go to the judge.
         self.assertEqual(tasks.count("second_review"), 2)
         judge = [c[3] for c in client.calls if c[0] == "second_review"]
-        self.assertTrue(all(p["model"] == cc.JUDGE_MODEL and p["fallbacks"] == "default"
-                            and p["betas"] == ["server-side-fallback-2026-07-01"] for p in judge))
+        # Ruling P1 (revised): no request asks for a server-side fallback or its beta.
+        self.assertTrue(all(p["model"] == cc.JUDGE_MODEL for p in judge))
         haiku = [c[3] for c in client.calls if c[0] != "second_review"]
-        self.assertTrue(all(p["model"] == cc.HAIKU_MODEL and "fallbacks" not in p for p in haiku))
+        self.assertTrue(all(p["model"] == cc.HAIKU_MODEL for p in haiku))
+        for params in judge + haiku:
+            self.assertNotIn("fallbacks", params)
+            self.assertNotIn("betas", params)
         for params in client.calls[0][3], judge[0]:
             self.assertEqual(params["output_config"]["effort"], "medium")
             self.assertEqual(params["output_config"]["format"]["schema"], cc.OUTPUT_SCHEMA)
@@ -984,6 +989,32 @@ class MoreReviewTests(CleanupCase):
         self.assertIn("third_party", [m["direction"] for m in listed["items"]])
         third = next(m for m in listed["items"] if m["direction"] == "third_party")
         self.assertEqual(third["co_participants"], ["Dylan Pretend"])
+
+
+class JudgeRefusalTests(CleanupCase):
+    def test_judge_refusal_is_cached_and_left_for_rob(self):
+        self.build()
+
+        def script(payload, params):
+            addresses = {a for r in payload["cluster"]["rows"] for a in r["addresses"]}
+            if payload["task"] == "second_review" and addresses == {"frontdesk@residence.example.org"}:
+                return [FakeMessage([], "refusal", cc.JUDGE_MODEL)]
+            return default_script(payload, params)
+
+        code, client = self.review(script)
+        self.assertEqual(code, 0)
+        judge = [e for e in cc.read_jsonl(self.paths.decisions, repair=False)[0] if e["phase"] == "judge"]
+        self.assertEqual([e["status"] for e in judge], ["refused"])
+        code, again = self.review(script)
+        self.assertEqual((code, again.calls), (0, []))  # a refusal is not bought again
+        self.assertEqual(cc.main(["apply", "--out", str(self.out)]), 0)
+        _, identities = self.read(self.paths.identities)
+        desk = next(r for r in identities if r["address"] == "frontdesk@residence.example.org")
+        self.assertEqual((desk["first_name"], desk["cleanup_note"]), ("Front", "review: judge refused"))
+        _, changes = self.read(self.paths.changes)
+        self.assertIn(("needs_rob", "judge refused"), {(c["kind"], c["reason"]) for c in changes})
+        _, removed = self.read(self.paths.removed)
+        self.assertNotIn("frontdesk@residence.example.org", {r["email"] for r in removed})
 
 
 class IndexTests(CleanupCase):
