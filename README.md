@@ -23,7 +23,7 @@
 
 Velma Josephine "Jo" Wray, née Hart: in the home page's own words, "teacher, quilter, bargain hunter, grandmother, and owner of a very cheeky giggle." When she died, her family wanted one place where everyone who knew her could leave a memory **while those memories were still fresh**, without creating an account, installing anything, or being good with computers. Most of the people sharing are over 70 and on an iPhone.
 
-So Phase 1 of this site does one thing well: **it collects.** A visitor opens the share page, types or records a memory, adds photos or a video, and presses Send. They get a private link to come back and edit. The family gets an email. Nothing is shown publicly yet; showing the memories back as a gallery, timeline and tag cloud is [Phase 2](#-roadmap).
+So Phase 1 of this site does one thing well: **it collects.** A visitor opens the share page, types or records a memory, adds photos or a video, and presses Send. They get a private link to come back and edit. The family gets an email. The See memories gallery, timeline and tag cloud are built and wait for the family to turn them on (`PUBLIC_MEMORIES_ENABLED`) after Rob's inventory sign-off; the rest of [Phase 2](#-roadmap) is still ahead.
 
 The design brief is one line: *"A celebration of Jo, not a memorial of her."* Warm, bright, handmade, a little cheeky. Jo's maiden name was Hart, so **the heart is the mark**, always red and always hand-stitched. Body text is Atkinson Hyperlegible with a 17 px floor, touch targets are 56 px or larger, there are no modals (except the footer's Privacy note and the full-screen diagram view) and nothing hides behind hover. See [`design/DESIGN.md`](design/DESIGN.md).
 
@@ -125,6 +125,7 @@ Each feature has a one-to-two page document: what we built, why, the decisions R
 
 | | Feature | In one sentence |
 |---|---|---|
+| 🧵 | [See memories](docs/features/see-memories.md) | Explore approved memories shared with Everyone by place, time or tag, with one page per memory; built behind `PUBLIC_MEMORIES_ENABLED`, waiting for the family to turn the pages on. |
 | 📝 | [Share form](docs/features/share-form.md) | One page, no account: name and email, one memory card on phones or several on a computer, place names offered from the photos' GPS, visibility asked once, a private link on the thank-you screen. |
 | 🔗 | [Invite links](docs/features/invite-links.md) | Personal links prefill a greeting, name and email on the shared form, with read-only lookup, revocation and a private import ledger. |
 | 🎙️ | [Audio recording](docs/features/audio-recording.md) | Record in the browser with a live level meter, a "we're not hearing anything" warning with help for your device, and a silent-clip check before you send. |
@@ -295,11 +296,11 @@ The 2026-11-05 public-repo audit opened four issues: [#46](https://github.com/Ro
 
 ### 🔭 Phase 2 · Analyze and show
 
-Everything below reads from the Phase 1 tables and never changes them. Source: [issue #37](https://github.com/RobertdWray/jowray_com/issues/37) and the original design notes in [`docs/Memorial Memories Site initial thinking.md`](docs/Memorial%20Memories%20Site%20initial%20thinking.md).
+The gallery, timeline and tag cloud below are built behind `PUBLIC_MEMORIES_ENABLED` (off by default); launch waits for Rob's inventory sign-off. The remaining analysis work is future Phase 2. Source: [issue #37](https://github.com/RobertdWray/jowray_com/issues/37) and the original design notes in [`docs/Memorial Memories Site initial thinking.md`](docs/Memorial%20Memories%20Site%20initial%20thinking.md).
 
-- 🏷️ **Tags for memories.** A `Tag` table per memorial with an origin (AI or family) and a merge pointer for cleanup; `MemoryTag` rows with a weight and a source (transcript, image, contributor, admin). The tag cloud is a count over approved memories. Family admins can add, rename and merge tags.
-- 🖼️ **A world-class gallery of every contributor's memories.** The public memorial pages: a memory gallery, a single-memory page with the media, the words, who left it and roughly when, and a "by person" view. Reads `APPROVED` only, serves the derived copies that already exist, and follows the standing rule that every lister decides explicitly what to do with `DRAFT` rows.
-- 📅 **A timeline.** Memories ordered by their approximate date (`approxYear`, `approxMonth`, and the text as given, "Summer 1985"), with era clues from the analysis filling gaps.
+- 🏷️ **Tags for memories.** The tag cloud is built behind `PUBLIC_MEMORIES_ENABLED`, using family-edited `Memory.tags` on APPROVED + PUBLIC memories that are not deleted. Still planned: AI tagging, a `Tag` table per memorial with an origin (AI or family) and a merge pointer for cleanup; `MemoryTag` rows with a weight and a source (transcript, image, contributor, admin); tools for family admins to rename and merge tags.
+- 🖼️ **A world-class gallery of every contributor's memories.** The gallery and single-memory pages are built behind `PUBLIC_MEMORIES_ENABLED`: media, words, who left them and roughly when. They read only APPROVED + PUBLIC memories that are not deleted, show derived photos and play eligible audio/video. A claim-link content edit sends an approved memory back to PENDING for review. A "by person" view is still planned.
+- 📅 **A timeline.** Built behind `PUBLIC_MEMORIES_ENABLED`: memories ordered by their approximate date (`approxYear`, `approxMonth`, and the text as given, "Summer 1985"). Era clues from future analysis may fill gaps later.
 - 🎙️ **Transcribe voice and video.** Not built yet. Speech-to-text for every recording and video audio track, stored with timestamps so a transcript can be quoted and searched. The design notes name ElevenLabs; [`docs/environment.md`](docs/environment.md) records the later decision to use Gemini for transcription and retire the ElevenLabs key.
 - 👁️ **Describe photos and video frames.** Gemini vision: people, places, objects, mood and era clues, written to an `Analysis` row per media file per model run, so a better model later keeps both results.
 - 👥 **People.** Grow the seeded `Person` table from mentions and faces; `MemoryPerson` with how (mentioned, pictured, contributor), a confidence, and a family confirmation flag.

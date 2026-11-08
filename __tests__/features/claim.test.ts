@@ -12,6 +12,15 @@ const mediaRows: MediaRow[] = [];
 const lockCalls: string[] = [];
 /** Other memories of the same send, for the submission count. */
 let siblings: Array<{ id: string; submissionId: string | null; deletedAt: Date | null }> = [];
+/** Other memories sharing the edited memory's Contributor row (one per send), for the D17 identity reopen. */
+type SiblingMemory = { id: string; contributorId: string; status: string; deletedAt: Date | null; consentVersion: string };
+let contributorMemories: SiblingMemory[] = [];
+function matchesSibling(row: SiblingMemory, where: Record<string, unknown>): boolean {
+  return Object.entries(where).every(([k, v]) => {
+    if (typeof v === "object" && v !== null && "not" in v) { return (row as Record<string, unknown>)[k] !== (v as { not: unknown }).not; }
+    return (row as Record<string, unknown>)[k] === v;
+  });
+}
 function matchesMedia(row: MediaRow, where: Record<string, unknown>): boolean {
   for (const [k, v] of Object.entries(where)) {
     if (k === "status" && typeof v === "object" && v !== null && "in" in v) { if (!(v as { in: string[] }).in.includes(row.status)) { return false; } continue; }
@@ -39,7 +48,13 @@ const tx = {
       // A snapshot, like a real pre-lock read: later mutations are only visible through findUniqueOrThrow.
       return { ...memory, contributor: memory.contributor ? { ...(memory.contributor as object) } : null };
     }),
-    update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { Object.assign(memory!, data); return memory; }),
+    update: vi.fn(async ({ where, data }: { where?: { id?: string }; data: Record<string, unknown> }) => {
+      const sibling = contributorMemories.find((m) => m.id === where?.id);
+      if (sibling) { Object.assign(sibling, data); return sibling; }
+      Object.assign(memory!, data);
+      return memory;
+    }),
+    findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => contributorMemories.filter((m) => matchesSibling(m, where)).sort((a, b) => a.id.localeCompare(b.id))),
     count: vi.fn(async ({ where }: { where: { submissionId: string; deletedAt: null } }) => siblings.filter((m) => m.submissionId === where.submissionId && m.deletedAt === null).length),
   },
   contributor: { update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { Object.assign(memory!.contributor as object, data); return memory!.contributor; }) },
@@ -60,6 +75,7 @@ beforeEach(() => {
   revisions.length = 0;
   lockCalls.length = 0;
   siblings = [];
+  contributorMemories = [];
   mediaRows.length = 0;
   mediaRows.push(
     { id: "med_1", memoryId: "mem_1", status: "READY", mimeType: "image/heic", originalFilename: "a.heic", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:00Z"), durationSeconds: 24, maxBytes: 25 * 1024 * 1024, derivatives: [{ kind: "WEB_IMAGE", status: "READY", mimeType: "image/jpeg" }, { kind: "THUMBNAIL", status: "READY", mimeType: "image/jpeg" }] },
@@ -108,7 +124,7 @@ describe("getMemoryForClaim", () => {
 describe("updateMemoryFromClaim", () => {
   it("writes the change and appends one revision with before/after; the first revision records the consent version", async () => {
     const result = await updateMemoryFromClaim({ claimToken: TOKEN, changes: { name: "Jo Friend", approxDateText: "Autumn 1998", note: "new note", visibility: "PRIVATE" } });
-    expect(result).toEqual({ ok: true, shared: false });
+    expect(result).toEqual({ ok: true, shared: false, reopened: false, reopenedOthers: 0 });
     expect(memory).toMatchObject({ approxDateText: "Autumn 1998", contributorNote: "new note", visibility: "PRIVATE" });
     expect(memory!.contributor).toMatchObject({ name: "Jo Friend", relationship: "friend" });
     expect(revisions).toHaveLength(1);
@@ -139,7 +155,7 @@ describe("removeMediaFromClaim", () => {
     mediaRows.push({ id: "med_rep", memoryId: "mem_1", status: "PENDING", mimeType: "image/jpeg", originalFilename: "new.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: VALID.mediaId, createdAt: new Date(), durationSeconds: null });
     memory!.contributorNote = "some words";
     const result = await removeMediaFromClaim(VALID);
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({ ok: true, reopened: false });
     expect(lockCalls[0]).toContain("FOR UPDATE|mem_1");
     expect(mediaRows.find((r) => r.id === VALID.mediaId)!.deletedAt).toBeInstanceOf(Date);
     expect(mediaRows.find((r) => r.id === "med_rep")!.deletedAt).toBeInstanceOf(Date);
@@ -172,7 +188,7 @@ describe("cancelReservation", () => {
   beforeEach(() => { mediaRows[1]!.id = PENDING_ID; });
 
   it("soft-deletes a PENDING reservation and writes a revision", async () => {
-    expect(await cancelReservation({ claimToken: TOKEN, mediaId: PENDING_ID })).toEqual({ ok: true });
+    expect(await cancelReservation({ claimToken: TOKEN, mediaId: PENDING_ID })).toEqual({ ok: true, reopened: false });
     expect(mediaRows.find((r) => r.id === PENDING_ID)!.deletedAt).toBeInstanceOf(Date);
     expect(revisions[0]!.after).toMatchObject({ mediaIds: ["med_1"] });
   });
@@ -187,14 +203,15 @@ describe("cancelReservation", () => {
 describe("saves that change nothing (issue #44, Oscar #17)", () => {
   it("an empty or identical memory edit writes no row and appends no revision, after taking the lock", async () => {
     tx.memory.update.mockClear(); tx.contributor.update.mockClear();
-    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: {} })).toEqual({ ok: true, shared: false });
-    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { name: "Jo", relationship: "friend", approxDateText: "Summer 1998", place: null, note: "old note", visibility: "FAMILY", notifyWhenPosted: true, contactOptIn: true } })).toEqual({ ok: true, shared: false });
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: {} })).toEqual({ ok: true, shared: false, reopened: false, reopenedOthers: 0 });
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { name: "Jo", relationship: "friend", approxDateText: "Summer 1998", place: null, note: "old note", visibility: "FAMILY", notifyWhenPosted: true, contactOptIn: true } })).toEqual({ ok: true, shared: false, reopened: false, reopenedOthers: 0 });
     expect(tx.memory.update).not.toHaveBeenCalled();
     expect(tx.contributor.update).not.toHaveBeenCalled();
     expect(revisions).toHaveLength(0);
-    expect(lockCalls.filter((c) => c.includes("FOR UPDATE|mem_1"))).toHaveLength(2);
+    // The empty save locks the memory; the one naming the name and relationship locks every memory of the contributor (B1-2).
+    expect(lockCalls).toEqual([expect.stringContaining('"id" = ? FOR UPDATE|mem_1'), expect.stringContaining('"contributorId" = ? ORDER BY "id" FOR UPDATE|con_1')]);
     // The same request with one real change still writes exactly one revision.
-    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Broadmead" } })).toEqual({ ok: true, shared: false });
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Broadmead" } })).toEqual({ ok: true, shared: false, reopened: false, reopenedOthers: 0 });
     expect(revisions).toHaveLength(1);
   });
 
@@ -202,12 +219,12 @@ describe("saves that change nothing (issue #44, Oscar #17)", () => {
     const ID = "00000000-0000-4000-8000-000000000001";
     mediaRows[0]!.id = ID; mediaRows[0]!.caption = "same words"; mediaRows[0]!.approxDateText = null; mediaRows[0]!.place = null;
     tx.media.update.mockClear(); tx.media.updateMany.mockClear();
-    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: {} })).toEqual({ ok: true });
-    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "same words" } })).toEqual({ ok: true });
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: {} })).toEqual({ ok: true, reopened: false });
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "same words" } })).toEqual({ ok: true, reopened: false });
     expect(tx.media.update).not.toHaveBeenCalled();
     expect(tx.media.updateMany).not.toHaveBeenCalled();
     expect(revisions).toHaveLength(0);
-    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "new words" } })).toEqual({ ok: true });
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "new words" } })).toEqual({ ok: true, reopened: false });
     expect(revisions).toHaveLength(1);
   });
 });
@@ -221,7 +238,7 @@ describe("updateMemoryFromClaim non-empty invariant", () => {
 
   it("allows clearing the note while a READY file remains and recomputes the type", async () => {
     memory!.type = "TEXT";
-    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "" } })).toEqual({ ok: true, shared: false });
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "" } })).toEqual({ ok: true, shared: false, reopened: false, reopenedOthers: 0 });
     expect(memory!.contributorNote).toBeNull();
     expect(memory!.type).toBe("PHOTO");
   });
@@ -283,7 +300,7 @@ describe("revision bookkeeping", () => {
   it("names the cancelled replacement in its revision instead of writing identical snapshots", async () => {
     const REP = "00000000-0000-4000-8000-000000000009";
     mediaRows.push({ id: REP, memoryId: "mem_1", status: "PENDING", mimeType: "image/jpeg", originalFilename: "new.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: "med_1", createdAt: new Date(), durationSeconds: null });
-    expect(await cancelReservation({ claimToken: TOKEN, mediaId: REP })).toEqual({ ok: true });
+    expect(await cancelReservation({ claimToken: TOKEN, mediaId: REP })).toEqual({ ok: true, reopened: false });
     expect(revisions[0]!.after).toMatchObject({ cancelledReplacementOf: "med_1" });
   });
 
@@ -311,7 +328,7 @@ describe("a DRAFT becomes the person's own by pressing Share", () => {
   it("share: DRAFT → PENDING with consent stamped now, at the version in force, recorded in the revision; no email is sent", async () => {
     const before = Date.now();
     const result = await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "my words, lightly edited", share: true } });
-    expect(result).toEqual({ ok: true, shared: true });
+    expect(result).toEqual({ ok: true, shared: true, reopened: false, reopenedOthers: 0 });
     expect(memory).toMatchObject({ status: "PENDING", consentVersion: "2026-11-v2", contributorNote: "my words, lightly edited" });
     expect((memory!.consentedAt as Date).getTime()).toBeGreaterThanOrEqual(before);
     expect(revisions).toHaveLength(1);
@@ -321,7 +338,7 @@ describe("a DRAFT becomes the person's own by pressing Share", () => {
   });
 
   it("an edit without share leaves the memory a DRAFT with no consent stamp", async () => {
-    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Broadmead" } })).toEqual({ ok: true, shared: false });
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Broadmead" } })).toEqual({ ok: true, shared: false, reopened: false, reopenedOthers: 0 });
     expect(memory).toMatchObject({ status: "DRAFT", consentedAt: null, place: "Broadmead" });
     expect(revisions[0]!.after).not.toHaveProperty("status");
   });
@@ -331,12 +348,12 @@ describe("a DRAFT becomes the person's own by pressing Share", () => {
     memory!.status = "PENDING";
     memory!.consentedAt = stamped;
     memory!.consentVersion = "2026-11-v1";
-    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { share: true, note: "again" } })).toEqual({ ok: true, shared: false });
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { share: true, note: "again" } })).toEqual({ ok: true, shared: false, reopened: false, reopenedOthers: 0 });
     expect(memory).toMatchObject({ status: "PENDING", consentedAt: stamped, consentVersion: "2026-11-v1" });
   });
 
   it("stores the two preferences from the claim page", async () => {
-    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { share: true, notifyWhenPosted: false, contactOptIn: false } })).toEqual({ ok: true, shared: true });
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { share: true, notifyWhenPosted: false, contactOptIn: false } })).toEqual({ ok: true, shared: true, reopened: false, reopenedOthers: 0 });
     expect(memory!.notifyWhenPosted).toBe(false);
     expect((memory!.contributor as { contactOptIn: boolean }).contactOptIn).toBe(false);
     expect(revisions[0]!.before).toMatchObject({ notifyWhenPosted: true, contactOptIn: true });
@@ -352,7 +369,7 @@ describe("a DRAFT becomes the person's own by pressing Share", () => {
 
   it("a share-less edit of a DRAFT cannot record preferences: those are given by pressing Share", async () => {
     (memory!.contributor as { contactOptIn: boolean }).contactOptIn = false;
-    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Broadmead", contactOptIn: true, notifyWhenPosted: false } })).toEqual({ ok: true, shared: false });
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { place: "Broadmead", contactOptIn: true, notifyWhenPosted: false } })).toEqual({ ok: true, shared: false, reopened: false, reopenedOthers: 0 });
     expect(memory).toMatchObject({ status: "DRAFT", place: "Broadmead", notifyWhenPosted: true });
     expect((memory!.contributor as { contactOptIn: boolean }).contactOptIn).toBe(false);
     expect(revisions[0]!.after).toMatchObject({ notifyWhenPosted: true, contactOptIn: false });
@@ -393,7 +410,7 @@ describe("updateMediaFromClaim", () => {
   beforeEach(() => { mediaRows[0]!.id = ID; mediaRows[0]!.caption = "old words"; mediaRows[0]!.approxDateText = null; mediaRows[0]!.place = "the lake"; });
 
   it("edits one file's caption, date and place under the lock and appends a revision with before/after", async () => {
-    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "  her classroom ", approxDateText: "1985", place: "" } })).toEqual({ ok: true });
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "  her classroom ", approxDateText: "1985", place: "" } })).toEqual({ ok: true, reopened: false });
     expect(mediaRows[0]).toMatchObject({ caption: "her classroom", approxDateText: "1985", place: null });
     expect(lockCalls[0]).toContain("FOR UPDATE|mem_1");
     expect(revisions).toHaveLength(1);
@@ -406,7 +423,7 @@ describe("updateMediaFromClaim", () => {
       { id: "med_repl", memoryId: "mem_1", status: "PENDING", mimeType: "image/jpeg", originalFilename: "new.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: ID, createdAt: new Date(), durationSeconds: null, caption: "old words", approxDateText: null, place: "the lake" },
       { id: "med_repl_gone", memoryId: "mem_1", status: "PENDING", mimeType: "image/jpeg", originalFilename: "x.jpg", sortOrder: 0, deletedAt: new Date(), replacesMediaId: ID, createdAt: new Date(), durationSeconds: null, caption: "old words", approxDateText: null, place: "the lake" },
     );
-    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "her classroom", place: "" } })).toEqual({ ok: true });
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "her classroom", place: "" } })).toEqual({ ok: true, reopened: false });
     expect(mediaRows.find((r) => r.id === "med_repl")).toMatchObject({ caption: "her classroom", approxDateText: null, place: null });
     expect(mediaRows.find((r) => r.id === "med_repl_gone")).toMatchObject({ caption: "old words", place: "the lake" });
   });
@@ -470,5 +487,155 @@ describe("Sentry identity and tags (plan §8.2)", () => {
     await updateMemoryFromClaim({ claimToken: "x".repeat(43), changes: { note: "x" } });
     expect(identifyMock).not.toHaveBeenCalled();
     expect(tagIdsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("an APPROVED memory edited through its claim link goes back for review (plan 2026-11-08 D17)", () => {
+  // The media schemas take UUIDs.
+  const READY_ID = "00000000-0000-4000-8000-0000000000a1";
+  const PENDING_ID = "00000000-0000-4000-8000-0000000000a2";
+  beforeEach(() => {
+    memory!.status = "APPROVED";
+    mediaRows[0]!.id = READY_ID;
+    mediaRows[1]!.id = PENDING_ID;
+  });
+
+  it.each([
+    ["the words", { note: "new words" }],
+    ["the name", { name: "Jo Friend" }],
+    ["the relationship", { relationship: "neighbor" }],
+    ["the date", { approxDateText: "Autumn 1998" }],
+    ["the place", { place: "Towson, MD" }],
+  ])("editing %s sets PENDING in the same write and names status in the revision", async (_what, changes) => {
+    const result = await updateMemoryFromClaim({ claimToken: TOKEN, changes });
+    expect(result).toEqual({ ok: true, shared: false, reopened: true, reopenedOthers: 0 });
+    expect(memory!.status).toBe("PENDING");
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]).toMatchObject({ changedVia: "CLAIM_LINK", before: { status: "APPROVED" }, after: { status: "PENDING" } });
+    expect(tx.memory.update).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "PENDING" }) }));
+  });
+
+  it("a visibility or preference change alone leaves it APPROVED and the revision without status", async () => {
+    for (const changes of [{ visibility: "PUBLIC" }, { notifyWhenPosted: false }, { contactOptIn: false }]) {
+      revisions.length = 0;
+      expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes })).toEqual({ ok: true, shared: false, reopened: false, reopenedOthers: 0 });
+      expect(memory!.status).toBe("APPROVED");
+      expect(revisions[0]?.before).not.toHaveProperty("status");
+      expect(revisions[0]?.after).not.toHaveProperty("status");
+    }
+  });
+
+  it("a save that changes nothing leaves it APPROVED with no write", async () => {
+    tx.memory.update.mockClear();
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "old note", place: "" } })).toEqual({ ok: true, shared: false, reopened: false, reopenedOthers: 0 });
+    expect(memory!.status).toBe("APPROVED");
+    expect(tx.memory.update).not.toHaveBeenCalled();
+    expect(revisions).toHaveLength(0);
+  });
+
+  it.each(["PENDING", "HIDDEN"])("a content edit of a %s memory leaves its status alone", async (status) => {
+    memory!.status = status;
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "new words" } })).toEqual({ ok: true, shared: false, reopened: false, reopenedOthers: 0 });
+    expect(memory!.status).toBe(status);
+    expect(revisions[0]?.after).not.toHaveProperty("status");
+  });
+
+  it("removing a received file sets PENDING with status in the revision", async () => {
+    expect(await removeMediaFromClaim({ claimToken: TOKEN, mediaId: READY_ID })).toEqual({ ok: true, reopened: true });
+    expect(memory!.status).toBe("PENDING");
+    expect(revisions[0]).toMatchObject({ changedVia: "CLAIM_LINK", before: { status: "APPROVED" }, after: { status: "PENDING" } });
+  });
+
+  it("cancelling a reservation that never arrived changes nothing anyone could see: it stays APPROVED", async () => {
+    expect(await cancelReservation({ claimToken: TOKEN, mediaId: PENDING_ID })).toEqual({ ok: true, reopened: false });
+    expect(memory!.status).toBe("APPROVED");
+    expect(revisions[0]?.after).not.toHaveProperty("status");
+  });
+
+  it("editing a file's caption, date or place sets PENDING with status in the revision", async () => {
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: READY_ID, changes: { caption: "At the fair" } })).toEqual({ ok: true, reopened: true });
+    expect(memory!.status).toBe("PENDING");
+    expect(revisions[0]).toMatchObject({ before: { status: "APPROVED" }, after: { status: "PENDING", caption: "At the fair" } });
+  });
+
+  it("an identical file-words edit leaves it APPROVED", async () => {
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: READY_ID, changes: {} })).toEqual({ ok: true, reopened: false });
+    expect(memory!.status).toBe("APPROVED");
+  });
+
+  it("the status is judged after the lock: a memory approved while the edit waited still goes back for review", async () => {
+    memory!.status = "PENDING";
+    // The pre-lock read sees PENDING; the family approves before the lock is granted.
+    tx.$queryRaw.mockImplementationOnce(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      lockCalls.push(`${strings.join("?")}|${String(values[0])}`);
+      memory!.status = "APPROVED";
+      return [{ id: values[0] }];
+    });
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "new words" } })).toEqual({ ok: true, shared: false, reopened: true, reopenedOthers: 0 });
+    expect(memory!.status).toBe("PENDING");
+  });
+});
+
+describe("a name or relationship edit reopens every APPROVED memory of that contributor (D17, TCR round 1 B1-2)", () => {
+  // One Contributor row per send (create-submission.ts): the name shows on every memory of that send.
+  beforeEach(() => {
+    contributorMemories = [
+      { id: "mem_0", contributorId: "con_1", status: "APPROVED", deletedAt: null, consentVersion: "2026-11-v1" },
+      { id: "mem_3", contributorId: "con_1", status: "PENDING", deletedAt: null, consentVersion: "2026-11-v1" },
+      { id: "mem_4", contributorId: "con_1", status: "HIDDEN", deletedAt: null, consentVersion: "2026-11-v1" },
+      { id: "mem_5", contributorId: "con_1", status: "APPROVED", deletedAt: new Date("2026-11-05T10:00:00Z"), consentVersion: "2026-11-v1" },
+      { id: "mem_9", contributorId: "con_1", status: "APPROVED", deletedAt: null, consentVersion: "2026-11-v2" },
+    ];
+  });
+
+  it.each([
+    ["the name", { name: "Jo Friend" }, { name: "Jo" }, { name: "Jo Friend" }],
+    ["the relationship", { relationship: "neighbor" }, { relationship: "friend" }, { relationship: "neighbor" }],
+  ])("changing %s on a PENDING memory sends the contributor's other APPROVED memories back, each with a CLAIM_LINK revision naming status", async (_what, changes, before, after) => {
+    expect(memory!.status).toBe("PENDING");
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes })).toEqual({ ok: true, shared: false, reopened: false, reopenedOthers: 2 });
+    expect(contributorMemories.map((m) => [m.id, m.status])).toEqual([["mem_0", "PENDING"], ["mem_3", "PENDING"], ["mem_4", "HIDDEN"], ["mem_5", "APPROVED"], ["mem_9", "PENDING"]]);
+    expect(memory!.status).toBe("PENDING");
+    const others = revisions.filter((r) => r.memoryId !== "mem_1");
+    expect(others.map((r) => r.memoryId)).toEqual(["mem_0", "mem_9"]);
+    for (const revision of others) {
+      expect(revision).toMatchObject({ changedVia: "CLAIM_LINK", before: { status: "APPROVED", ...before }, after: { status: "PENDING", ...after } });
+    }
+    // The edited memory keeps its own single revision, without status (it was not APPROVED).
+    const own = revisions.filter((r) => r.memoryId === "mem_1");
+    expect(own).toHaveLength(1);
+    expect(own[0]!.after).not.toHaveProperty("status");
+  });
+
+  it("an APPROVED edited memory goes back itself as well as its siblings", async () => {
+    memory!.status = "APPROVED";
+    expect(await updateMemoryFromClaim({ claimToken: TOKEN, changes: { name: "Jo Friend" } })).toEqual({ ok: true, shared: false, reopened: true, reopenedOthers: 2 });
+    expect(memory!.status).toBe("PENDING");
+    expect(contributorMemories.filter((m) => m.status === "APPROVED").map((m) => m.id)).toEqual(["mem_5"]);
+  });
+
+  it("locks every memory of the contributor in one id-ordered statement before anything is read or written", async () => {
+    tx.memory.findUniqueOrThrow.mockClear();
+    await updateMemoryFromClaim({ claimToken: TOKEN, changes: { name: "Jo Friend" } });
+    expect(lockCalls).toHaveLength(1);
+    expect(lockCalls[0]).toMatch(/FROM "Memory" WHERE "contributorId" = \? ORDER BY "id" FOR UPDATE\|con_1$/);
+    expect(tx.$queryRaw.mock.invocationCallOrder[0]!).toBeLessThan(tx.memory.findUniqueOrThrow.mock.invocationCallOrder[0]!);
+  });
+
+  it.each([
+    ["the words only", { note: "new words" }],
+    ["the same name and relationship", { name: "Jo", relationship: "friend", note: "new words" }],
+    ["the contact preference", { contactOptIn: false }],
+  ])("an edit of %s reopens no other memory", async (_what, changes) => {
+    const result = await updateMemoryFromClaim({ claimToken: TOKEN, changes });
+    expect(result).toMatchObject({ ok: true, reopenedOthers: 0 });
+    expect(contributorMemories.map((m) => m.status)).toEqual(["APPROVED", "PENDING", "HIDDEN", "APPROVED", "APPROVED"]);
+    expect(revisions.every((r) => r.memoryId === "mem_1")).toBe(true);
+  });
+
+  it("a memory with no contributor row locks only itself", async () => {
+    memory!.contributor = null;
+    await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "new words" } });
+    expect(lockCalls).toEqual([expect.stringMatching(/FROM "Memory" WHERE "id" = \? FOR UPDATE\|mem_1$/)]);
   });
 });

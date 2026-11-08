@@ -5,26 +5,80 @@ import { useState } from "react";
 
 import type { AdminMemoryView } from "@/features/admin/get-memory";
 import type { AdminMemoryEditable } from "@/features/admin/update-memory";
+import { MIN_YEAR } from "@/lib/memories/approx-year";
 import { VISIBILITY_OPTIONS } from "@/lib/visibility";
 
 import { PrimaryButton, SecondaryButton } from "../_components/buttons";
 import { inputClass, labelClass, selectClass, textareaClass } from "../_components/field-classes";
 import { saveMemory } from "./actions";
 
-type Values = Pick<AdminMemoryEditable, "name" | "relationship" | "approxDateText" | "place" | "note" | "visibility">;
+type Stored = Omit<AdminMemoryEditable, "memoryVersion" | "contributorVersion">;
+/**
+ * The form holds every field as text, so dirty tracking is one string comparison: the year and month as
+ * digits (null when blank) and the patches joined with ", " (null when none). They become numbers and a
+ * list only when sent (`toChange`).
+ */
+type Values = { [K in Exclude<keyof Stored, "visibility">]: string | null } & { visibility: Stored["visibility"] };
 type Versions = Pick<AdminMemoryEditable, "memoryVersion" | "contributorVersion">;
-const KEYS = ["name", "relationship", "approxDateText", "place", "note", "visibility"] as const;
-const LABEL: Record<keyof Values, string> = { name: "name", relationship: "relationship", approxDateText: "when", place: "where", note: "words", visibility: "visibility" };
+const KEYS = ["name", "relationship", "approxDateText", "place", "approxYear", "approxMonth", "tags", "note", "visibility"] as const;
+const LABEL: Record<keyof Values, string> = {
+  name: "name",
+  relationship: "relationship",
+  approxDateText: "when",
+  place: "where",
+  approxYear: "year",
+  approxMonth: "month",
+  tags: "patches",
+  note: "words",
+  visibility: "visibility",
+};
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/** The patches typed in the box: split on commas, trimmed, empties dropped (the server normalises the rest). */
+function splitTags(value: string): string[] {
+  return value
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0);
+}
+
+function formValues(stored: Stored): Values {
+  return {
+    name: stored.name,
+    relationship: stored.relationship,
+    approxDateText: stored.approxDateText,
+    place: stored.place,
+    approxYear: stored.approxYear === null ? null : String(stored.approxYear),
+    approxMonth: stored.approxMonth === null ? null : String(stored.approxMonth),
+    tags: stored.tags.length === 0 ? null : stored.tags.join(", "),
+    note: stored.note,
+    visibility: stored.visibility,
+  };
+}
 
 function valuesOf(memory: AdminMemoryView): Values {
-  return {
+  return formValues({
     name: memory.contributor?.name ?? null,
     relationship: memory.contributor?.relationship ?? null,
     approxDateText: memory.approxDateText,
     place: memory.place,
+    approxYear: memory.approxYear,
+    approxMonth: memory.approxMonth,
+    tags: memory.tags,
     note: memory.contributorNote,
     visibility: memory.visibility,
-  };
+  });
+}
+
+/** What one dirty field sends: text as before ("" clears), the year and month as numbers or null, the patches as a list ([] clears). */
+function toChange(key: keyof Values, value: string | null): string | number | string[] | null {
+  if (key === "approxYear" || key === "approxMonth") {
+    return value === null ? null : Number(value);
+  }
+  if (key === "tags") {
+    return value === null ? [] : splitTags(value);
+  }
+  return value === null ? "" : value;
 }
 
 /** The form's text for a stored value (null is an empty field) and back (a trimmed empty field is null). */
@@ -76,9 +130,10 @@ function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage:
    */
   function adopt(formElement: HTMLFormElement, typed: Values, current: AdminMemoryEditable, committed: boolean) {
     const nextInitial: Values = { ...initial };
+    const currentValues = formValues(current);
     for (const key of KEYS) {
       const touched = typed[key] !== initial[key];
-      const value = touched ? (committed ? typed[key] : initial[key]) : current[key];
+      const value = touched ? (committed ? typed[key] : initial[key]) : currentValues[key];
       nextInitial[key] = value as never;
       if (!touched) {
         const input = formElement.elements.namedItem(key);
@@ -103,13 +158,16 @@ function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage:
       relationship: stored(String(form.get("relationship") ?? "")),
       approxDateText: stored(String(form.get("approxDateText") ?? "")),
       place: stored(String(form.get("place") ?? "")),
+      approxYear: stored(String(form.get("approxYear") ?? "").trim()),
+      approxMonth: stored(String(form.get("approxMonth") ?? "")),
+      tags: stored(splitTags(String(form.get("tags") ?? "")).join(", ")),
       note: stored(String(form.get("note") ?? "")),
       visibility: String(form.get("visibility") ?? initial.visibility) as Values["visibility"],
     };
-    const changes: Partial<Record<keyof Values, string | null>> = {};
+    const changes: Partial<Record<keyof Values, string | number | string[] | null>> = {};
     for (const key of KEYS) {
       if (typed[key] !== initial[key]) {
-        changes[key] = typed[key] === null ? "" : typed[key];
+        changes[key] = toChange(key, typed[key]);
       }
     }
     if (Object.keys(changes).length === 0) {
@@ -122,7 +180,7 @@ function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage:
       const first = await saveMemory({ memoryId: memory.id, ...versions, changes });
       // Only non-editable columns moved (a status change, a reissued link, a file that arrived): nothing the
       // person edits differs from what the form opened with, so saving again is exactly what the banner would ask for.
-      const onlyHiddenColumnsMoved = !first.ok && first.code === "stale" && KEYS.every((key) => first.current[key] === initial[key]);
+      const onlyHiddenColumnsMoved = !first.ok && first.code === "stale" && KEYS.every((key) => formValues(first.current)[key] === initial[key]);
       const result =
         onlyHiddenColumnsMoved && !first.ok && first.code === "stale"
           ? await saveMemory({ memoryId: memory.id, memoryVersion: first.current.memoryVersion, contributorVersion: first.current.contributorVersion, changes })
@@ -137,7 +195,8 @@ function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage:
       }
       if (result.code === "stale") {
         const { current } = result;
-        const changedElsewhere = KEYS.filter((key) => current[key] !== initial[key]);
+        const currentValues = formValues(current);
+        const changedElsewhere = KEYS.filter((key) => currentValues[key] !== initial[key]);
         // Untouched fields take the other editor's values now; the person's own typing stays until they press Save.
         adopt(formElement, typed, current, false);
         setServerChanged(changedElsewhere.map((key) => LABEL[key]));
@@ -150,7 +209,7 @@ function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage:
             ? "This memory is no longer here. Reload the page."
             : result.code === "unauthorized"
               ? "You are signed out. Open your link again."
-              : "Could not save. Please check the fields."
+              : "Could not save. Please check the fields: a year from 1900 to this year, a month only with a year, and patches of at most 40 characters with a letter or number."
       );
     } catch {
       onMessage("We could not reach the server. Your changes are still in the form; please try again.");
@@ -193,6 +252,33 @@ function EditFields({ memory, onMessage }: { memory: AdminMemoryView; onMessage:
       <label className={labelClass}>
         <span>Where</span>
         <input name="place" defaultValue={text(initial.place)} maxLength={200} className={inputClass} />
+      </label>
+      <div className="flex flex-wrap gap-4">
+        <label className={labelClass}>
+          <span>Year on the timeline</span>
+          <input name="approxYear" type="number" inputMode="numeric" min={MIN_YEAR} max={new Date().getFullYear()} step={1} defaultValue={text(initial.approxYear)} className={inputClass} aria-describedby="approx-year-help" />
+          <span id="approx-year-help" className="text-small text-walnut-soft">
+            Blank: read from &ldquo;Roughly when&rdquo;.
+          </span>
+        </label>
+        <label className={labelClass}>
+          <span>Month</span>
+          <select name="approxMonth" defaultValue={text(initial.approxMonth)} className={selectClass}>
+            <option value="">(none)</option>
+            {MONTHS.map((month, index) => (
+              <option key={month} value={String(index + 1)}>
+                {month}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <label className={labelClass}>
+        <span>Patches</span>
+        <input name="tags" defaultValue={text(initial.tags)} className={inputClass} aria-describedby="tags-help" />
+        <span id="tags-help" className="text-small text-walnut-soft">
+          What the memory is about, separated by commas: quilting, Ocean City, church. At most 20.
+        </span>
       </label>
       <label className={labelClass}>
         <span>Their words</span>

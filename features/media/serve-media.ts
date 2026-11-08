@@ -14,6 +14,8 @@ import {
 import { isStagingKey } from "@/lib/derived-keys";
 import { attachmentDisposition, extensionFor, isAllowedMime } from "@/lib/media-types";
 import { createLogger, logError } from "@/lib/logger";
+import { type LocationFacts, originalPlayablePublicly } from "@/lib/memories/playability";
+import { isPublicMemory, type PublicRuleFacts } from "@/lib/memories/public-rule";
 import { getMediaServingEnv, type MediaServingEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 import { createStorageService } from "@/services/storage";
@@ -58,8 +60,23 @@ export function mediaVariantFrom(value: string | null): MediaVariant {
   return value === "thumb" || value === "original" ? value : "web";
 }
 
-/** Who is asking: the holder of the memory's claim token, or the family admin (cookie). Decides the allowance, never the authorization. */
-export type MediaCaller = "claim" | "admin";
+/**
+ * Who is asking: the holder of the memory's claim token, the family admin (cookie), or any visitor of See memories
+ * (plan 2026-11-08 D6). Decides the allowance; for `public` it also adds its own refusals (below), whatever
+ * `authorize` says.
+ */
+export type MediaCaller = "claim" | "admin" | "public";
+
+/** What `authorize` sees of the file's memory. */
+export interface ServableMemory {
+  claimTokenHash: string;
+  status: "DRAFT" | "PENDING" | "APPROVED" | "HIDDEN";
+  visibility: "PUBLIC" | "FAMILY" | "PRIVATE";
+  deletedAt: Date | null;
+}
+
+/** Counter scopes of public visitors start with this, so they never share a row with the claim-link or admin counters (D18). */
+export const PUBLIC_SCOPE_PREFIX = "public:";
 
 export interface ServeMediaOptions {
   id: string;
@@ -71,7 +88,7 @@ export interface ServeMediaOptions {
   /** The admin page shows a deleted memory's files (Restore is decided there); the claim page never does. */
   allowDeletedMemory: boolean;
   /** Decides whether the caller may see this memory's files; called only for a servable row. Must be constant-time when it compares secrets. */
-  authorize: (memory: { claimTokenHash: string }) => boolean;
+  authorize: (memory: ServableMemory) => boolean;
   /** Test seam for the day boundary. */
   now?: () => Date;
 }
@@ -94,13 +111,25 @@ export interface ServeMediaOptions {
  * request cap. A claim-link holder over any of the three gets 429 with
  * `Retry-After`; the admin is counted and never refused. A counter that
  * cannot be reached fails open: the file is served and the error reported.
+ *
+ * The `public` caller (plan 2026-11-08, `/api/public-media`) is refused, with
+ * the same 404, unless the memory is APPROVED, PUBLIC and not deleted (D1,
+ * checked here as well as by the route's `authorize`, and regardless of
+ * `allowDeletedMemory`). It never gets an original photo or a download: `original` becomes the web
+ * copy and `download` is ignored. A recording or video plays only when its
+ * original cannot carry a location or a complete scan found none (D16). Its
+ * allowance is counted in `public:` scopes against the `MEDIA_PUBLIC_*`
+ * limits (D18).
  */
-export async function serveMedia({ id, variant, download, caller, viewerKey = "unknown", allowDeletedMemory, authorize, now = () => new Date() }: ServeMediaOptions): Promise<Response> {
+export async function serveMedia({ id, variant: askedVariant, download: askedDownload, caller, viewerKey = "unknown", allowDeletedMemory, authorize, now = () => new Date() }: ServeMediaOptions): Promise<Response> {
+  const isPublic = caller === "public";
+  const variant: MediaVariant = isPublic && askedVariant === "original" ? "web" : askedVariant;
+  const download = isPublic ? false : askedDownload;
   const db = getDb();
   const media = await db.media.findUnique({
     where: { id },
     include: {
-      memory: { select: { claimTokenHash: true, deletedAt: true, status: true } },
+      memory: { select: { claimTokenHash: true, deletedAt: true, status: true, visibility: true } },
       derivatives: { where: { status: "READY" }, select: { kind: true, storageKey: true, mimeType: true, sizeBytes: true } },
     },
   });
@@ -114,6 +143,9 @@ export async function serveMedia({ id, variant, download, caller, viewerKey = "u
     !isAllowedMime(media.mimeType) ||
     !authorize(media.memory)
   ) {
+    return mediaNotFound();
+  }
+  if (isPublic && !isPublicFile(media)) {
     return mediaNotFound();
   }
 
@@ -174,6 +206,18 @@ export async function serveMedia({ id, variant, download, caller, viewerKey = "u
 }
 
 /**
+ * The public caller's own gate (D1, D16): the memory is APPROVED, PUBLIC and not deleted, and a non-photo original
+ * cannot carry a location or a complete scan found none. Photos are judged by the derived-copy branch, which never serves
+ * their original.
+ */
+function isPublicFile(media: LocationFacts & { memory: PublicRuleFacts }): boolean {
+  if (!isPublicMemory(media.memory)) {
+    return false;
+  }
+  return media.mimeType.startsWith("image/") || originalPlayablePublicly(media);
+}
+
+/**
  * The blob host's own "save, don't display" switch, the same one the SDK's
  * `getDownloadUrl` adds. It is outside the signed part of a presigned URL
  * (like `cache`), so it rides along without disturbing the signature.
@@ -200,21 +244,24 @@ async function withinAllowance(
       await recordEgress(db, { scope: GLOBAL_EGRESS_SCOPE, day, bytes: cost });
       return true;
     }
-    const viewerScope = mediaViewerScope(mediaId, copy, viewerKey);
-    const nth = await countRequest(db, { scope: viewerScope, day, limit: env.MEDIA_VIEWER_DAILY_REQUESTS });
+    const isPublic = caller === "public";
+    const scoped = (scope: string) => (isPublic ? `${PUBLIC_SCOPE_PREFIX}${scope}` : scope);
+    const globalScope = scoped(GLOBAL_EGRESS_SCOPE);
+    const viewerScope = scoped(mediaViewerScope(mediaId, copy, viewerKey));
+    const nth = await countRequest(db, { scope: viewerScope, day, limit: isPublic ? env.MEDIA_PUBLIC_VIEWER_DAILY_REQUESTS : env.MEDIA_VIEWER_DAILY_REQUESTS });
     if (nth === null) {
       return false;
     }
     if (nth > 1) {
       return true;
     }
-    const fileScope = mediaEgressScope(mediaId);
-    const multiple = approved ? env.MEDIA_FILE_DAILY_MULTIPLE : env.MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED;
+    const fileScope = scoped(mediaEgressScope(mediaId));
+    const multiple = isPublic ? env.MEDIA_PUBLIC_FILE_DAILY_MULTIPLE : approved ? env.MEDIA_FILE_DAILY_MULTIPLE : env.MEDIA_FILE_DAILY_MULTIPLE_UNAPPROVED;
     if (!(await reserveEgress(db, { scope: fileScope, day, bytes: cost, limit: multiple * originalBytes }))) {
       await releaseEgress(db, { scope: viewerScope, day, bytes: 1 });
       return false;
     }
-    if (!(await reserveEgress(db, { scope: GLOBAL_EGRESS_SCOPE, day, bytes: cost, limit: env.MEDIA_DAILY_EGRESS_BYTES }))) {
+    if (!(await reserveEgress(db, { scope: globalScope, day, bytes: cost, limit: isPublic ? env.MEDIA_PUBLIC_DAILY_EGRESS_BYTES : env.MEDIA_DAILY_EGRESS_BYTES }))) {
       await releaseEgress(db, { scope: fileScope, day, bytes: cost });
       await releaseEgress(db, { scope: viewerScope, day, bytes: 1 });
       return false;

@@ -202,7 +202,7 @@ describe("tools/list contract (case 2)", () => {
           "annotations": {
             "readOnlyHint": true,
           },
-          "description": "One memory with its contributor, files, coordinates, revision history and emails. \`memoryVersion\` and \`contributor.contributorVersion\` are what update_memory and set_coordinates need. Each file's \`coordinates\` is where the camera was (often a home); never propose it for set_coordinates.",
+          "description": "One memory with its contributor, files, coordinates, revision history and emails. \`memoryVersion\` and \`contributor.contributorVersion\` are what update_memory and set_coordinates need. \`reviewVersion\` is what set_status (and share_draft) need to approve: it covers the memory, its contributor and its files, so approve only right after reading them. Each file's \`coordinates\` is where the camera was (often a home); never propose it for set_coordinates.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
@@ -501,7 +501,7 @@ describe("tools/list contract (case 2)", () => {
           "annotations": {
             "destructiveHint": true,
           },
-          "description": "Edits a memory's words, date, place, visibility or the contributor's name and relationship; send only the keys you change. Read \`memoryVersion\` and \`contributor.contributorVersion\` from get_memory first. On \`stale\`, compare every editable field in \`current\` with the value you read before this edit: if any differs, including a field you are changing, show Rob what changed and ask before retrying; retry from \`current\` without asking only when none differs (only the versions moved).",
+          "description": "Edits a memory's words, date, place, visibility, patches (\`tags\`, the whole list), timeline year and month (\`approxYear\`, \`approxMonth\`; null clears, a month needs a year) or the contributor's name and relationship; send only the keys you change. Read \`memoryVersion\` and \`contributor.contributorVersion\` from get_memory first. On \`stale\`, compare every editable field in \`current\` with the value you read before this edit: if any differs, including a field you are changing, show Rob what changed and ask before retrying; retry from \`current\` without asking only when none differs (only the versions moved).",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
@@ -519,6 +519,32 @@ describe("tools/list contract (case 2)", () => {
                         "type": "null",
                       },
                     ],
+                  },
+                  "approxMonth": {
+                    "anyOf": [
+                      {
+                        "maximum": 12,
+                        "minimum": 1,
+                        "type": "integer",
+                      },
+                      {
+                        "type": "null",
+                      },
+                    ],
+                    "description": "The month (1–12) within approxYear; null clears it. Refused when the memory would have a month without a year.",
+                  },
+                  "approxYear": {
+                    "anyOf": [
+                      {
+                        "maximum": 9007199254740991,
+                        "minimum": 1900,
+                        "type": "integer",
+                      },
+                      {
+                        "type": "null",
+                      },
+                    ],
+                    "description": "The year the memory is from (1900 to this year), placing it on the See memories timeline; null clears it so the year is read from the approximate date text again.",
                   },
                   "name": {
                     "anyOf": [
@@ -563,6 +589,16 @@ describe("tools/list contract (case 2)", () => {
                         "type": "null",
                       },
                     ],
+                  },
+                  "tags": {
+                    "description": "The memory's patches (tags), replacing the whole list: at most 20, each at most 40 characters; [] clears them. Two spellings with the same slug (café, cafe) are one patch, the first kept.",
+                    "items": {
+                      "maxLength": 40,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "maxItems": 20,
+                    "type": "array",
                   },
                   "visibility": {
                     "enum": [
@@ -612,7 +648,7 @@ describe("tools/list contract (case 2)", () => {
             "destructiveHint": true,
             "idempotentHint": true,
           },
-          "description": "Moves a shared memory between PENDING, APPROVED and HIDDEN. A DRAFT is refused (\`draft\`); use \`share_draft\`.",
+          "description": "Moves a shared memory between PENDING, APPROVED and HIDDEN. A DRAFT is refused (\`draft\`); use \`share_draft\`. APPROVED with visibility PUBLIC shows the memory on See memories once the family has turned those pages on (PUBLIC_MEMORIES_ENABLED); PENDING or HIDDEN takes it off. APPROVED needs \`reviewVersion\` from get_memory, read just before: on \`stale\` the memory, its contributor or a file changed since, so call get_memory again, show Rob what changed and ask before approving again. PENDING and HIDDEN never need it.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
@@ -620,6 +656,12 @@ describe("tools/list contract (case 2)", () => {
               "memoryId": {
                 "format": "uuid",
                 "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+              "reviewVersion": {
+                "description": "\`reviewVersion\` from get_memory, read just before this call: approving checks the memory, its contributor and its files are exactly what you read",
+                "maxLength": 100,
+                "minLength": 1,
                 "type": "string",
               },
               "status": {
@@ -645,7 +687,7 @@ describe("tools/list contract (case 2)", () => {
             "destructiveHint": true,
             "idempotentHint": true,
           },
-          "description": "Records the sender's consent and moves a DRAFT to PENDING or APPROVED, with the same consent stamp as the sender's own Share. Call it only when Rob says in this conversation that this named sender agreed; never infer consent from a reply or a message's tone. Read \`memoryVersion\` from \`get_memory\` first. On \`stale\`, re-read and show Rob what changed before asking again. APPROVED publishes nothing public yet (the public memorial pages are not built). No admin alert is sent, now or later. The sender's preferences and claim link are unchanged.",
+          "description": "Records the sender's consent and moves a DRAFT to PENDING or APPROVED, with the same consent stamp as the sender's own Share. Call it only when Rob says in this conversation that this named sender agreed; never infer consent from a reply or a message's tone. Read \`memoryVersion\` from \`get_memory\` first, and for APPROVED also \`reviewVersion\` (it covers the files and the sender's name too). On \`stale\`, re-read and show Rob what changed before asking again. APPROVED with visibility PUBLIC shows the memory on See memories once the family has turned those pages on (PUBLIC_MEMORIES_ENABLED). No admin alert is sent, now or later. The sender's preferences and claim link are unchanged.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
@@ -660,8 +702,14 @@ describe("tools/list contract (case 2)", () => {
                 "description": "ISO-8601 timestamp exactly as get_memory returned it",
                 "type": "string",
               },
+              "reviewVersion": {
+                "description": "\`reviewVersion\` from get_memory, read just before this call: approving checks the memory, its contributor and its files are exactly what you read",
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string",
+              },
               "status": {
-                "description": "The shared status; APPROVED publishes nothing public yet",
+                "description": "The shared status; APPROVED + PUBLIC shows on See memories once the family turns it on",
                 "enum": [
                   "PENDING",
                   "APPROVED",
@@ -906,6 +954,9 @@ interface ContractRow {
 const memoryArgs = { memoryId: ID };
 const coordinateArgs = { memoryId: ID, memoryVersion: VERSION, coordinates: BROADMEAD };
 const shareArgs = { memoryId: ID, memoryVersion: VERSION, status: "PENDING" };
+/** get_memory's `reviewVersion` (TCR round 1, B1-3), opaque to the tools. */
+const REVIEW_VERSION = "rv1.0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
+const approveArgs = { memoryId: ID, status: "APPROVED", reviewVersion: REVIEW_VERSION };
 const changeArgs = { memoryId: ID, memoryVersion: VERSION, contributorVersion: VERSION, changes: { place: "Broadmead" } };
 const draftArgs = {
   contributor: { name: "Joyce Gilley", email: "joyce@example.com", relationship: "Friend from church" },
@@ -960,12 +1011,14 @@ const CONTRACT: ContractRow[] = [
   { tool: "update_memory", args: changeArgs, feature: "updateMemoryAsAdmin", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
   { tool: "update_memory", args: changeArgs, feature: "updateMemoryAsAdmin", answer: { ok: false, code: "last_words" }, expected: { code: "last_words" }, isError: true },
   { tool: "update_memory", args: changeArgs, feature: "updateMemoryAsAdmin", answer: { ok: false, code: "stale", current: editable }, expected: { code: "stale", current: editable }, isError: true },
-  { tool: "set_status", args: { memoryId: ID, status: "APPROVED" }, feature: "setMemoryStatusAsAdmin", answer: { ok: true }, expected: {} },
-  { tool: "set_status", args: { memoryId: ID, status: "APPROVED" }, feature: "setMemoryStatusAsAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
-  { tool: "set_status", args: { memoryId: ID, status: "APPROVED" }, feature: "setMemoryStatusAsAdmin", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
-  { tool: "set_status", args: { memoryId: ID, status: "APPROVED" }, feature: "setMemoryStatusAsAdmin", answer: { ok: false, code: "draft" }, expected: { code: "draft" }, isError: true },
+  { tool: "set_status", args: approveArgs, feature: "setMemoryStatusAsAdmin", answer: { ok: true }, expected: {} },
+  { tool: "set_status", args: approveArgs, feature: "setMemoryStatusAsAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
+  { tool: "set_status", args: approveArgs, feature: "setMemoryStatusAsAdmin", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
+  { tool: "set_status", args: approveArgs, feature: "setMemoryStatusAsAdmin", answer: { ok: false, code: "draft" }, expected: { code: "draft" }, isError: true },
+  // TCR round 1, B1-3: the memory changed since get_memory; no new version is handed back, so the model must re-read.
+  { tool: "set_status", args: approveArgs, feature: "setMemoryStatusAsAdmin", answer: { ok: false, code: "stale" }, expected: { code: "stale" }, isError: true },
   { tool: "share_draft", args: shareArgs, feature: "shareDraftAsAdmin", answer: { ok: true, status: "PENDING", memoryVersion: "2026-11-07T03:00:00.000Z" }, expected: { status: "PENDING", memoryVersion: "2026-11-07T03:00:00.000Z" } },
-  { tool: "share_draft", args: { ...shareArgs, status: "APPROVED" }, feature: "shareDraftAsAdmin", answer: { ok: true, status: "APPROVED", memoryVersion: "2026-11-07T03:00:00.000Z" }, expected: { status: "APPROVED", memoryVersion: "2026-11-07T03:00:00.000Z" } },
+  { tool: "share_draft", args: { ...shareArgs, status: "APPROVED", reviewVersion: REVIEW_VERSION }, feature: "shareDraftAsAdmin", answer: { ok: true, status: "APPROVED", memoryVersion: "2026-11-07T03:00:00.000Z" }, expected: { status: "APPROVED", memoryVersion: "2026-11-07T03:00:00.000Z" } },
   { tool: "share_draft", args: shareArgs, feature: "shareDraftAsAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
   { tool: "share_draft", args: shareArgs, feature: "shareDraftAsAdmin", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
   { tool: "share_draft", args: shareArgs, feature: "shareDraftAsAdmin", answer: { ok: false, code: "not_draft" }, expected: { code: "not_draft" }, isError: true },
@@ -1043,6 +1096,24 @@ describe("the result contract (case 3: every row of plan §4.5)", () => {
   });
 });
 
+describe("set_status arguments (TCR round 1, B1-3)", () => {
+  it("hands the feature the review version with an approval", async () => {
+    features.setMemoryStatusAsAdmin.mockResolvedValueOnce({ ok: true });
+    await callTool("set_status", approveArgs);
+    expect(features.setMemoryStatusAsAdmin).toHaveBeenCalledExactlyOnceWith(approveArgs);
+  });
+
+  it.each([
+    { memoryId: ID, status: "APPROVED" },
+    { memoryId: ID, status: "APPROVED", reviewVersion: "" },
+    { ...approveArgs, memoryVersion: VERSION },
+  ])("refuses an approval without a review version, or with extra fields, before the feature (%j)", async (args) => {
+    const { result } = await callTool("set_status", args);
+    expect(result.isError).toBe(true);
+    expect(features.setMemoryStatusAsAdmin).not.toHaveBeenCalled();
+  });
+});
+
 describe("share_draft arguments (A1, A2)", () => {
   it("hands the feature the validated version and target status", async () => {
     features.shareDraftAsAdmin.mockResolvedValueOnce({ ok: true, status: "PENDING", memoryVersion: VERSION });
@@ -1053,6 +1124,8 @@ describe("share_draft arguments (A1, A2)", () => {
   it.each([
     { ...shareArgs, status: "HIDDEN" },
     { ...shareArgs, status: "DRAFT" },
+    // Sharing straight to APPROVED publishes, so it needs the review version (TCR round 1, B1-3).
+    { ...shareArgs, status: "APPROVED" },
     { ...shareArgs, memoryVersion: "yesterday" },
     { memoryId: ID, status: "PENDING" },
     { ...shareArgs, memoryId: "not-a-uuid" },

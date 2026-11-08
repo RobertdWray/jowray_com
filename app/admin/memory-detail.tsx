@@ -11,6 +11,7 @@ import { StatusActions } from "./status-actions-client";
 import { StatusBadge } from "./status-badge";
 
 const cell = "min-w-0 break-words whitespace-pre-wrap";
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 function Facts({ memory }: { memory: AdminMemoryView }) {
   const contributor = memory.contributor;
@@ -20,6 +21,26 @@ function Facts({ memory }: { memory: AdminMemoryView }) {
       <dd className={cell}>{formatDateTime(memory.createdAt)}</dd>
       <dt className="font-bold">How</dt>
       <dd className={cell}>{SOURCE_LABEL[memory.source]}</dd>
+      {memory.tags.length > 0 && (
+        <>
+          <dt className="font-bold">Patches</dt>
+          <dd className="min-w-0">
+            <ul className="flex flex-wrap gap-2" aria-label="Patches">
+              {memory.tags.map((tag) => (
+                <li key={tag} className="rounded-full border-2 border-dashed border-periwinkle bg-paper px-3 break-words">
+                  {tag}
+                </li>
+              ))}
+            </ul>
+          </dd>
+        </>
+      )}
+      {memory.approxYear !== null && (
+        <>
+          <dt className="font-bold">Timeline</dt>
+          <dd className={cell}>{memory.approxMonth !== null ? `${MONTH_NAMES[memory.approxMonth - 1]} ${memory.approxYear}` : memory.approxYear}</dd>
+        </>
+      )}
       {memory.consentedAt !== null && (
         <>
           <dt className="font-bold">Shared</dt>
@@ -90,7 +111,7 @@ export function MemoryAside({ memory }: { memory: AdminMemoryView }) {
     <div className="flex min-w-0 flex-col gap-6">
       <section aria-label="Status" className="flex min-w-0 flex-col gap-3">
         <h3 className="text-label font-bold">Status</h3>
-        <StatusActions memory={{ id: memory.id, status: memory.status, deleted: memory.deletedAt !== null, purgedFiles: memory.media.filter((m) => m.purged).length }} />
+        <StatusActions memory={{ id: memory.id, status: memory.status, deleted: memory.deletedAt !== null, purgedFiles: memory.media.filter((m) => m.purged).length, reviewVersion: memory.reviewVersion }} />
       </section>
       <section aria-label="Files" className="flex min-w-0 flex-col gap-3">
         <h3 className="text-label font-bold">Files</h3>

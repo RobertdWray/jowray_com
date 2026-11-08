@@ -2,7 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 
-import { lockMemory } from "@/features/memories/lock";
+import { lockContributorMemories, lockMemory, type Tx } from "@/features/memories/lock";
 import { appendClaimRevision, hasWords, LIVE_MEDIA_ORDER, recomputeMemoryType, snapshotsEqual, visibleMediaIds } from "@/features/memories/media-state";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
@@ -159,7 +159,25 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
   };
 }
 
-export type ClaimUpdateResult = { ok: true; shared: boolean } | { ok: false; code: "invalid" | "not_found" | "last_words" };
+/**
+ * `reopened`: this save sent an APPROVED memory back to PENDING (plan 2026-11-08 D17), so the page can say the
+ * family will look again before it is back on See memories. `reopenedOthers`: how many of the contributor's other
+ * APPROVED memories went back with it, because they show the same name and relationship (TCR round 1, B1-2).
+ */
+export type ClaimUpdateResult = { ok: true; shared: boolean; reopened: boolean; reopenedOthers: number } | { ok: false; code: "invalid" | "not_found" | "last_words" };
+
+/** The memory's own words and facts: changing any of them through the claim link on an APPROVED memory needs a new review (D17). */
+const CONTENT_KEYS = ["name", "relationship", "approxDateText", "place", "contributorNote"] as const;
+
+/**
+ * D17: a content change from the contributor's side (their words or facts, or a file added, removed, replaced or
+ * re-captioned) on an APPROVED memory sends it back to PENDING inside the same locked write, so nothing reaches See
+ * memories without the family reading it. Visibility and the two preferences are the contributor's to change and
+ * keep the status. Judged on the status read under the lock.
+ */
+export function reopensForReview(status: MemoryStatus, contentChanged: boolean): boolean {
+  return status === "APPROVED" && contentChanged;
+}
 
 /**
  * Apply an edit from the claim page and append a MemoryRevision with the
@@ -173,6 +191,12 @@ export type ClaimUpdateResult = { ok: true; shared: boolean } | { ok: false; cod
  * status `share` is ignored, so a repeated press never restamps consent. No
  * email is sent here (site-email.ts). `shared` in the result says whether
  * this call made the transition.
+ *
+ * On an APPROVED memory, a change to the words, name, relationship, date or
+ * place also sets PENDING in the same write and names `status` in the
+ * revision (D17, `reopened` in the result). A changed name or relationship
+ * also sends the contributor's other APPROVED memories back, whatever this
+ * one's status (`reopenedOthers`, TCR round 1 B1-2).
  */
 export async function updateMemoryFromClaim({ claimToken, changes }: { claimToken: string; changes: unknown }): Promise<ClaimUpdateResult> {
   const parsed = claimChangesSchema.safeParse(changes);
@@ -190,7 +214,14 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
     if (!memory || memory.deletedAt !== null) {
       return "not_found" as const;
     }
-    await lockMemory(tx, memory.id);
+    // The name and relationship live on the Contributor row that every memory of the send shows, so an edit that may
+    // change them locks all of those memories (this one included) before anything is read (TCR round 1, B1-2).
+    const identityEdit = input.name !== undefined || input.relationship !== undefined;
+    if (memory.contributor !== null && identityEdit) {
+      await lockContributorMemories(tx, memory.contributor.id);
+    } else {
+      await lockMemory(tx, memory.id);
+    }
     // Re-read under the lock: the invariants below must see what a concurrent editor committed first.
     const fresh = await tx.memory.findUniqueOrThrow({
       where: { id: memory.id },
@@ -243,7 +274,12 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
     };
     // A save that changes nothing (a double-click, a replayed request) writes no row and no revision (issue #44, Oscar #17).
     if (snapshotsEqual(before, after)) {
-      return "ok" as const;
+      return { outcome: "ok" as const, reopenedOthers: 0 };
+    }
+    const reopen = !sharing && reopensForReview(fresh.status, CONTENT_KEYS.some((key) => before[key] !== after[key]));
+    if (reopen) {
+      Object.assign(before, { status: fresh.status });
+      Object.assign(after, { status: "PENDING" });
     }
     if (hasWords(before.contributorNote) && !hasWords(after.contributorNote)) {
       const readyFiles = await tx.media.count({ where: { memoryId: memory.id, deletedAt: null, status: "READY" } });
@@ -260,30 +296,69 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
         visibility: after.visibility,
         notifyWhenPosted: after.notifyWhenPosted,
         ...(consent && { status: "PENDING", ...consent }),
+        ...(reopen && { status: "PENDING" }),
       },
     });
     if (fresh.contributor && (after.name !== before.name || after.relationship !== before.relationship || after.contactOptIn !== before.contactOptIn)) {
       await tx.contributor.update({ where: { id: fresh.contributor.id }, data: { name: after.name, relationship: after.relationship, contactOptIn: after.contactOptIn } });
     }
+    // A changed name or relationship shows on every memory of the send: the other APPROVED ones go back too (B1-2).
+    // They are locked: a change to either needs `input.name` or `input.relationship`, which took lockContributorMemories.
+    const reopenedOthers = fresh.contributor && identityEdit ? await reopenContributorSiblings(tx, { contributorId: fresh.contributor.id, editedMemoryId: memory.id, before, after }) : 0;
     if (hasWords(before.contributorNote) !== hasWords(after.contributorNote)) {
       await recomputeMemoryType(tx, memory.id, after.contributorNote);
     }
     await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: consent?.consentVersion ?? fresh.consentVersion });
-    return sharing ? ("shared" as const) : ("ok" as const);
+    return { outcome: sharing ? ("shared" as const) : reopen ? ("reopened" as const) : ("ok" as const), reopenedOthers };
   }, TX_OPTIONS);
 
-  if (result !== "ok" && result !== "shared") {
+  if (typeof result === "string") {
     return { ok: false, code: result };
   }
-  if (result === "shared") {
-    log.info({ action: "draft_shared" }, "drafted memory shared by its contributor");
+  if (result.outcome === "shared") {
+    log.info({ action: "draft_shared", reopenedOthers: result.reopenedOthers }, "drafted memory shared by its contributor");
   } else {
-    log.info({ action: "claim_edit" }, "memory edited through its claim link");
+    log.info({ action: "claim_edit", reopened: result.outcome === "reopened", reopenedOthers: result.reopenedOthers }, "memory edited through its claim link");
   }
-  return { ok: true, shared: result === "shared" };
+  return { ok: true, shared: result.outcome === "shared", reopened: result.outcome === "reopened", reopenedOthers: result.reopenedOthers };
 }
 
-export type ClaimMediaResult = { ok: true } | { ok: false; code: "invalid" | "not_found" | "last_file" };
+/**
+ * D17 for the name and relationship (TCR round 1, B1-2): they live on the Contributor row every memory of a send
+ * shares, so a change made through one claim link shows on all of them. Every other APPROVED, live memory of that
+ * contributor goes back to PENDING, whatever the edited memory's own status, each with a CLAIM_LINK revision naming
+ * its status and the identity fields that changed. The caller holds `lockContributorMemories`. Answers how many went
+ * back.
+ */
+async function reopenContributorSiblings(
+  tx: Tx,
+  { contributorId, editedMemoryId, before, after }: { contributorId: string; editedMemoryId: string; before: { name: string | null; relationship: string | null }; after: { name: string | null; relationship: string | null } }
+): Promise<number> {
+  const changedBefore: Record<string, unknown> = {};
+  const changedAfter: Record<string, unknown> = {};
+  for (const key of ["name", "relationship"] as const) {
+    if (before[key] !== after[key]) {
+      changedBefore[key] = before[key];
+      changedAfter[key] = after[key];
+    }
+  }
+  if (Object.keys(changedAfter).length === 0) {
+    return 0;
+  }
+  const siblings = await tx.memory.findMany({
+    where: { contributorId, id: { not: editedMemoryId }, deletedAt: null, status: "APPROVED" },
+    select: { id: true, consentVersion: true },
+    orderBy: { id: "asc" },
+  });
+  for (const sibling of siblings) {
+    await tx.memory.update({ where: { id: sibling.id }, data: { status: "PENDING" } });
+    await appendClaimRevision(tx, { memoryId: sibling.id, before: { status: "APPROVED", ...changedBefore }, after: { status: "PENDING", ...changedAfter }, consentVersion: sibling.consentVersion });
+  }
+  return siblings.length;
+}
+
+/** `reopened`: as for `ClaimUpdateResult` (D17). */
+export type ClaimMediaResult = { ok: true; reopened: boolean } | { ok: false; code: "invalid" | "not_found" | "last_file" };
 
 /**
  * Soft-delete one of the memory's files from its claim page. READY files are
@@ -307,7 +382,7 @@ async function retireMedia(raw: unknown, statuses: MediaStatus[], action: "remov
     }
     await lockMemory(tx, memory.id);
     // Re-read under the lock: a note cleared by a concurrent editor must count here.
-    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { deletedAt: true, claimTokenHash: true, contributorNote: true, type: true, consentVersion: true } });
+    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { deletedAt: true, claimTokenHash: true, contributorNote: true, type: true, consentVersion: true, status: true } });
     if (fresh.deletedAt !== null || fresh.claimTokenHash !== claimTokenHash) {
       return "not_found" as const;
     }
@@ -322,26 +397,32 @@ async function retireMedia(raw: unknown, statuses: MediaStatus[], action: "remov
         return "last_file" as const;
       }
     }
-    const before = { mediaIds: await visibleMediaIds(tx, memory.id), type: fresh.type };
+    // Removing a received file changes what visitors would see; cancelling a reservation that never arrived does not (D17).
+    const reopen = reopensForReview(fresh.status, target.status === "READY");
+    const before = { mediaIds: await visibleMediaIds(tx, memory.id), type: fresh.type, ...(reopen && { status: fresh.status }) };
     const now = new Date();
     await tx.media.update({ where: { id: target.id }, data: { deletedAt: now } });
     await tx.media.updateMany({ where: { memoryId: memory.id, replacesMediaId: target.id, deletedAt: null, status: "PENDING" }, data: { deletedAt: now } });
     const type = (await recomputeMemoryType(tx, memory.id, fresh.contributorNote)) ?? fresh.type;
+    if (reopen) {
+      await tx.memory.update({ where: { id: memory.id }, data: { status: "PENDING" } });
+    }
     const after = {
       mediaIds: await visibleMediaIds(tx, memory.id),
       type,
       // A cancelled replacement is invisible in mediaIds on both sides; name it so the revision is not a no-op.
       ...(target.replacesMediaId !== null && { cancelledReplacementOf: target.replacesMediaId }),
+      ...(reopen && { status: "PENDING" }),
     };
     await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: fresh.consentVersion });
-    return { memoryId: memory.id };
+    return { memoryId: memory.id, reopen };
   }, TX_OPTIONS);
 
   if (typeof result === "string") {
     return { ok: false, code: result };
   }
-  log.info({ action: `media_${action}`, memoryId: result.memoryId, mediaId }, "file retired through the claim link");
-  return { ok: true };
+  log.info({ action: `media_${action}`, memoryId: result.memoryId, mediaId, reopened: result.reopen }, "file retired through the claim link");
+  return { ok: true, reopened: result.reopen };
 }
 
 /** Remove a received file (soft delete; blobs are purged by the reconcile cron). */
@@ -372,7 +453,7 @@ export async function updateMediaFromClaim(raw: unknown): Promise<ClaimMediaResu
     }
     await lockMemory(tx, memory.id);
     // Re-read under the lock: a link rotated while this request waited (an admin reissue) must not act.
-    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { deletedAt: true, claimTokenHash: true, consentVersion: true } });
+    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { deletedAt: true, claimTokenHash: true, consentVersion: true, status: true } });
     if (fresh.deletedAt !== null || fresh.claimTokenHash !== claimTokenHash) {
       return "not_found" as const;
     }
@@ -396,12 +477,23 @@ export async function updateMediaFromClaim(raw: unknown): Promise<ClaimMediaResu
     await tx.media.update({ where: { id: target.id }, data: words });
     // A replacement still on its way copied the target's words when it was ticketed; keep it current so the swap cannot restore stale words.
     await tx.media.updateMany({ where: { memoryId: memory.id, replacesMediaId: target.id, status: "PENDING", deletedAt: null }, data: words });
-    await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: fresh.consentVersion });
-    return "ok" as const;
+    // A file's caption is shown with it on See memories: a changed one needs a new review (D17).
+    const statusBefore = fresh.status;
+    const reopen = reopensForReview(statusBefore, true);
+    if (reopen) {
+      await tx.memory.update({ where: { id: memory.id }, data: { status: "PENDING" } });
+    }
+    await appendClaimRevision(tx, {
+      memoryId: memory.id,
+      before: { ...before, ...(reopen && { status: statusBefore }) },
+      after: { ...after, ...(reopen && { status: "PENDING" }) },
+      consentVersion: fresh.consentVersion,
+    });
+    return reopen ? ("reopened" as const) : ("ok" as const);
   }, TX_OPTIONS);
-  if (result !== "ok") {
+  if (result !== "ok" && result !== "reopened") {
     return { ok: false, code: result };
   }
-  log.info({ action: "media_edit", mediaId }, "file words edited through the claim link");
-  return { ok: true };
+  log.info({ action: "media_edit", mediaId, reopened: result === "reopened" }, "file words edited through the claim link");
+  return { ok: true, reopened: result === "reopened" };
 }

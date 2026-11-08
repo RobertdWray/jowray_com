@@ -683,7 +683,8 @@ describe("step (h): photo GPS (B3)", () => {
       })),
       photo("med_image", minutesAgo(100), { derivatives: [], gpsCheckedAt: minutesAgo(50) }),
       photo("med_webm", minutesAgo(500), { mimeType: "video/webm", derivatives: [] }),
-      photo("med_audio", minutesAgo(500), { mimeType: "audio/mp4", derivatives: [] }),
+      // A browser recording has no location reader; M4A (an MP4 container) does and is covered with the extractor's tests.
+      photo("med_audio", minutesAgo(500), { mimeType: "audio/webm", derivatives: [] }),
       photo("med_decided_video", minutesAgo(500), { mimeType: "video/mp4", gpsCheckedAt: minutesAgo(400) }),
       photo("med_capped_video", minutesAgo(500), { mimeType: "video/quicktime", gpsAttempts: 3 }),
       photo("med_pending_video", minutesAgo(500), { mimeType: "video/quicktime", status: "PENDING", reservedUntil: new Date(Date.now() + HOUR) }),

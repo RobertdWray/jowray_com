@@ -32,7 +32,7 @@ function matches(row: MediaRow, where: Record<string, unknown>): boolean {
 }
 let media: MediaRow[] = [];
 let p2002Once = false;
-const memories = [{ id: "mem_1", claimTokenHash: hashClaimToken(CLAIM), deletedAt: null as Date | null, contributorNote: null as string | null, consentVersion: "2026-11-v2", submissionId: null as string | null }];
+const memories = [{ id: "mem_1", claimTokenHash: hashClaimToken(CLAIM), deletedAt: null as Date | null, contributorNote: null as string | null, consentVersion: "2026-11-v2", submissionId: null as string | null, status: "PENDING" as string }];
 const afterCalls: Array<() => Promise<void>> = [];
 /** The task name of each scheduled callback, index for index with afterCalls. */
 const afterNames: string[] = [];
@@ -48,7 +48,11 @@ const dbStub = {
   memory: {
     findUnique: vi.fn(async ({ where }: { where: { claimTokenHash: string } }) => memories.find((m) => m.claimTokenHash === where.claimTokenHash) ?? null),
     findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { const m = memories.find((x) => x.id === where.id); if (!m) { throw Object.assign(new Error("not found"), { code: "P2025" }); } return m; }),
-    update: vi.fn(async ({ where, data }: { where: { id: string }; data: { type: string } }) => { memoryTypes[where.id] = data.type; return { id: where.id, ...data }; }),
+    update: vi.fn(async ({ where, data }: { where: { id: string }; data: { type?: string; status?: string } }) => {
+      if (data.type !== undefined) { memoryTypes[where.id] = data.type; }
+      if (data.status !== undefined) { memories.find((m) => m.id === where.id)!.status = data.status; }
+      return { id: where.id, ...data };
+    }),
   },
   memoryRevision: { count: vi.fn(async () => revisions.length), create: vi.fn(async ({ data }: { data: { memoryId: string; before: Record<string, unknown>; after: Record<string, unknown> } }) => { revisions.push(data); return data; }) },
   media: {
@@ -122,6 +126,7 @@ beforeEach(() => {
   notifyMock.mockClear();
   media = [row()];
   memories[0]!.contributorNote = null;
+  memories[0]!.status = "PENDING";
   memoryTypes.mem_1 = "PHOTO";
   revisions.length = 0;
   lockCalls.length = 0;
@@ -429,9 +434,11 @@ describe("finalizeUpload", () => {
   it.each([
     { kind: "a MOV video", mimeType: "video/quicktime", maxBytes: 500 * 1024 * 1024, locationTasks: 1 },
     { kind: "an MP4 video", mimeType: "video/mp4", maxBytes: 500 * 1024 * 1024, locationTasks: 1 },
-    { kind: "a voice note", mimeType: "audio/mp4", maxBytes: 100 * 1024 * 1024, locationTasks: 0 },
+    // An M4A voice note is the same MP4 container and can carry a location (plan 2026-11-08 D16).
+    { kind: "an M4A voice note", mimeType: "audio/mp4", maxBytes: 100 * 1024 * 1024, locationTasks: 1 },
+    { kind: "a browser voice recording", mimeType: "audio/webm", maxBytes: 100 * 1024 * 1024, locationTasks: 0 },
     { kind: "a WebM video", mimeType: "video/webm", maxBytes: 500 * 1024 * 1024, locationTasks: 0 },
-  ])("schedules location for MOV/MP4 but not audio/WebM: $kind (final review, item 4; plan §9, R2)", async ({ mimeType, maxBytes, locationTasks }) => {
+  ])("schedules location for MOV/MP4/M4A but not WebM: $kind (final review, item 4; plan §9, R2; plan 2026-11-08 D16)", async ({ mimeType, maxBytes, locationTasks }) => {
     headMock.mockResolvedValue({ pathname: "originals/mem_1/abc.jpg", url: "u", size: 1234, contentType: mimeType, uploadedAt: new Date() });
     media = [row({ mimeType, maxBytes })];
     const result = await finalizeUpload({ ticket: mintUploadTicket({ ...claims, mimeType, maxBytes }), claimToken: CLAIM });
@@ -519,5 +526,48 @@ describe("Sentry tags and metrics in finalizeUpload (plan §8.2)", () => {
     expect(tagIdsMock).toHaveBeenCalledWith({ memoryId: "mem_1", mediaId: "med_1" });
     expect(metricsMock.uploadFinalized).toHaveBeenCalledWith("READY");
     expect(identifyMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("a file the contributor's side adds or swaps in on an APPROVED memory sends it back for review (plan 2026-11-08 D17)", () => {
+  beforeEach(() => {
+    memories[0]!.status = "APPROVED";
+  });
+
+  it("an added file reaching READY sets PENDING with one revision naming status and the new file", async () => {
+    media = [row({ id: "med_old", status: "READY", storageKey: "originals/mem_1/old.jpg", sizeBytes: 5, blobUrl: "u" }), row()];
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("READY");
+    expect(memories[0]!.status).toBe("PENDING");
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]).toMatchObject({ before: { status: "APPROVED" }, after: { status: "PENDING", addedMediaId: "med_1" } });
+  });
+
+  it("a replacement reaching READY sets PENDING and its swap revision names status", async () => {
+    media = [row({ id: "med_old", status: "READY", storageKey: "originals/mem_1/old.jpg", sizeBytes: 5, blobUrl: "u" }), row({ id: "med_1", replacesMediaId: "med_old" })];
+    expect((await recordMedia({ mediaId: "med_1" })).status).toBe("READY");
+    expect(memories[0]!.status).toBe("PENDING");
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]).toMatchObject({ before: { mediaIds: ["med_old"], status: "APPROVED" }, after: { mediaIds: ["med_1"], status: "PENDING" } });
+  });
+
+  it("a replacement cancelled in flight changes nothing visible: the memory stays APPROVED", async () => {
+    media = [row({ id: "med_old", status: "READY", storageKey: "originals/mem_1/old.jpg", sizeBytes: 5, blobUrl: "u", deletedAt: new Date() }), row({ id: "med_1", replacesMediaId: "med_old" })];
+    await recordMedia({ mediaId: "med_1" });
+    expect(memories[0]!.status).toBe("APPROVED");
+    expect(revisions).toHaveLength(0);
+  });
+
+  it("a file that fails validation changes nothing visible: the memory stays APPROVED", async () => {
+    readPrefixMock.mockResolvedValueOnce(new Uint8Array(16));
+    await recordMedia({ mediaId: "med_1" });
+    expect(media[0]!.status).toBe("FAILED");
+    expect(memories[0]!.status).toBe("APPROVED");
+  });
+
+  it.each(["PENDING", "HIDDEN", "DRAFT"])("a %s memory keeps its status when a file arrives", async (status) => {
+    memories[0]!.status = status;
+    await recordMedia({ mediaId: "med_1" });
+    expect(memories[0]!.status).toBe(status);
+    expect(revisions).toHaveLength(0);
   });
 });

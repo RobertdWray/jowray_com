@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en"><head><style data-dc-design-system-vars="">@layer{:root{--color-jo-red:#c8102e;--color-jo-red-deep:#a50d26;--color-jo-red-shadow:#7d0a1e;--color-periwinkle:#5b7db1;--color-periwinkle-deep:#3f5f94;--color-periwinkle-shadow:#26406a;--color-goldenrod:#e8a317;--color-sunhat-pink:#e0457b;--color-plum:#6b3a5b;--color-lake-green:#3f7d4e;--color-muslin:#f6efe3;--color-paper:#fffdf8;--color-wood:#8a7259;--color-wood-light:#e9d9c0;--color-walnut:#2e2420;--color-walnut-soft:#5a4a3e;--shadow-button-red:0 5px 0 #7d0a1e;--shadow-button-periwinkle:0 5px 0 #26406a;--shadow-card-red:0 6px 0 #7d0a1e;--shadow-card:0 6px 0 #e9d9c0;--shadow-form:0 8px 0 #e9d9c0;--shadow-photo:0 14px 30px rgb(46 36 32 / 0.18);--shadow-card-hover:0 10px 0 #e9d9c0;--shadow-card-red-hover:0 10px 0 #7d0a1e;--shadow-pill:0 3px 0 #7d0a1e;--spacing-tap:56px;--spacing-tap-lg:64px;--radius-button:14px;--radius-card:18px;--radius-input:12px;--radius-form:20px;--font-display:"Fraunces Variable", "Fraunces", Georgia, serif;--font-body:"Atkinson Hyperlegible", system-ui, sans-serif;--text-text-display:800 68px/1.02 var(--font-display);--text-text-display-sm:800 44px/1.02 var(--font-display);--text-text-thanks:800 60px/1.05 var(--font-display);--text-text-h2:700 44px/1.1 var(--font-display);--text-text-h2-sm:700 34px/1.1 var(--font-display);--text-text-card-title:700 28px/1.1 var(--font-display);--text-text-lead:400 22px/1.5 var(--font-body);--text-text-body:400 20px/1.5 var(--font-body);--text-text-label:700 19px/1.4 var(--font-body);--text-text-small:400 17px/1.45 var(--font-body);}}</style>
+
+
+<meta charset="utf-8">
+<title>Memories of Jo — explore</title>
+<script src="dc-runtime.js"></script>
+<script src="data/memories.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+@font-face{font-family:"Fraunces Variable";src:url("ds/jo-wray/fonts/fraunces-latin-standard-normal.woff2") format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
+@font-face{font-family:"Fraunces Variable";src:url("ds/jo-wray/fonts/fraunces-latin-standard-italic.woff2") format("woff2");font-weight:100 900;font-style:italic;font-display:swap}
+@font-face{font-family:"Atkinson Hyperlegible";src:url("ds/jo-wray/fonts/atkinson-hyperlegible-latin-400-normal.woff2") format("woff2");font-weight:400;font-display:swap}
+@font-face{font-family:"Atkinson Hyperlegible";src:url("ds/jo-wray/fonts/atkinson-hyperlegible-latin-700-normal.woff2") format("woff2");font-weight:700;font-display:swap}
+body{margin:0}
+a{color:#a50d26}a:hover{color:#2e2420}
+:is(a,button,input,select,[tabindex="0"]):focus-visible{outline:3px solid #2e2420;outline-offset:2px}
+input::placeholder{color:#8a7259}
+.jw-card{transition:transform .15s,box-shadow .15s}
+@media (prefers-reduced-motion:no-preference){.jw-card:hover{transform:translateY(-3px);box-shadow:0 10px 0 #e9d9c0}}
+.jw-pin:hover svg{filter:brightness(1.08)}
+</style>
+</helmet>
+<div style="min-height:100%;display:flex;flex-direction:column;color:#2e2420;font-family:'Atkinson Hyperlegible',system-ui,sans-serif;font-size:20px;line-height:1.5;background-color:#f6efe3;background-image:linear-gradient(rgb(91 125 177 / 0.08) 50%, transparent 50%),linear-gradient(90deg, rgb(91 125 177 / 0.08) 50%, transparent 50%);background-size:36px 36px">
+
+  <header style="padding:20px max(16px,5%)">
+    <div style="max-width:1200px;margin:0 auto;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px 32px">
+      <a href="Main.dc.html" style="display:flex;align-items:center;gap:12px;color:#2e2420;text-decoration:none">
+        <svg width="44" height="44" sc-camel-view-box="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 21s-7.2-4.6-9.6-9.1A5.4 5.4 0 0 1 12 6.2a5.4 5.4 0 0 1 9.6 5.7C19.2 16.4 12 21 12 21z" fill="#c8102e"></path><path d="M12 19.2s-5.8-3.9-7.9-7.7A4 4 0 0 1 12 7.6a4 4 0 0 1 7.9 3.9C17.8 15.3 12 19.2 12 19.2z" stroke="#f6efe3" stroke-width="1.1" stroke-dasharray="1.6 1.4" stroke-linecap="round"></path></svg>
+        <span style="font-family:'Fraunces Variable',Georgia,serif;font-size:30px;font-weight:700;letter-spacing:-0.01em">Jo Wray</span>
+      </a>
+      <nav aria-label="Site" style="display:flex;flex-wrap:wrap;gap:8px 28px;font-size:19px;font-weight:700">
+        <a href="Main.dc.html" aria-current="page" style="padding:10px 0 7px;color:#2e2420;text-decoration:none;border-bottom:3px dashed #c8102e">See memories</a>
+        <a href="https://www.jowray.com/share" style="padding:10px 0;color:#2e2420;text-decoration:none">Leave a memory</a>
+        <a href="https://www.jowray.com/#story" style="padding:10px 0;color:#2e2420;text-decoration:none">Jo's story</a>
+      </nav>
+    </div>
+  </header>
+
+  <main style="display:flex;flex-direction:column;flex:1">
+
+    <section aria-labelledby="h1" style="padding:24px max(16px,5%) 48px">
+      <div style="max-width:1200px;margin:0 auto;display:flex;flex-wrap:wrap;align-items:flex-end;gap:32px 64px">
+        <div style="flex:1 1 440px;min-width:0;display:flex;flex-direction:column;gap:20px">
+          <p style="margin:0;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#a50d26">Memories of Jo</p>
+          <h1 id="h1" style="margin:0;font-family:'Fraunces Variable',Georgia,serif;font-size:68px;line-height:1.02;letter-spacing:-0.02em;font-weight:800">Every <span style="color:#c8102e">Jo</span> story, in one place.</h1>
+          <p style="margin:0;max-width:34em;font-size:22px">So far her students, church friends, neighbors and family have left <strong>{{stats.total}} memories</strong> from <strong>{{stats.places}} places</strong>, stretching from <strong>{{stats.first}}</strong> to <strong>{{stats.last}}</strong>. Wander by place, by year or by what she loved. More arrive every day.</p>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:16px">
+            <a href="https://www.jowray.com/share" style="display:inline-flex;align-items:center;justify-content:center;gap:12px;min-height:64px;padding:0 28px;border-radius:14px;background:#c8102e;color:#fff;font-weight:700;font-size:20px;text-decoration:none;box-shadow:0 5px 0 #7d0a1e">
+              <svg width="26" height="26" sc-camel-view-box="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 21s-7.2-4.6-9.6-9.1A5.4 5.4 0 0 1 12 6.2a5.4 5.4 0 0 1 9.6 5.7C19.2 16.4 12 21 12 21z" stroke="#fff" stroke-width="1.8" stroke-dasharray="2.4 2" stroke-linecap="round"></path></svg>
+              Leave a memory of Jo
+            </a>
+            <a href="Timeline.dc.html" style="display:inline-flex;align-items:center;justify-content:center;min-height:64px;padding:0 24px;border-radius:14px;border:3px dashed #8a7259;color:#2e2420;font-weight:700;font-size:20px;text-decoration:none;background:#fffdf8">Start at the beginning</a>
+          </div>
+        </div>
+        <ul role="list" style="list-style:none;margin:0;padding:0;flex:1 1 360px;min-width:0;display:grid;grid-template-columns:repeat(3, minmax(0, 1fr));gap:16px">
+          <li style="display:flex;flex-direction:column;gap:4px;padding:20px 18px;background:#fffdf8;border:3px solid #e9d9c0;border-radius:18px;box-shadow:0 6px 0 #e9d9c0;transform:rotate(-1deg)">
+            <span style="font-family:'Fraunces Variable',Georgia,serif;font-size:44px;font-weight:800;line-height:1;color:#c8102e">{{stats.total}}</span>
+            <span style="font-size:17px;color:#5a4a3e">memories</span>
+          </li>
+          <li style="display:flex;flex-direction:column;gap:4px;padding:20px 18px;background:#fffdf8;border:3px solid #e9d9c0;border-radius:18px;box-shadow:0 6px 0 #e9d9c0;transform:rotate(0.8deg)">
+            <span style="font-family:'Fraunces Variable',Georgia,serif;font-size:44px;font-weight:800;line-height:1">{{stats.places}}</span>
+            <span style="font-size:17px;color:#5a4a3e">places</span>
+          </li>
+          <li style="display:flex;flex-direction:column;gap:4px;padding:20px 18px;background:#fffdf8;border:3px solid #e9d9c0;border-radius:18px;box-shadow:0 6px 0 #e9d9c0;transform:rotate(-0.6deg)">
+            <span style="font-family:'Fraunces Variable',Georgia,serif;font-size:44px;font-weight:800;line-height:1">{{stats.decades}}</span>
+            <span style="font-size:17px;color:#5a4a3e">decades</span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section aria-label="Ways to look" style="border-top:3px dashed #c8102e;border-bottom:3px dashed #c8102e;background:#fffdf8;padding:28px max(16px,5%)">
+      <div style="max-width:1200px;margin:0 auto;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:20px 32px">
+        <nav aria-label="View" style="display:flex;flex-wrap:wrap;gap:10px">
+          <a href="Main.dc.html" aria-current="page" style="display:inline-flex;align-items:center;gap:10px;min-height:56px;padding:0 22px;border-radius:999px;background:#3f5f94;color:#fff;font-weight:700;font-size:19px;text-decoration:none;box-shadow:0 4px 0 #26406a">
+            <svg width="22" height="22" sc-camel-view-box="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect></svg>
+            Everything
+          </a>
+          <a href="Map.dc.html" style="display:inline-flex;align-items:center;gap:10px;min-height:56px;padding:0 22px;border-radius:999px;border:3px dashed #5b7db1;color:#2e2420;font-weight:700;font-size:19px;text-decoration:none;background:#fffdf8">
+            <svg width="22" height="22" sc-camel-view-box="0 0 24 24" fill="none" stroke="#a50d26" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-6-5.3-6-10a6 6 0 0 1 12 0c0 4.7-6 10-6 10z"></path><circle cx="12" cy="11" r="2.2"></circle></svg>
+            By place
+          </a>
+          <a href="Timeline.dc.html" style="display:inline-flex;align-items:center;gap:10px;min-height:56px;padding:0 22px;border-radius:999px;border:3px dashed #5b7db1;color:#2e2420;font-weight:700;font-size:19px;text-decoration:none;background:#fffdf8">
+            <svg width="22" height="22" sc-camel-view-box="0 0 24 24" fill="none" stroke="#a50d26" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h18"></path><circle cx="7" cy="12" r="2.2"></circle><circle cx="17" cy="12" r="2.2"></circle><path d="M7 9.8V5M17 14.2V19"></path></svg>
+            By year
+          </a>
+          <a href="Tags.dc.html" style="display:inline-flex;align-items:center;gap:10px;min-height:56px;padding:0 22px;border-radius:999px;border:3px dashed #5b7db1;color:#2e2420;font-weight:700;font-size:19px;text-decoration:none;background:#fffdf8">
+            <svg width="22" height="22" sc-camel-view-box="0 0 24 24" fill="none" stroke="#a50d26" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11V4h7l10 10-7 7L3 11z"></path><circle cx="7.5" cy="8.5" r="1.4"></circle></svg>
+            By what she loved
+          </a>
+        </nav>
+        <div style="flex:1 1 320px;max-width:460px;min-width:0;display:flex;flex-direction:column;gap:6px">
+          <label for="q" style="font-size:19px;font-weight:700">Look for a word, a name or a place</label>
+          <input id="q" type="search" value="{{q}}" sc-camel-on-change="{{setQ}}" placeholder="quilt" style="min-height:56px;padding:0 16px;border:2px solid #8a7259;border-radius:12px;background:#fff;color:#2e2420;font:inherit;font-size:20px">
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="where-h" style="padding:56px max(16px,5%) 24px">
+      <div style="max-width:1200px;margin:0 auto;display:flex;flex-wrap:wrap;gap:32px 48px;align-items:flex-start">
+        <div style="flex:2 1 560px;min-width:0;display:flex;flex-direction:column;gap:14px">
+          <div style="display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px 24px">
+            <h2 id="where-h" style="margin:0;font-family:'Fraunces Variable',Georgia,serif;font-size:34px;line-height:1.1;letter-spacing:-0.015em;font-weight:700">Where the stories happened</h2>
+            <a href="Map.dc.html" style="font-size:19px;font-weight:700">Open the big map</a>
+          </div>
+          <div style="position:relative;width:100%;aspect-ratio:1000 / 560;background:#fffdf8;border:3px solid #e9d9c0;border-radius:18px;box-shadow:0 6px 0 #e9d9c0;overflow:visible">
+            <svg sc-camel-view-box="0 0 1000 560" style="position:absolute;inset:0;width:100%;height:100%" aria-hidden="true">
+              <path d="M13.5 30.8 L23.7 63.8 L25.3 114.4 L18.6 154.0 L22.0 178.2 L28.7 224.4 L50.7 264.0 L60.8 290.4 L82.8 334.4 L118.3 347.6 L138.6 369.6 L142.0 380.6 L182.5 376.2 L243.4 407.0 L292.4 407.0 L321.1 396.0 L348.1 424.6 L376.9 457.6 L407.3 440.0 L439.4 490.6 L474.9 525.8 L478.3 484.0 L491.8 470.8 L518.8 451.0 L535.7 442.2 L566.1 444.4 L599.9 455.4 L610.1 431.2 L633.8 424.6 L659.1 426.8 L684.4 442.2 L703.0 435.6 L721.6 457.6 L725.0 484.0 L738.5 512.6 L750.4 541.2 L762.2 541.2 L767.3 508.2 L758.8 470.8 L747.0 437.8 L743.6 420.2 L750.4 391.6 L770.6 374.0 L794.3 349.8 L804.4 343.2 L828.1 332.2 L845.0 319.0 L838.2 290.4 L836.5 275.0 L843.3 261.8 L851.8 250.8 L855.1 237.6 L868.7 215.6 L870.3 202.4 L877.1 200.2 L904.1 191.4 L916.0 182.6 L924.4 180.4 L937.9 178.2 L929.5 158.4 L926.1 147.4 L934.6 134.2 L958.2 118.8 L988.6 110.0 L975.1 90.2 L975.1 59.4 L956.5 55.0 L951.5 52.8 L932.9 81.4 L921.0 99.0 L880.5 105.6 L858.5 105.6 L831.5 123.2 L823.0 136.4 L787.5 143.0 L784.2 147.4 L787.5 151.8 L767.3 162.8 L740.2 182.6 L709.8 178.2 L716.6 169.4 L726.7 149.6 L725.0 127.6 L709.8 96.8 L689.5 88.0 L674.3 103.4 L659.1 123.2 L662.5 147.4 L640.5 173.8 L637.1 151.8 L650.6 107.8 L643.9 72.6 L633.8 63.8 L599.9 68.2 L564.5 66.0 L583.0 50.6 L606.7 39.6 L599.9 37.4 L522.2 24.2 L512.1 17.6 L37.2 17.6 L45.6 33.0 Z" fill="#f6efe3" stroke="#c8102e" stroke-width="3" stroke-dasharray="9 7" stroke-linejoin="round" stroke-linecap="round"></path>
+            </svg>
+            <sc-for list="{{pins}}" as="p" hint-placeholder-count="12">
+              <button type="button" class="jw-pin" sc-camel-on-click="{{p.pick}}" aria-pressed="{{p.selected}}" aria-label="{{p.aria}}" style="position:absolute;left:{{p.x}}%;top:{{p.y}}%;transform:translate(-50%,-82%);background:none;border:0;padding:0;margin:0;cursor:pointer;display:flex;flex-direction:column;align-items:center;min-width:44px;min-height:44px;font:inherit">
+                <svg width="{{p.size}}" height="{{p.size}}" sc-camel-view-box="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 21s-7.2-4.6-9.6-9.1A5.4 5.4 0 0 1 12 6.2a5.4 5.4 0 0 1 9.6 5.7C19.2 16.4 12 21 12 21z" fill="{{p.fill}}"></path><path d="M12 19.2s-5.8-3.9-7.9-7.7A4 4 0 0 1 12 7.6a4 4 0 0 1 7.9 3.9C17.8 15.3 12 19.2 12 19.2z" stroke="#f6efe3" stroke-width="1.1" stroke-dasharray="1.6 1.4" stroke-linecap="round"></path></svg>
+                <span style="{{p.labelStyle}}">{{p.label}}</span>
+              </button>
+            </sc-for>
+          </div>
+          <p style="margin:0;font-size:17px;color:#5a4a3e">Each heart is a place someone remembers with Jo; the bigger the heart, the more stories. Tap one to keep only those.</p>
+        </div>
+        <div style="flex:1 1 280px;min-width:0;display:flex;flex-direction:column;gap:12px">
+          <h3 style="margin:0;font-family:'Fraunces Variable',Georgia,serif;font-size:28px;line-height:1.1;font-weight:700">Most of them close to home</h3>
+          <ul role="list" style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px">
+            <sc-for list="{{topPlaces}}" as="tp" hint-placeholder-count="6">
+              <li>
+                <button type="button" sc-camel-on-click="{{tp.pick}}" aria-pressed="{{tp.selected}}" style="{{tp.style}}">
+                  <span style="flex:1;text-align:left">{{tp.name}}</span>
+                  <span style="font-size:17px;font-weight:400;opacity:0.9">{{tp.countText}}</span>
+                </button>
+              </li>
+            </sc-for>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="when-h" style="padding:32px max(16px,5%) 24px">
+      <div style="max-width:1200px;margin:0 auto;display:flex;flex-direction:column;gap:16px">
+        <div style="display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px 24px">
+          <h2 id="when-h" style="margin:0;font-family:'Fraunces Variable',Georgia,serif;font-size:34px;line-height:1.1;letter-spacing:-0.015em;font-weight:700">When</h2>
+          <a href="Timeline.dc.html" style="font-size:19px;font-weight:700">Walk the whole timeline</a>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;padding:20px 16px 16px;background:#fffdf8;border:3px solid #e9d9c0;border-radius:18px;box-shadow:0 6px 0 #e9d9c0">
+          <sc-for list="{{decades}}" as="d" hint-placeholder-count="8">
+            <button type="button" sc-camel-on-click="{{d.pick}}" aria-pressed="{{d.selected}}" style="flex:1 1 110px;min-width:0;display:flex;flex-direction:column;align-items:center;gap:10px;background:none;border:0;padding:0;margin:0;cursor:pointer;color:#2e2420;font:inherit">
+              <span style="width:100%;display:flex;align-items:flex-end;justify-content:center;height:80px"><span style="width:58%;border-radius:8px 8px 0 0;background:{{d.bar}};height:{{d.h}}px"></span></span>
+              <span style="{{d.chip}}">{{d.label}}</span>
+              <span style="font-size:17px;color:#5a4a3e">{{d.countText}}</span>
+            </button>
+          </sc-for>
+        </div>
+        <ol role="list" style="list-style:none;margin:0;padding:0 8px;display:flex;flex-wrap:wrap;gap:6px 22px;font-size:17px;color:#5a4a3e">
+          <li><strong style="color:#a50d26">1949–66</strong> Growing up on Army posts</li>
+          <li><strong style="color:#a50d26">1967–71</strong> Towson, and a tall guy named Richard</li>
+          <li><strong style="color:#a50d26">1971–2008</strong> The teaching years</li>
+          <li><strong style="color:#a50d26">2009–17</strong> Quilts, bargains and Santa</li>
+          <li><strong style="color:#a50d26">2018–</strong> Grandma Jo</li>
+        </ol>
+      </div>
+    </section>
+
+    <section aria-labelledby="what-h" style="padding:32px max(16px,5%) 40px">
+      <div style="max-width:1200px;margin:0 auto;display:flex;flex-direction:column;gap:16px">
+        <div style="display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px 24px">
+          <h2 id="what-h" style="margin:0;font-family:'Fraunces Variable',Georgia,serif;font-size:34px;line-height:1.1;letter-spacing:-0.015em;font-weight:700">What she loved</h2>
+          <a href="Tags.dc.html" style="font-size:19px;font-weight:700">See every tag</a>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:10px">
+          <sc-for list="{{tagChips}}" as="t" hint-placeholder-count="12">
+            <button type="button" sc-camel-on-click="{{t.pick}}" aria-pressed="{{t.selected}}" style="{{t.style}}">{{t.name}} <span style="font-weight:400;opacity:0.9">{{t.count}}</span></button>
+          </sc-for>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+          <span style="font-size:19px;font-weight:700;margin-right:6px">Kind:</span>
+          <sc-for list="{{kinds}}" as="k" hint-placeholder-count="5">
+            <button type="button" sc-camel-on-click="{{k.pick}}" aria-pressed="{{k.selected}}" style="{{k.style}}">{{k.name}} <span style="font-weight:400;opacity:0.9">{{k.count}}</span></button>
+          </sc-for>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="list-h" style="border-top:3px dashed #c8102e;background:#fffdf8;padding:56px max(16px,5%) 64px">
+      <div style="max-width:1200px;margin:0 auto;display:flex;flex-direction:column;gap:28px">
+        <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px 24px">
+          <h2 id="list-h" style="margin:0;font-family:'Fraunces Variable',Georgia,serif;font-size:34px;line-height:1.1;letter-spacing:-0.015em;font-weight:700">{{summary}}</h2>
+          <sc-if value="{{hasFilters}}" hint-placeholder-val="{{true}}">
+            <button type="button" sc-camel-on-click="{{clear}}" style="display:inline-flex;align-items:center;gap:10px;min-height:56px;padding:0 20px;border-radius:14px;border:3px dashed #8a7259;background:#fffdf8;color:#2e2420;font:inherit;font-size:19px;font-weight:700;cursor:pointer">
+              <svg width="22" height="22" sc-camel-view-box="0 0 24 24" fill="none" stroke="#a50d26" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+              Show everything again
+            </button>
+          </sc-if>
+        </div>
+        <sc-if value="{{empty}}" hint-placeholder-val="{{false}}">
+          <p style="margin:0;max-width:40em;font-size:22px;padding:28px;border:3px dashed #5b7db1;border-radius:18px;background:#f6efe3">Nothing here yet for that mix. Try one filter fewer, or <a href="https://www.jowray.com/share">be the first to tell that Jo story</a>.</p>
+        </sc-if>
+        <ul role="list" style="list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fit, minmax(min({{cardMinPx}}, 100%), 1fr));gap:24px;align-items:start">
+          <sc-for list="{{cards}}" as="c" hint-placeholder-count="9">
+            <li style="min-width:0;display:flex">
+              <a href="Memory.dc.html" class="jw-card" aria-label="{{c.aria}}" style="flex:1;display:flex;flex-direction:column;gap:16px;background:#fffdf8;border:3px solid #e9d9c0;border-radius:18px;box-shadow:0 6px 0 #e9d9c0;padding:20px;color:#2e2420;text-decoration:none;min-width:0">
+                <sc-if value="{{c.isPhoto}}" hint-placeholder-val="{{true}}">
+                  <div style="transform:{{c.tilt}};padding:8px;border-radius:6px;background-color:#c8102e;background-image:linear-gradient(45deg,#5b7db1 25%,transparent 25%,transparent 75%,#5b7db1 75%),linear-gradient(45deg,#e8a317 25%,transparent 25%,transparent 75%,#e8a317 75%);background-size:16px 16px;background-position:0 0,8px 8px;box-shadow:0 14px 30px rgb(46 36 32 / 0.18)">
+                    <div style="background:#fffdf8;border-radius:3px;padding:8px 8px 10px">
+                      <div role="img" aria-label="{{c.photoAria}}" style="aspect-ratio:4 / 3;background:{{c.photoFill}};border-radius:3px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:#5a4a3e">
+                        <svg width="44" height="44" sc-camel-view-box="0 0 24 24" fill="none" stroke="#a50d26" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"></rect><circle cx="9" cy="10" r="2"></circle><path d="M21 16l-5-5-8 8"></path></svg>
+                        <span style="font-size:17px;font-weight:700">{{c.photoText}}</span>
+                      </div>
+                    </div>
+                  </div>
+                </sc-if>
+                <sc-if value="{{c.isVoice}}" hint-placeholder-val="{{false}}">
+                  <div style="display:flex;align-items:center;gap:14px;padding:14px;border:3px dashed #5b7db1;border-radius:16px;background:#f6efe3">
+                    <span aria-hidden="true" style="width:56px;height:56px;border-radius:50%;background:#3f5f94;box-shadow:0 4px 0 #26406a;display:flex;align-items:center;justify-content:center;flex:none">
+                      <svg width="24" height="24" sc-camel-view-box="0 0 24 24" fill="#fff" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"></path></svg>
+                    </span>
+                    <span aria-hidden="true" style="flex:1;min-width:0;display:flex;align-items:center;gap:3px;height:48px;overflow:hidden">
+                      <sc-for list="{{c.bars}}" as="b" hint-placeholder-count="24"><span style="flex:none;width:4px;border-radius:2px;background:#5b7db1;height:{{b.h}}px"></span></sc-for>
+                    </span>
+                    <span style="flex:none;font-size:17px;font-weight:700;color:#5a4a3e">{{c.durationText}}</span>
+                  </div>
+                </sc-if>
+                <sc-if value="{{c.isVideo}}" hint-placeholder-val="{{false}}">
+                  <div role="img" aria-label="{{c.videoAria}}" style="position:relative;aspect-ratio:16 / 9;border:3px dashed #8a7259;border-radius:16px;background:#e9d9c0;display:flex;align-items:center;justify-content:center">
+                    <svg width="64" height="64" sc-camel-view-box="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="#c8102e"></circle><circle cx="12" cy="12" r="8.6" stroke="#fffdf8" stroke-width="1.1" stroke-dasharray="1.8 1.6" stroke-linecap="round"></circle><path d="M9.6 7.8v8.4l6.6-4.2z" fill="#fffdf8"></path></svg>
+                    <span style="position:absolute;right:12px;bottom:10px;padding:4px 12px;border-radius:999px;background:#c8102e;color:#fffdf8;font-size:17px;font-weight:700;box-shadow:0 3px 0 #7d0a1e">{{c.durationText}}</span>
+                  </div>
+                </sc-if>
+                <sc-if value="{{c.isText}}" hint-placeholder-val="{{false}}">
+                  <p style="margin:0;font-family:'Fraunces Variable',Georgia,serif;font-size:24px;line-height:1.35;font-weight:500;display:-webkit-box;-webkit-line-clamp:7;-webkit-box-orient:vertical;overflow:hidden">“{{c.note}}”</p>
+                </sc-if>
+                <sc-if value="{{c.notText}}" hint-placeholder-val="{{true}}">
+                  <p style="margin:0;font-size:19px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">{{c.note}}</p>
+                </sc-if>
+                <div style="display:flex;flex-direction:column;gap:2px;margin-top:auto">
+                  <span style="font-family:'Fraunces Variable',Georgia,serif;font-size:21px;font-weight:700">{{c.who}}</span>
+                  <span style="font-size:17px;line-height:1.45;color:#5a4a3e">{{c.meta}}</span>
+                </div>
+                <div style="display:flex;flex-wrap:wrap;gap:8px">
+                  <sc-for list="{{c.tags}}" as="t" hint-placeholder-count="2">
+                    <span style="display:inline-flex;align-items:center;min-height:32px;padding:0 12px;border-radius:999px;border:2px dashed #5b7db1;font-size:17px;font-weight:700;color:#3f5f94;background:#fffdf8">{{t.name}}</span>
+                  </sc-for>
+                </div>
+              </a>
+            </li>
+          </sc-for>
+        </ul>
+        <sc-if value="{{hasMore}}" hint-placeholder-val="{{true}}">
+          <div style="display:flex;justify-content:center">
+            <button type="button" sc-camel-on-click="{{more}}" style="display:inline-flex;align-items:center;justify-content:center;min-height:64px;padding:0 32px;border-radius:14px;border:3px dashed #8a7259;background:#fffdf8;color:#2e2420;font:inherit;font-size:20px;font-weight:700;cursor:pointer">{{moreText}}</button>
+          </div>
+        </sc-if>
+      </div>
+    </section>
+
+    <section aria-labelledby="cta-h" style="background:#3f7d4e;color:#fffdf8;padding:64px max(16px,5%)">
+      <div style="max-width:1200px;margin:0 auto;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:24px 48px">
+        <div style="flex:1 1 420px;min-width:0;display:flex;flex-direction:column;gap:10px">
+          <h2 id="cta-h" style="margin:0;font-family:'Fraunces Variable',Georgia,serif;font-size:44px;line-height:1.1;letter-spacing:-0.015em;font-weight:700">Did one of these remind you of your own?</h2>
+          <p style="margin:0;font-size:20px;line-height:1.6">Three sentences count. A photo from a shoebox counts. Spelling doesn't count.</p>
+        </div>
+        <a href="https://www.jowray.com/share" style="display:inline-flex;align-items:center;justify-content:center;gap:12px;min-height:64px;padding:0 28px;border-radius:14px;border:3px dashed #e7f0e3;color:#fffdf8;font-weight:700;font-size:20px;text-decoration:none">Leave a memory of Jo</a>
+      </div>
+    </section>
+  </main>
+
+  <footer style="padding:40px max(16px,5%)">
+    <div style="max-width:1200px;margin:0 auto;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px 32px">
+      <p style="margin:0;display:flex;align-items:center;gap:10px;font-family:'Fraunces Variable',Georgia,serif;font-size:22px">Made with
+        <svg width="40" height="40" sc-camel-view-box="0 0 24 24" fill="none" role="img" aria-label="love"><path d="M12 21s-7.2-4.6-9.6-9.1A5.4 5.4 0 0 1 12 6.2a5.4 5.4 0 0 1 9.6 5.7C19.2 16.4 12 21 12 21z" stroke="#c8102e" stroke-width="1.8" stroke-dasharray="2.4 2" stroke-linecap="round"></path></svg>
+        for Jo.</p>
+      <nav aria-label="Footer" style="display:flex;flex-wrap:wrap;gap:8px 28px;font-size:19px;font-weight:700">
+        <a href="https://www.jowray.com/obituary" style="padding:10px 0">Obituary</a>
+        <a href="https://www.jowray.com/how-it-was-built" style="padding:10px 0">How it was built</a>
+        <a href="https://www.jowray.com/#privacy" style="padding:10px 0">Privacy</a>
+      </nav>
+    </div>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script="" data-props="{&quot;cardMin&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:300,&quot;min&quot;:240,&quot;max&quot;:420,&quot;unit&quot;:&quot;px&quot;,&quot;section&quot;:&quot;Gallery&quot;},&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:2720}}">
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { decade: null, tag: null, type: null, place: null, q: "", shown: 12 };
+  }
+  renderVals() {
+    const D = window.JW_MEMORIES || { places: [], tags: [], memories: [] };
+    const s = this.state;
+    const placeById = {}; D.places.forEach((p) => { placeById[p.id] = p; });
+    const tagById = {}; D.tags.forEach((t) => { tagById[t.id] = t; });
+    const all = D.memories || [];
+    const decadeOf = (m) => Math.floor(m.year / 10) * 10;
+    const hay = (m) => [m.who, m.relationship, m.note, m.when, (placeById[m.placeId] || {}).name || "", (m.tags || []).map((t) => (tagById[t] || {}).name || "").join(" ")].join(" ").toLowerCase();
+    const q = (s.q || "").trim().toLowerCase();
+    const pass = (m, skip) => (skip === "decade" || !s.decade || decadeOf(m) === s.decade)
+      && (skip === "tag" || !s.tag || (m.tags || []).indexOf(s.tag) >= 0)
+      && (skip === "type" || !s.type || m.type === s.type)
+      && (skip === "place" || !s.place || m.placeId === s.place)
+      && (!q || hay(m).indexOf(q) >= 0);
+
+    const toggle = (key, val) => () => this.setState({ [key]: s[key] === val ? null : val, shown: 12 });
+    const chipOn = "display:inline-flex;align-items:center;gap:8px;min-height:48px;padding:0 18px;border-radius:999px;border:3px solid #3f5f94;background:#3f5f94;color:#fff;font:inherit;font-size:19px;font-weight:700;cursor:pointer;box-shadow:0 4px 0 #26406a";
+    const chipOff = "display:inline-flex;align-items:center;gap:8px;min-height:48px;padding:0 18px;border-radius:999px;border:3px dashed #5b7db1;background:#fffdf8;color:#2e2420;font:inherit;font-size:19px;font-weight:700;cursor:pointer";
+
+    const years = all.map((m) => m.year);
+    const placeSet = {}; all.forEach((m) => { if (m.placeId) placeSet[m.placeId] = 1; });
+    const decSet = {}; all.forEach((m) => { decSet[decadeOf(m)] = 1; });
+    const stats = {
+      total: all.length,
+      places: Object.keys(placeSet).length,
+      first: years.length ? Math.min.apply(null, years) : "",
+      last: years.length ? Math.max.apply(null, years) : "",
+      decades: Object.keys(decSet).length
+    };
+
+    const placeCounts = {};
+    all.filter((m) => pass(m, "place")).forEach((m) => { if (m.placeId) placeCounts[m.placeId] = (placeCounts[m.placeId] || 0) + 1; });
+    const pins = D.places.filter((p) => placeCounts[p.id]).map((p) => {
+      const n = placeCounts[p.id];
+      const sel = s.place === p.id;
+      const size = Math.round(26 + Math.sqrt(n) * 7) + (sel ? 6 : 0);
+      return {
+        x: ((p.lon + 125.5) * 1.69).toFixed(1),
+        y: ((49.8 - p.lat) * 3.9286).toFixed(1),
+        size: size,
+        fill: sel ? "#a50d26" : "#c8102e",
+        label: sel ? p.name : (n > 1 ? String(n) : ""),
+        labelStyle: sel
+          ? "margin-top:-6px;padding:2px 12px;border-radius:999px;background:#2e2420;color:#fffdf8;font-size:17px;font-weight:700;white-space:nowrap;box-shadow:0 3px 0 #7d0a1e"
+          : (n > 1 ? "margin-top:-8px;padding:0 9px;border-radius:999px;background:#fffdf8;border:2px solid #e9d9c0;color:#a50d26;font-size:17px;font-weight:700;line-height:1.4" : "display:none"),
+        selected: sel,
+        aria: p.name + ": " + n + (n === 1 ? " memory" : " memories"),
+        pick: toggle("place", p.id)
+      };
+    });
+    const topPlaces = D.places.filter((p) => placeCounts[p.id]).sort((a, b) => placeCounts[b.id] - placeCounts[a.id]).slice(0, 7).map((p) => {
+      const n = placeCounts[p.id]; const sel = s.place === p.id;
+      return {
+        name: p.name, countText: n + (n === 1 ? " memory" : " memories"), selected: sel,
+        style: (sel
+          ? "width:100%;display:flex;align-items:center;gap:12px;min-height:56px;padding:0 18px;border-radius:12px;border:3px solid #3f5f94;background:#3f5f94;color:#fff;font:inherit;font-size:19px;font-weight:700;cursor:pointer;box-shadow:0 4px 0 #26406a"
+          : "width:100%;display:flex;align-items:center;gap:12px;min-height:56px;padding:0 18px;border-radius:12px;border:3px solid #e9d9c0;background:#fffdf8;color:#2e2420;font:inherit;font-size:19px;font-weight:700;cursor:pointer;box-shadow:0 4px 0 #e9d9c0"),
+        pick: toggle("place", p.id)
+      };
+    });
+
+    const decCounts = {}; all.filter((m) => pass(m, "decade")).forEach((m) => { const d = decadeOf(m); decCounts[d] = (decCounts[d] || 0) + 1; });
+    const decMax = Math.max(1, Math.max.apply(null, Object.keys(decCounts).map((k) => decCounts[k]).concat([1])));
+    const decades = [];
+    for (let y = 1950; y <= 2020; y += 10) {
+      const n = decCounts[y] || 0; const sel = s.decade === y;
+      decades.push({
+        label: y + "s", countText: n ? n + (n === 1 ? " memory" : " memories") : "none yet", selected: sel,
+        h: n ? Math.max(8, Math.round((n / decMax) * 80)) : 4,
+        bar: sel ? "#3f5f94" : (n ? "#5b7db1" : "#e9d9c0"),
+        chip: sel ? chipOn : chipOff,
+        pick: toggle("decade", y)
+      });
+    }
+
+    const tagCounts = {}; all.filter((m) => pass(m, "tag")).forEach((m) => (m.tags || []).forEach((t) => { tagCounts[t] = (tagCounts[t] || 0) + 1; }));
+    const tagChips = D.tags.filter((t) => tagCounts[t.id] || s.tag === t.id).sort((a, b) => (tagCounts[b.id] || 0) - (tagCounts[a.id] || 0)).slice(0, 12).map((t) => {
+      const sel = s.tag === t.id;
+      return { name: t.name, count: String(tagCounts[t.id] || 0), selected: sel, style: sel ? chipOn : chipOff, pick: toggle("tag", t.id) };
+    });
+
+    const kindDefs = [["PHOTO", "Photos"], ["VOICE", "Voices"], ["VIDEO", "Videos"], ["TEXT", "Written"]];
+    const kindCounts = {}; all.filter((m) => pass(m, "type")).forEach((m) => { kindCounts[m.type] = (kindCounts[m.type] || 0) + 1; });
+    const kinds = kindDefs.map((k) => { const sel = s.type === k[0]; return { name: k[1], count: String(kindCounts[k[0]] || 0), selected: sel, style: sel ? chipOn : chipOff, pick: toggle("type", k[0]) }; });
+
+    const list = all.filter((m) => pass(m)).sort((a, b) => (b.year - a.year) || ((b.month || 0) - (a.month || 0)) || (a.id < b.id ? 1 : -1));
+    const fmtDur = (sec) => !sec ? "" : (sec < 60 ? sec + " sec" : (Math.round(sec / 60) + " min"));
+    const cards = list.slice(0, s.shown).map((m, i) => {
+      const p = m.placeId ? placeById[m.placeId] : null;
+      const seed = parseInt(String(m.id).replace(/\D/g, ""), 10) || 7;
+      const bars = []; for (let k = 0; k < 24; k++) { bars.push({ h: 8 + ((seed * 37 + k * 53 + k * k * 11) % 40) }); }
+      const fills = ["#f6efe3", "#e9d9c0", "#efe4d2"];
+      return {
+        id: m.id, who: m.who, note: m.note,
+        meta: [m.relationship, m.when, p ? p.name : "place not given"].filter(Boolean).join(" · "),
+        isPhoto: m.type === "PHOTO", isVoice: m.type === "VOICE", isVideo: m.type === "VIDEO", isText: m.type === "TEXT", notText: m.type !== "TEXT",
+        durationText: fmtDur(m.durationSeconds),
+        photoText: m.photoCount === 1 ? "1 photo" : (m.photoCount || 0) + " photos",
+        photoAria: "Placeholder for " + (m.photoCount || 1) + " photo" + (m.photoCount === 1 ? "" : "s") + " from " + m.who,
+        videoAria: "Placeholder for a video from " + m.who + ", " + fmtDur(m.durationSeconds),
+        photoFill: fills[seed % 3],
+        tilt: i % 2 ? "rotate(1.2deg)" : "rotate(-1.2deg)",
+        bars: bars,
+        tags: (m.tags || []).slice(0, 2).map((t) => ({ name: (tagById[t] || { name: t }).name })),
+        aria: "Open the memory from " + m.who + ", " + m.when
+      };
+    });
+
+    const parts = [];
+    if (s.type) parts.push({ PHOTO: "photos", VOICE: "voices", VIDEO: "videos", TEXT: "written memories" }[s.type]);
+    const n = list.length;
+    let summary = n + " " + (parts[0] || (n === 1 ? "memory" : "memories"));
+    if (s.tag && tagById[s.tag]) summary += " about " + tagById[s.tag].name.toLowerCase();
+    if (s.place && placeById[s.place]) summary += " from " + placeById[s.place].name;
+    if (s.decade) summary += " in the " + s.decade + "s";
+    if (q) summary += " mentioning “" + s.q.trim() + "”";
+    const hasFilters = !!(s.type || s.tag || s.place || s.decade || q);
+    if (!hasFilters) summary = n + " memories, newest first";
+
+    return {
+      stats, pins, topPlaces, decades, tagChips, kinds, cards, summary, hasFilters,
+      empty: n === 0,
+      q: s.q,
+      setQ: (e) => this.setState({ q: e.target.value, shown: 12 }),
+      clear: () => this.setState({ decade: null, tag: null, type: null, place: null, q: "", shown: 12 }),
+      hasMore: n > s.shown,
+      moreText: "Show " + Math.min(12, n - s.shown) + " more of " + n,
+      more: () => this.setState({ shown: s.shown + 12 }),
+      cardMinPx: (this.props.cardMin || 300) + "px"
+    };
+  }
+}
+</script>
+
+
+</body></html>

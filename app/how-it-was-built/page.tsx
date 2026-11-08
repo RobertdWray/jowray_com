@@ -237,8 +237,7 @@ export default function HowItWasBuiltPage() {
               corrections from their private page.
             </li>
             <li>Files sit in private storage. Photos are shown from a copy with the location data removed.</li>
-            {/* Goes stale when the Phase 2 gallery ships (issue #37): reword it in that PR (plan §12 F4). */}
-            <li>Nothing you share is public yet. The family reads every memory first.</li>
+            <li>The family reads every memory before it appears on See memories.</li>
             {/* Alpha telemetry (AGENTS.md § Sentry). When the alpha settings end, UPDATE this line in the same
                 commit; do not delete it: replays continue at 10% after the alpha (telemetry plan §13, plan §12 F3).
                 The footer's Privacy note (app/_components/privacy-note-client.tsx) says the same thing in Rob's

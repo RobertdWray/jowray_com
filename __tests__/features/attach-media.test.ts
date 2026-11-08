@@ -70,7 +70,7 @@ function mediaRow(over: Partial<Media> = {}): Media {
     durationSeconds: null, width: null, height: null, capturedAt: null, exif: null, caption: null, approxDateText: null, place: null,
     deletedAt: null, replacesMediaId: null, purgedAt: null, sortOrder: 0,
     createdAt: new Date(NOW), updatedAt: new Date(NOW), reservedUntil: new Date(NOW + 4_500_000),
-    gpsCheckedAt: null, gpsAttempts: 0, gpsClaimedAt: null, latitude: null, longitude: null,
+    gpsCheckedAt: null, gpsScanComplete: null, gpsAttempts: 0, gpsClaimedAt: null, latitude: null, longitude: null,
     ...over,
   };
 }
@@ -168,7 +168,7 @@ beforeEach(() => {
   resetEnvCache();
   memory = {
     id: ID, memorialId: "memorial", contributorId: null, deletedAt: null, status: "DRAFT", type: "TEXT", source: "OTHER", sourceRef: null,
-    approxDateText: null, approxYear: null, approxMonth: null, place: null, latitude: null, longitude: null,
+    approxDateText: null, approxYear: null, approxMonth: null, place: null, latitude: null, longitude: null, tags: [],
     contributorNote: "Words", language: "en", visibility: "FAMILY", notifyWhenPosted: true,
     consentVersion: "v1", consentedAt: null, analysisStatus: "NOT_STARTED", claimTokenHash: "0".repeat(64),
     submissionId: null, submissionIndex: null, uploadLeaseUntil: null, createdAt: new Date(NOW), updatedAt: new Date(NOW),
@@ -451,7 +451,8 @@ describe("finalizeUploadAsAdmin", () => {
     expect(revisions).toHaveLength(1);
   });
 
-  it.each(["audio/mp4", "video/webm"])("keeps GPS not_applicable for %s", async (mimeType) => {
+  // audio/mp4 now has a location reader (plan 2026-11-08 D16); browser WebM recordings still do not.
+  it.each(["audio/webm", "video/webm"])("keeps GPS not_applicable for %s", async (mimeType) => {
     media[0] = mediaRow({ status: "READY", mimeType, sizeBytes: BYTES.length });
     expect(await finalizeUploadAsAdmin(args)).toMatchObject({ status: "READY", gps: "not_applicable" });
     expect(media[0]!.gpsAttempts).toBe(0);
@@ -583,5 +584,18 @@ describe("finalizeUploadAsAdmin", () => {
     expect(media[0]!.gpsAttempts).toBe(0);
     // Only run the checksum/derive callback: GPS has its separate cron-backed callback.
     await tasks[0]!(); expect(derive).not.toHaveBeenCalled();
+  });
+});
+
+describe("a family connector upload keeps an APPROVED memory approved (plan 2026-11-08 D17)", () => {
+  beforeEach(() => { media = [mediaRow()]; });
+  it("READY through finalize_upload leaves APPROVED: the family attached it themselves", async () => {
+    Object.assign(memory!, { status: "APPROVED", consentedAt: new Date(NOW) });
+    land();
+    expect((await recordMedia({ mediaId: MID })).status).toBe("READY");
+    expect(memory).toMatchObject({ status: "APPROVED" });
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]).toMatchObject({ changedVia: "ADMIN" });
+    expect(revisions[0]!.after).not.toHaveProperty("status");
   });
 });

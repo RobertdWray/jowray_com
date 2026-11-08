@@ -1,5 +1,6 @@
 import "server-only";
 
+import { REVIEW_FACTS_SELECT, reviewVersionOf } from "@/features/admin/review-version";
 import { TX_OPTIONS } from "@/features/memories/create-memory";
 import { lockMemory } from "@/features/memories/lock";
 import { appendRevision } from "@/features/memories/media-state";
@@ -18,21 +19,28 @@ export type ShareDraftResult =
 
 /**
  * Share a DRAFT on its sender's behalf (R4, R7). Only Rob's explicit word that
- * the named sender agreed justifies a call. APPROVED publishes nothing public
- * yet (R4a). Record the sender's consent stamp and an ADMIN revision (R6),
- * preserving every preference and the claim link (D8). The status, stamp and
+ * the named sender agreed justifies a call. APPROVED + PUBLIC (Everyone) appears
+ * on See memories once the family turns on PUBLIC_MEMORIES_ENABLED (D1, D15).
+ * Record the sender's consent stamp and an ADMIN revision (R6), preserving every
+ * preference and the claim link (D8). A later claim-link content edit sends an
+ * approved memory back to PENDING for review (D17). The status, stamp and
  * permanent admin-alert suppression commit together (R5, D11) in this one
  * transaction; helpers use its client and never open another (D12).
+ *
+ * Sharing straight to APPROVED publishes, so it also carries the `reviewVersion`
+ * from get_memory (TCR round 1, B1-3): a file the sender added through the claim
+ * link, or a name they changed, since it was read answers `stale` like a
+ * changed draft does. Sharing to PENDING leaves review to the family.
  */
 export async function shareDraftAsAdmin(raw: unknown): Promise<ShareDraftResult> {
   const parsed = adminShareDraftSchema.safeParse(raw);
   if (!parsed.success) {
     return { ok: false, code: "invalid" };
   }
-  const { memoryId, memoryVersion, status } = parsed.data;
+  const { memoryId, memoryVersion, status, reviewVersion } = parsed.data;
   const result = await getDb().$transaction(async (tx): Promise<ShareDraftResult> => {
     await lockMemory(tx, memoryId);
-    const fresh = await tx.memory.findUnique({ where: { id: memoryId }, select: { status: true, deletedAt: true, updatedAt: true } });
+    const fresh = await tx.memory.findUnique({ where: { id: memoryId }, select: { status: true, deletedAt: true, ...REVIEW_FACTS_SELECT } });
     if (!fresh || fresh.deletedAt !== null) {
       return { ok: false, code: "not_found" };
     }
@@ -41,7 +49,7 @@ export async function shareDraftAsAdmin(raw: unknown): Promise<ShareDraftResult>
       return { ok: false, code: "not_draft" };
     }
     const current = { memoryVersion: fresh.updatedAt.toISOString(), status: fresh.status };
-    if (current.memoryVersion !== memoryVersion) {
+    if (current.memoryVersion !== memoryVersion || (status === "APPROVED" && reviewVersionOf(fresh) !== reviewVersion)) {
       return { ok: false, code: "stale", current };
     }
     const consentedAt = new Date();

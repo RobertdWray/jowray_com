@@ -61,7 +61,7 @@ const TOOLS = {
   get_memory: {
     title: "Get a memory",
     description:
-      "One memory with its contributor, files, coordinates, revision history and emails. `memoryVersion` and `contributor.contributorVersion` are what update_memory and set_coordinates need. Each file's `coordinates` is where the camera was (often a home); never propose it for set_coordinates.",
+      "One memory with its contributor, files, coordinates, revision history and emails. `memoryVersion` and `contributor.contributorVersion` are what update_memory and set_coordinates need. `reviewVersion` is what set_status (and share_draft) need to approve: it covers the memory, its contributor and its files, so approve only right after reading them. Each file's `coordinates` is where the camera was (often a home); never propose it for set_coordinates.",
     inputSchema: mcpMemoryIdSchema,
     annotations: { readOnlyHint: true },
   },
@@ -80,19 +80,20 @@ const TOOLS = {
   update_memory: {
     title: "Edit a memory",
     description:
-      "Edits a memory's words, date, place, visibility or the contributor's name and relationship; send only the keys you change. Read `memoryVersion` and `contributor.contributorVersion` from get_memory first. On `stale`, compare every editable field in `current` with the value you read before this edit: if any differs, including a field you are changing, show Rob what changed and ask before retrying; retry from `current` without asking only when none differs (only the versions moved).",
+      "Edits a memory's words, date, place, visibility, patches (`tags`, the whole list), timeline year and month (`approxYear`, `approxMonth`; null clears, a month needs a year) or the contributor's name and relationship; send only the keys you change. Read `memoryVersion` and `contributor.contributorVersion` from get_memory first. On `stale`, compare every editable field in `current` with the value you read before this edit: if any differs, including a field you are changing, show Rob what changed and ask before retrying; retry from `current` without asking only when none differs (only the versions moved).",
     inputSchema: mcpMemoryChangesSchema,
     annotations: { destructiveHint: true },
   },
   set_status: {
     title: "Set a memory's status",
-    description: "Moves a shared memory between PENDING, APPROVED and HIDDEN. A DRAFT is refused (`draft`); use `share_draft`.",
+    description:
+      "Moves a shared memory between PENDING, APPROVED and HIDDEN. A DRAFT is refused (`draft`); use `share_draft`. APPROVED with visibility PUBLIC shows the memory on See memories once the family has turned those pages on (PUBLIC_MEMORIES_ENABLED); PENDING or HIDDEN takes it off. APPROVED needs `reviewVersion` from get_memory, read just before: on `stale` the memory, its contributor or a file changed since, so call get_memory again, show Rob what changed and ask before approving again. PENDING and HIDDEN never need it.",
     inputSchema: mcpStatusSchema,
     annotations: { destructiveHint: true, idempotentHint: true },
   },
   share_draft: {
     title: "Share a draft on the sender's behalf",
-    description: "Records the sender's consent and moves a DRAFT to PENDING or APPROVED, with the same consent stamp as the sender's own Share. Call it only when Rob says in this conversation that this named sender agreed; never infer consent from a reply or a message's tone. Read `memoryVersion` from `get_memory` first. On `stale`, re-read and show Rob what changed before asking again. APPROVED publishes nothing public yet (the public memorial pages are not built). No admin alert is sent, now or later. The sender's preferences and claim link are unchanged.",
+    description: "Records the sender's consent and moves a DRAFT to PENDING or APPROVED, with the same consent stamp as the sender's own Share. Call it only when Rob says in this conversation that this named sender agreed; never infer consent from a reply or a message's tone. Read `memoryVersion` from `get_memory` first, and for APPROVED also `reviewVersion` (it covers the files and the sender's name too). On `stale`, re-read and show Rob what changed before asking again. APPROVED with visibility PUBLIC shows the memory on See memories once the family has turned those pages on (PUBLIC_MEMORIES_ENABLED). No admin alert is sent, now or later. The sender's preferences and claim link are unchanged.",
     inputSchema: mcpShareDraftSchema,
     annotations: { destructiveHint: true, idempotentHint: true },
   },

@@ -17,6 +17,17 @@ export async function lockMemory(tx: Tx, memoryId: string): Promise<void> {
 }
 
 /**
+ * Lock every memory that shares one Contributor row (all the memories of a send) in a single statement. Postgres takes
+ * the row locks in the ORDER BY order, so two writers that each need the whole set always queue in id order and never
+ * deadlock; a writer holding one of these memories through `lockMemory` only makes this one wait. Taken instead of
+ * `lockMemory` when an edit may change the contributor's name or relationship, which every one of those memories
+ * shows (TCR round 1, B1-2); the contributor row, if written, comes after (memory → contributor).
+ */
+export async function lockContributorMemories(tx: Tx, contributorId: string): Promise<void> {
+  await tx.$queryRaw`SELECT "id" FROM "Memory" WHERE "contributorId" = ${contributorId} ORDER BY "id" FOR UPDATE`;
+}
+
+/**
  * Lock one contributor row (shared by every memory of a send). Lock order
  * everywhere: memory first, then contributor; the claim writer holds only the
  * memory lock and touches the contributor inside it, so an admin that takes

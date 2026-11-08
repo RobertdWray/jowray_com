@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import type { ClaimView } from "@/features/memories/claim";
 import { CONTACT_OPT_IN_LABEL, IMPLICIT_CONSENT_NOTE, NOTIFY_WHEN_POSTED_LABEL } from "@/lib/consent";
 import { ACCEPT_ATTRIBUTE } from "@/lib/media-types";
+import { claimSaveMessage } from "@/lib/memories/review-again";
 import { reportClientError } from "@/lib/sentry/report";
 import { identifyContributor, tagIds } from "@/lib/sentry/user";
 import { contributorVisibilityOptions } from "@/lib/visibility";
@@ -50,9 +51,7 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
       });
       setMessage(
         result.ok
-          ? result.shared
-            ? "Thank you. Your memory is with the family."
-            : "Saved."
+          ? claimSaveMessage(result)
           : result.code === "last_words"
             ? draft
               ? "Keep a few words, or add a photo or a recording first: a memory cannot be empty."

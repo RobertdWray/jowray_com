@@ -15,10 +15,21 @@ export interface VideoLocationLimits {
   maxTotalBytes: number;
 }
 
+/**
+ * `absent` says whether the reader can vouch for it (TCR round 1, B1-1): `complete: true` only when the whole movie box
+ * was parsed and no location key was met; `complete: false` when it stopped early (a structural limit, a malformed or
+ * unsupported box, no movie box) or met a location value it could not use. Only a complete absence may let an original
+ * play publicly (plan 2026-11-08 D16).
+ */
 export type VideoLocationResult =
   | { status: "found"; coordinates: { latitude: number; longitude: number } }
-  | { status: "absent"; reason: string }
+  | { status: "absent"; reason: string; complete: boolean }
   | { status: "failed"; error: Error };
+
+/** An absence the reader cannot vouch for (`complete: false`). */
+function unvouched(reason: string): VideoLocationResult {
+  return { status: "absent", reason, complete: false };
+}
 
 const DEFAULT_LIMITS: VideoLocationLimits = {
   maxTopLevelBoxes: 64,
@@ -79,8 +90,9 @@ function headerAt(view: DataView, start: number, parentEnd: number): Box {
 }
 
 /**
- * Never rejects. Deterministic format/limit decisions are absent; read exceptions
- * and incorrect byte counts are failed so callers can retry rather than stamp absence.
+ * Never rejects. Deterministic format/limit decisions are absent (complete only
+ * for a whole parse with no location key); read exceptions and incorrect byte
+ * counts are failed so callers can retry rather than stamp absence.
  * Limits are overridable nonnegative safe integers; unspecified limits retain defaults.
  */
 export async function readVideoLocation(
@@ -150,10 +162,11 @@ export async function readVideoLocation(
       }
       offset += box.end; // Skip every non-moov body, including mdat.
     }
-    return { status: "absent", reason: "No moov box" };
+    // Every top-level box was walked and none was a movie box: nothing was parsed, so nothing is vouched for.
+    return unvouched("No moov box");
   } catch (error) {
     if (error instanceof AbsentLocation) {
-      return { status: "absent", reason: error.message };
+      return unvouched(error.message);
     }
     return {
       status: "failed",
@@ -379,21 +392,22 @@ function parseMovie(bytes: Uint8Array, maxDepth: number): VideoLocationResult {
       return parseIso6709(value);
     }
   }
-  return { status: "absent", reason: "No supported location metadata" };
+  // The one complete absence: the whole movie box was validated and walked, and no location key was met.
+  return { status: "absent", reason: "No supported location metadata", complete: true };
 }
 
 function parseIso6709(value: string): VideoLocationResult {
   const match = /^([+-]\d{1,2}(?:\.\d+)?)([+-]\d{1,3}(?:\.\d+)?)(?:[+-]\d+(?:\.\d+)?)?(?:CRS[A-Za-z0-9_]+)?\/?$/.exec(value);
   if (!match) {
-    return { status: "absent", reason: "Invalid ISO 6709 location coordinates" };
+    return unvouched("Invalid ISO 6709 location coordinates");
   }
   const latitude = Number(match[1]);
   const longitude = Number(match[2]);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
-    return { status: "absent", reason: "Location coordinates out of range" };
+    return unvouched("Location coordinates out of range");
   }
   if (latitude === 0 && longitude === 0) {
-    return { status: "absent", reason: "Zero location coordinates" };
+    return unvouched("Zero location coordinates");
   }
   return { status: "found", coordinates: { latitude, longitude } };
 }

@@ -265,7 +265,8 @@ describe("extractPhotoGps: eligibility, the claim and the cap", () => {
     { name: "a PENDING row", rows: [photo({ status: "PENDING" })] },
     { name: "a FAILED row", rows: [photo({ status: "FAILED" })] },
     { name: "a WebM video", rows: [photo({ mimeType: "video/webm" })] },
-    { name: "a voice note", rows: [photo({ mimeType: "audio/mp4" })] },
+    // An M4A voice note is an MP4 container and is scanned (plan 2026-11-08 D16); a browser recording has no location reader.
+    { name: "a browser voice recording", rows: [photo({ mimeType: "audio/webm" })] },
     { name: "a removed file", rows: [photo({ deletedAt: new Date() })] },
     { name: "a file of a deleted memory", rows: [photo({ memory: { deletedAt: new Date() } })] },
     { name: "an already decided row", rows: [photo({ gpsCheckedAt: new Date() })] },
@@ -369,11 +370,14 @@ describe("extractPhotoGps: video location (A20-A22)", () => {
   it.each([
     { fixture: "location-mdta.mov", mimeType: "video/quicktime" },
     { fixture: "location-xyz.mp4", mimeType: "video/mp4" },
-  ])("finds $fixture with bounded ranges under the head request's deadline", async ({ fixture, mimeType }) => {
+    // M4A voice notes share the MP4 container, so the same reader finds a location in them (plan 2026-11-08 D16).
+    { fixture: "location-xyz.mp4", mimeType: "audio/mp4" },
+    { fixture: "location-mdta.mov", mimeType: "audio/x-m4a" },
+  ])("finds $fixture as $mimeType with bounded ranges under the head request's deadline", async ({ fixture, mimeType }) => {
     media[0]!.mimeType = mimeType;
     blobs.set(key, videoFixture(fixture));
     expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("found");
-    expect(media[0]).toMatchObject({ gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null });
+    expect(media[0]).toMatchObject({ gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null, gpsScanComplete: true });
     expect(media[0]!.latitude).toBeCloseTo(40.6892, 4);
     expect(media[0]!.longitude).toBeCloseTo(-74.0445, 4);
     expect(headMock).toHaveBeenCalledExactlyOnceWith(key, { signal: expect.any(AbortSignal) });
@@ -399,8 +403,9 @@ describe("extractPhotoGps: video location (A20-A22)", () => {
       }
     };
     expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("absent");
-    expect(media[0]).toMatchObject({ latitude: null, longitude: null, gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null });
-    expect(photoGpsLines()).toEqual([{ level: "info", action: "photo_gps", mediaId: "med_1", outcome: "absent", attempt: 1, reason: "No supported location metadata" }]);
+    // The only absence that lets the original play publicly (TCR round 1, B1-1).
+    expect(media[0]).toMatchObject({ latitude: null, longitude: null, gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null, gpsScanComplete: true });
+    expect(photoGpsLines()).toEqual([{ level: "info", action: "photo_gps", mediaId: "med_1", outcome: "absent", attempt: 1, reason: "No supported location metadata", complete: true }]);
     expect(captureExceptionMock).not.toHaveBeenCalled();
     expectNoCoordinatesLogged();
   });
@@ -427,9 +432,10 @@ describe("extractPhotoGps: video location (A20-A22)", () => {
     blobs.set(key, header);
     headMock.mockResolvedValueOnce({ size });
     expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("absent");
-    expect(media[0]).toMatchObject({ latitude: null, longitude: null, gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null });
+    // Decided (no retry would read it differently), but not vouched for: it never plays publicly (TCR round 1, B1-1).
+    expect(media[0]).toMatchObject({ latitude: null, longitude: null, gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null, gpsScanComplete: false });
     expect(readRangeMock).toHaveBeenCalledExactlyOnceWith(key, 0, 8, { signal: expect.any(AbortSignal) });
-    expect(photoGpsLines()).toEqual([{ level: "info", action: "photo_gps", mediaId: "med_1", outcome: "absent", attempt: 1, reason: "moov byte limit (maxMoovBytes) exceeded" }]);
+    expect(photoGpsLines()).toEqual([{ level: "info", action: "photo_gps", mediaId: "med_1", outcome: "absent", attempt: 1, reason: "moov byte limit (maxMoovBytes) exceeded", complete: false }]);
     expectNoCoordinatesLogged();
   });
 

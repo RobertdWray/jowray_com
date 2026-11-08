@@ -1,0 +1,40 @@
+import { readFileSync } from "node:fs";
+
+import { describe, expect, it } from "vitest";
+
+import { assertLoopback, parseSample } from "@/scripts/seed-sample-memories";
+
+describe("seed-sample-memories (plan 2026-11-08 finding #14: local databases only)", () => {
+  it.each(["postgresql://postgres@127.0.0.1:54329/db", "postgresql://u:p@localhost/db", "postgresql://u@[::1]:5432/db"])("accepts the loopback host in %s", (url) => {
+    expect(() => assertLoopback(url)).not.toThrow();
+  });
+
+  it.each([
+    "postgresql://u:p@ep-cool-name-123.us-east-1.aws.neon.tech/neondb?sslmode=require",
+    "postgresql://u@10.0.0.5/db",
+    "postgresql://u@127.0.0.1.evil.example/db",
+    "postgresql://u@localhost.example.com/db",
+  ])("refuses %s", (url) => {
+    expect(() => assertLoopback(url)).toThrow(/refusing host/);
+  });
+
+  // node-postgres (pg-connection-string, behind PrismaPg) lets a `host` query parameter replace the URL's host, so a
+  // loopback-looking URL could still write to Neon (TCR round 1, B1-4). The check refuses any such parameter.
+  it.each([
+    "postgresql://u:p@localhost:54329/db?host=ep-cool-name-123.us-east-1.aws.neon.tech",
+    "postgresql://u@127.0.0.1:54329/db?sslmode=require&host=ep-cool-name-123.us-east-1.aws.neon.tech",
+    "postgresql://u@127.0.0.1:54329/db?%68ost=ep-cool-name-123.us-east-1.aws.neon.tech",
+    "postgresql://u@localhost/db?host=localhost",
+    "postgresql://u@localhost/db?hostaddr=10.0.0.5",
+    "postgresql://u@localhost,ep-cool-name-123.us-east-1.aws.neon.tech/db",
+  ])("refuses %s, whose host comes from somewhere other than a single loopback host name", (url) => {
+    expect(() => assertLoopback(url)).toThrow(/refusing/);
+  });
+
+  it("parses the canvas seed as data: 100 invented memories, 23 places", () => {
+    const data = parseSample(readFileSync(new URL("../../design/reference/see-memories/data/memories.js", import.meta.url), "utf8"));
+    expect(data.memories).toHaveLength(100);
+    expect(data.places).toHaveLength(23);
+    expect(data.memories[0]).toMatchObject({ id: "m001", type: "TEXT" });
+  });
+});

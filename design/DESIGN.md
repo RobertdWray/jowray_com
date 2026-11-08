@@ -245,7 +245,8 @@ below), and a closing primary "Leave a memory of Jo".
   are h3 under each section's h2.
 - Every sentence is checked against the code in the plan's fact table
   (`docs/plans/2026-11-06-why-and-how-built.md` §6). Two lines will go stale
-  and carry code comments: "Nothing you share is public yet" (Phase 2 gallery)
+  and carry code comments: "The family reads every memory before it appears on
+  See memories." (update if the review/publishing policy changes)
   and the alpha telemetry note (update it, don't delete it, when the alpha
   settings end; replays continue at 10%).
 - **"The detailed version"** (Rob, 2026-11-06, plan ruling R9): README.md's three
@@ -310,6 +311,92 @@ below), and a closing primary "Leave a memory of Jo".
     the files contain, not how a browser parses them; the CSP above is the
     second layer.
 
+### 5.12 See memories (`/memories`, added 2026-11-08)
+Built in PR #93 (2026-11-08); the launch flag `PUBLIC_MEMORIES_ENABLED`
+keeps the pages dark until Rob's inventory sign-off. Explore (`/memories`),
+Map (`/memories/map`), Timeline (`/memories/timeline`), Tags (`/memories/tags`)
+and one memory (`/memories/<id>`) use the shared header, footer, hearts and
+buttons. The [artboard spec](reference/see-memories/SPEC.md) and ten adjacent
+PNGs are the design reference; this section describes the components as built
+in `app/memories/_components/`.
+
+- **Frame and bands.** `chips.ts` provides `bandClass` (5% side gutter, at
+  least 16px), `innerClass` (1200px cap), `eyebrowClass` (bold red-deep
+  uppercase), `paperBandClass` and `paperBandBothClass` (paper with 3px dashed
+  red rules). Muslin/gingham ground, Fraunces headings and Atkinson body type
+  continue the house style. Explore ends in the lake-green `ShareBand`.
+- **View pills.** `ViewNav` offers Everything, By place, By year and By what
+  she loved (“What she loved” on phones). The row scrolls horizontally on
+  phones and wraps from `sm`; Explore adds decorative icons. `pillOnClass`
+  is periwinkle-deep with white text and a 4px dark-blue shadow;
+  `pillOffClass` is paper/walnut with a 3px dashed periwinkle edge. Both are
+  rounded-full, 52px minimum on phones and `min-h-tap` from `sm`.
+  The current link has `aria-current="page"`.
+- **Chips and rows.** `CountChip` uses `chipOnClass` / `chipOffClass`: 48px
+  minimum, rounded-full, bold label and `chipCountClass`'s normal-weight
+  count. Off is dashed periwinkle on paper; on is a solid periwinkle-deep
+  edge/fill with white text and the same 4px shadow. Selection is
+  `aria-current="true"`; these are URL links, not toggle buttons. Place
+  rows use `rowOnClass` / `rowOffClass`, `rounded-input`, a name and count;
+  off has a wood-light border/shadow. `SearchForm` sits beside or below the
+  view pills, with GET submission and a 400 ms typing enhancement.
+- **Memory cards.** `MemoryCard` uses `cardClass`: paper, 3px wood-light
+  border, `rounded-card`, `p-5`, `shadow-card`, with a 3px lift and deeper
+  shadow only under `motion-safe`. The whole card is one link. PHOTO has a
+  slightly tilted `patchwork-sm` frame and 4:3 lazy thumbnail over a
+  placeholder; `FallbackImage` hides a failed image. VOICE has a dashed
+  periwinkle box, decorative play circle/bars and duration. VIDEO has a
+  dashed wood 16:9 tile, stitched red play badge and duration pill. TEXT
+  uses a Fraunces quote clamped to six lines on phones, seven from `sm`;
+  other excerpts use three. Name, relationship/date/place and patches
+  follow; patches are labels (`cardTagClass`, or filled `cardTagOnClass`),
+  never nested links. `CompactCard` uses a `KindBadge` and four-line excerpt
+  for related memories and the phone map's short list. Audio/video only
+  play on the individual page; `PhotoFigure` has the larger patchwork frame,
+  caption, date/town pill and thumbnail buttons. Its main photo has no
+  failed-image placeholder yet.
+- **Map.** `UsMap` draws the lower-48 outline as a decorative
+  `aria-hidden` SVG; heart pins and label pills are absolutely positioned
+  HTML links, keeping text at 17px or more. Bigger hearts mean more memories;
+  a selected heart is deeper red, larger and above its neighbours.
+  Town points come from the memory, rounded to 0.05°, never a file's GPS.
+  Places outside the outline or without coordinates remain in the lists.
+  On the Map page, `HomeInset` (“Closer to home”) sits beside the map from
+  `lg` and below it at narrower desktop widths. It does not float over it:
+  the board's floating inset covered pins and the caption (SPEC §8).
+- **Decades.** `DecadeBars` draws count-scaled vertical bars, periwinkle
+  normally, periwinkle-deep when selected, wood-light when empty. Explore
+  bars toggle a year filter; Timeline bars jump to decade anchors. Labels
+  shorten to `’50`, `’60`, etc. below `sm`; desktop labels show the full
+  decade and Explore adds counts. The timeline continues as a dashed red
+  thread with hearts and year pills, with an undated group at the end.
+- **Quilt.** `TagQuilt` wraps tilted Fraunces patches, larger for more
+  memories, cycling dashed periwinkle, goldenrod, lake-green, sunhat-pink,
+  plum and wood edges. The selected patch fills periwinkle-deep with white
+  text and `shadow-button-periwinkle`; others are paper/walnut. Hover
+  straightens/lifts only under `motion-safe`. Links carry counts and
+  `aria-current`; co-occurring patches appear below the quilt.
+- **Phones and XL.** Phone Explore omits the map and links to By place;
+  chip rows scroll. `MapZoom` switches Close to home / Whole country with
+  real `aria-pressed` buttons, initially home. `TimelineDecades` shows at
+  most one decade below `sm`, uses `aria-expanded`/`aria-controls`, and
+  follows decade hashes; desktop shows all. Both components have `noscript`
+  styles to reveal their content, but these cannot replace the site's
+  streamed “Loading…” fallback when JavaScript is off. Explore becomes
+  three panes at `min-[120rem]` (1920px): filters, results, map. It is an
+  approximation of Main-XL: extra space under search, vertical decade
+  columns instead of horizontal rows, shared view pills/header and no XL
+  inset. Explore starts with 12 cards at every width.
+- **Dark flag.** `OpeningSoon` in `bands.tsx` shows a dashed periwinkle
+  paper note: “Jo's family is reading every memory first. See memories
+  opens November 10.” It includes the primary Leave a memory action.
+  `PUBLIC_MEMORIES_ENABLED` is off by default: no header link, no memory
+  data, and public media returns 404. Turning it on or off requires a
+  redeploy; the intended opening date is 2026-11-10, not a live-status claim.
+
+Contracts, tests, launch steps and known gaps: [See memories feature
+document](../docs/features/see-memories.md).
+
 ## 6. Layout
 - Content max-width 1200px, 5% side padding (≥16px on phones).
 - Section padding 64–72px top and bottom on desktop, 40–48px on phones.
@@ -359,10 +446,10 @@ supposed to be about Rob or Tracy").
   `@media (prefers-reduced-motion: no-preference)`.
 
 ## 9. Not in Phase 1
-Phone-in voicemail (there is no "Call" card — removed 2026-11-03), the
-memory wall, tag cloud, search, seasonal/Christmas variant. Don't build
-placeholders for them. (The obituary page left this list on 2026-11-03; see
-§ 5.9.)
+Phone-in voicemail (there is no "Call" card — removed 2026-11-03) and the
+seasonal/Christmas variant. Don't build placeholders for them. The memory
+wall, tag cloud and search are built in See memories (§5.12, 2026-11-08).
+(The obituary page left this list on 2026-11-03; see §5.9.)
 
 ## 10. Placeholders in the comp
 `[PHONE-NUMBER]` on the "Text us" card's `sms:` link — fill from the

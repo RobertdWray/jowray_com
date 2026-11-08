@@ -249,6 +249,12 @@ export async function recordMedia({ mediaId, signal }: { mediaId: string; signal
  * connector upload (`addedVia = ADMIN`) reaching READY appends one ADMIN
  * revision of the memory's READY files in the same transaction (D10), so the
  * revision exists exactly once whoever wins: a lost race rolls back with it.
+ *
+ * A file from the contributor's side (anything but a connector upload) that
+ * becomes visible on an APPROVED memory, added or swapped in, sends the memory
+ * back to PENDING in the same transaction, with `status` in the revision
+ * (plan 2026-11-08 D17): nothing reaches See memories unread. A file that
+ * fails, or a replacement cancelled in flight, changes nothing visible.
  */
 async function transition(
   row: { id: string; memoryId: string; replacesMediaId: string | null; addedVia?: string | null },
@@ -266,7 +272,10 @@ async function transition(
         where: { id: row.id, status: "PENDING" },
         data: retireFailedReplacement ? { ...data, deletedAt: new Date() } : data,
       });
-      const memory = await tx.memory.findUniqueOrThrow({ where: { id: row.memoryId }, select: { contributorNote: true, consentVersion: true } });
+      const memory = await tx.memory.findUniqueOrThrow({ where: { id: row.memoryId }, select: { contributorNote: true, consentVersion: true, status: true } });
+      const statusBefore = memory.status;
+      // Whether this READY file, once visible, sends an APPROVED memory back for review (D17); decided again below for a replacement.
+      const reopenOnReady = data.status === "READY" && !adminReady && statusBefore === "APPROVED";
       let outcome: "done" | "retired" = "done";
       if (adminReady) {
         const readyAfter = await readyLiveMediaIds(tx, row.memoryId);
@@ -277,13 +286,16 @@ async function transition(
           // Cancelled while the upload was in flight: recorded (so purge can delete the blob) but never swapped in.
           outcome = "retired";
         } else {
-          const before = { mediaIds: await visibleMediaIds(tx, row.memoryId) };
+          const before = { mediaIds: await visibleMediaIds(tx, row.memoryId), ...(reopenOnReady && { status: statusBefore }) };
           const now = new Date();
           const retired = await tx.media.updateMany({ where: { id: row.replacesMediaId, deletedAt: null }, data: { deletedAt: now } });
           if (retired.count === 1) {
             // The replacement takes the target's place; clearing the pointer makes it a visible file.
             await tx.media.update({ where: { id: row.id }, data: { replacesMediaId: null } });
-            const after = { mediaIds: await visibleMediaIds(tx, row.memoryId) };
+            if (reopenOnReady) {
+              await tx.memory.update({ where: { id: row.memoryId }, data: { status: "PENDING" } });
+            }
+            const after = { mediaIds: await visibleMediaIds(tx, row.memoryId), ...(reopenOnReady && { status: "PENDING" }) };
             await appendClaimRevision(tx, { memoryId: row.memoryId, before, after, consentVersion: memory.consentVersion });
           } else {
             // The target was removed while this upload ran: the replacement must not resurrect it.
@@ -292,6 +304,10 @@ async function transition(
             outcome = "retired";
           }
         }
+      } else if (reopenOnReady) {
+        // A new file on an APPROVED memory: back to PENDING, with the file named in the revision.
+        await tx.memory.update({ where: { id: row.memoryId }, data: { status: "PENDING" } });
+        await appendClaimRevision(tx, { memoryId: row.memoryId, before: { status: statusBefore }, after: { status: "PENDING", addedMediaId: row.id }, consentVersion: memory.consentVersion });
       }
       await recomputeMemoryType(tx, row.memoryId, memory.contributorNote);
       return outcome;

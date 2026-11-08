@@ -17,6 +17,9 @@ interface MemoryRow {
   consentVersion: string;
   notifyWhenPosted: boolean;
   claimTokenHash: string;
+  /** The review version's other facts (TCR round 1, B1-3): the contributor row and the live files. */
+  contributor: { updatedAt: Date } | null;
+  media: Array<{ id: string; status: string; updatedAt: Date }>;
 }
 interface Revision { memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown> }
 interface EmailRow { memoryId: string; emailType: string; status: string; errorMessage: string | null; recipientEmail: string; recipientKey: string }
@@ -94,8 +97,12 @@ vi.mock("@/server/db/client", () => ({ getDb: () => db }));
 
 import { shareDraftAsAdmin } from "@/features/admin/share-draft";
 import { TX_OPTIONS } from "@/features/memories/create-memory";
+import { computeReviewVersion } from "@/lib/review-version";
 
 const input = { memoryId: MEM, memoryVersion: T0.toISOString(), status: "PENDING" as const };
+const FILE = { id: "med_1", status: "READY", updatedAt: T0 };
+/** What get_memory handed out for the draft as the fixture holds it. */
+const REVIEWED = computeReviewVersion({ memoryUpdatedAt: T0, contributorUpdatedAt: T0, media: [FILE] });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -104,7 +111,7 @@ beforeEach(() => {
   vi.stubEnv("MEMORIAL_SLUG", "share-draft-test");
   vi.stubEnv("CONSENT_VERSION", "share-test-v2");
   resetEnvCache();
-  memory = { id: MEM, status: "DRAFT", deletedAt: null, updatedAt: T0, consentedAt: null, consentVersion: "draft-v1", notifyWhenPosted: true, claimTokenHash: "a".repeat(64) };
+  memory = { id: MEM, status: "DRAFT", deletedAt: null, updatedAt: T0, consentedAt: null, consentVersion: "draft-v1", notifyWhenPosted: true, claimTokenHash: "a".repeat(64), contributor: { updatedAt: T0 }, media: [{ ...FILE }] };
   revisions = [];
   emails = [];
   calls.length = 0;
@@ -124,7 +131,7 @@ function expectNoWrites() {
 describe("shareDraftAsAdmin (A1, A2)", () => {
   it.each(["PENDING", "APPROVED"] as const)("A1: shares to %s with the sender's consent stamp, one ADMIN revision and a terminal row in one transaction", async (status) => {
     const before = structuredClone({ memory, contributor });
-    expect(await shareDraftAsAdmin({ ...input, status })).toEqual({ ok: true, status, memoryVersion: NOW.toISOString() });
+    expect(await shareDraftAsAdmin({ ...input, status, reviewVersion: REVIEWED })).toEqual({ ok: true, status, memoryVersion: NOW.toISOString() });
     expect(db.$transaction).toHaveBeenCalledExactlyOnceWith(expect.any(Function), TX_OPTIONS);
     expect(calls).toEqual(["lock", "read", "update", "revision", "suppress", "commit"]);
     expect(tx.memory.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: MEM }, data: { status, consentedAt: NOW, consentVersion: "share-test-v2" } }));
@@ -143,7 +150,7 @@ describe("shareDraftAsAdmin (A1, A2)", () => {
     expect(revisions[1]).toEqual({ memoryId: MEM, changedVia: "ADMIN", before: { status: "DRAFT", consentedAt: null }, after: { status: "PENDING", consentedAt: NOW.toISOString() } });
   });
 
-  it.each([null, { ...input, memoryId: "bad" }, { ...input, memoryVersion: "yesterday" }, { memoryId: MEM, status: "PENDING" }, { ...input, status: "DRAFT" }, { ...input, status: "HIDDEN" }])("A2: refuses invalid input without opening a transaction (%j)", async (raw) => {
+  it.each([null, { ...input, memoryId: "bad" }, { ...input, memoryVersion: "yesterday" }, { memoryId: MEM, status: "PENDING" }, { ...input, status: "DRAFT" }, { ...input, status: "HIDDEN" }, { ...input, status: "APPROVED" }, { ...input, status: "APPROVED", reviewVersion: "" }])("A2: refuses invalid input without opening a transaction (%j)", async (raw) => {
     expect(await shareDraftAsAdmin(raw)).toEqual({ ok: false, code: "invalid" });
     expect(db.$transaction).not.toHaveBeenCalled();
     expectNoWrites();
@@ -165,6 +172,21 @@ describe("shareDraftAsAdmin (A1, A2)", () => {
     onLock = () => { memory!.updatedAt = NOW; };
     expect(await shareDraftAsAdmin(input)).toEqual({ ok: false, code: "stale", current: { memoryVersion: NOW.toISOString(), status: "DRAFT" } });
     expectNoWrites();
+  });
+
+  it.each([
+    ["a file was added", () => { memory!.media.push({ id: "med_2", status: "PENDING", updatedAt: NOW }); }],
+    ["a file finished uploading", () => { memory!.media[0]!.updatedAt = NOW; }],
+    ["the sender changed their name", () => { memory!.contributor = { updatedAt: NOW }; }],
+  ])("B1-3: sharing straight to APPROVED answers stale when %s since get_memory, with nothing written", async (_what, change) => {
+    onLock = change;
+    expect(await shareDraftAsAdmin({ ...input, status: "APPROVED", reviewVersion: REVIEWED })).toEqual({ ok: false, code: "stale", current: { memoryVersion: T0.toISOString(), status: "DRAFT" } });
+    expectNoWrites();
+  });
+
+  it("B1-3: sharing to PENDING publishes nothing, so a changed file does not block it", async () => {
+    onLock = () => { memory!.media.push({ id: "med_2", status: "PENDING", updatedAt: NOW }); };
+    expect(await shareDraftAsAdmin(input)).toMatchObject({ ok: true, status: "PENDING" });
   });
 
   it("A2: compares the version string exactly like update-memory, even for equivalent timestamps", async () => {

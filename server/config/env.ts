@@ -167,6 +167,25 @@ const mediaServingSchema = z.object({
   MEDIA_VIEWER_DAILY_REQUESTS: blankIsUnset(z.coerce.number().int().positive().default(300)),
   /** Downloads up to this size stream through the function (sanitized filename, as on main); larger ones redirect (default 25 MiB). */
   MEDIA_PROXY_DOWNLOAD_MAX_BYTES: blankIsUnset(z.coerce.number().int().nonnegative().default(25 * 1024 ** 2)),
+  /**
+   * See memories (plan 2026-11-08 D18): public visitors of `/api/public-media` have their own counters (`public:` scopes)
+   * and limits, so strangers can never use up what claim-link holders and the admin page are allowed.
+   * Bytes the whole site may serve to public visitors per day (default 20 GiB).
+   */
+  MEDIA_PUBLIC_DAILY_EGRESS_BYTES: blankIsUnset(z.coerce.number().int().positive().default(20 * 1024 ** 3)),
+  /** Distinct public viewers per day one file may be served to, each charged once at the copy's size (default 100). */
+  MEDIA_PUBLIC_FILE_DAILY_MULTIPLE: blankIsUnset(z.coerce.number().int().positive().default(100)),
+  /** Requests one public viewer may make for one copy of one file per day (default 600: a page of thumbnails, reloads and seeking). */
+  MEDIA_PUBLIC_VIEWER_DAILY_REQUESTS: blankIsUnset(z.coerce.number().int().positive().default(600)),
+});
+
+/**
+ * The See memories launch flag (plan 2026-11-08 D15). Off (the default) keeps `/memories/**` on the opening note,
+ * `/api/public-media` at 404 and the header link hidden. A change applies only to a new deployment (Vercel), so
+ * turning the pages on or off is "set the variable, then redeploy".
+ */
+const publicMemoriesSchema = z.object({
+  PUBLIC_MEMORIES_ENABLED: blankIsUnset(strictBoolean.default(false)),
 });
 
 /**
@@ -190,6 +209,7 @@ const placesSchema = z.object({
 export type DbEnv = z.infer<typeof dbSchema>;
 export type PlacesEnv = z.infer<typeof placesSchema>;
 export type MediaServingEnv = z.infer<typeof mediaServingSchema>;
+export type PublicMemoriesEnv = z.infer<typeof publicMemoriesSchema>;
 export type AdminPageEnv = z.infer<typeof adminPageSchema>;
 export type AdminEnv = z.infer<typeof adminSchema>;
 export type McpEnv = z.infer<typeof mcpSchema>;
@@ -237,6 +257,7 @@ export const getAdminEnv = memoized("admin", adminSchema);
 export const getMcpEnv = memoized("mcp", mcpSchema);
 export const getAdminPageEnv = memoized("adminPage", adminPageSchema);
 export const getMediaServingEnv = memoized("mediaServing", mediaServingSchema);
+export const getPublicMemoriesEnv = memoized("publicMemories", publicMemoriesSchema);
 export const getPlacesEnv = memoized("places", placesSchema);
 
 /** Test helper: forget every parsed sub-schema so the next call re-reads `process.env`. */
