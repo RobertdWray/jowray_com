@@ -48,3 +48,7 @@ next-env.d.ts
 
 # agent scratch workspace (superpowers plan ledgers, logs)
 /.superpowers/
+
+# Python bytecode (scripts/notify harvester and its tests)
+__pycache__/
+*.py[cod]
