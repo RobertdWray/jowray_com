@@ -1,5 +1,5 @@
 /**
- * The public read model for See memories (docs/plans/2026-11-08-see-memories.md, D1, D6, D16).
+ * The public read model for See memories (docs/plans/2026-11-08-see-memories.md, D1, D6, D16 as amended).
  *
  * Plain, serializable data: these objects are rendered on public pages and
  * passed into Client Components, so they never carry an email, a claim token
@@ -17,9 +17,10 @@ export type PublicKind = (typeof PUBLIC_KINDS)[number];
 export type PublicMediaKind = Exclude<PublicKind, "TEXT">;
 
 /**
- * Whether a file may play publicly (D16). `waiting`: a video or MP4-family
- * recording whose location scan has not decided "no location" yet, or a photo
- * without a server-made copy; the page shows a one-line status instead.
+ * Whether a file may play publicly (D16 as amended by Rob, 2026-11-08: videos
+ * and recordings play as recorded). `waiting`: a photo without a server-made
+ * copy, or a type the site does not accept; the page shows a one-line status
+ * instead.
  */
 export type Playable = "yes" | "waiting";
 
@@ -72,7 +73,7 @@ export interface PublicMemory {
   /** The first recording's or video's length, for card labels. */
   durationSeconds: number | null;
   photos: PublicPhoto[];
-  /** The memory's first recording or video (D16); "yes" for memories without one. */
+  /** The memory's first recording or video (D16 as amended); "yes" for memories without one. */
   playable: Playable;
   /** ISO 8601; the tie-breaker after year and month. */
   createdAt: string;
