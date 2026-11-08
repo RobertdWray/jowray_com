@@ -2,7 +2,7 @@
 
 Personal `/s/<token>` links let family-approved correspondents open the share form with a greeting, name and email already filled in. The local importer creates the links and keeps them in a private ledger for the later mail merge.
 
-**Status:** implemented on this branch for the PR-2 workstream of [issue #59](https://github.com/RobertdWray/jowray_com/issues/59), [notify plan §8](../plans/2026-11-07-notify-correspondents.md). Merge, production migration, deployment, live token checks and a real import are not established here. S1, the server-side Sentry scrubber switch, remains pending.
+**Status:** [PR #91](https://github.com/RobertdWray/jowray_com/pull/91) delivered it for [issue #59](https://github.com/RobertdWray/jowray_com/issues/59) ([notify plan §8](../plans/2026-11-07-notify-correspondents.md)); merged and deployed 2026-11-08 (`81fd36a`). The `Invite` migration ran on production the same minute. The production `/s/` checks (D1) were exercised with one rehearsal invite for Rob's own address, the WAF rate limit covers `/s/` (D2), and S1 switched the project's server-side Sentry scrubbers off. All are recorded in the [public-safe evidence](../plans/evidence/2026-11-notify/post-merge.md). The real import of correspondents (D6) waits for Rob's explicit go, after the family review. No invitation has been sent.
 
 ## What we built
 
@@ -83,7 +83,7 @@ Revocation is SQL-only until F3 adds a button. An authorized database operator s
 UPDATE "Invite" SET "revokedAt" = CURRENT_TIMESTAMP WHERE "id" = '<inviteId>';
 ```
 
-Neon preview branches copy production `Invite` rows (D17); creating a preview does not anonymize them. After deployment, prove prefill, the shared-device case, “Share another,” headers and token removal using synthetic data before a real import or S1. The plan's `/s/` WAF readiness check is operational work, not established by these unit tests.
+Neon preview branches copy production `Invite` rows (D17); creating a preview does not anonymize them. After each deploy that touches this feature, re-check the headers, an unknown token's plain form and token removal in Sentry, as D1 did on 2026-11-08 ([evidence](../plans/evidence/2026-11-notify/post-merge.md)). The Vercel WAF rule "Public paths rate limit" includes `/s/` (1200 requests per IP per 10 minutes).
 
 **After the first real send, fix forward only (D27).** Reverting PR-2 would make delivered links 404. Before any real send, the additive table can remain while code is reverted. Do not rotate delivered links as a recovery shortcut.
 
@@ -113,14 +113,21 @@ Token tests cover length/alphabet, uniqueness across 10,000 values and SHA-256 p
 
 `__tests__/lib/sentry-envelope.test.ts` uses real SDK transport with positive controls: action inputs/results, incoming invite bodies, both route-token tuples, RSC response segments through the Replay hook, and Pino-to-Sentry logs retain synthetic names/emails while removing tokens. Scrub unit/differential/timing tests, `replay-options.test.ts`, `logger.test.ts`, `__tests__/app/analytics-client.test.ts` and `__tests__/next-config.test.ts` pin the related policies.
 
-Local checks on 2026-11-07, base `1d8b50d` plus this documentation working tree, using Node v26.13.0 (`PATH=/opt/homebrew/bin:$PATH`) and no `.env*` file:
+Recorded results:
 
-- `npm run test:run -- __tests__/lib/readme-diagrams.test.ts` ran first after the README edit: 45 passed, 1 failed, specifically the Data model source-hash drift, before attempting regeneration. No tests were added or changed for this docs-only task.
-- `npx tsx scripts/make-readme-diagrams.ts` failed before rendering with `listen EPERM` on tsx's IPC pipe. A separate local `playwright-core` Chromium launch probe also failed (browser exited with `SIGABRT`). `public/diagrams/` is unchanged. The orchestrator must regenerate outside this sandbox, including the generated `app/how-it-was-built/readme-diagrams.ts` manifest, which is outside this worker's ownership.
-- `npm run validate`: passed (route type generation, TypeScript and ESLint).
-- `npm run test:run`: 2,565 passed, 55 skipped, 4 failed; 100 files passed, 8 skipped, 2 failed. Failures: the same Data model drift test and three `__tests__/scripts/no-network.test.ts` loopback cases (`net.connect(port, callback)`, `net.connect(options, callback)`, `Socket.connect(port, callback)`), all refused by sandbox `listen EPERM` on `127.0.0.1`. No checks were suppressed or weakened.
+- Combined checks on the final PR #91 head (`aa9a355`): `npm run validate`, `npm run test:run` and `npm run build:offline` pass (`/share` stays static). The real-Postgres suites (`TEST_DATABASE_URL`, Postgres 18) pass: 11 files, 169 tests, including `__tests__/integration/invites.test.ts`. CI `ci` passed.
+- Local end-to-end run on 2026-11-08 against a throwaway Neon branch with synthetic `example.com` data:
+  - an import run twice, the second posting nothing;
+  - a blank last name accepted;
+  - headers present, and unknown, short or malformed tokens give the plain form;
+  - the `Invite` table digest unchanged after 18 GET/RSC requests;
+  - every decision-table row checked in a browser, including the shared-device case;
+  - one full submission from an invite link.
+  One deviation: `OUTBOUND_ENABLED=false` still delivers to `OUTBOUND_ALLOWLIST`, so one admin alert about the synthetic memory reached the maintainer's own allowlisted inbox.
+- Preview, before merge, and production (D1) after it: [public-safe evidence](../plans/evidence/2026-11-notify/post-merge.md).
+- Reviews: one Team Code Review round (George + Oscar) with its repairs, then an Opus regression review: "no serious regressions".
 
-**NOT RUN:** integration not run here (no `TEST_DATABASE_URL`); offline build, CI, browser/real-device prefill and replay checks, live analytics intake, production migration/import and token checks, WAF readiness and S1. Tests present in source do not establish deployment or real-data use.
+**NOT RUN:** the real import of correspondents (D6), a real-device (phone) prefill pass, and a production Server Function submission from an invite link. That last case is covered by the envelope tests with positive controls.
 
 ## Known gaps and follow-ups
 
@@ -128,7 +135,8 @@ Local checks on 2026-11-07, base `1d8b50d` plus this documentation working tree,
 - F3, Low: an admin revoke button; SQL is the current operation.
 - F5/F7, Low: final thank-you copy and separating other people's unsent draft cards on shared devices. The undated R6 copy and identity prefill do not close these.
 - F8, Low: consider scrubbing Invite rows copied into Neon previews (D17).
-- S1, operator-owned: server-side Data Scrubber and Default Scrubbers stay on until deployment and token proof, then require Rob's re-confirmation of amended R12. SDK scrubbing remains enabled.
+- S1, done 2026-11-08: the project's server-side Data Scrubber and Default Scrubbers are off, so the SDK scrubber is now the only token control. Rollback sets both flags back to `true` ([evidence](../plans/evidence/2026-11-notify/post-merge.md)).
+- F13, Low: Sentry's `scrubUrl` does not catch a token behind an encoded segment letter (`/%73/<token>`); analytics drops that case. Check whether Next routes such a path to the invite page.
 - Plan/code differences: §8.5 described POST only; code also has the authenticated GET preflight and includes `memorialSlug`/`siteUrl` in both responses. Despite §16 declining per-batch checkpoints, the importer persists each batch's issued links, including valid links before an `exists`/`revoked` stop. The prefill code compares draft names with the chosen fallback name and ignores a blank draft relationship when emails match. D21 also covers Next's RSC `{"n":…,"k":…}` response segments, beyond the original tuple-only plan. This document follows the code.
 
 ## Related

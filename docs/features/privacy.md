@@ -53,11 +53,11 @@ The note adds no storage, consent record or telemetry switch. Opening or closing
 | Photo points sent to OpenStreetMap | With Nominatim enabled, uncached lookups send coordinates at 6 decimal places for a place name. On `/share`, this can happen when a photo is picked, before Send. Production enablement is unverified here. | Not mentioned. [Share form §Place suggestions](./share-form.md#place-suggestions-from-photos). |
 | Emails | SendGrid sends receipts with private links but no contributor text or pictures, and family alerts with contributor details and words but no links. Open/click tracking is off. Replies are forwarded through Cloudflare. | Not mentioned. [Email and cron](./email-and-cron.md#what-we-built), [Email replies and forwarding](./email-forwarding.md). |
 
-### Replay masking and the pending server scrubber switch
+### Replay masking and the server scrubber switch
 
 D20 fixes SDK attribute masking: the SDK defaults star `placeholder`, `title` and `aria-label` even with `maskAllText: false`. `lib/sentry/replay-options.ts` sets `maskAttributes: []`; this is separate from server-side event filtering.
 
-Under [notify plan R12 amended / §8.10](../plans/2026-11-07-notify-correspondents.md), the project's **Data Scrubber and Default Scrubbers stay on until PR-2 is live and its token checks pass**. S1 is pending: after Rob re-confirms the event-data policy change, those two settings turn off so ordinary story text is not replaced with `[Filtered]`. The SDK scrubber stays the token control. This document does not attest to live dashboard settings or a completed S1. The accepted residuals include `/s/<token>` in replay DOM URLs (R5) and Vercel request logs (R11), alongside the existing claim-page and feedback-screenshot residuals.
+Under [notify plan R12 amended / §8.10](../plans/2026-11-07-notify-correspondents.md), the project's Data Scrubber and Default Scrubbers stayed on until PR-2 was live and its token checks passed. On 2026-11-08, with Rob's go-ahead, S1 turned both off, so ordinary story text is no longer replaced with `[Filtered]` ([evidence](../plans/evidence/2026-11-notify/post-merge.md)). The SDK scrubber is the token control. The accepted residuals include `/s/<token>` in replay DOM URLs (R5) and Vercel request logs (R11), alongside the existing claim-page and feedback-screenshot residuals.
 
 ## Operations and rollback
 
