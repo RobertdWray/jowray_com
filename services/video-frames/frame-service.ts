@@ -22,9 +22,6 @@ export interface FfmpegVideoFrameServiceOptions {
 
 type Failure = Extract<ExtractPosterResult, { ok: false }>;
 
-/** The filter check gets at most this long, within the caller's budget. */
-const FILTER_CHECK_MS = 5000;
-
 function messageOf(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
@@ -93,7 +90,8 @@ export class FfmpegVideoFrameService implements VideoFrameService {
     let toneMap = false;
     let warning: PosterWarning | undefined;
     if (input.transferKind === "hlg" || input.transferKind === "pq") {
-      const check = await detectZscale(binary, { timeoutMs: Math.min(FILTER_CHECK_MS, remaining()), signal: input.signal });
+      // The probe is shared and runs on its own clock; this run waits for it only within its own budget and signal.
+      const check = await detectZscale(binary, { timeoutMs: remaining(), signal: input.signal });
       if (check.kind === "exited") {
         // Listing filters cannot fail on a sound binary: an environment problem, not this video's.
         return fail("deferred", `ffmpeg -filters failed (${check.signal ? `signal ${check.signal}` : `exit ${check.exitCode}`})`, { stderrTail: check.stderrTail || undefined });

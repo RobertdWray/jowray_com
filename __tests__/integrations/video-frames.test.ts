@@ -10,6 +10,7 @@ import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MAX_VIDEO_PIXELS, REDACTED_FRAME_URL, WINDOW_BYTES } from "@/lib/video-frames";
+import { detectZscale } from "@/integrations/video-frames/ffmpeg";
 import { FrameSourceError, type FrameRequestInfo } from "@/integrations/video-frames/frame-server";
 import { createVideoFrameService, FfmpegVideoFrameService, type ExtractPosterInput, type ExtractPosterResult } from "@/services/video-frames";
 
@@ -205,6 +206,50 @@ beforeEach(() => {
 afterEach(async () => {
   // Every run closes its server, its sockets and its child.
   await expect.poll(openHandles, { timeout: 2000 }).toEqual(baseline);
+});
+
+describe("detectZscale: one probe per binary, each caller on its own clock (TCR B2-1)", () => {
+  /** A stand-in ffmpeg whose `-filters` lists zscale after `seconds`, logging each run. */
+  async function slowFilterList(seconds: number) {
+    const dir = await mkdtemp(join(tmpdir(), "frames-probe-"));
+    const path = join(dir, "ffmpeg");
+    const log = join(dir, "runs.log");
+    await writeFile(path, ["#!/bin/sh", `echo "$@" >> '${log}'`, `sleep ${seconds}`, "echo ' .SC zscale            V->V       Apply resizing, colorspace and bit depth conversion.'", ""].join("\n"));
+    await chmod(path, 0o755);
+    const runs = async () => (await readFile(log, "utf8")).trim().split("\n");
+    return { dir, path, runs };
+  }
+
+  it("answers a caller whose own deadline or signal ends first with its own timeout or abort, and still answers the others", async () => {
+    const binary = await slowFilterList(0.4);
+    try {
+      const controller = new AbortController();
+      // The first caller has the tightest deadline: under the old code its 50 ms bounded the shared probe for everyone.
+      const impatient = detectZscale(binary.path, { timeoutMs: 50 });
+      const aborted = detectZscale(binary.path, { timeoutMs: 5_000, signal: controller.signal });
+      const patient = detectZscale(binary.path, { timeoutMs: 5_000 });
+      controller.abort(new Error("caller gave up"));
+      expect(await impatient).toMatchObject({ kind: "timed_out" });
+      expect(await aborted).toMatchObject({ kind: "aborted" });
+      expect(await patient).toEqual({ kind: "known", zscale: true });
+      expect(await binary.runs()).toEqual(["-hide_banner -filters"]);
+      // The definite answer is kept for the binary: no second run, whatever the next caller's deadline.
+      expect(await detectZscale(binary.path, { timeoutMs: 1 })).toEqual({ kind: "known", zscale: true });
+      expect(await binary.runs()).toHaveLength(1);
+    } finally {
+      await rm(binary.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("starts no probe for a caller whose signal has already fired", async () => {
+    const binary = await slowFilterList(0);
+    try {
+      expect(await detectZscale(binary.path, { timeoutMs: 5_000, signal: AbortSignal.abort() })).toMatchObject({ kind: "aborted" });
+      await expect(binary.runs()).rejects.toThrow(/ENOENT/);
+    } finally {
+      await rm(binary.dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("createVideoFrameService", () => {

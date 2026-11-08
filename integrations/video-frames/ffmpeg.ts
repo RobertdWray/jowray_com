@@ -267,25 +267,51 @@ export function runFfmpeg(binaryPath: string, args: readonly string[], options: 
 
 export type FilterCheck = { kind: "known"; zscale: boolean } | Exclude<FfmpegRunOutcome, { kind: "frame" | "empty" }>;
 
+/** The one `-filters` probe per binary gets at most this long, whoever asked first (TCR B2-1). */
+export const FILTER_CHECK_MS = 5000;
+
 const zscaleByBinary = new Map<string, Promise<FilterCheck>>();
 
 /**
- * Whether the binary lists the `zscale` filter (`-hide_banner -filters`), asked once per binary and process. Only a
- * definite answer is cached; a spawn failure, timeout or abort is returned and the next call asks again.
+ * Whether the binary lists the `zscale` filter (`-hide_banner -filters`), asked once per binary and process.
+ * - The probe is shared: concurrent callers wait on the same run. It runs on its own clock (FILTER_CHECK_MS) with no
+ *   caller's signal, so one caller's tight deadline or abort can never decide the answer for the others.
+ * - Each caller waits on its own clock: `timeoutMs` and `signal` end only that caller's wait, as `timed_out` or
+ *   `aborted`, while the probe runs on (killed at FILTER_CHECK_MS at the latest) for whoever asks next.
+ * - Only a definite answer is cached; a spawn failure, timeout or failed run is returned and the next call asks again.
+ * - A caller whose signal has already fired gets `aborted` and starts nothing.
  */
 export function detectZscale(binaryPath: string, options: RunOptions): Promise<FilterCheck> {
-  const cached = zscaleByBinary.get(binaryPath);
-  if (cached) {
-    return cached;
+  if (options.signal?.aborted) {
+    return Promise.resolve({ kind: "aborted", reason: options.signal.reason, stderrTail: "" });
   }
-  const check = runFilterList(binaryPath, options);
-  zscaleByBinary.set(binaryPath, check);
-  void check.then((result) => {
-    if (result.kind !== "known") {
-      zscaleByBinary.delete(binaryPath);
-    }
+  let probe = zscaleByBinary.get(binaryPath);
+  if (probe === undefined) {
+    const started = runFilterList(binaryPath, { timeoutMs: FILTER_CHECK_MS });
+    zscaleByBinary.set(binaryPath, started);
+    void started.then((result) => {
+      if (result.kind !== "known" && zscaleByBinary.get(binaryPath) === started) {
+        zscaleByBinary.delete(binaryPath);
+      }
+    });
+    probe = started;
+  }
+  return onCallersClock(probe, options);
+}
+
+/** The shared probe's answer, or this caller's own timeout or abort when that comes first. Never rejects. */
+function onCallersClock(probe: Promise<FilterCheck>, { timeoutMs, signal }: RunOptions): Promise<FilterCheck> {
+  return new Promise((resolve) => {
+    const finish = (result: FilterCheck) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(result);
+    };
+    const onAbort = () => finish({ kind: "aborted", reason: signal?.reason, stderrTail: "" });
+    const timer = setTimeout(() => finish({ kind: "timed_out", stderrTail: "" }), Math.max(1, Math.floor(timeoutMs)));
+    signal?.addEventListener("abort", onAbort, { once: true });
+    void probe.then(finish);
   });
-  return check;
 }
 
 function runFilterList(binaryPath: string, options: RunOptions): Promise<FilterCheck> {
