@@ -121,7 +121,7 @@ const dbStub = {
 };
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
-import { ADMIN_ALERTS_PAUSED_SUBJECT, claimableWhere, HOUR_MS, RECIPIENT_DAILY_CAP, sendAdminNewMemory, sendMemoryConfirmation, sendSubmissionConfirmation, skipDelivery, suppressAdminAlertForDraftShare, TERMINAL_SKIP_REASONS } from "@/services/email";
+import { ADMIN_ALERTS_PAUSED_SUBJECT, claimableWhere, deliveryClosed, HOUR_MS, RECIPIENT_DAILY_CAP, sendAdminNewMemory, sendMemoryConfirmation, sendSubmissionConfirmation, skipDelivery, suppressAdminAlertForDraftShare, TERMINAL_SKIP_REASONS } from "@/services/email";
 import type { AdminNewMemoryContent, MemoryConfirmationInput, SubmissionConfirmationInput } from "@/services/email/types";
 
 const base: MemoryConfirmationInput = {
@@ -921,6 +921,29 @@ describe("terminal admin share suppression (A1, A3)", () => {
     expect(rows.filter((row) => matches(row, claimableWhere(now) as Where)).map((row) => row.id)).toEqual([
       "null-skip", "ordinary-skip", "pending", "failed", "stale-sending",
     ]);
+  });
+
+  it("deliveryClosed is exactly the complement of claimableWhere: SENT, a fresh SENDING claim and a terminal skip (the alert's advisory read, T14)", () => {
+    const now = new Date("2026-11-08T03:00:00.000Z").getTime();
+    const at = (msAgo: number) => new Date(now - msAgo);
+    const candidates = [
+      { id: "terminal", status: "SKIPPED", errorMessage: "admin_shared", updatedAt: at(0) },
+      { id: "null-skip", status: "SKIPPED", errorMessage: null, updatedAt: at(0) },
+      { id: "ordinary-skip", status: "SKIPPED", errorMessage: "outbound_disabled", updatedAt: at(0) },
+      { id: "pending", status: "PENDING", errorMessage: null, updatedAt: at(0) },
+      { id: "failed", status: "FAILED", errorMessage: "SendGrid 503", updatedAt: at(0) },
+      { id: "sent", status: "SENT", errorMessage: null, updatedAt: at(48 * HOUR_MS) },
+      { id: "fresh-sending", status: "SENDING", errorMessage: null, updatedAt: at(15 * 60_000 - 1) },
+      { id: "stale-sending", status: "SENDING", errorMessage: null, updatedAt: at(15 * 60_000 + 1) },
+    ] as const;
+    expect(candidates.filter((row) => deliveryClosed(row, now)).map((row) => row.id)).toEqual(["terminal", "sent", "fresh-sending"]);
+    for (const candidate of candidates) {
+      rows.push(newRow({ memoryId: candidate.id, emailType: "ADMIN_NEW_MEMORY", recipientEmail: "", ...candidate }));
+    }
+    const claimable = new Set(rows.filter((row) => matches(row, claimableWhere(now) as Where)).map((row) => row.id));
+    for (const candidate of candidates) {
+      expect(deliveryClosed(candidate, now)).toBe(!claimable.has(candidate.id));
+    }
   });
 
   it.each([true, false])("A3: the real deliver never claims a helper-created terminal row, outbound enabled = %s", async (enabled) => {

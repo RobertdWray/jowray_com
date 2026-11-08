@@ -95,12 +95,20 @@ function VoiceSlot({ memory }: { memory: PublicMemory }) {
   );
 }
 
-function VideoSlot({ memory }: { memory: PublicMemory }) {
+/**
+ * A video memory's picture: the server-made poster as a decorative fill image over the dashed slot ([C27]). The fill
+ * image is absolutely positioned, so the badge and the pill sit in positioned `z-[1]` layers to stay above it. With no
+ * poster yet, or once the image fails (FallbackImage then renders nothing), the slot looks as it did before posters.
+ */
+export function VideoSlot({ memory }: { memory: PublicMemory }) {
   const length = durationText(memory.durationSeconds);
   return (
-    <div className="relative grid aspect-video place-items-center rounded-[16px] border-[3px] border-dashed border-wood bg-wood-light" aria-hidden="true">
-      <PlayBadge size={64} />
-      {length && <span className="absolute bottom-[10px] right-3 rounded-full bg-jo-red px-3 py-1 text-small font-bold text-paper shadow-pill">{length}</span>}
+    <div className="relative grid aspect-video place-items-center overflow-hidden rounded-[16px] border-[3px] border-dashed border-wood bg-wood-light" aria-hidden="true">
+      {memory.poster && <FallbackImage src={publicMediaHref(memory.poster.mediaId, "thumb")} alt="" fill unoptimized className="object-cover" />}
+      <span className="relative z-[1] flex">
+        <PlayBadge size={64} />
+      </span>
+      {length && <span className="absolute bottom-[10px] right-3 z-[1] rounded-full bg-jo-red px-3 py-1 text-small font-bold text-paper shadow-pill">{length}</span>}
     </div>
   );
 }

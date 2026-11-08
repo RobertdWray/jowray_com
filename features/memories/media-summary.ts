@@ -1,10 +1,14 @@
 import "server-only";
 
 import { TICKET_TTL_MS } from "@/lib/upload-ticket";
-import type { MediaKind, MemoryMediaSummary } from "@/services/email";
+import type { MediaKind, MediaPreview, MemoryMediaSummary } from "@/services/email";
 
-/** The columns the email summaries need; both `confirmMemory` and `notifyAdminsOfMemory` select exactly these. */
+/**
+ * The columns the admin alert's file list needs; `notifyAdminsOfMemory` selects them. The receipts
+ * (`confirmMemory`, `confirmSubmission`) list kind and length only and never call `summarizeReadyMedia`.
+ */
 export interface SummarizableMedia {
+  id: string;
   status: "PENDING" | "READY" | "FAILED";
   mimeType: string;
   originalFilename: string | null;
@@ -23,19 +27,19 @@ export function mediaKindOf(mimeType: string): MediaKind {
 
 /**
  * READY files in the order given (callers order by `createdAt`), as the admin
- * alert shows them. `preview` stays null until the derived-media pipeline
- * (issue #17 PR A) fills it here. Only the admin audience may see previews:
- * since issue #46 the contributor receipts take kind and length only and never
- * carry an uploaded picture.
+ * alert shows them, each with its preview from `previews` (keyed by media id;
+ * `loadAdminPreviews` makes them) or null. Only the admin audience may see
+ * previews: since issue #46 the contributor receipts take kind and length only
+ * and never carry an uploaded picture.
  */
-export function summarizeReadyMedia(rows: SummarizableMedia[]): MemoryMediaSummary[] {
+export function summarizeReadyMedia(rows: SummarizableMedia[], previews: ReadonlyMap<string, MediaPreview> = new Map()): MemoryMediaSummary[] {
   return rows
     .filter((row) => row.status === "READY")
     .map((row) => ({
       kind: mediaKindOf(row.mimeType),
       originalFilename: row.originalFilename,
       durationSeconds: row.durationSeconds,
-      preview: null,
+      preview: previews.get(row.id) ?? null,
     }));
 }
 

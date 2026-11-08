@@ -50,7 +50,7 @@ enum ChangedVia {
 enum DerivedKind {
   WEB_IMAGE // 2048 px long edge, same container family as the original; what inline pages show
   THUMBNAIL // 1000 px long edge JPEG ≤ 350 KB on #fffdf8; what emails attach inline
-  POSTER    // reserved: video poster from a browser-captured staging upload (email plan § 3.4)
+  POSTER    // video poster: one frame extracted server-side with ffmpeg (R-P1)
 }
 
 enum DerivedStatus {

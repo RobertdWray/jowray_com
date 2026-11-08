@@ -29,6 +29,8 @@ let onLock: (() => void) | undefined;
 let budgetBytes = 0;
 const locks: string[] = [];
 const tasks: Array<() => Promise<unknown>> = [];
+/** The name of each scheduled task, index for index with `tasks`. */
+const taskNames: string[] = [];
 
 /** Interpret every predicate used by the real features; unexpected operators fail loudly. */
 function matches(row: object, where: Record<string, unknown>): boolean {
@@ -135,12 +137,15 @@ vi.mock("@/lib/logger", () => ({ createLogger: () => log, logError: vi.fn(), log
 const confirm = vi.fn();
 const notify = vi.fn();
 const derive = vi.fn();
+const poster = vi.fn();
 vi.mock("@/features/memories/confirm", () => ({ confirmMemory: (...args: unknown[]) => confirm(...args) }));
 vi.mock("@/features/memories/notify-admins", () => ({ notifyAdminsOfMemory: (...args: unknown[]) => notify(...args) }));
 vi.mock("@/features/memories/derive-media", () => ({ deriveMedia: (...args: unknown[]) => derive(...args) }));
-vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (_name: string, task: () => Promise<unknown>) => {
+vi.mock("@/features/memories/derive-poster", () => ({ derivePoster: (...args: unknown[]) => poster(...args) }));
+vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (name: string, task: () => Promise<unknown>) => {
   if (failSchedule) { failSchedule = false; throw new Error("response lost after GPS stamp"); }
   tasks.push(task);
+  taskNames.push(name);
 } }));
 
 import { finalizeUploadAsAdmin, requestUploadAsAdmin } from "@/features/admin/attach-media";
@@ -173,7 +178,7 @@ beforeEach(() => {
     consentVersion: "v1", consentedAt: null, analysisStatus: "NOT_STARTED", claimTokenHash: "0".repeat(64),
     submissionId: null, submissionIndex: null, uploadLeaseUntil: null, createdAt: new Date(NOW), updatedAt: new Date(NOW),
   };
-  media = []; revisions = []; tasks.length = 0; locks.length = 0;
+  media = []; revisions = []; tasks.length = 0; taskNames.length = 0; locks.length = 0;
   inTransaction = false; failAfterCommit = false; failSchedule = false; onLock = undefined; budgetBytes = 0;
   storage.head.mockImplementation(async () => { expect(inTransaction).toBe(false); return null; });
   storage.presignPut.mockImplementation(async ({ validUntil, contentType }: { validUntil: number; contentType: string }) => {
@@ -444,7 +449,7 @@ describe("finalizeUploadAsAdmin", () => {
     expect(media[0]).toMatchObject({ gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null });
     expect(storage.readRange).toHaveBeenCalled();
     expect(spy).toHaveBeenCalledWith(5_000);
-    expect(tasks).toHaveLength(2);
+    expect(taskNames).toEqual(["finalize.checksum_and_derive", "finalize.photo_gps", "mcp.finalize.poster"]);
     storage.readRange.mockClear(); storage.head.mockClear();
     expect(await finalizeUploadAsAdmin(args)).toMatchObject({ status: "READY", gps });
     expect(storage.readRange).not.toHaveBeenCalled(); expect(storage.head).not.toHaveBeenCalled();
@@ -584,6 +589,100 @@ describe("finalizeUploadAsAdmin", () => {
     expect(media[0]!.gpsAttempts).toBe(0);
     // Only run the checksum/derive callback: GPS has its separate cron-backed callback.
     await tasks[0]!(); expect(derive).not.toHaveBeenCalled();
+  });
+});
+
+describe("finalizeUploadAsAdmin: the video poster (video-posters plan T7, ruling R2)", () => {
+  const args = { memoryId: ID, mediaId: MID };
+  const MOV = new Uint8Array(readFileSync(new URL("../fixtures/no-location.mov", import.meta.url)));
+  const WEBM = new Uint8Array([...SIGNATURE_SAMPLES["video/webm"]!, ...new Array<number>(2048).fill(7)]);
+  /** A PENDING connector reservation of `bytes` as `mimeType`, with its blob in the store. */
+  function videoReservation(mimeType: string, bytes: Uint8Array<ArrayBuffer>, over: Partial<Media> = {}): void {
+    media = [mediaRow({ mimeType, storageKey: `dev/originals/${ID}/clip.${mimeType === "video/webm" ? "webm" : "mov"}`, originalFilename: "clip", maxBytes: bytes.length, declaredSha256: createHash("sha256").update(bytes).digest("hex"), ...over })];
+    land(media[0], bytes);
+  }
+  const posterTask = () => tasks[taskNames.indexOf("mcp.finalize.poster")]!;
+
+  it.each([
+    { mimeType: "video/quicktime", bytes: MOV, names: ["finalize.checksum_and_derive", "finalize.photo_gps", "mcp.finalize.poster"] },
+    { mimeType: "video/webm", bytes: WEBM, names: ["finalize.checksum_and_derive", "mcp.finalize.poster"] },
+  ])("schedules its own poster task right after the follow-ups when a $mimeType first becomes READY", async ({ mimeType, bytes, names }) => {
+    videoReservation(mimeType, bytes);
+    expect(await finalizeUploadAsAdmin(args)).toMatchObject({ ok: true, status: "READY", mediaId: MID, memoryType: "VIDEO" });
+    expect(taskNames).toEqual(names);
+    expect(poster).not.toHaveBeenCalled(); // scheduled, never run before the reply
+    await posterTask()();
+    // The call's 25 s less the 3 s kept back for put, publish and the Sentry flush (ruling R12).
+    expect(poster).toHaveBeenCalledExactlyOnceWith({ mediaId: MID, deadlineMs: 22_000 });
+  });
+
+  it("keeps 3 s of the call's deadline back, as the hash and derive tasks do, so put, publish and the flush fit in maxDuration 30 (R12)", async () => {
+    videoReservation("video/quicktime", MOV);
+    await finalizeUploadAsAdmin(args);
+    // 10 s of the call's 25 s left: the poster is handed 7 s, never the whole 10.
+    vi.mocked(Date.now).mockReturnValue(NOW + 15_000);
+    await posterTask()();
+    expect(poster).toHaveBeenCalledExactlyOnceWith({ mediaId: MID, deadlineMs: 7_000 });
+  });
+
+  it("hands derivePoster what is left of the call's 25 s (less the margin) when the task runs, not when it was scheduled", async () => {
+    videoReservation("video/quicktime", MOV);
+    await finalizeUploadAsAdmin(args);
+    vi.mocked(Date.now).mockReturnValue(NOW + 9_000);
+    await posterTask()();
+    expect(poster).toHaveBeenCalledExactlyOnceWith({ mediaId: MID, deadlineMs: 13_000 });
+  });
+
+  it("the budget is what the inline hash and GPS read left: their time comes off the poster's", async () => {
+    videoReservation("video/quicktime", MOV);
+    storage.get.mockImplementationOnce(async () => {
+      // The inline hash takes 12 s of the call (the GPS read then runs on what is left).
+      vi.mocked(Date.now).mockReturnValue(NOW + 12_000);
+      return { stream: new Blob([MOV]).stream(), contentLength: MOV.length, contentType: "video/quicktime" };
+    });
+    expect(await finalizeUploadAsAdmin(args)).toMatchObject({ status: "READY", memoryType: "VIDEO" });
+    await posterTask()();
+    expect(poster).toHaveBeenCalledExactlyOnceWith({ mediaId: MID, deadlineMs: 10_000 });
+  });
+
+  it("passes even a spent budget through: derivePoster's own floor defers it, and cron (g2) backstops", async () => {
+    videoReservation("video/quicktime", MOV);
+    await finalizeUploadAsAdmin(args);
+    vi.mocked(Date.now).mockReturnValue(NOW + 26_000);
+    await posterTask()();
+    expect(poster).toHaveBeenCalledExactlyOnceWith({ mediaId: MID, deadlineMs: -4_000 });
+  });
+
+  it("schedules none for a photo, and none for a voice recording", async () => {
+    media = [mediaRow()];
+    land();
+    expect(await finalizeUploadAsAdmin(args)).toMatchObject({ status: "READY", memoryType: "PHOTO" });
+    expect(taskNames).toEqual(["finalize.checksum_and_derive", "finalize.photo_gps"]);
+    for (const task of tasks.splice(0)) { await task(); }
+    expect(poster).not.toHaveBeenCalled();
+
+    media = [mediaRow({ status: "READY", mimeType: "audio/webm", sizeBytes: BYTES.length })];
+    taskNames.length = 0;
+    await finalizeUploadAsAdmin(args);
+    expect(taskNames).toEqual([]);
+  });
+
+  it("schedules none when finalize starts READY (a repeat call): only the first transition schedules", async () => {
+    videoReservation("video/quicktime", MOV);
+    await finalizeUploadAsAdmin(args);
+    expect(taskNames).toContain("mcp.finalize.poster");
+    tasks.length = 0; taskNames.length = 0;
+    expect(await finalizeUploadAsAdmin(args)).toMatchObject({ status: "READY", memoryType: "VIDEO" });
+    expect(taskNames).toEqual([]);
+    expect(poster).not.toHaveBeenCalled();
+  });
+
+  it("schedules none for a video that is READY from the start, or still PENDING", async () => {
+    media = [mediaRow({ status: "READY", mimeType: "video/mp4", sizeBytes: BYTES.length, gpsCheckedAt: new Date(NOW) })];
+    expect(await finalizeUploadAsAdmin(args)).toMatchObject({ status: "READY" });
+    media = [mediaRow({ mimeType: "video/mp4" })]; // no blob landed
+    expect(await finalizeUploadAsAdmin(args)).toMatchObject({ status: "PENDING", uploaded: false });
+    expect(taskNames).toEqual([]);
   });
 });
 

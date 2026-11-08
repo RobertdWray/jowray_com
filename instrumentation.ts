@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/nextjs";
 
 import { DATA_COLLECTION } from "@/lib/sentry/data-collection";
+import { SERVER_HTTP_OPTIONS } from "@/lib/sentry/http-options";
 import { scrubBreadcrumb, scrubEvent, scrubLog, scrubSpan } from "@/lib/sentry/scrub";
 
 // Server-side Sentry init runs here, inside register(), for the Node.js
@@ -17,8 +18,10 @@ export function register(): void {
       normalizeDepth: 6,
       // Sentry Logs are on by default in SDK v11 (the v10 `enableLogs` option no longer exists).
       dataCollection: DATA_COLLECTION,
-      // Every Pino level streams as a log; `fatal` lines also become issues.
-      integrations: [Sentry.prismaIntegration(), Sentry.pinoIntegration({ error: { levels: ["fatal"] } })],
+      // Every Pino level streams as a log; `fatal` lines also become issues. The Http integration replaces the
+      // SDK's default one, so it keeps that default's no-incoming-spans setting and also ignores the poster frame
+      // server's loopback requests (lib/sentry/http-options.ts).
+      integrations: [Sentry.httpIntegration(SERVER_HTTP_OPTIONS), Sentry.prismaIntegration(), Sentry.pinoIntegration({ error: { levels: ["fatal"] } })],
       beforeSend: (event) => scrubEvent(event),
       // v11 streams spans: beforeSendTransaction is ignored, beforeSendSpan runs per span.
       beforeSendSpan: (span) => scrubSpan(span),

@@ -2,9 +2,11 @@ import * as Sentry from "@sentry/nextjs";
 import { type NextRequest, NextResponse } from "next/server";
 
 import { extractPhotoGps, GPS_DB_MARGIN_MS, GPS_READ_DEADLINE_MS, GPS_STALE_CLAIM_MS, MAX_GPS_ATTEMPTS, type PhotoGpsOutcome } from "@/features/media/extract-photo-gps";
+import { PREVIEW_READ_TIMEOUT_MS } from "@/features/memories/admin-previews";
 import { confirmSubmission } from "@/features/memories/complete-submission";
 import { confirmMemory } from "@/features/memories/confirm";
 import { DERIVED_KINDS, deriveMedia, MAX_DECODE_ATTEMPTS, MAX_PIXELS, STALE_CLAIM_MS } from "@/features/memories/derive-media";
+import { derivePoster } from "@/features/memories/derive-poster";
 import { TX_OPTIONS } from "@/features/memories/create-memory";
 import { computeChecksum, recordMedia } from "@/features/memories/ingest-upload";
 import { lockMemory } from "@/features/memories/lock";
@@ -14,9 +16,11 @@ import { safeEqualHex } from "@/lib/claim-token";
 import { posterStagingKeyFor } from "@/lib/derived-keys";
 import { createLogger, logError } from "@/lib/logger";
 import { LOCATION_READER_MIME_TYPES } from "@/lib/media-location";
+import { ALLOWED_VIDEO_MIME_TYPES } from "@/lib/media-types";
 import { reconcileRun } from "@/lib/sentry/metrics";
 import { storagePrefix } from "@/lib/site-url";
 import { UPLOAD_WINDOW_MS } from "@/lib/upload-ticket";
+import { MAX_VIDEO_PIXELS, tooManyPixelsCode } from "@/lib/video-frames";
 import { getCronEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 import { createStorageService } from "@/services/storage";
@@ -60,6 +64,12 @@ const CHECKSUM_DEADLINE_MS = 40_000;
  */
 const ADMIN_HASH_TIMEOUT_MS = 15_000;
 const ADMIN_HASH_MARGIN_MS = 5_000;
+/**
+ * Steps (d) and (e2): an admin alert loads the previews that exist and never waits for more (T14). Its reads stop
+ * after PREVIEW_READ_TIMEOUT_MS or this long before the run deadline, whichever is sooner, so a storage stall cannot
+ * spend the run's budget on pictures and starve the later steps (R19). The same margin as step (a)'s hashing.
+ */
+const ALERT_PREVIEW_MARGIN_MS = ADMIN_HASH_MARGIN_MS;
 /** Steps (a) and (c) defer items below this budget so time pressure alone cannot burn event retries. */
 const MIN_RECORD_BUDGET_MS = 1_000;
 /** Steps (e), (e2) and (e3) leave very new memories to the request path (finalize or completion may still be running). */
@@ -100,6 +110,19 @@ const DERIVE_BATCH = 3;
 const DERIVE_DEADLINE_MS = 30_000;
 /** Step (h): files per run. On the 10-minute schedule that is about 60 an hour, which is also the backfill rate. */
 const PHOTO_GPS_BATCH = 10;
+/**
+ * Step (g2): videos per run (12 an hour on the 10-minute schedule, also the backfill rate) and the most of the run it may
+ * take. It runs last, on what (g) and (h) left (video-posters plan T7, ruling R11).
+ */
+const POSTER_BATCH = 2;
+const POSTER_STEP_MS = 20_000;
+/**
+ * Step (g2)'s order alternates by this slot, the cron's interval (every 10 minutes, vercel.json): oldest first in even
+ * slots, newest first in odd ones (TCR B2-6, amends R11). A video whose header reads stall on every run defers each
+ * time, spending no attempt, so it stays eligible; with one fixed order, two such videos at its head would hold the
+ * batch for good. Alternating lets the other end through on every other run.
+ */
+const POSTER_ORDER_SLOT_MS = 10 * MINUTE_MS;
 /** What purge (f) writes over a photo's GPS: a purged photo keeps no location and no GPS claim (final review, item 5). */
 const PURGED_GPS = { latitude: null, longitude: null, gpsClaimedAt: null } as const;
 /** Step (h): the count each extraction outcome adds to. */
@@ -122,6 +145,7 @@ interface Counts {
   deletedBlobsRemoved: number;
   lateSweeps: number;
   derived: number;
+  posters: number;
   gpsFound: number;
   gpsAbsent: number;
   gpsFailed: number;
@@ -162,6 +186,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       deletedBlobsRemoved: 0,
       lateSweeps: 0,
       derived: 0,
+      posters: 0,
       gpsFound: 0,
       gpsAbsent: 0,
       gpsFailed: 0,
@@ -189,6 +214,9 @@ export async function GET(request: NextRequest): Promise<Response> {
       const budgetMs = Math.min(ADMIN_HASH_TIMEOUT_MS, RUN_DEADLINE_MS - (Date.now() - now) - ADMIN_HASH_MARGIN_MS);
       return budgetMs < MIN_RECORD_BUDGET_MS ? null : AbortSignal.timeout(budgetMs);
     };
+    // Each alert's preview reads stop after their own 5 s, or at the run deadline less the margin if sooner; an
+    // alert started after that reads none and goes without pictures.
+    const alertPreviewsReadUntil = (): number => Math.min(Date.now() + PREVIEW_READ_TIMEOUT_MS, now + RUN_DEADLINE_MS - ALERT_PREVIEW_MARGIN_MS);
 
     // (a0) Rows this environment retired in earlier runs ((a), (f2), or (f) with nothing
     // left to point at): delete their pathname again. A Blob request that started before
@@ -324,7 +352,7 @@ export async function GET(request: NextRequest): Promise<Response> {
           // receipt answers `leased` while its anchor's upload lease is live and is retried later.
           const result =
             row.emailType === "ADMIN_NEW_MEMORY"
-              ? await notifyAdminsOfMemory({ memoryId: row.memoryId })
+              ? await notifyAdminsOfMemory({ memoryId: row.memoryId, previewsReadUntil: alertPreviewsReadUntil() })
               : row.emailType === "SUBMISSION_CONFIRMATION"
                 ? await confirmSubmission({ anchorId: row.memoryId })
                 : await confirmMemory({ memoryId: row.memoryId });
@@ -424,7 +452,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       // Each item in its own isolation scope: an identity set by a shared feature cannot leak into the next item.
       await Sentry.withIsolationScope(async () => {
         try {
-          const result = await notifyAdminsOfMemory({ memoryId: memory.id });
+          const result = await notifyAdminsOfMemory({ memoryId: memory.id, previewsReadUntil: alertPreviewsReadUntil() });
           if (result.sent) {
             counts.adminAlertsSent += 1;
           }
@@ -726,6 +754,56 @@ export async function GET(request: NextRequest): Promise<Response> {
         } catch (error) {
           counts.errors += 1;
           logError("reconcile: photo GPS failed", error, { category: "cron", mediaId: row.id });
+        }
+      });
+    }
+
+    // (g2) Video posters (video-posters plan T7): READY videos of an allowed type (R13: one derivePoster would refuse
+    // must never hold the batch, which is ordered oldest first) of this environment whose POSTER row is missing, a stale
+    // claim, a retryable failure with attempts left, or a pixel refusal made under a ceiling other than today's video
+    // one. The backfill for videos stored before posters existed, and the retry path for the upload callback and MCP
+    // finalize, which defer below derivePoster's floor. Same eligibility as derivePoster (`isEligible(…,
+    // MAX_VIDEO_PIXELS)`), written out here like (g)'s: keep the two in step. Exhausted stale claims are selected and
+    // retired by derivePoster. Last in the run on what (g) and (h) left, at most POSTER_STEP_MS (ruling R11): (g) alone
+    // may take 30 s, and posters must never starve the GPS step. The order alternates by run slot (POSTER_ORDER_SLOT_MS).
+    // derivePoster never throws; a refusal or a deferral is its verdict, not a run error (like (g)'s).
+    const posterOrder = Math.floor(now / POSTER_ORDER_SLOT_MS) % 2 === 0 ? "asc" : "desc";
+    const videos = await db.media.findMany({
+      where: {
+        status: "READY",
+        deletedAt: null,
+        mimeType: { in: [...ALLOWED_VIDEO_MIME_TYPES] },
+        storageKey: { startsWith: storagePrefix() },
+        memory: { deletedAt: null },
+        OR: [
+          { derivatives: { none: { kind: "POSTER" } } },
+          // Stale claims (a null claimedAt is treated as stale; exhausted ones are retired by derivePoster).
+          { derivatives: { some: { kind: "POSTER", status: "PENDING", OR: [{ claimedAt: null }, { claimedAt: { lt: new Date(now - STALE_CLAIM_MS) } }] } } },
+          { derivatives: { some: { kind: "POSTER", status: "FAILED", error: { in: ["decode_failed", "timeout"] }, attempts: { lt: MAX_DECODE_ATTEMPTS } } } },
+          // A refusal made under a ceiling other than today's: one retry converges the row.
+          { derivatives: { some: { kind: "POSTER", status: "FAILED", error: { startsWith: "too_many_pixels:", not: tooManyPixelsCode(MAX_VIDEO_PIXELS) } } } },
+        ],
+      },
+      select: { id: true },
+      orderBy: { createdAt: posterOrder },
+      take: POSTER_BATCH,
+    });
+    const posterStart = Date.now();
+    for (const row of videos) {
+      // Each video gets only what is left of the step and of the run, never a fresh budget.
+      const remainingMs = Math.min(POSTER_STEP_MS - (Date.now() - posterStart), RUN_DEADLINE_MS - (Date.now() - now));
+      if (remainingMs <= 0) {
+        break;
+      }
+      // Each item in its own isolation scope: an identity set by a shared feature cannot leak into the next item.
+      await Sentry.withIsolationScope(async () => {
+        try {
+          if ((await derivePoster({ mediaId: row.id, deadlineMs: remainingMs })) === "derived") {
+            counts.posters += 1;
+          }
+        } catch (error) {
+          counts.errors += 1;
+          logError("reconcile: video poster failed", error, { category: "cron", mediaId: row.id });
         }
       });
     }

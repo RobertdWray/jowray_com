@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { resetEnvCache } from "@/server/config/env";
 
@@ -117,6 +117,10 @@ const confirmSubmissionMock = vi.fn(async ({ anchorId }: { anchorId: string }) =
 vi.mock("@/features/memories/complete-submission", () => ({ confirmSubmission: (a: { anchorId: string }) => confirmSubmissionMock(a) }));
 const deriveMediaMock = vi.fn(async ({ mediaId }: { mediaId: string; deadlineMs: number }) => { const m = media.find((x) => x.id === mediaId)!; m.derivatives = [{ kind: "WEB_IMAGE", status: "READY", error: null, attempts: 1, claimedAt: new Date(), storageKey: "dev/derived/x/a.jpg" }, { kind: "THUMBNAIL", status: "READY", error: null, attempts: 1, claimedAt: new Date(), storageKey: "dev/derived/x/b.jpg" }]; return { WEB_IMAGE: "derived", THUMBNAIL: "derived" }; });
 vi.mock("@/features/memories/derive-media", async (importOriginal) => { const actual = await importOriginal<Record<string, unknown>>(); return { ...actual, deriveMedia: (a: { mediaId: string; deadlineMs: number }) => deriveMediaMock(a) }; });
+type PosterOutcome = "derived" | "failed" | "not_eligible" | "claimed_elsewhere" | "deferred";
+/** Inert by default (the poster rows are the (g2) tests' business); `mockReset` restores this. */
+const derivePosterMock = vi.fn(async (_a: { mediaId: string; deadlineMs: number }): Promise<PosterOutcome> => "not_eligible");
+vi.mock("@/features/memories/derive-poster", () => ({ derivePoster: (a: { mediaId: string; deadlineMs: number }) => derivePosterMock(a) }));
 type GpsOutcome = "found" | "absent" | "failed" | "skipped";
 /** Like the real step: a decided outcome stamps the row (so the next run leaves it alone); failed/skipped leave it undecided. */
 function decideGps(mediaId: string, outcome: GpsOutcome): GpsOutcome {
@@ -127,14 +131,17 @@ const extractGpsMock = vi.fn(async ({ mediaId }: { mediaId: string; deadlineMs?:
 vi.mock("@/features/media/extract-photo-gps", async (importOriginal) => { const actual = await importOriginal<Record<string, unknown>>(); return { ...actual, extractPhotoGps: (a: { mediaId: string; deadlineMs?: number }) => extractGpsMock(a) }; });
 // The activation cutoff is a day in the past here so the fixtures (created 2 h ago) fall after it; the real constant is the merge day.
 const ADMIN_ALERT_SINCE = vi.hoisted(() => new Date(Date.now() - 24 * 60 * 60 * 1000));
-const notifyMock = vi.fn(async ({ memoryId }: { memoryId: string }) => recordSent(memoryId, "ADMIN_NEW_MEMORY"));
-vi.mock("@/features/memories/notify-admins", () => ({ ADMIN_ALERT_SINCE, notifyAdminsOfMemory: (a: { memoryId: string }) => notifyMock(a) }));
+const notifyMock = vi.fn(async ({ memoryId }: { memoryId: string; previewsUntil?: number; previewsReadUntil?: number }) => recordSent(memoryId, "ADMIN_NEW_MEMORY"));
+vi.mock("@/features/memories/notify-admins", () => ({ ADMIN_ALERT_SINCE, notifyAdminsOfMemory: (a: { memoryId: string; previewsReadUntil?: number }) => notifyMock(a) }));
 const delMock = vi.fn(async (_key: string) => { if (inTransaction) { throw new Error("storage.del inside the purge transaction"); } });
 /** The store answers head() for exactly one fixture: a blob that exists although recordMedia could not read its first bytes (#48's prefix check answered null). */
 const headMock = vi.fn(async (key: string) => (key === "dev/originals/mem_2/present" ? { size: 5, contentType: "video/mp4", url: "u", uploadedAt: new Date() } : null));
 vi.mock("@/services/storage", () => ({ createStorageService: () => ({ del: delMock, head: headMock, get: vi.fn(), put: vi.fn(), presignGet: vi.fn() }) }));
 
 import { GET } from "@/app/api/cron/reconcile-uploads/route";
+import { isEligible, MAX_PIXELS } from "@/features/memories/derived-claims";
+import { ALLOWED_MIME_TYPES } from "@/lib/media-types";
+import { MAX_VIDEO_PIXELS } from "@/lib/video-frames";
 
 function run(auth?: string) {
   return GET(new NextRequest("http://localhost:3000/api/cron/reconcile-uploads", { headers: auth ? { authorization: auth } : {} }));
@@ -250,7 +257,7 @@ beforeEach(() => {
   inTransaction = false; onLock = null; lockCalls.length = 0; delMock.mockReset(); delMock.mockImplementation(async () => { if (inTransaction) { throw new Error("storage.del inside the purge transaction"); } });
     recordMediaMock.mockClear(); checksumMock.mockClear(); confirmMock.mockClear(); confirmSubmissionMock.mockClear(); notifyMock.mockClear(); delMock.mockClear(); derivedDeletes.length = 0;
   // Reset, not clear: a test that swaps in its own implementation (the step (g) budget test advances the clock) must not leak it into the next test.
-  deriveMediaMock.mockReset(); extractGpsMock.mockReset();
+  deriveMediaMock.mockReset(); extractGpsMock.mockReset(); derivePosterMock.mockReset();
   recordMediaMock.mockImplementation(async ({ mediaId }) => {
     if (mediaId === "med_orphan_finalized") {
       // head() saw nothing; a finalize from the browser lands the moment after and records the file.
@@ -317,6 +324,8 @@ describe("GET /api/cron/reconcile-uploads", () => {
     // (Task 15) plus the sibling of a send whose lease ran out; nothing from the send still under its lease, and no sibling-less text anchors (they have no admin row yet but are alerted: mem_subfail0 and mem_subnoemail0 are ready text memories);
     // plus the two shared admin drafts (one of them younger than 30 minutes: a Share has no request-path alert to wait for)
     expect(notifyMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5", "mem_draft_shared", "mem_draft_shared_young", "mem_noemail", "mem_skipped", "mem_sub1", "mem_subfail0", "mem_subnoemail0"]);
+    // (d) and (e2) load whatever previews exist and never wait for more: no wait deadline, only a read deadline (T14, R19).
+    expect(notifyMock.mock.calls.every(([arg]) => Object.keys(arg).sort().join() === "memoryId,previewsReadUntil")).toBe(true);
     // admin-drafted memories: never confirmed by the site (DRAFT or shared), never alerted while DRAFT (see the fixture comments)
     expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_draft");
     expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_draft_shared");
@@ -386,8 +395,8 @@ describe("GET /api/cron/reconcile-uploads", () => {
 
   it("(e2) waits for a send's lease before alerting any of its memories, and (e3) emails the anchor once the lease is gone", async () => {
     await run(`Bearer ${SECRET}`);
-    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_live0" });
-    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_live1" });
+    expect(notifyMock).not.toHaveBeenCalledWith(expect.objectContaining({ memoryId: "mem_live0" }));
+    expect(notifyMock).not.toHaveBeenCalledWith(expect.objectContaining({ memoryId: "mem_live1" }));
     expect(emails.find((e) => e.id === "log_sub_leased")?.status).toBe("FAILED");
     memories.find((m) => m.id === "mem_live0")!.uploadLeaseUntil = new Date(Date.now() - 1_000);
     notifyMock.mockClear(); confirmSubmissionMock.mockClear();
@@ -411,6 +420,32 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(receipts).not.toContain("mem_live0_by_e3");
   });
 
+  it("R19: bounds each alert's preview reads by its own 5 s and by the run deadline less the margin, so a storage stall cannot starve later steps", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const restore = notifyMock.getMockImplementation()!;
+    try {
+      const startedAt = Date.now();
+      const calls: Array<{ memoryId: string; at: number; previewsReadUntil?: number; previewsUntil?: number }> = [];
+      // Each alert takes 10 s (a stalled read would take its whole budget).
+      notifyMock.mockImplementation(async (arg) => {
+        calls.push({ ...arg, at: Date.now() });
+        vi.setSystemTime(Date.now() + 10_000);
+        return recordSent(arg.memoryId, "ADMIN_NEW_MEMORY");
+      });
+      expect((await run(`Bearer ${SECRET}`)).status).toBe(200);
+      expect(calls.length).toBeGreaterThanOrEqual(5);
+      for (const call of calls) {
+        expect(call.previewsUntil).toBeUndefined();
+        expect(call.previewsReadUntil).toBe(Math.min(call.at + 5_000, startedAt + 50_000 - 5_000));
+      }
+      // Late in the run the run deadline, not the 5 s, is the bound (and once it has passed, the alert reads nothing).
+      expect(calls.some((call) => call.at + 5_000 > startedAt + 45_000)).toBe(true);
+    } finally {
+      notifyMock.mockImplementation(restore);
+      vi.useRealTimers();
+    }
+  });
+
   it("alerts a failed upload only when words were saved, and never resends", async () => {
     const old = new Date(Date.now() - 2 * HOUR);
     memories.push(
@@ -418,11 +453,11 @@ describe("GET /api/cron/reconcile-uploads", () => {
       { id: "mem_failed_nowords", type: "VIDEO", deletedAt: null, createdAt: old, contributorNote: null, contributor: { email: null }, media: [{ status: "FAILED", deletedAt: null, createdAt: old }], emails: [] }
     );
     await run(`Bearer ${SECRET}`);
-    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_failed_words" });
-    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_failed_nowords" });
+    expect(notifyMock).toHaveBeenCalledWith(expect.objectContaining({ memoryId: "mem_failed_words" }));
+    expect(notifyMock).not.toHaveBeenCalledWith(expect.objectContaining({ memoryId: "mem_failed_nowords" }));
     notifyMock.mockClear();
     const res = await run(`Bearer ${SECRET}`);
-    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_failed_words" });
+    expect(notifyMock).not.toHaveBeenCalledWith(expect.objectContaining({ memoryId: "mem_failed_words" }));
     expect(((await res.json()) as { data: Record<string, number> }).data.adminAlertsSent).toBe(0);
   });
 
@@ -477,18 +512,18 @@ describe("GET /api/cron/reconcile-uploads", () => {
 
   it("alerts the admins once a pending upload lands, never while it is in flight", async () => {
     await run(`Bearer ${SECRET}`);
-    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_pending_upload" });
+    expect(notifyMock).not.toHaveBeenCalledWith(expect.objectContaining({ memoryId: "mem_pending_upload" }));
     const pending = memories.find((m) => m.id === "mem_pending_upload")!;
     pending.media[0]!.status = "READY";
     notifyMock.mockClear();
     const res = await run(`Bearer ${SECRET}`);
-    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_pending_upload" });
+    expect(notifyMock).toHaveBeenCalledWith(expect.objectContaining({ memoryId: "mem_pending_upload" }));
     expect(((await res.json()) as { data: Record<string, number> }).data.adminAlertsSent).toBe(1);
   });
 
   it("never announces a memory created before the alert feature was activated", async () => {
     await run(`Bearer ${SECRET}`);
-    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_before_cutoff" });
+    expect(notifyMock).not.toHaveBeenCalledWith(expect.objectContaining({ memoryId: "mem_before_cutoff" }));
     expect(memories.find((m) => m.id === "mem_before_cutoff")?.emails).toHaveLength(0);
   });
 
@@ -766,6 +801,243 @@ describe("step (h): photo GPS (B3)", () => {
     const res = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
     expect(extractGpsMock).toHaveBeenCalledTimes(10);
     expect(res.data).toMatchObject({ errors: 1, gpsAbsent: 9 });
+  });
+});
+
+describe("step (g2): video posters (video-posters plan T7, ruling R11)", () => {
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000);
+  /** A live READY video of this environment with its GPS decided, so step (h) leaves it alone. */
+  function video(id: string, createdAt: Date, over: Partial<MediaRow> = {}): MediaRow {
+    return { id, memoryId: "mem_1", status: "READY", checksumSha256: "d".repeat(64), createdAt, storageKey: `dev/originals/mem_1/${id}.mov`, blobUrl: "u", deletedAt: null, mimeType: "video/quicktime", derivatives: [], gpsCheckedAt: minutesAgo(400), gpsAttempts: 1, memory: { deletedAt: null }, ...over };
+  }
+  function poster(over: Partial<DerivedRow> = {}): DerivedRow {
+    return { kind: "POSTER", status: "PENDING", error: null, attempts: 1, claimedAt: minutesAgo(1), storageKey: "dev/derived/mem_1/p.jpg", ...over };
+  }
+  /** Like the real derivePoster on an eligible row: its POSTER row ends READY. */
+  function makePoster(mediaId: string): PosterOutcome {
+    const row = media.find((m) => m.id === mediaId)!;
+    row.derivatives = [...(row.derivatives ?? []).filter((d) => d.kind !== "POSTER"), poster({ status: "READY", claimedAt: new Date() })];
+    return "derived";
+  }
+  /** (g2)'s read: the only media query whose OR names the POSTER kind ((g)'s names the photo copies). */
+  const isPosterQuery = (where: Record<string, unknown>) => JSON.stringify(where.OR ?? []).includes("POSTER");
+  const posterQuery = () => dbStub.media.findMany.mock.calls.map(([args]) => args).filter(({ where }) => isPosterQuery(where)).at(-1);
+  /** The cron's interval: (g2)'s order alternates by these slots (TCR B2-6). */
+  const SLOT_MS = 10 * 60_000;
+  /** A run start 5 s into an even slot (oldest first); `+ SLOT_MS` is the next run's, in an odd slot (newest first). */
+  const EVEN_SLOT = Math.ceil(Date.UTC(2026, 10, 8, 12) / (2 * SLOT_MS)) * 2 * SLOT_MS + 5_000;
+  beforeEach(() => {
+    events = []; emails = []; memories = []; media = [];
+    isolationCalls.length = 0;
+    dbStub.media.findMany.mockClear();
+    // Every (g2) test runs on a pinned clock, in an even slot unless it moves on; only Date is faked.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(EVEN_SLOT);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("selects exactly the rows derivePoster's isEligible would take (or retire), judged against the video pixel ceiling", async () => {
+    const thumb: DerivedRow = { kind: "THUMBNAIL", status: "READY", error: null, attempts: 1, claimedAt: minutesAgo(100), storageKey: "dev/derived/mem_1/t.jpg" };
+    const variants: Array<{ name: string; row: DerivedRow | null; others?: DerivedRow[] }> = [
+      { name: "no poster row", row: null },
+      { name: "no poster row, other kinds READY", row: null, others: [thumb] },
+      { name: "a live claim", row: poster({ claimedAt: minutesAgo(1) }) },
+      { name: "a live claim at its last attempt", row: poster({ claimedAt: minutesAgo(1), attempts: 3 }) },
+      { name: "a stale claim", row: poster({ claimedAt: minutesAgo(11) }) },
+      { name: "a claim with no timestamp", row: poster({ claimedAt: null }) },
+      { name: "a stale claim that used its attempts (retired by derivePoster)", row: poster({ claimedAt: minutesAgo(11), attempts: 3 }) },
+      { name: "READY", row: poster({ status: "READY" }), others: [thumb] },
+      ...(["decode_failed", "timeout"] as const).flatMap((error) => [1, 2, 3].map((attempts) => ({ name: `FAILED ${error} after ${attempts}`, row: poster({ status: "FAILED", error, attempts }) }))),
+      ...["no_video_stream", "no_frame", "source_limit", "unsupported_type", "too_large", "abandoned"].map((error) => ({ name: `FAILED ${error}`, row: poster({ status: "FAILED", error }) })),
+      { name: "refused under today's video ceiling", row: poster({ status: "FAILED", error: `too_many_pixels:${MAX_VIDEO_PIXELS}` }) },
+      { name: "refused under the photo ceiling", row: poster({ status: "FAILED", error: `too_many_pixels:${MAX_PIXELS}` }) },
+      { name: "refused under another ceiling, attempts spent", row: poster({ status: "FAILED", error: "too_many_pixels:1000", attempts: 3 }) },
+    ];
+    media = variants.map(({ row, others }, i) => video(`med_v${i}`, minutesAgo(500 - i), { derivatives: [...(others ?? []), ...(row ? [row] : [])] }));
+    await run(`Bearer ${SECRET}`);
+    const where = posterQuery()!.where;
+    const judged = variants.map(({ name, row }, i) => {
+      const verdict = row === null ? "eligible" : isEligible({ id: `d${i}`, ...row, status: row.status as "PENDING" | "READY" | "FAILED" }, new Date(), MAX_VIDEO_PIXELS);
+      return { name, selected: matches(media[i] as unknown as Record<string, unknown>, where), expected: verdict === "eligible" || verdict === "exhausted" };
+    });
+    expect(judged.filter((j) => j.selected !== j.expected)).toEqual([]);
+    // The matrix covers both sides of every branch.
+    expect(judged.filter((j) => j.selected).length).toBeGreaterThanOrEqual(8);
+    expect(judged.filter((j) => !j.selected).length).toBeGreaterThanOrEqual(10);
+  });
+
+  it("takes only READY, live, video/* originals of this environment whose memory is live", async () => {
+    media = [
+      video("med_ok", minutesAgo(100)),
+      video("med_mp4", minutesAgo(99), { mimeType: "video/mp4" }),
+      video("med_webm", minutesAgo(98), { mimeType: "video/webm", storageKey: "dev/originals/mem_1/w.webm" }),
+      video("med_photo", minutesAgo(500), { mimeType: "image/jpeg", storageKey: "dev/originals/mem_1/p.jpg" }),
+      video("med_audio", minutesAgo(500), { mimeType: "audio/mp4", storageKey: "dev/originals/mem_1/a.m4a" }),
+      video("med_prod", minutesAgo(500), { storageKey: "originals/mem_9/v.mov" }),
+      video("med_preview", minutesAgo(500), { storageKey: "preview/originals/mem_1/v.mov" }),
+      video("med_removed", minutesAgo(500), { deletedAt: minutesAgo(30), reservedUntil: new Date(Date.now() + HOUR) }),
+      video("med_memory_deleted", minutesAgo(500), { memory: { deletedAt: minutesAgo(30) } }),
+      video("med_pending", minutesAgo(500), { status: "PENDING", reservedUntil: new Date(Date.now() + HOUR) }),
+      video("med_failed", minutesAgo(500), { status: "FAILED" }),
+    ];
+    await run(`Bearer ${SECRET}`);
+    const where = posterQuery()!.where;
+    expect(media.filter((m) => matches(m as unknown as Record<string, unknown>, where)).map((m) => m.id)).toEqual(["med_ok", "med_mp4", "med_webm"]);
+  });
+
+  it("selects only the video types the site accepts, taken from lib/media-types (ruling R13)", async () => {
+    media = [
+      video("med_mov", minutesAgo(100)),
+      video("med_avi", minutesAgo(500), { mimeType: "video/x-msvideo", storageKey: "dev/originals/mem_1/v.avi" }),
+      video("med_mkv", minutesAgo(500), { mimeType: "video/x-matroska", storageKey: "dev/originals/mem_1/v.mkv" }),
+      video("med_param", minutesAgo(500), { mimeType: "video/mp4;codecs=avc1" }),
+    ];
+    await run(`Bearer ${SECRET}`);
+    const where = posterQuery()!.where;
+    expect(where.mimeType).toEqual({ in: ALLOWED_MIME_TYPES.filter((mime) => mime.startsWith("video/")) });
+    expect(where.mimeType).toEqual({ in: ["video/mp4", "video/quicktime", "video/webm"] });
+    expect(media.filter((m) => matches(m as unknown as Record<string, unknown>, where)).map((m) => m.id)).toEqual(["med_mov"]);
+  });
+
+  it("a disallowed video type, never eligible for derivePoster, cannot hold the batch and starve newer videos (R13)", async () => {
+    derivePosterMock.mockImplementation(async ({ mediaId }) => makePoster(mediaId));
+    media = [
+      video("med_avi_1", minutesAgo(900), { mimeType: "video/x-msvideo" }),
+      video("med_avi_2", minutesAgo(800), { mimeType: "video/x-msvideo" }),
+      video("med_new", minutesAgo(10), { mimeType: "video/mp4" }),
+    ];
+    await run(`Bearer ${SECRET}`);
+    expect(derivePosterMock.mock.calls.map(([a]) => a.mediaId)).toEqual(["med_new"]);
+  });
+
+  it("works through a backlog two per run, oldest first, and a run after the last poster is a no-op", async () => {
+    derivePosterMock.mockImplementation(async ({ mediaId }) => makePoster(mediaId));
+    media = [
+      video("med_c", minutesAgo(300)),
+      video("med_a", minutesAgo(500), { derivatives: [poster({ claimedAt: minutesAgo(11) })] }),
+      video("med_done", minutesAgo(600), { derivatives: [poster({ status: "READY" })] }),
+      video("med_e", minutesAgo(100), { derivatives: [poster({ status: "FAILED", error: `too_many_pixels:${MAX_PIXELS}` })] }),
+      video("med_b", minutesAgo(400), { derivatives: [poster({ status: "FAILED", error: "timeout", attempts: 2 })] }),
+      video("med_d", minutesAgo(200), { mimeType: "video/mp4" }),
+    ];
+    const perRun: string[][] = [];
+    const posters: number[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      derivePosterMock.mockClear();
+      const body = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
+      perRun.push(derivePosterMock.mock.calls.map(([a]) => a.mediaId));
+      posters.push(body.data.posters!);
+    }
+    expect(perRun).toEqual([["med_a", "med_b"], ["med_c", "med_d"], ["med_e"], []]);
+    expect(posters).toEqual([2, 2, 1, 0]);
+    expect(posterQuery()).toMatchObject({ orderBy: { createdAt: "asc" }, take: 2 });
+  });
+
+  it("alternates its order by ten-minute slot: oldest first in even slots, newest first in odd ones (TCR B2-6, amends R11)", async () => {
+    derivePosterMock.mockImplementation(async ({ mediaId }) => makePoster(mediaId));
+    media = ["med_a", "med_b", "med_c", "med_d", "med_e"].map((id, i) => video(id, minutesAgo(500 - 100 * i)));
+    const perRun: string[][] = [];
+    const orders: unknown[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      vi.setSystemTime(EVEN_SLOT + i * SLOT_MS);
+      derivePosterMock.mockClear();
+      await run(`Bearer ${SECRET}`);
+      perRun.push(derivePosterMock.mock.calls.map(([a]) => a.mediaId));
+      orders.push(posterQuery()!.orderBy);
+    }
+    expect(perRun).toEqual([["med_a", "med_b"], ["med_e", "med_d"], ["med_c"], []]);
+    expect(orders).toEqual([{ createdAt: "asc" }, { createdAt: "desc" }, { createdAt: "asc" }, { createdAt: "desc" }]);
+  });
+
+  it("a head that defers on every run (header reads that stall: no attempt spent) no longer blocks a newer video (TCR B2-6)", async () => {
+    const stuck = new Set(["med_stuck_1", "med_stuck_2"]);
+    derivePosterMock.mockImplementation(async ({ mediaId }) => (stuck.has(mediaId) ? "deferred" : makePoster(mediaId)));
+    media = [video("med_stuck_1", minutesAgo(900)), video("med_stuck_2", minutesAgo(800)), video("med_new", minutesAgo(10))];
+    const first = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
+    expect(derivePosterMock.mock.calls.map(([a]) => a.mediaId)).toEqual(["med_stuck_1", "med_stuck_2"]);
+    expect(first.data.posters).toBe(0);
+
+    vi.setSystemTime(EVEN_SLOT + SLOT_MS);
+    derivePosterMock.mockClear();
+    const second = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
+    expect(derivePosterMock.mock.calls.map(([a]) => a.mediaId)[0]).toBe("med_new");
+    expect(second.data.posters).toBe(1);
+    expect(media.find((m) => m.id === "med_new")!.derivatives).toEqual([expect.objectContaining({ kind: "POSTER", status: "READY" })]);
+  });
+
+  it("is the last step: it starts after step (h) has finished", async () => {
+    derivePosterMock.mockImplementation(async ({ mediaId }) => makePoster(mediaId));
+    extractGpsMock.mockImplementation(async ({ mediaId }) => decideGps(mediaId, "absent"));
+    media = [video("med_both", minutesAgo(100), { gpsCheckedAt: null, gpsAttempts: 0 }), video("med_gps_only", minutesAgo(90), { gpsCheckedAt: null, gpsAttempts: 0, derivatives: [poster({ status: "READY" })] })];
+    await run(`Bearer ${SECRET}`);
+    expect(extractGpsMock).toHaveBeenCalledTimes(2);
+    expect(derivePosterMock).toHaveBeenCalledTimes(1);
+    expect(Math.max(...extractGpsMock.mock.invocationCallOrder)).toBeLessThan(derivePosterMock.mock.invocationCallOrder[0]!);
+    // Its query is the run's last read of the media table.
+    expect(dbStub.media.findMany.mock.calls.at(-1)![0]).toBe(posterQuery());
+  });
+
+  describe("budget: what is left of the run, capped at 20 s, and each item only what is left of both", () => {
+    it.each([
+      { why: "a fresh run: the step's 20 s cap, then its remainder", elapsedMs: 0, firstTakesMs: 15_000, budgets: [20_000, 5_000] },
+      { why: "the step's cap is spent by the first item: the second waits", elapsedMs: 0, firstTakesMs: 20_000, budgets: [20_000] },
+      { why: "(g) and (h) left 12 s of the run: the leftover, then its remainder", elapsedMs: 38_000, firstTakesMs: 5_000, budgets: [12_000, 7_000] },
+      { why: "the first item spends the run's leftover: the second waits", elapsedMs: 38_000, firstTakesMs: 12_000, budgets: [12_000] },
+      { why: "the run is already spent: nothing starts", elapsedMs: 50_000, firstTakesMs: 0, budgets: [] },
+    ])("$why", async ({ elapsedMs, firstTakesMs, budgets }) => {
+      media = [video("med_1st", minutesAgo(200)), video("med_2nd", minutesAgo(100))];
+      const findMedia = dbStub.media.findMany.getMockImplementation()!;
+      try {
+        const startedAt = Date.now();
+        dbStub.media.findMany.mockImplementation(async (args) => {
+          const rows = await findMedia(args);
+          if (isPosterQuery(args.where)) {
+            vi.setSystemTime(startedAt + elapsedMs);
+          }
+          return rows;
+        });
+        derivePosterMock.mockImplementation(async ({ mediaId }) => { vi.setSystemTime(Date.now() + firstTakesMs); return makePoster(mediaId); });
+        const body = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
+        expect(derivePosterMock.mock.calls.map(([a]) => a.deadlineMs)).toEqual(budgets);
+        expect(derivePosterMock.mock.calls.map(([a]) => a.mediaId)).toEqual(["med_1st", "med_2nd"].slice(0, budgets.length));
+        expect(body.data).toMatchObject({ posters: budgets.length, errors: 0 });
+      } finally {
+        dbStub.media.findMany.mockImplementation(findMedia);
+      }
+    });
+  });
+
+  it("runs each video in its own isolation scope", async () => {
+    const scopes: unknown[] = [];
+    derivePosterMock.mockImplementation(async ({ mediaId }) => { scopes.push(isolationCalls.at(-1)); return makePoster(mediaId); });
+    media = [video("med_1st", minutesAgo(200)), video("med_2nd", minutesAgo(100))];
+    await run(`Bearer ${SECRET}`);
+    expect(scopes).toHaveLength(2);
+    expect(scopes[0]).toBeDefined();
+    expect(scopes[0]).not.toBe(scopes[1]);
+    expect(isolationCalls.slice(-2)).toEqual(scopes);
+  });
+
+  it.each([
+    { outcomes: ["derived", "failed"], posters: 1 },
+    { outcomes: ["deferred", "claimed_elsewhere"], posters: 0 },
+    { outcomes: ["not_eligible", "derived"], posters: 1 },
+  ] as Array<{ outcomes: PosterOutcome[]; posters: number }>)("counts only a poster made, and none of $outcomes as a run error", async ({ outcomes, posters }) => {
+    for (const outcome of outcomes) { derivePosterMock.mockImplementationOnce(async () => outcome); }
+    media = [video("med_1st", minutesAgo(200)), video("med_2nd", minutesAgo(100))];
+    const body = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
+    expect(derivePosterMock).toHaveBeenCalledTimes(2);
+    expect(body.data).toMatchObject({ posters, errors: 0 });
+  });
+
+  it("an item that throws (derivePoster never should) is a run error, and the next item still runs", async () => {
+    derivePosterMock.mockImplementationOnce(async () => { throw new Error("unexpected"); }).mockImplementationOnce(async ({ mediaId }) => makePoster(mediaId));
+    media = [video("med_1st", minutesAgo(200)), video("med_2nd", minutesAgo(100))];
+    const body = (await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> };
+    expect(derivePosterMock.mock.calls.map(([a]) => a.mediaId)).toEqual(["med_1st", "med_2nd"]);
+    expect(body.data).toMatchObject({ posters: 1, errors: 1 });
   });
 });
 

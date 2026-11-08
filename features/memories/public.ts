@@ -11,7 +11,7 @@ import { roundPoint, toPublicPlace } from "@/lib/memories/places";
 import { publicPlayability } from "@/lib/memories/playability";
 import { PUBLIC_MEMORY_RULE } from "@/lib/memories/public-rule";
 import { toPublicTags } from "@/lib/memories/tags";
-import type { Playable, PublicMediaItem, PublicMemory, PublicMemoryDetail, PublicPhoto } from "@/lib/memories/types";
+import type { Playable, PublicMediaItem, PublicMediaKind, PublicMemory, PublicMemoryDetail, PublicPhoto, PublicPoster } from "@/lib/memories/types";
 import { parseMemoryId } from "@/lib/validations/public-memories";
 import { getDb } from "@/server/db/client";
 
@@ -70,13 +70,21 @@ function words(value: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function servedCopy(media: MediaRow, kind: "WEB_IMAGE" | "THUMBNAIL") {
+/** A READY derived copy the media route would serve: never one on a browser-staged key (as `serve-media` refuses). */
+function servedCopy(media: MediaRow, kind: "WEB_IMAGE" | "THUMBNAIL" | "POSTER") {
   return media.derivatives.find((d) => d.kind === kind && !isStagingKey(d.storageKey)) ?? null;
 }
+
+/**
+ * The copy `?v=thumb` serves for a file of this kind (`features/media/serve-media.ts`): a photo's THUMBNAIL, a
+ * video's POSTER (D7: never the video itself). A recording has none.
+ */
+const THUMB_COPY: Record<PublicMediaKind, "THUMBNAIL" | "POSTER" | null> = { PHOTO: "THUMBNAIL", VIDEO: "POSTER", VOICE: null };
 
 function toMediaItem(media: MediaRow): PublicMediaItem {
   const web = servedCopy(media, "WEB_IMAGE");
   const kind = memoryTypeFor(media.mimeType);
+  const thumbCopy = THUMB_COPY[kind];
   return {
     id: media.id,
     kind,
@@ -85,9 +93,20 @@ function toMediaItem(media: MediaRow): PublicMediaItem {
     durationSeconds: media.durationSeconds,
     width: kind === "PHOTO" && web ? web.width : media.width,
     height: kind === "PHOTO" && web ? web.height : media.height,
-    hasThumb: servedCopy(media, "THUMBNAIL") !== null,
+    hasThumb: thumbCopy !== null && servedCopy(media, thumbCopy) !== null,
     playable: publicPlayability({ mimeType: media.mimeType, webCopyReady: web !== null }),
   };
+}
+
+/** The card's picture for a video: the first video with a served POSTER, sized from that copy (not the original). */
+function posterOf(media: MediaRow[]): PublicPoster | null {
+  for (const file of media) {
+    const copy = memoryTypeFor(file.mimeType) === "VIDEO" ? servedCopy(file, "POSTER") : null;
+    if (copy) {
+      return { mediaId: file.id, width: copy.width, height: copy.height };
+    }
+  }
+  return null;
 }
 
 function toPublicMemory(row: MemoryRow, items: PublicMediaItem[]): PublicMemory {
@@ -113,6 +132,7 @@ function toPublicMemory(row: MemoryRow, items: PublicMediaItem[]): PublicMemory 
     tags: toPublicTags(row.tags),
     durationSeconds: recording?.durationSeconds ?? null,
     photos,
+    poster: posterOf(row.media),
     playable,
     createdAt: row.createdAt.toISOString(),
   };

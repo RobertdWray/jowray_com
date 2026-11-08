@@ -4,9 +4,28 @@ import type { Sharp } from "sharp";
 
 import { decodeHeicInWorker } from "@/lib/heic-worker";
 import { ImageDeriveError } from "@/lib/image-derive-error";
-import type { DeriveOptions, DerivedSet, DeriveSlot, Encoded, ImageService } from "@/services/images/types";
+import type { DeriveOptions, DerivedSet, DeriveSlot, Encoded, ImageService, ThumbnailOptions, ThumbnailSet } from "@/services/images/types";
 
 type Family = "jpeg" | "png" | "webp" | "gif";
+
+/** What the shared decode step reads; `DeriveOptions` and `ThumbnailOptions` both carry it. */
+type DecodeOptions = Pick<DeriveOptions, "sourceMime" | "deadlineMs" | "maxPixels">;
+
+/**
+ * An original whose bytes matched its label and whose frame is within the
+ * pixel ceiling. Each builder returns a new pipeline over it, so an encoder
+ * never pays for a pipeline it does not use.
+ */
+interface Decoded {
+  family: Family;
+  /** Upright dimensions of one frame of the original. */
+  sourceWidth: number;
+  sourceHeight: number;
+  /** The whole original, for the web copy. A GIF stays animated only within `maxFrames` and the pixel ceiling (issue #45). */
+  full(maxFrames: number): Sharp;
+  /** One upright still frame, for the thumbnail. */
+  still(): Sharp;
+}
 
 const FAMILY: Record<string, Family> = {
   "image/jpeg": "jpeg",
@@ -88,13 +107,11 @@ export class SharpHeicImageService implements ImageService {
 
   private slot(): DeriveSlot {
     let released = false;
+    // A released slot refuses every kind of work: the next holder may already be decoding.
+    const whileHeld = <T>(work: () => Promise<T>): Promise<T> => (released ? Promise.reject(new Error("derive slot already released")) : work());
     return {
-      derive: (input, options) => {
-        if (released) {
-          return Promise.reject(new Error("derive slot already released"));
-        }
-        return this.deriveNow(input, options);
-      },
+      derive: (input, options) => whileHeld(() => this.deriveNow(input, options)),
+      thumbnail: (input, options) => whileHeld(() => this.thumbnailNow(input, options)),
       release: () => {
         if (released) {
           return;
@@ -124,33 +141,51 @@ export class SharpHeicImageService implements ImageService {
     }
   }
 
-  private async deriveNow(input: Buffer, options: DeriveOptions): Promise<DerivedSet> {
-    const family = FAMILY[options.sourceMime];
+  private deriveNow(input: Buffer, options: DeriveOptions): Promise<DerivedSet> {
+    return this.decode(input, options, async (decoded) => {
+      const { sourceWidth, sourceHeight } = decoded;
+      const web = await this.encodeWeb(decoded.full(options.maxFrames), decoded.family, options.web, { width: sourceWidth, height: sourceHeight });
+      const thumb = await this.encodeThumb(decoded.still(), options.thumb);
+      return { sourceWidth, sourceHeight, web, thumb };
+    });
+  }
+
+  /** The thumbnail alone: the web pipeline is never built, so no web copy is decoded or encoded. */
+  private thumbnailNow(input: Buffer, options: ThumbnailOptions): Promise<ThumbnailSet> {
+    return this.decode(input, options, async (decoded) => {
+      const thumb = await this.encodeThumb(decoded.still(), options.thumb);
+      return { sourceWidth: decoded.sourceWidth, sourceHeight: decoded.sourceHeight, thumb };
+    });
+  }
+
+  /**
+   * The step `derive` and `thumbnail` share: check the label, then the bytes
+   * and the size, and hand `encode` builders for the pipelines it needs.
+   * Anything libvips or the HEIC worker throws, here or in `encode`, becomes
+   * a typed `ImageDeriveError`.
+   */
+  private async decode<T>(input: Buffer, { sourceMime, deadlineMs, maxPixels }: DecodeOptions, encode: (decoded: Decoded) => Promise<T>): Promise<T> {
+    const family = FAMILY[sourceMime];
     if (!family) {
       throw new ImageDeriveError("unsupported_type");
     }
     // Lazy: no route, prerender or build ever loads libvips until a copy is made.
     const sharp = (await import("sharp")).default;
 
-    let base: Sharp;
-    let thumbSource: Sharp;
-    let sourceWidth: number;
-    let sourceHeight: number;
     // libvips stops a pipeline that runs past this (native formats; HEIC has the worker's own deadline).
-    const timeout = { seconds: Math.max(1, Math.ceil(options.deadlineMs / 1000)) };
+    const timeout = { seconds: Math.max(1, Math.ceil(deadlineMs / 1000)) };
     try {
-      if (options.sourceMime === "image/heic" || options.sourceMime === "image/heif") {
-        const rgba = await decodeHeicInWorker(input, { deadlineMs: options.deadlineMs, maxPixels: options.maxPixels });
+      let decoded: Decoded;
+      if (sourceMime === "image/heic" || sourceMime === "image/heif") {
+        const rgba = await decodeHeicInWorker(input, { deadlineMs, maxPixels });
         const raw = { width: rgba.width, height: rgba.height, channels: 4 as const };
         const pixels = Buffer.from(rgba.data.buffer, rgba.data.byteOffset, rgba.data.byteLength);
-        base = sharp(pixels, { raw }).timeout(timeout);
-        thumbSource = sharp(pixels, { raw }).timeout(timeout);
-        sourceWidth = rgba.width;
-        sourceHeight = rgba.height;
+        const pipeline = () => sharp(pixels, { raw }).timeout(timeout);
+        decoded = { family, sourceWidth: rgba.width, sourceHeight: rgba.height, full: pipeline, still: pipeline };
       } else {
         // The declared type chooses the output; the bytes choose libvips's loader. They must agree,
         // or an SVG/TIFF/anything-else file labelled as a photo would reach a loader we never meant to expose.
-        const meta = await sharp(input, { limitInputPixels: options.maxPixels }).metadata();
+        const meta = await sharp(input, { limitInputPixels: maxPixels }).metadata();
         if (meta.format !== family) {
           throw new ImageDeriveError("unsupported_type");
         }
@@ -162,39 +197,45 @@ export class SharpHeicImageService implements ImageService {
           // the animation. One frame over the pixel ceiling is a refusal, as for any photo.
           const frames = meta.pages ?? 1;
           const frameHeight = meta.pageHeight ?? meta.height;
-          if (meta.width * frameHeight > options.maxPixels) {
-            throw new ImageDeriveError("too_many_pixels", { limit: options.maxPixels });
+          if (meta.width * frameHeight > maxPixels) {
+            throw new ImageDeriveError("too_many_pixels", { limit: maxPixels });
           }
-          const animate = frames <= options.maxFrames && meta.width * frameHeight * frames <= options.maxPixels;
-          base = sharp(input, { animated: animate, limitInputPixels: options.maxPixels }).timeout(timeout);
-          thumbSource = sharp(input, { page: 0, limitInputPixels: options.maxPixels }).timeout(timeout);
-          sourceWidth = meta.width;
-          sourceHeight = frameHeight;
+          decoded = {
+            family,
+            sourceWidth: meta.width,
+            sourceHeight: frameHeight,
+            full: (maxFrames) => {
+              const animate = frames <= maxFrames && meta.width * frameHeight * frames <= maxPixels;
+              return sharp(input, { animated: animate, limitInputPixels: maxPixels }).timeout(timeout);
+            },
+            still: () => sharp(input, { page: 0, limitInputPixels: maxPixels }).timeout(timeout),
+          };
         } else {
-          base = sharp(input, { limitInputPixels: options.maxPixels }).rotate().timeout(timeout);
-          thumbSource = sharp(input, { limitInputPixels: options.maxPixels }).rotate().timeout(timeout);
+          const pipeline = () => sharp(input, { limitInputPixels: maxPixels }).rotate().timeout(timeout);
           const swapped = (meta.orientation ?? 1) >= 5;
-          sourceWidth = swapped ? meta.height : meta.width;
-          sourceHeight = swapped ? meta.width : meta.height;
+          decoded = {
+            family,
+            sourceWidth: swapped ? meta.height : meta.width,
+            sourceHeight: swapped ? meta.width : meta.height,
+            full: pipeline,
+            still: pipeline,
+          };
         }
       }
-
-      const web = await this.encodeWeb(base, family, options, { width: sourceWidth, height: sourceHeight });
-      const thumb = await this.encodeThumb(thumbSource, options);
-      return { sourceWidth, sourceHeight, web, thumb };
+      return await encode(decoded);
     } catch (error) {
       if (error instanceof ImageDeriveError) {
         throw error;
       }
       if (isPixelLimitError(error)) {
-        throw new ImageDeriveError("too_many_pixels", { limit: options.maxPixels, cause: error });
+        throw new ImageDeriveError("too_many_pixels", { limit: maxPixels, cause: error });
       }
       throw new ImageDeriveError("decode_failed", { cause: error });
     }
   }
 
-  private async encodeWeb(base: Sharp, family: Family, { web }: DeriveOptions, source: { width: number; height: number }): Promise<Encoded> {
-    let pipeline = base.clone();
+  private async encodeWeb(base: Sharp, family: Family, web: DeriveOptions["web"], source: { width: number; height: number }): Promise<Encoded> {
+    let pipeline = base;
     if (family === "gif") {
       // Animated: libvips resizes the whole frame strip, so the long edge is capped through the width
       // using the per-frame height; never enlarged.
@@ -208,10 +249,10 @@ export class SharpHeicImageService implements ImageService {
     return { data, mimeType: MIME[family], extension: EXTENSION[family], width: info.width, height: info.pageHeight ?? info.height };
   }
 
-  private async encodeThumb(source: Sharp, { thumb }: DeriveOptions): Promise<Encoded | { failed: "too_large" }> {
+  /** The THUMBNAIL spec (`DERIVE_DEFAULTS.thumb`), shared by photos and video posters. */
+  private async encodeThumb(source: Sharp, thumb: DeriveOptions["thumb"]): Promise<Encoded | { failed: "too_large" }> {
     // Decode, flatten and resize once; the quality retry re-encodes the small raw result, not the original.
     const { data: raw, info } = await source
-      .clone()
       .flatten({ background: thumb.background })
       .resize({ width: thumb.maxEdge, height: thumb.maxEdge, fit: "inside", withoutEnlargement: true })
       .raw()

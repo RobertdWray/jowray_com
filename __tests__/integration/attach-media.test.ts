@@ -57,6 +57,9 @@ const observed = client?.$extends({
 vi.mock("@/server/db/client", () => ({ getDb: () => observed }));
 const tasks: Array<() => Promise<unknown>> = [];
 vi.mock("@/lib/sentry/after-flush", () => ({ afterWithFlush: (_name: string, task: () => Promise<unknown>) => { tasks.push(task); } }));
+// Finalize schedules a video's poster task (video-posters plan T7); these tests never run the tasks, and the poster
+// feature (ffmpeg, the image slot) is not what they exercise.
+vi.mock("@/features/memories/derive-poster", () => ({ derivePoster: vi.fn(async () => "deferred") }));
 const blobs = new Map<string, { bytes: Uint8Array; contentType: string }>();
 vi.mock("@/services/storage", () => ({
   createStorageService: () => ({

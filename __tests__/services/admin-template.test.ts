@@ -186,6 +186,26 @@ describe("buildAdminNewMemory: media cards and attachments", () => {
     expect(new Set(cids(html))).toEqual(new Set(ids));
   });
 
+  it("shows a video's POSTER inline as video-N.jpg with the video alt text, numbered by its place in the list (T14)", () => {
+    const { html, text, attachments } = build({
+      media: [
+        photo({ kind: "VOICE", originalFilename: "voice.m4a", durationSeconds: 134 }),
+        photo({ kind: "VIDEO", originalFilename: "clip.mov", durationSeconds: 12, preview: preview("v1", 1000, 562) }),
+        photo({ preview: preview("p1") }),
+      ],
+    });
+    expect(html).toMatch(/<img src="cid:preview-v1" width="520"[^>]*alt="Your video"/);
+    expect(html).toContain("cid:preview-p1");
+    expect(attachments.filter((a) => a.contentId.startsWith("preview-")).map((a) => [a.contentId, a.filename, a.contentType])).toEqual([
+      ["preview-v1", "video-2.jpg", "image/jpeg"],
+      ["preview-p1", "photo-3.jpg", "image/jpeg"],
+    ]);
+    // The video with a picture needs no badge; the recording keeps its own.
+    expect(attachments.map((a) => a.contentId)).not.toContain(EMAIL_ASSETS.badgeVideo.contentId);
+    expect(attachments.map((a) => a.contentId)).toContain(EMAIL_ASSETS.badgeAudio.contentId);
+    expect(text).toContain("- Video (0:12): clip.mov");
+  });
+
   it("uses at most four previews; further files fall back to badge cards", () => {
     const media = Array.from({ length: 6 }, (_, i) => photo({ originalFilename: `p${i}.jpg`, preview: preview(`m${i}`) }));
     const { html, attachments } = build({ media });

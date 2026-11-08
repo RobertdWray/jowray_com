@@ -11,6 +11,14 @@ export interface ReceiptMediaSummary {
   durationSeconds: number | null;
 }
 
+/** A derived JPEG carried inline (`cid:<contentId>`), sized as its DerivedMedia row says. */
+export interface MediaPreview {
+  contentId: string;
+  contentBase64: string;
+  width: number;
+  height: number;
+}
+
 /**
  * One READY file as the family-admin alert shows it: the receipt's summary
  * plus the name the contributor gave the file and the derived preview JPEG
@@ -18,7 +26,7 @@ export interface ReceiptMediaSummary {
  */
 export interface MemoryMediaSummary extends ReceiptMediaSummary {
   originalFilename: string | null;
-  preview: { contentId: string; contentBase64: string; width: number; height: number } | null;
+  preview: MediaPreview | null;
 }
 
 /**

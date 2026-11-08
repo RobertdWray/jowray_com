@@ -2,6 +2,7 @@ import "server-only";
 
 import { reviewVersionOf } from "@/features/admin/review-version";
 import { LIVE_MEDIA_ORDER } from "@/features/memories/media-state";
+import { isStagingKey } from "@/lib/derived-keys";
 import type { AdminMemoryStatus } from "@/lib/validations/admin";
 import { coordinatesOf, type Coordinates } from "@/lib/validations/memory";
 import { getDb } from "@/server/db/client";
@@ -23,6 +24,8 @@ export interface AdminMediaView {
   sortOrder: number;
   webReady: boolean;
   thumbReady: boolean;
+  /** A video's server-made POSTER is READY: what `?v=thumb` serves for a video (D7), shown by the gallery's player. */
+  posterReady: boolean;
   /** `purgedAt` is set: the bytes are gone or being removed (cron step (f)); the row never serves again. */
   purged: boolean;
   /**
@@ -135,6 +138,14 @@ function revisionsWithoutCoordinates(revisions: AdminRevisionView[]): AdminRevis
 }
 
 /**
+ * A READY copy of this kind that the media routes would serve: never one on a browser-staged key, which
+ * `features/media/serve-media.ts` answers with 404 (as `features/memories/public.ts` judges it).
+ */
+function servable(derivatives: ReadonlyArray<{ kind: string; storageKey: string }>, kind: "WEB_IMAGE" | "THUMBNAIL" | "POSTER"): boolean {
+  return derivatives.some((d) => d.kind === kind && !isStagingKey(d.storageKey));
+}
+
+/**
  * One memory for the admin detail page, deleted or not (the page decides what
  * to offer). Never includes `claimTokenHash`, `blobUrl`, `storageKey` or `exif`
  * (plan §4.1): the view is serialised to the browser. The MCP `get_memory` tool
@@ -165,7 +176,8 @@ export async function getMemoryForAdmin(id: string, options: AdminViewOptions = 
           purgedAt: true,
           latitude: true,
           longitude: true,
-          derivatives: { where: { status: "READY" }, select: { kind: true } },
+          // `storageKey` decides readiness (a browser-staged key is never served) and is never put in the view.
+          derivatives: { where: { status: "READY" }, select: { kind: true, storageKey: true } },
         },
         orderBy: [...LIVE_MEDIA_ORDER],
       },
@@ -224,8 +236,9 @@ export async function getMemoryForAdmin(id: string, options: AdminViewOptions = 
       approxDateText: m.approxDateText,
       place: m.place,
       sortOrder: m.sortOrder,
-      webReady: m.derivatives.some((d) => d.kind === "WEB_IMAGE"),
-      thumbReady: m.derivatives.some((d) => d.kind === "THUMBNAIL"),
+      webReady: servable(m.derivatives, "WEB_IMAGE"),
+      thumbReady: servable(m.derivatives, "THUMBNAIL"),
+      posterReady: servable(m.derivatives, "POSTER"),
       purged: m.purgedAt !== null,
       ...(options.includeCoordinates && { coordinates: coordinatesOf(m) }),
     })),

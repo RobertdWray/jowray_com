@@ -155,7 +155,18 @@ export async function serveMedia({ id, variant: askedVariant, download: askedDow
   let pathname = media.storageKey;
   let cost = originalBytes;
   let copy: "original" | "web" | "thumb" = "original";
-  if (!download && variant !== "original" && media.mimeType.startsWith("image/")) {
+  if (!download && variant === "thumb" && media.mimeType.startsWith("video/")) {
+    // A video's thumb URL is always an image (D7): its server-made POSTER, or nothing. Never the video itself,
+    // which an <img> or <video poster> would download whole.
+    const poster = media.derivatives.find((d) => d.kind === "POSTER");
+    if (!poster || isStagingKey(poster.storageKey)) {
+      return mediaNotFound();
+    }
+    pathname = poster.storageKey;
+    // A READY poster always has its size; the original's size is only the safe over-estimate if a row lacks it.
+    cost = poster.sizeBytes ?? originalBytes;
+    copy = "thumb";
+  } else if (!download && variant !== "original" && media.mimeType.startsWith("image/")) {
     const find = (kind: "WEB_IMAGE" | "THUMBNAIL") => media.derivatives.find((d) => d.kind === kind);
     const thumbnail = variant === "thumb" ? find("THUMBNAIL") : undefined;
     const chosen = thumbnail ?? find("WEB_IMAGE");

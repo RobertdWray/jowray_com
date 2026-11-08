@@ -10,7 +10,7 @@ function memory(id: string, overrides: Partial<PublicMemory> = {}): PublicMemory
   return {
     id, kind: "PHOTO", who: "A friend of Jo's", relationship: null, note: null,
     when: null, year: null, month: null, place: null, point: null, tags: [],
-    durationSeconds: null, photos: [], playable: "yes", createdAt: "2026-01-01T00:00:00.000Z",
+    durationSeconds: null, photos: [], poster: null, playable: "yes", createdAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };
 }

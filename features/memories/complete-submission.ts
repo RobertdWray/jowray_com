@@ -1,5 +1,6 @@
 import "server-only";
 
+import { ADMIN_PREVIEW_WAIT_MS, PREVIEW_READ_TIMEOUT_MS } from "@/features/memories/admin-previews";
 import { notifyAdminsQuietly, recordMedia } from "@/features/memories/ingest-upload";
 import { mediaKindOf } from "@/features/memories/media-summary";
 import { LIVE_MEDIA_ORDER } from "@/features/memories/media-state";
@@ -202,7 +203,8 @@ async function confirmSubmissionInner({ anchorId, claimTokens }: { anchorId: str
  * receipt carries no uploaded picture (issue #46, review #6), so nothing waits
  * for thumbnails (the D16 wait is gone with them). Email problems are reported
  * and never hide the links; `already_sent` and `in_progress` count as emailed.
- * The admin alerts, one per live memory, run after the response (D18).
+ * The admin alerts, one per live memory, run after the response (D18) and
+ * share one wait for their pictures (T14); the receipt never waits.
  */
 export async function completeSubmission(raw: unknown): Promise<CompleteSubmissionResult> {
   const parsed = completeSubmissionSchema.safeParse(raw);
@@ -242,9 +244,13 @@ export async function completeSubmission(raw: unknown): Promise<CompleteSubmissi
 
   const liveIds = liveOfSend.map((m) => m.id);
   afterWithFlush("completion.admin_alerts", async () => {
+    // One preview wait and one read budget for the whole send (T14, R18; C22): N alerts spend at most
+    // ADMIN_PREVIEW_WAIT_MS + PREVIEW_READ_TIMEOUT_MS on pictures in all, and a memory reached later goes without.
+    const previewsUntil = Date.now() + ADMIN_PREVIEW_WAIT_MS;
+    const previewsReadUntil = previewsUntil + PREVIEW_READ_TIMEOUT_MS;
     for (const memoryId of liveIds) {
       // The send is settled: alert with what arrived, whatever is still marked in flight.
-      await notifyAdminsQuietly(memoryId, { settleNow: true });
+      await notifyAdminsQuietly(memoryId, { settleNow: true, previewsUntil, previewsReadUntil });
     }
   });
   log.info({ action: "submission_completed", memoryId: anchorId, memories: liveIds.length, emailed }, "submission completed");

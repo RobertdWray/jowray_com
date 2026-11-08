@@ -19,6 +19,7 @@ export type {
   EmailAttachment,
   EmailTransport,
   MediaKind,
+  MediaPreview,
   MemoryConfirmationContent,
   MemoryConfirmationInput,
   MemoryMediaSummary,
@@ -162,8 +163,18 @@ export function claimableWhere(now: number): Prisma.EmailLogWhereInput {
 }
 
 /** True while another sender's claim on this row is live. */
-function inFlight(row: LogRow, now: number): boolean {
+function inFlight(row: Pick<LogRow, "status" | "updatedAt">, now: number): boolean {
   return row.status === "SENDING" && row.updatedAt.getTime() >= now - STALE_CLAIM_MS;
+}
+
+/**
+ * No sender may take this row now: it is SENT, a live claim owns it, or it is a terminal skip (the complement of
+ * `claimableWhere`). Read outside the outbound lock this is advisory only: `notifyAdminsOfMemory` uses it to skip
+ * the preview wait and load for an alert that will not render again, and `decide` still answers under the lock.
+ */
+export function deliveryClosed(row: Pick<LogRow, "status" | "updatedAt" | "errorMessage">, now: number = Date.now()): boolean {
+  const terminal = row.status === "SKIPPED" && TERMINAL_SKIP_REASONS.some((reason) => reason === row.errorMessage);
+  return row.status === "SENT" || inFlight(row, now) || terminal;
 }
 
 /**

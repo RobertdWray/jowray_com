@@ -64,6 +64,12 @@ const BY_EXTENSION: Record<string, string> = {
 
 export const ALLOWED_MIME_TYPES: readonly string[] = Object.keys(ALLOWED);
 
+/**
+ * The allowed `video/*` types: exactly the rows derivePoster's gate accepts (`video/*` and `isAllowedMime`). Cron step
+ * (g2) selects with this list, so a row it would refuse can never hold the poster batch (video-posters plan, R13).
+ */
+export const ALLOWED_VIDEO_MIME_TYPES: readonly string[] = ALLOWED_MIME_TYPES.filter((mime) => mime.startsWith("video/"));
+
 /** Value for the file input's `accept` attribute: MIME types plus extensions. */
 export const ACCEPT_ATTRIBUTE: string = [
   ...ALLOWED_MIME_TYPES,

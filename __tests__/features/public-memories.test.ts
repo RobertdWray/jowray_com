@@ -182,6 +182,81 @@ describe("listPublicMemories", () => {
   });
 });
 
+/**
+ * The card's video picture (video-posters T10, D7): the first video whose server-made POSTER is READY and not a
+ * browser-staged key, sized from that POSTER row (never from the original video), and nothing else.
+ */
+describe("the poster on a memory (video posters, T10)", () => {
+  const POSTER = (over: Row = {}): Row => ({ kind: "POSTER", width: 1000, height: 562, storageKey: "derived/mem_1/poster.jpg", ...over });
+  const video = (id: string, derivatives: Row[]): Row => mediaRow({ id, mimeType: "video/mp4", durationSeconds: 30, width: 3840, height: 2160, caption: null, derivatives });
+
+  it("takes the first video with a READY POSTER, sized from the POSTER row, past a photo and a video without one", async () => {
+    rows = [memoryRow({ type: "VIDEO", media: [
+      mediaRow(),
+      video("00000000-0000-4000-8000-0000000000v1", []),
+      video("00000000-0000-4000-8000-0000000000v2", [POSTER()]),
+      video("00000000-0000-4000-8000-0000000000v3", [POSTER({ width: 640, height: 360, storageKey: "derived/mem_1/other.jpg" })]),
+    ] })];
+    const [memory] = await listPublicMemories();
+    expect(memory!.poster).toEqual({ mediaId: "00000000-0000-4000-8000-0000000000v2", width: 1000, height: 562 });
+  });
+
+  it("skips a POSTER on a browser-staged key and never lets a derived key into the DTO", async () => {
+    rows = [memoryRow({ type: "VIDEO", media: [
+      video("00000000-0000-4000-8000-0000000000v1", [POSTER({ storageKey: "derived/mem_1/v1.upload.jpg" })]),
+      video("00000000-0000-4000-8000-0000000000v2", [POSTER()]),
+    ] })];
+    const [memory] = await listPublicMemories();
+    expect(memory!.poster).toEqual({ mediaId: "00000000-0000-4000-8000-0000000000v2", width: 1000, height: 562 });
+    expect(JSON.stringify(memory)).not.toContain("derived/mem_1");
+
+    rows = [memoryRow({ type: "VIDEO", media: [video("00000000-0000-4000-8000-0000000000v1", [POSTER({ storageKey: "derived/mem_1/v1.upload.jpg" })])] })];
+    const [stagedOnly] = await listPublicMemories();
+    expect(stagedOnly!.poster).toBeNull();
+  });
+
+  it("is null for a video without one, a photo memory, a recording and a written memory", async () => {
+    rows = [
+      memoryRow({ type: "VIDEO", media: [video("00000000-0000-4000-8000-0000000000v1", [{ kind: "THUMBNAIL", width: 1000, height: 562, storageKey: "derived/mem_1/t.jpg" }])] }),
+      memoryRow({ id: "00000000-0000-4000-8000-000000000002" }),
+      memoryRow({ id: "00000000-0000-4000-8000-000000000003", type: "VOICE", media: [mediaRow({ mimeType: "audio/mp4", derivatives: [POSTER()] })] }),
+      memoryRow({ id: "00000000-0000-4000-8000-000000000004", type: "TEXT", media: [] }),
+    ];
+    const memories = await listPublicMemories();
+    expect(memories.map((m) => m.poster)).toEqual([null, null, null, null]);
+  });
+
+  it("is on the memory page's read too", async () => {
+    rows = [memoryRow({ type: "VIDEO", media: [video("00000000-0000-4000-8000-0000000000v2", [POSTER()])] })];
+    const memory = await getPublicMemory("00000000-0000-4000-8000-000000000001");
+    expect(memory!.poster).toEqual({ mediaId: "00000000-0000-4000-8000-0000000000v2", width: 1000, height: 562 });
+  });
+
+  it("sets hasThumb from the copy `?v=thumb` serves for the kind: a photo's THUMBNAIL, a video's POSTER, never for a recording", async () => {
+    const STAGED = POSTER({ storageKey: "derived/mem_1/v4.upload.jpg" });
+    const THUMBNAIL = { kind: "THUMBNAIL", width: 1000, height: 750, storageKey: "derived/mem_1/thumb.jpg" };
+    rows = [memoryRow({ media: [
+      mediaRow({ id: "00000000-0000-4000-8000-0000000000p1" }),
+      mediaRow({ id: "00000000-0000-4000-8000-0000000000p2", derivatives: [{ kind: "WEB_IMAGE", width: 2048, height: 1536, storageKey: "derived/mem_1/web.jpg" }, POSTER()] }),
+      video("00000000-0000-4000-8000-0000000000v1", [POSTER()]),
+      video("00000000-0000-4000-8000-0000000000v2", [THUMBNAIL]),
+      video("00000000-0000-4000-8000-0000000000v3", []),
+      video("00000000-0000-4000-8000-0000000000v4", [STAGED]),
+      mediaRow({ id: "00000000-0000-4000-8000-0000000000a1", mimeType: "audio/mp4", derivatives: [THUMBNAIL, POSTER()] }),
+    ] })];
+    const memory = await getPublicMemory("00000000-0000-4000-8000-000000000001");
+    expect(memory!.media.map((item) => [item.id.slice(-2), item.hasThumb])).toEqual([
+      ["p1", true],
+      ["p2", false],
+      ["v1", true],
+      ["v2", false],
+      ["v3", false],
+      ["v4", false],
+      ["a1", false],
+    ]);
+  });
+});
+
 describe("getPublicMemory", () => {
   it("reads one memory with PUBLIC_MEMORY_WHERE and its id, and returns its files in order", async () => {
     rows = [memoryRow({ media: [mediaRow(), mediaRow({ id: "00000000-0000-4000-8000-0000000000m5", mimeType: "video/quicktime", durationSeconds: 30, gpsCheckedAt: CHECKED, latitude: 40.68, longitude: -74.04, derivatives: [] })] })];
