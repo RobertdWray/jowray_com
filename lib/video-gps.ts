@@ -2,6 +2,8 @@
  * Pure MOV/MP4 location reader. The caller owns I/O, range-response validation,
  * deadlines and logging. Only headers and the bounded moov box are requested.
  */
+import { BoxFormatError, child, children, headerAt, moovRoot, readMoov, requirePayload, viewOf, type Box } from "@/lib/mp4-boxes";
+
 export interface VideoLocationLimits {
   /** Defaults to 64. */
   maxTopLevelBoxes: number;
@@ -54,40 +56,11 @@ const LOCATION_KEY = "com.apple.quicktime.location.ISO6709";
 // sample descriptions and other unrelated payloads are opaque to this reader.
 const CONTAINERS = new Set([MOOV, UDTA, ILST]);
 
-/** Only deterministic parser decisions use this private error class. */
+/**
+ * Deterministic parser decisions about location metadata use this private error class; box-structure and budget
+ * decisions arrive as `BoxFormatError` from `lib/mp4-boxes.ts`. Both are absences the reader cannot vouch for.
+ */
 class AbsentLocation extends Error {}
-
-type Box = { type: number; payload: number; end: number };
-
-function viewOf(bytes: Uint8Array): DataView {
-  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-}
-
-/** A bounded header; parentEnd may exceed view length for a ranged top-level header. */
-function headerAt(view: DataView, start: number, parentEnd: number): Box {
-  if (parentEnd - start < 8 || view.byteLength - start < 8) {
-    throw new AbsentLocation("Malformed video: truncated box header");
-  }
-  const shortSize = view.getUint32(start);
-  let size = shortSize;
-  let headerSize = 8;
-  if (shortSize === 1) {
-    headerSize = 16;
-    if (parentEnd - start < 16 || view.byteLength - start < 16) {
-      throw new AbsentLocation("Malformed video: truncated extended box header");
-    }
-    size = view.getUint32(start + 8) * 2 ** 32 + view.getUint32(start + 12);
-    if (!Number.isSafeInteger(size)) {
-      throw new AbsentLocation("Malformed video: box size exceeds safe integer range");
-    }
-  } else if (shortSize === 0) {
-    size = parentEnd - start;
-  }
-  if (size < headerSize || size > parentEnd - start) {
-    throw new AbsentLocation("Malformed video: box size is outside its enclosing bounds");
-  }
-  return { type: view.getUint32(start + 4), payload: start + headerSize, end: start + size };
-}
 
 /**
  * Never rejects. Deterministic format/limit decisions are absent (complete only
@@ -101,71 +74,16 @@ export async function readVideoLocation(
   limits?: Partial<VideoLocationLimits>,
 ): Promise<VideoLocationResult> {
   try {
+    // readMoov checks every limit here, maxDepth included, before its first read.
     const budget = { ...DEFAULT_LIMITS, ...limits };
-    for (const [name, value] of Object.entries(budget)) {
-      if (!Number.isSafeInteger(value) || value < 0) {
-        throw new AbsentLocation(`Invalid ${name} limit`);
-      }
+    const bytes = await readMoov(read, size, budget, "video location");
+    if (bytes === undefined) {
+      // Every top-level box was walked and none was a movie box: nothing was parsed, so nothing is vouched for.
+      return unvouched("No moov box");
     }
-    if (!Number.isSafeInteger(size) || size < 0) {
-      throw new AbsentLocation("Invalid video file size");
-    }
-
-    let calls = 0;
-    let bytesRead = 0;
-    const range = async (offset: number, length: number): Promise<Uint8Array> => {
-      if (calls >= budget.maxReadCalls) {
-        throw new AbsentLocation("Read call limit (maxReadCalls) reached");
-      }
-      if (length > budget.maxTotalBytes - bytesRead) {
-        throw new AbsentLocation("Total byte limit (maxTotalBytes) exceeded");
-      }
-      calls += 1;
-      bytesRead += length;
-      const bytes = await read(offset, length);
-      if (bytes.byteLength < length) {
-        throw new Error("Short read while reading video location");
-      }
-      if (bytes.byteLength > length) {
-        throw new Error("Video range read returned more bytes than requested");
-      }
-      return bytes;
-    };
-
-    let offset = 0;
-    let boxes = 0;
-    while (offset < size) {
-      if (boxes >= budget.maxTopLevelBoxes) {
-        throw new AbsentLocation("Top-level box limit (maxTopLevelBoxes) reached");
-      }
-      if (size - offset < 8) {
-        throw new AbsentLocation("Malformed video: truncated top-level box header");
-      }
-      boxes += 1;
-      let header = await range(offset, 8);
-      if (viewOf(header).getUint32(0) === 1) {
-        if (size - offset < 16) {
-          throw new AbsentLocation("Malformed video: truncated extended box header");
-        }
-        const extended = new Uint8Array(16);
-        extended.set(header);
-        extended.set(await range(offset + 8, 8), 8);
-        header = extended;
-      }
-      const box = headerAt(viewOf(header), 0, size - offset);
-      if (box.type === MOOV) {
-        if (box.end > budget.maxMoovBytes) {
-          throw new AbsentLocation("moov byte limit (maxMoovBytes) exceeded");
-        }
-        const bytes = await range(offset, box.end);
-        return parseMovie(bytes, budget.maxDepth);
-      }
-      offset += box.end; // Skip every non-moov body, including mdat.
-    }
-    // Every top-level box was walked and none was a movie box: nothing was parsed, so nothing is vouched for.
-    return unvouched("No moov box");
+    return parseMovie(bytes, budget.maxDepth);
   } catch (error) {
-    if (error instanceof AbsentLocation) {
+    if (error instanceof AbsentLocation || error instanceof BoxFormatError) {
       return unvouched(error.message);
     }
     return {
@@ -183,36 +101,15 @@ class Movie {
   }
 
   root(): Box {
-    const root = headerAt(this.view, 0, this.bytes.length);
-    if (root.type !== MOOV || root.end !== this.bytes.length) {
-      throw new AbsentLocation("Malformed video: inconsistent moov header");
-    }
-    return root;
+    return moovRoot(this.bytes);
   }
 
-  *children(parent: Box, start = parent.payload): Generator<Box> {
-    const firstChildStart = start;
-    while (start < parent.end) {
-      const remaining = parent.end - start;
-      // Padding follows child boxes; QTFF also allows an otherwise empty udta
-      // to end with a four-byte zero terminator. A truncated first header fails.
-      if (remaining < 8
-        && (start > firstChildStart || (parent.type === UDTA && remaining === 4))
-        && this.bytes.subarray(start, parent.end).every((byte) => byte === 0)) {
-        return;
-      }
-      const child = headerAt(this.view, start, parent.end);
-      yield child;
-      start = child.end;
-    }
+  children(parent: Box, start = parent.payload): Generator<Box> {
+    return children(this.bytes, parent, start);
   }
 
   child(parent: Box, type: number, start = parent.payload): Box | undefined {
-    for (const child of this.children(parent, start)) {
-      if (child.type === type) {
-        return child;
-      }
-    }
+    return child(this.bytes, parent, type, start);
   }
 
   /** QuickTime meta is plain; ISO meta has a four-byte version/flags prefix. */
@@ -222,7 +119,7 @@ class Movie {
         continue;
       }
       const handler = headerAt(this.view, start, meta.end);
-      this.requireBytes(handler, 12, "hdlr");
+      requirePayload(handler, 12, "hdlr");
       return start;
     }
     throw new AbsentLocation("Malformed video: meta has no valid hdlr header");
@@ -259,7 +156,7 @@ class Movie {
     if (!keys || !list) {
       return;
     }
-    this.requireBytes(keys, 8, "keys");
+    requirePayload(keys, 8, "keys");
     const count = this.view.getUint32(keys.payload + 4);
     let cursor = keys.payload + 8;
     let locationIndex: number | undefined;
@@ -308,7 +205,7 @@ class Movie {
         continue;
       }
       hasData = true;
-      this.requireBytes(data, 8, "data");
+      requirePayload(data, 8, "data");
       if (this.view.getUint32(data.payload) !== 1) {
         continue;
       }
@@ -333,12 +230,6 @@ class Movie {
       throw new AbsentLocation("Malformed video: truncated international text");
     }
     return this.utf8(start + 4, start + 4 + length);
-  }
-
-  private requireBytes(box: Box, length: number, name: string): void {
-    if (box.end - box.payload < length) {
-      throw new AbsentLocation(`Malformed video: truncated ${name} payload`);
-    }
   }
 
   private utf8(start: number, end: number): string {
