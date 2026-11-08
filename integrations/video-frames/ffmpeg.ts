@@ -2,7 +2,7 @@ import "server-only";
 
 import { execFile, type ExecFileException } from "node:child_process";
 
-import type { PosterContainer } from "@/lib/video-frames";
+import { type PosterContainer, redactFrameUrls } from "@/lib/video-frames";
 
 /**
  * The ffmpeg runner for poster frames (video-posters plan, Task 4). It spawns the binary directly (no shell) with an
@@ -16,7 +16,7 @@ export const POSTER_MAX_EDGE = 1000;
 /** The most PNG bytes ffmpeg may write; a 1000 × 1000 RGB48 frame is under 6 MiB even uncompressed. */
 export const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 
-/** How much of stderr comes back for the log. */
+/** How much of stderr comes back for the log (with the loopback URL redacted). */
 export const STDERR_TAIL_CHARS = 2000;
 
 /**
@@ -161,8 +161,13 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
 const NO_VIDEO_STREAM = [/Stream map '[^']*' matches no streams/, /does not contain any stream/];
 const PIXEL_LIMIT = /exceeds specified max pixel count/;
 
+/**
+ * The end of stderr, for the log. The loopback URL ffmpeg names in its errors is redacted first, over the whole text,
+ * so the cut can never leave part of a port or nonce behind.
+ */
 function tail(text: string): string {
-  return text.length > STDERR_TAIL_CHARS ? text.slice(-STDERR_TAIL_CHARS) : text;
+  const redacted = redactFrameUrls(text);
+  return redacted.length > STDERR_TAIL_CHARS ? redacted.slice(-STDERR_TAIL_CHARS) : redacted;
 }
 
 function toText(value: Buffer | string | undefined): string {

@@ -3,7 +3,7 @@ import "server-only";
 import * as Sentry from "@sentry/nextjs";
 
 import type { DeriveOutcome } from "@/features/memories/derive-media";
-import { claimKind, type DerivedClaim, failClaims, isEligible, publishClaims } from "@/features/memories/derived-claims";
+import { claimKind, type DerivedClaim, failClaims, isEligible, publishClaims, type PublishOutcome, quietDel } from "@/features/memories/derived-claims";
 import { isImageDeriveError } from "@/lib/image-derive-error";
 import { createLogger, logError, toError } from "@/lib/logger";
 import { isAllowedMime, matchesSignature, SIGNATURE_PREFIX_BYTES } from "@/lib/media-types";
@@ -18,9 +18,10 @@ import { createVideoFrameService } from "@/services/video-frames";
 const log = createLogger({ category: "upload" });
 
 /**
- * The least budget a poster is started with. Below it nothing is claimed, so no attempt is spent (premortem #5):
- * reading the headers, one or two ffmpeg runs and the re-encode need a few seconds, and a run that times out
- * costs the row one of its three attempts.
+ * The budget ffmpeg and sharp are guaranteed when a poster is claimed. Nothing is claimed with less, so no attempt is
+ * spent (premortem #5): one or two ffmpeg runs and the re-encode need a few seconds, and a run that times out costs
+ * the row one of its three attempts. Waiting for the image slot and reading the headers both stop while this much is
+ * still left.
  */
 export const POSTER_MIN_BUDGET_MS = 6_000;
 
@@ -33,10 +34,20 @@ const ENCODE_RESERVE_MS = 1_000;
 /** A row's verdict, recorded by `failClaims`; `isEligible` alone decides which are retried (`decode_failed`, `timeout`). */
 type PosterFailureCode = VideoFrameErrorCode;
 
-/** What the original's first bytes and movie box say, read before anything is claimed. */
-type Inspection =
-  | { ok: true; size: number; container: PosterContainer; transferKind: TransferKind; track?: { codec: string; width: number; height: number } }
-  | { ok: false; code: PosterFailureCode; detail: string; error?: Error };
+/**
+ * What the original's first bytes and movie box say, read before anything is claimed. `bytesRead` counts every byte
+ * the reads returned (the 128-byte prefix and the track reader's ranges; `head` returns none).
+ * - `ok`: ready to claim and extract.
+ * - `verdict`: something to record on the row (final, or retryable within the attempts).
+ * - `out_of_time`: the reads were cut off with only the poster budget left. That is the store's doing, not the
+ *   video's: the reads are bounded (128 bytes, then at most 16 range reads and 16.5 MiB in `readVideoTrackInfo`), so
+ *   it is deferred and spends no attempt.
+ */
+type Inspection = { bytesRead: number } & (
+  | { kind: "ok"; size: number; container: PosterContainer; transferKind: TransferKind; track?: { codec: string; width: number; height: number } }
+  | { kind: "verdict"; code: PosterFailureCode; detail: string; error?: Error }
+  | { kind: "out_of_time" }
+);
 
 /** The environment, not the video, stopped the run (no binary, a loopback server failure); reported, never recorded. */
 class PosterEnvironmentError extends Error {
@@ -101,41 +112,54 @@ async function readOriginal(storage: StorageService, storageKey: string, size: n
 }
 
 /**
- * Size, container and (for `mov`) the first video track. Never throws: a missing original or a store error is a
- * retryable `decode_failed`, a read cut off by `signal` (the deadline) is `timeout`, and the track reader's verdicts
- * map by ruling R6: `failed` (a malformed box) → retryable `decode_failed` with its error, `absent` → `no_video_stream`.
- * A declared track over MAX_VIDEO_PIXELS is refused before ffmpeg; a non-positive width or height is unknown, and
- * ffmpeg's own `-max_pixels` guards it (ruling R7).
+ * Size, container and (for `mov`) the first video track; never throws.
+ * - A read cut off by `signal` is `out_of_time`, whatever the reader made of it.
+ * - A missing original, or a store error, is a retryable `decode_failed` (bounded by the attempts, as a failed
+ *   download is for photos: a store error can be specific to this object).
+ * - The track reader's verdicts map by ruling R6: `failed` (a malformed box) → retryable `decode_failed` with its
+ *   error, `absent` → `no_video_stream`.
+ * - A declared track over MAX_VIDEO_PIXELS is refused before ffmpeg; a non-positive width or height is unknown, and
+ *   ffmpeg's own `-max_pixels` guards it (ruling R7).
  */
 async function inspect(storage: StorageService, storageKey: string, signal: AbortSignal): Promise<Inspection> {
-  const timedOut = (): Inspection => ({ ok: false, code: "timeout", detail: "reading the original's headers passed the deadline" });
+  let bytesRead = 0;
+  const counted = (bytes: Uint8Array): Uint8Array => {
+    bytesRead += bytes.byteLength;
+    return bytes;
+  };
+  const verdict = (code: PosterFailureCode, detail: string, error?: Error): Inspection => ({ kind: "verdict", code, detail, error, bytesRead });
+  const outOfTime = (): Inspection => ({ kind: "out_of_time", bytesRead });
   try {
     const head = await storage.head(storageKey, { signal });
     const prefix = head === null ? null : await storage.readPrefix(storageKey, SIGNATURE_PREFIX_BYTES, { signal });
     if (head === null || prefix === null) {
-      return { ok: false, code: "decode_failed", detail: "the original is not in the store" };
+      return verdict("decode_failed", "the original is not in the store");
     }
-    const container = containerOf(prefix);
+    const container = containerOf(counted(prefix));
     if (container === null) {
-      return { ok: false, code: "unsupported_type", detail: "the bytes are neither QuickTime/ISO BMFF nor Matroska/WebM" };
+      return verdict("unsupported_type", "the bytes are neither QuickTime/ISO BMFF nor Matroska/WebM");
     }
     if (container === "matroska") {
-      return { ok: true, size: head.size, container, transferKind: "unknown" };
+      return { kind: "ok", size: head.size, container, transferKind: "unknown", bytesRead };
     }
-    const info = await readVideoTrackInfo((offset, length) => readOriginal(storage, storageKey, head.size, offset, length, signal), head.size);
+    const info = await readVideoTrackInfo(async (offset, length) => counted(await readOriginal(storage, storageKey, head.size, offset, length, signal)), head.size);
     if (info.status === "failed") {
-      return signal.aborted ? timedOut() : { ok: false, code: "decode_failed", detail: info.reason, error: info.error };
+      return signal.aborted ? outOfTime() : verdict("decode_failed", info.reason, info.error);
     }
     if (info.status === "absent") {
-      return { ok: false, code: "no_video_stream", detail: info.reason };
+      return verdict("no_video_stream", info.reason);
     }
     const { codec, width, height, transferKind } = info.track;
     if (width > 0 && height > 0 && width * height > MAX_VIDEO_PIXELS) {
-      return { ok: false, code: tooManyPixelsCode(MAX_VIDEO_PIXELS), detail: `the ${codec} track declares ${width}×${height}` };
+      return verdict(tooManyPixelsCode(MAX_VIDEO_PIXELS), `the ${codec} track declares ${width}×${height}`);
     }
-    return { ok: true, size: head.size, container, transferKind, track: { codec, width, height } };
+    return { kind: "ok", size: head.size, container, transferKind, track: { codec, width, height }, bytesRead };
   } catch (error) {
-    return signal.aborted ? timedOut() : { ok: false, code: "decode_failed", detail: toError(error).message, error: toError(error) };
+    if (signal.aborted) {
+      return outOfTime();
+    }
+    const thrown = toError(error);
+    return verdict("decode_failed", thrown.message, thrown);
   }
 }
 
@@ -147,50 +171,83 @@ async function inspect(storage: StorageService, storageKey: string, signal: Abor
  *
  * 1. Gate: READY, an allowed `video/*` type, not removed, its memory not deleted, stored under `storagePrefix()`, and
  *    its POSTER row (if any) eligible under the video pixel ceiling. Anything else is `not_eligible` (or
- *    `claimed_elsewhere` for a live claim), with nothing read.
- * 2. Preflight, before any claim: the binary is available, the image slot is ours, and at least
- *    POSTER_MIN_BUDGET_MS is left. A miss is `deferred`: nothing is claimed, so no attempt is spent, and the cron
- *    comes back. The slot is held from here through ffmpeg AND sharp: a 4K frame costs ffmpeg about 280 MB, so one
- *    heavy decode runs per process.
+ *    `claimed_elsewhere` for a live claim), with nothing read. A stale claim that has used up its attempts is retired
+ *    as `abandoned` straight away: that needs no binary, slot or byte.
+ * 2. Preflight, before any claim: at least POSTER_MIN_BUDGET_MS left, the binary available, then the image slot,
+ *    waited for only while more than POSTER_MIN_BUDGET_MS would remain. A miss is `deferred`: nothing is claimed, so
+ *    no attempt is spent, and the cron comes back. The slot is held from here through ffmpeg AND sharp: a 4K frame
+ *    costs ffmpeg about 280 MB, so one heavy decode runs per process.
  * 3. Inspect: `storage.head` for the size, the first 128 bytes for the container and, for `mov`, the first video
- *    track (pixel ceiling, HDR transfer). If that leaves less than the floor, `deferred` again, still unclaimed.
+ *    track (pixel ceiling, HDR transfer). The reads are cut off when only POSTER_MIN_BUDGET_MS is left, so they either
+ *    finish in time to claim with the whole poster budget or are `deferred`, still unclaimed.
  * 4. Claim the POSTER row with a fresh `.jpg` key ([C35], the shared protocol). An inspection verdict is recorded on
- *    the claim; otherwise ffmpeg extracts the frame inside a `media.poster` span [C24], within the budget less the
- *    encoder's reserve, reading the original only through bounded range reads (D2).
- * 5. sharp re-encodes the frame at the thumbnail spec [C21] (D4), the slot is released, the JPEG is written to the
- *    claimed key, and the claim is published under the memory lock with no `whileLocked`: a poster never writes the
- *    Media row, whose `updatedAt` feeds `reviewVersion` (D6, [C36]). A video removed meanwhile is not resurrected.
+ *    the claim. If the claim itself left less than POSTER_MIN_BUDGET_MS, the claim is released (no attempt spent) and
+ *    the run is `deferred`. Otherwise ffmpeg extracts the frame inside a `media.poster` span [C24], within the budget
+ *    less the encoder's reserve, reading the original only through bounded range reads (D2).
+ * 5. sharp re-encodes the frame at the thumbnail spec [C21] (D4), and the slot is released.
+ * 6. The JPEG is written to the claimed key, and the claim is published under the memory lock with no `whileLocked`:
+ *    a poster never writes the Media row, whose `updatedAt` feeds `reviewVersion` (D6, [C36]). A video removed
+ *    meanwhile is not resurrected.
  *
- * Failures: `no_video_stream`, `no_frame`, `source_limit`, `unsupported_type`, `too_many_pixels:<n>` and `too_large`
- * are final; `decode_failed` and `timeout` are retried up to MAX_DECODE_ATTEMPTS (`isEligible`). When ffmpeg cannot
- * run after the claim (the binary vanished, the loopback server failed), our PENDING row is deleted and the result is
- * `deferred`. Never throws.
+ * Attempts: a condition of the video is recorded and bounded: `no_video_stream`, `no_frame`, `source_limit`,
+ * `unsupported_type`, `too_many_pixels:<n>` and `too_large` are final; `decode_failed` and `timeout` are retried up
+ * to MAX_DECODE_ATTEMPTS (`isEligible`). A condition of the environment spends none: when ffmpeg cannot run after the
+ * claim (the binary vanished, the loopback server failed), or the store or database fails the write or the publish,
+ * our row is given back (deleted while it is still exactly our PENDING claim, its candidate blob with it) and the
+ * result is `deferred`, reported to Sentry. Never throws.
  */
 export async function derivePoster({ mediaId, deadlineMs, now = new Date() }: { mediaId: string; deadlineMs: number; now?: Date }): Promise<DeriveOutcome> {
   const startedAt = Date.now();
   const deadlineAt = startedAt + deadlineMs;
   const remainingMs = () => deadlineAt - Date.now();
+  const elapsedMs = () => Date.now() - startedAt;
   let slot: DeriveSlot | null = null;
   let claim: DerivedClaim<"POSTER"> | null = null;
   let inspectTimer: ReturnType<typeof setTimeout> | undefined;
   /** What every log line of this run carries, filled in as it is learnt. */
   const run: Record<string, unknown> = { mediaId };
 
+  /** Nothing claimed and nothing spent: the cron comes back. */
   const deferred = (code: string, message: string): DeriveOutcome => {
-    log.info({ action: "poster_deferred", ...run, code, durationMs: Date.now() - startedAt }, message);
+    log.info({ action: "poster_deferred", ...run, code, durationMs: elapsedMs() }, message);
     return "deferred";
   };
 
+  /** Our claim, handed over exactly once: to be failed or released. */
+  const takeClaim = (): DerivedClaim<"POSTER"> => {
+    if (claim === null) {
+      throw new Error("derivePoster holds no claim");
+    }
+    const held = claim;
+    claim = null;
+    return held;
+  };
+
   /** Record a verdict on our claim (conditionally; only the candidate still ours is deleted) and log it. */
-  const fail = async (held: DerivedClaim<"POSTER">, code: PosterFailureCode, details: { detail: string; error?: Error; stderrTail?: string }): Promise<DeriveOutcome> => {
-    await failClaims([held], { mediaId, now, error: code });
-    const fields = { action: "poster_failed", ...run, code, detail: details.detail, stderrTail: details.stderrTail, durationMs: Date.now() - startedAt };
+  const fail = async (code: PosterFailureCode, details: { detail: string; error?: Error; stderrTail?: string }): Promise<DeriveOutcome> => {
+    await failClaims([takeClaim()], { mediaId, now, error: code });
+    const fields = { action: "poster_failed", ...run, code, detail: details.detail, stderrTail: details.stderrTail, durationMs: elapsedMs() };
     if (details.error) {
       logError("video poster failed", details.error, { category: "upload", ...fields });
     } else {
       log.warn(fields, "video poster could not be made");
     }
     return "failed";
+  };
+
+  /**
+   * Give our claim back after it was taken: no attempt spent, `deferred`. `report` is the environment's failure, sent to
+   * Sentry; without one (a claim that took too long) it is logged only.
+   */
+  const release = async (code: string, report: Error | null, extra: Record<string, unknown> = {}): Promise<DeriveOutcome> => {
+    await releaseClaim(takeClaim(), { mediaId, now });
+    const fields = { action: "poster_deferred", ...run, code, ...extra, durationMs: elapsedMs() };
+    if (report) {
+      logError("video poster deferred", report, { category: "upload", ...fields });
+    } else {
+      log.info(fields, "poster claim given back; left to the cron");
+    }
+    return "deferred";
   };
 
   try {
@@ -213,12 +270,32 @@ export async function derivePoster({ mediaId, deadlineMs, now = new Date() }: { 
     }
     run.memoryId = row.memoryId;
     const existing = row.derivatives[0] ?? null;
+    const claimPoster = async () => {
+      const claimed = await claimKind({ mediaId, kind: "POSTER", existing, originalKey: row.storageKey, extension: "jpg", now, maxPixels: MAX_VIDEO_PIXELS });
+      if (!("claim" in claimed) && claimed.outcome === "failed") {
+        log.warn({ action: "poster_abandoned", ...run }, "stale poster claim had used up its attempts");
+      }
+      return claimed;
+    };
+
+    // 1. Eligibility. An exhausted stale claim is retired here: that needs no binary, slot or byte.
     const verdict = isEligible(existing, now, MAX_VIDEO_PIXELS);
     if (verdict === "not_eligible" || verdict === "claimed_elsewhere") {
       return verdict;
     }
+    if (verdict === "exhausted") {
+      const retired = await claimPoster();
+      if ("claim" in retired) {
+        claim = retired.claim;
+        throw new Error("claimKind returned a claim for an exhausted POSTER row");
+      }
+      return retired.outcome;
+    }
 
-    // 2. Preflight: nothing below is claimed until all three hold.
+    // 2. Preflight: nothing below is claimed until all of it holds.
+    if (remainingMs() < POSTER_MIN_BUDGET_MS) {
+      return deferred("budget", "too little budget to start a poster; left to the cron");
+    }
     const frames = createVideoFrameService();
     if (!(await frames.available())) {
       // A deployment defect (a trace-key miss, a skipped install script, a lost exec bit): reported every time.
@@ -226,23 +303,28 @@ export async function derivePoster({ mediaId, deadlineMs, now = new Date() }: { 
       return "deferred";
     }
     try {
-      slot = await createImageService().acquire(remainingMs());
+      // Wait only while the poster's own budget would still be whole afterwards.
+      slot = await createImageService().acquire(remainingMs() - POSTER_MIN_BUDGET_MS);
     } catch (error) {
       if (isImageDeriveError(error) && (error.code === "busy" || error.code === "timeout")) {
-        return deferred(error.code, "image slot not available; left to the cron");
+        return deferred(error.code, "image slot not available in time; left to the cron");
       }
       throw error;
     }
     if (remainingMs() < POSTER_MIN_BUDGET_MS) {
-      return deferred("budget", "too little budget left to start a poster; left to the cron");
+      return deferred("budget", "the image slot arrived with too little budget left; left to the cron");
     }
 
-    // 3. Inspect, within the deadline; a stalled read is aborted, not waited for.
+    // 3. Inspect, cut off when only the poster budget is left: it finishes in time to claim, or it is deferred.
     const controller = new AbortController();
-    inspectTimer = setTimeout(() => controller.abort(), Math.max(0, remainingMs()));
+    inspectTimer = setTimeout(() => controller.abort(), remainingMs() - POSTER_MIN_BUDGET_MS);
     const inspection = await inspect(storage, row.storageKey, controller.signal);
     clearTimeout(inspectTimer);
-    if (inspection.ok) {
+    Object.assign(run, { inspectBytes: inspection.bytesRead, sourceBytesRead: inspection.bytesRead });
+    if (inspection.kind === "out_of_time") {
+      return deferred("inspect_time", "reading the headers did not finish while the poster budget was left; left to the cron");
+    }
+    if (inspection.kind === "ok") {
       Object.assign(run, { container: inspection.container, transferKind: inspection.transferKind, ...inspection.track });
       if (remainingMs() < POSTER_MIN_BUDGET_MS) {
         return deferred("budget", "reading the headers left too little budget; left to the cron");
@@ -250,18 +332,17 @@ export async function derivePoster({ mediaId, deadlineMs, now = new Date() }: { 
     }
 
     // 4. Claim; the claim must exist before any verdict can be recorded.
-    const claimed = await claimKind({ mediaId, kind: "POSTER", existing, originalKey: row.storageKey, extension: "jpg", now, maxPixels: MAX_VIDEO_PIXELS });
+    const claimed = await claimPoster();
     if (!("claim" in claimed)) {
-      if (claimed.outcome === "failed") {
-        log.warn({ action: "poster_abandoned", ...run }, "stale poster claim had used up its attempts");
-      }
       return claimed.outcome;
     }
     claim = claimed.claim;
-    if (!inspection.ok) {
-      const { code, detail, error } = inspection;
-      claim = null;
-      return await fail(claimed.claim, code, { detail, error });
+    if (inspection.kind === "verdict") {
+      return await fail(inspection.code, { detail: inspection.detail, error: inspection.error });
+    }
+    if (remainingMs() < POSTER_MIN_BUDGET_MS) {
+      // A slow claim (a reclaim deletes the previous candidate first) is not the video's fault.
+      return await release("budget", null);
     }
 
     const { size, container, transferKind } = inspection;
@@ -283,44 +364,43 @@ export async function derivePoster({ mediaId, deadlineMs, now = new Date() }: { 
         return result;
       },
     );
-    run.sourceBytesRead = extraction.sourceBytesRead;
+    Object.assign(run, { frameBytes: extraction.sourceBytesRead, sourceBytesRead: inspection.bytesRead + extraction.sourceBytesRead });
 
     if (!extraction.ok) {
       if (extraction.code === "deferred") {
-        // ffmpeg could not run here after all: give the row back as we found it, with no attempt spent.
-        const held = claim;
-        claim = null;
-        await releaseClaim(held, { mediaId, now });
-        logError("video poster deferred", extraction.error ?? new PosterEnvironmentError(extraction.detail), { category: "upload", action: "poster_deferred", ...run, detail: extraction.detail, stderrTail: extraction.stderrTail, durationMs: Date.now() - startedAt });
-        return "deferred";
+        // ffmpeg could not run here after all.
+        return await release("ffmpeg", extraction.error ?? new PosterEnvironmentError(extraction.detail), { detail: extraction.detail, stderrTail: extraction.stderrTail });
       }
-      const held = claim;
-      claim = null;
-      return await fail(held, extraction.code, { detail: extraction.detail, error: extraction.error, stderrTail: extraction.stderrTail });
+      return await fail(extraction.code, { detail: extraction.detail, error: extraction.error, stderrTail: extraction.stderrTail });
     }
     Object.assign(run, { toneMapped: extraction.toneMapped, seekSeconds: extraction.seekSeconds, warning: extraction.warning });
 
     // 5. Re-encode while the slot is still ours (the slot does not refuse a spent deadline, so check first).
     if (remainingMs() <= 0) {
-      const held = claim;
-      claim = null;
-      return await fail(held, "timeout", { detail: "ffmpeg used the whole budget; none was left to re-encode the frame" });
+      return await fail("timeout", { detail: "ffmpeg used the whole budget; none was left to re-encode the frame" });
     }
     const { thumb } = await slot.thumbnail(extraction.png, { sourceMime: "image/png", deadlineMs: remainingMs(), maxPixels: MAX_VIDEO_PIXELS, thumb: DERIVE_DEFAULTS.thumb });
     slot.release();
     slot = null;
 
-    if (!("failed" in thumb)) {
-      await storage.put(claim.storageKey, thumb.data, thumb.mimeType);
+    // 6. Write and publish. Both depend on the store and the database only, never on the video, so a failure gives the
+    //    claim back. Under the memory lock, conditional on this exact claim; no `whileLocked`, so the Media row is never
+    //    written (D6).
+    let outcomes: Partial<Record<"POSTER", PublishOutcome>>;
+    try {
+      if (!("failed" in thumb)) {
+        await storage.put(claim.storageKey, thumb.data, thumb.mimeType);
+      }
+      outcomes = await publishClaims({ mediaId, memoryId: row.memoryId, claims: [claim], now, encodedFor: () => thumb });
+    } catch (error) {
+      return await release("write", toError(error));
     }
-    // Under the memory lock, conditional on this exact claim; no `whileLocked`, so the Media row is never written (D6).
-    const outcomes = await publishClaims({ mediaId, memoryId: row.memoryId, claims: [claim], now, encodedFor: () => thumb });
     const published = outcomes.POSTER;
     if (published === undefined) {
       throw new Error("publishClaims returned no POSTER outcome for the claim it was given");
     }
     claim = null;
-    const fields = { ...run, outcome: published, durationMs: Date.now() - startedAt };
+    const fields = { ...run, outcome: published, durationMs: elapsedMs() };
     if (published === "derived") {
       log.info({ action: "poster_derived", ...fields }, "video poster recorded");
     } else if (published === "failed") {
@@ -330,15 +410,13 @@ export async function derivePoster({ mediaId, deadlineMs, now = new Date() }: { 
     }
     return published;
   } catch (error) {
+    const thrown = toError(error);
     if (claim !== null) {
       const code = frameVerdict(error);
-      if (code !== null) {
-        return await fail(claim, code, { detail: toError(error).message });
-      }
-      return await fail(claim, "decode_failed", { detail: toError(error).message, error: toError(error) });
+      return code === null ? await fail("decode_failed", { detail: thrown.message, error: thrown }) : await fail(code, { detail: thrown.message });
     }
     // Nothing claimed, so nothing spent: the cron comes back.
-    logError("video poster failed before its claim", error, { category: "upload", ...run, durationMs: Date.now() - startedAt });
+    logError("video poster failed before its claim", thrown, { category: "upload", ...run, durationMs: elapsedMs() });
     return "deferred";
   } finally {
     clearTimeout(inspectTimer);
@@ -347,12 +425,17 @@ export async function derivePoster({ mediaId, deadlineMs, now = new Date() }: { 
 }
 
 /**
- * Delete our PENDING row, only while it is still exactly our claim, so the next run starts from no row. Never throws:
- * a row that cannot be deleted lapses as a stale claim and is reclaimed.
+ * Give a claim back: delete our PENDING row, only while it is still exactly our claim (so a publish that committed
+ * despite an error, or another worker's reclaim, is left alone), and then its candidate blob. The next run starts
+ * from no row, as if this one had not happened (ruling R8: a reclaimed row's history goes with it). Never throws: a
+ * row that cannot be deleted lapses as a stale claim, and its reclaim deletes the candidate.
  */
 async function releaseClaim(claim: DerivedClaim<"POSTER">, { mediaId, now }: { mediaId: string; now: Date }): Promise<void> {
   try {
-    await getDb().derivedMedia.deleteMany({ where: { id: claim.id, status: "PENDING", claimedAt: now, attempts: claim.attempts } });
+    const released = await getDb().derivedMedia.deleteMany({ where: { id: claim.id, status: "PENDING", claimedAt: now, attempts: claim.attempts } });
+    if (released.count === 1) {
+      await quietDel(claim.storageKey, mediaId);
+    }
   } catch (error) {
     logError("video poster claim could not be released", error, { category: "upload", mediaId });
   }

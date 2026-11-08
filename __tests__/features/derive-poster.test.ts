@@ -234,7 +234,10 @@ describe("derivePoster", () => {
     extractMock.mockImplementationOnce(async () => ({ ok: true, png: PNG, sourceBytesRead: 1_234, toneMapped: true, seekSeconds: 0 }));
     await run();
     const line = logs.lines.find((l) => l.fields.action === "poster_derived")!;
-    expect(line.fields).toMatchObject({ mediaId: "med_v", memoryId: "mem_1", outcome: "derived", sourceBytesRead: 1_234, transferKind: "unknown", toneMapped: true, seekSeconds: 0, container: "mov" });
+    // The inspection's reads (the 128-byte prefix and the track reader's ranges) count as well as ffmpeg's.
+    const inspectBytes = 128 + readRangeMock.mock.calls.reduce((sum, [, , length]) => sum + length, 0);
+    expect(inspectBytes).toBeGreaterThan(1_000);
+    expect(line.fields).toMatchObject({ mediaId: "med_v", memoryId: "mem_1", outcome: "derived", inspectBytes, frameBytes: 1_234, sourceBytesRead: inspectBytes + 1_234, transferKind: "unknown", toneMapped: true, seekSeconds: 0, container: "mov" });
     expect(typeof line.fields.durationMs).toBe("number");
     expect(JSON.stringify(logs.lines)).not.toMatch(/https?:\/\//);
     expect(sentry.spans[0]!.attributes).toMatchObject({ "poster.container": "mov", "poster.transfer_kind": "unknown", "poster.outcome": "ok", "poster.source_bytes_read": 1_234 });
@@ -404,12 +407,34 @@ describe("derivePoster", () => {
       expect(logErrorMock).not.toHaveBeenCalled();
     });
 
-    it(`defers with less than ${POSTER_MIN_BUDGET_MS} ms of budget, before reading a byte`, async () => {
+    it(`defers with less than ${POSTER_MIN_BUDGET_MS} ms of budget, before waiting for the slot or reading a byte`, async () => {
       expect(POSTER_MIN_BUDGET_MS).toBe(6_000);
       expect(await run(POSTER_MIN_BUDGET_MS - 1)).toBe("deferred");
       expect(derived).toHaveLength(0);
+      expect(availableMock).not.toHaveBeenCalled();
+      expect(acquireMock).not.toHaveBeenCalled();
       expect(headMock).not.toHaveBeenCalled();
-      expect(slots).toHaveLength(1);
+    });
+
+    it("waits for the slot only while the poster's own budget would stay whole", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(NOW);
+      expect(await run(15_000)).toBe("derived");
+      expect(acquireMock.mock.calls[0]![0]).toBe(15_000 - POSTER_MIN_BUDGET_MS);
+    });
+
+    it("defers without reading when the slot arrives with less than the floor left", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(NOW);
+      acquireMock.mockImplementationOnce(async () => {
+        vi.setSystemTime(Date.now() + 1_500);
+        const slot = { thumbnail: (i: Buffer, o: unknown) => thumbnailMock(i, o), derive: vi.fn(), release: vi.fn() };
+        slots.push(slot);
+        return slot;
+      });
+      expect(await run(7_000)).toBe("deferred");
+      expect(headMock).not.toHaveBeenCalled();
+      expect(derived).toHaveLength(0);
     });
 
     it("defers without claiming when reading the headers leaves less than the floor", async () => {
@@ -463,6 +488,10 @@ describe("derivePoster", () => {
       expect(await run()).toBe("failed");
       expect(posterRow()).toMatchObject({ status: "FAILED", error: "abandoned" });
       expect(delMock).toHaveBeenCalledWith("dev/derived/mem_1/dead.jpg");
+      // Retired before the preflight: no binary check, no slot, no byte of the original.
+      expect(availableMock).not.toHaveBeenCalled();
+      expect(acquireMock).not.toHaveBeenCalled();
+      expect(headMock).not.toHaveBeenCalled();
       expect(extractMock).not.toHaveBeenCalled();
     });
   });
@@ -483,7 +512,8 @@ describe("derivePoster", () => {
         // failClaims deletes the never-written candidate (idempotent), never anything else.
         expect(delMock.mock.calls).toEqual([[row.storageKey]]);
         const line = logs.lines.find((l) => l.fields.action === "poster_failed")!;
-        expect(line.fields).toMatchObject({ mediaId: "med_v", code, detail: `detail for ${code}`, stderrTail: "tail of stderr", sourceBytesRead: 77, transferKind: "unknown" });
+        expect(line.fields).toMatchObject({ mediaId: "med_v", code, detail: `detail for ${code}`, stderrTail: "tail of stderr", frameBytes: 77, transferKind: "unknown" });
+        expect(line.fields.sourceBytesRead).toBe((line.fields.inspectBytes as number) + 77);
         expect(typeof line.fields.durationMs).toBe("number");
         expect(logErrorMock).not.toHaveBeenCalled();
         expect(sentry.spans[0]!.attributes).toMatchObject({ "poster.outcome": code });
@@ -510,7 +540,7 @@ describe("derivePoster", () => {
       expect(await run()).toBe("failed");
       expect(logErrorMock).toHaveBeenCalledTimes(1);
       expect(logErrorMock.mock.calls[0]![1]).toBe(cause);
-      expect(logErrorMock.mock.calls[0]![2]).toMatchObject({ mediaId: "med_v", code: "decode_failed", sourceBytesRead: 4096 });
+      expect(logErrorMock.mock.calls[0]![2]).toMatchObject({ mediaId: "med_v", code: "decode_failed", frameBytes: 4096 });
     });
 
     it("`deferred` after the claim (the binary vanished, a server error) deletes only our PENDING row and spends no attempt", async () => {
@@ -541,8 +571,8 @@ describe("derivePoster", () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(NOW);
       extractMock.mockImplementationOnce(async (input) => {
-        expect(input.deadlineMs).toBeGreaterThan(0);
-        expect(input.deadlineMs).toBeLessThan(15_000);
+        // Date is frozen until here: the whole budget less the encoder's 1 s reserve.
+        expect(input.deadlineMs).toBe(14_000);
         vi.setSystemTime(Date.now() + 15_000);
         return { ok: true, png: PNG, sourceBytesRead: 8, toneMapped: false, seekSeconds: 1 };
       });
@@ -608,12 +638,37 @@ describe("derivePoster", () => {
       expect(posterRow()).toMatchObject({ status: "PENDING", storageKey: "dev/derived/mem_1/theirs.jpg" });
     });
 
-    it("a failed publish transaction fails our claim as decode_failed, deletes our blob after it, and reports", async () => {
-      db.$transaction.mockRejectedValueOnce(new Error("connection terminated"));
-      expect(await run()).toBe("failed");
-      expect(posterRow()).toMatchObject({ status: "FAILED", error: "decode_failed" });
-      expect(delMock).toHaveBeenCalledWith(putMock.mock.calls[0]![0]);
+    it("a failed publish transaction (the database, not the video) gives the claim back, deletes our blob and spends no attempt", async () => {
+      const failure = new Error("connection terminated");
+      db.$transaction.mockRejectedValueOnce(failure);
+      expect(await run()).toBe("deferred");
+      expect(derived).toHaveLength(0);
+      expect(delMock.mock.calls).toEqual([[putMock.mock.calls[0]![0]]]);
       expect(logErrorMock).toHaveBeenCalledTimes(1);
+      expect(logErrorMock.mock.calls[0]![1]).toBe(failure);
+      expect(logErrorMock.mock.calls[0]![2]).toMatchObject({ mediaId: "med_v", code: "write" });
+    });
+
+    it("a publish that committed but reported an error keeps its READY row and blob", async () => {
+      db.$transaction.mockImplementationOnce(async (fn: (t: unknown) => Promise<unknown>) => { await fn(db); throw new Error("ack lost"); });
+      expect(await run()).toBe("deferred");
+      expect(posterRow()).toMatchObject({ status: "READY", storageKey: putMock.mock.calls[0]![0] });
+      expect(delMock).not.toHaveBeenCalled();
+    });
+
+    it("a blob write that fails gives the claim back, deletes the candidate and spends no attempt", async () => {
+      const failure = new Error("blob store down");
+      putMock.mockRejectedValueOnce(failure);
+      expect(await run()).toBe("deferred");
+      expect(derived).toHaveLength(0);
+      expect(delMock.mock.calls).toEqual([[putMock.mock.calls[0]![0]]]);
+      expect(db.$transaction).not.toHaveBeenCalled();
+      expect(logErrorMock).toHaveBeenCalledTimes(1);
+      expect(logErrorMock.mock.calls[0]![1]).toBe(failure);
+      expect(slots).toHaveLength(1);
+      // The next run starts from no row at all.
+      expect(await run()).toBe("derived");
+      expect(posterRow()).toMatchObject({ status: "READY", attempts: 1 });
     });
 
     it("treats a publish that reports no POSTER outcome as an internal error, not a success", async () => {
@@ -641,17 +696,61 @@ describe("derivePoster", () => {
       expect(logErrorMock.mock.calls[0]![2]).toMatchObject({ mediaId: "med_v", code: "decode_failed" });
     });
 
-    it("a header read stalled past the deadline is aborted and recorded as timeout", async () => {
-      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    describe("the inspection window: the reads stop while the whole poster budget is left", () => {
+      /** A head that answers after `ms`, or rejects when its signal fires first (as the store's fetch does). */
+      const slowHead = (ms: number) => (pathname: string, options?: { signal?: AbortSignal }) => new Promise<Awaited<ReturnType<typeof headMock>>>((resolve, reject) => {
+        const timer = setTimeout(() => resolve({ pathname, url: "https://blob.test/x", size: original.byteLength, contentType: "video/quicktime", uploadedAt: new Date() }), ms);
+        options?.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("This operation was aborted")); }, { once: true });
+      });
+      const at = async (headMs: number) => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        vi.setSystemTime(NOW);
+        headMock.mockImplementationOnce(slowHead(headMs));
+        const outcome = run(10_000);
+        // Exactly to the head's answer: inside the window it lands first; outside, the window's end fires before it.
+        await vi.advanceTimersByTimeAsync(headMs);
+        return outcome;
+      };
+
+      it("claims and extracts when the reads finish just inside the window (budget − floor)", async () => {
+        expect(await at(10_000 - POSTER_MIN_BUDGET_MS - 1)).toBe("derived");
+        expect(posterRow()).toMatchObject({ status: "READY", attempts: 1 });
+        // ffmpeg got the whole floor less the encoder's reserve, not the remains of a long read.
+        expect(extractMock.mock.calls[0]![0].deadlineMs).toBe(POSTER_MIN_BUDGET_MS + 1 - 1_000);
+      });
+
+      it("defers, claiming nothing, when the reads are still running at the window's end", async () => {
+        expect(await at(10_000 - POSTER_MIN_BUDGET_MS + 1)).toBe("deferred");
+        expect(derived).toHaveLength(0);
+        expect(db.derivedMedia.create).not.toHaveBeenCalled();
+        expect(extractMock).not.toHaveBeenCalled();
+        expect(logErrorMock).not.toHaveBeenCalled();
+        expect(logs.lines.find((l) => l.fields.action === "poster_deferred")?.fields).toMatchObject({ code: "inspect_time" });
+      });
+
+      it("never defers a deterministic verdict: a malformed movie box read in time still spends its attempt", async () => {
+        original = withEmptyStsd(fixture("poster-hevc-moov-last.mov"));
+        expect(await at(10_000 - POSTER_MIN_BUDGET_MS - 1)).toBe("failed");
+        expect(posterRow()).toMatchObject({ status: "FAILED", error: "decode_failed", attempts: 1 });
+      });
+    });
+
+    it("gives the claim back, spending no attempt, when the claim itself leaves less than the floor", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(NOW);
-      headMock.mockImplementationOnce((_pathname: string, options?: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
-        options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-      }));
-      const outcome = run(POSTER_MIN_BUDGET_MS + 500);
-      await vi.advanceTimersByTimeAsync(POSTER_MIN_BUDGET_MS + 1_000);
-      expect(await outcome).toBe("failed");
-      expect(posterRow()).toMatchObject({ status: "FAILED", error: "timeout" });
+      derived = [poster({ claimedAt: STALE, storageKey: "dev/derived/mem_1/stale.jpg" })];
+      db.derivedMedia.updateMany.mockImplementationOnce(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+        // The reclaim is slow (it is followed by the previous candidate's delete).
+        vi.setSystemTime(Date.now() + 2_000);
+        const rows = derived.filter((d) => matches(d as unknown as Record<string, unknown>, where));
+        for (const r of rows) { Object.assign(r, { ...data, attempts: r.attempts + 1 }); }
+        return { count: rows.length };
+      });
+      expect(await run(7_000)).toBe("deferred");
+      expect(derived).toHaveLength(0);
       expect(extractMock).not.toHaveBeenCalled();
+      expect(logErrorMock).not.toHaveBeenCalled();
+      expect(logs.lines.find((l) => l.fields.action === "poster_deferred")?.fields).toMatchObject({ code: "budget" });
     });
   });
 

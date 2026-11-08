@@ -9,7 +9,7 @@ import ffmpegPath from "ffmpeg-static";
 import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { MAX_VIDEO_PIXELS, WINDOW_BYTES } from "@/lib/video-frames";
+import { MAX_VIDEO_PIXELS, REDACTED_FRAME_URL, WINDOW_BYTES } from "@/lib/video-frames";
 import { FrameSourceError, type FrameRequestInfo } from "@/integrations/video-frames/frame-server";
 import { createVideoFrameService, FfmpegVideoFrameService, type ExtractPosterInput, type ExtractPosterResult } from "@/services/video-frames";
 
@@ -434,6 +434,10 @@ describe("VideoFrameService.extractPoster (real ffmpeg-static binary)", { timeou
     }
     expect(["decode_failed", "no_video_stream"]).toContain(result.code);
     expect(result.stderrTail).toBeTruthy();
+    // The real binary names its input (the loopback URL) in this error; the tail keeps only the redacted form.
+    expect(result.stderrTail).toContain(REDACTED_FRAME_URL);
+    expect(result.stderrTail).not.toMatch(/127\.0\.0\.1:\d+\/__frames\//);
+    expect(result.stderrTail).not.toMatch(/__frames\/[0-9a-f]{8}-/);
   });
 
   it("answers no_video_stream for an audio-only file", async () => {

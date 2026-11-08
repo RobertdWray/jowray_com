@@ -7,6 +7,21 @@
 /** Path prefix of the loopback frame server; every request path is `/__frames/<nonce>`. */
 export const FRAME_SERVER_PREFIX = "/__frames/";
 
+/** What a frame-server URL reads as once redacted: the shape stays recognisable, the port and nonce are gone. */
+export const REDACTED_FRAME_URL = `http://127.0.0.1${FRAME_SERVER_PREFIX}[nonce]`;
+
+/** `http://127.0.0.1:<port>/__frames/<nonce>`, the input ffmpeg names in its errors (the nonce is a `randomUUID()`). */
+const FRAME_URL = new RegExp(`http://127\\.0\\.0\\.1(?::\\d+)?${FRAME_SERVER_PREFIX}[0-9A-Za-z-]+`, "g");
+
+/**
+ * `text` with every frame-server URL replaced by REDACTED_FRAME_URL. ffmpeg names its input in open and read errors
+ * (6.0: `<url>: Invalid data found when processing input`; 7.0: `Error opening input file <url>.`), so its stderr is
+ * redacted before any of it is kept for a log line.
+ */
+export function redactFrameUrls(text: string): string {
+  return text.replace(FRAME_URL, REDACTED_FRAME_URL);
+}
+
 /** 8K UHD (7680 × 4320). ffmpeg's decoder refuses larger frames (`-max_pixels`), and the poster feature refuses larger declared tracks. */
 export const MAX_VIDEO_PIXELS = 33_177_600;
 
