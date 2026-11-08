@@ -13,7 +13,7 @@ Plan: [`docs/plans/2026-11-08-see-memories.md`](../../2026-11-08-see-memories.md
 | Check | Result |
 |---|---|
 | `npm run validate` | pass (exit 0) at every ledger row; last at `c15d03e` |
-| `npm run test:run` with `TEST_DATABASE_URL` (real-Postgres suites run, none skipped) | pass: 111 files, 2622 tests at the L7 commit; one earlier run hit a timing flake in `__tests__/integration/extract-photo-gps.test.ts` ("video no-location.mov", 1008 ms under parallel load) that passes alone and on rerun |
+| `npm run test:run` with `TEST_DATABASE_URL` (real-Postgres suites run, none skipped) | pass: 111 files, 2622 tests at the L7 commit; one earlier run failed in `__tests__/integration/extract-photo-gps.test.ts` ("video no-location.mov"); first recorded here as a timing flake, it was the parallel integration files deadlocking against the budget suite's `TRUNCATE` (found by the TCR round 1 regression review). Since `35bb0c8` the real-Postgres files run one at a time (`vitest.config.ts` project `integration`), five consecutive full runs were green, and the merged head passed 132 files, 3319 tests |
 | `npm run build:offline`, no `.env*`, no database variables | pass (exit 0); no `blocking-prerender-*` error; `/`, `/how-it-was-built`, `/share` stay fully static (○); `/memories`, `/memories/map`, `/memories/tags`, `/memories/[id]` are partial prerenders (◐). The offline build prints no Sentry tunnel line, on this branch and on the base (L0), so that line cannot be checked offline |
 | Flag off: `/memories`, `/memories/map`, `/memories/timeline`, `/memories/tags`, `/memories/<public id>` | each 200 with "See memories opens November 10." and no memory content |
 | Flag off: `/api/public-media/<public browser-recorded file>` | 404 |
