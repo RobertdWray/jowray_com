@@ -422,9 +422,35 @@ class ToolTests(CleanupCase):
         found = self.call(specs, "search_people", query="sample")
         self.assertEqual({p["email"] for p in found["items"]}, {BOB, "bsample@example.net"})
         self.assertIn("error", self.call(specs, "search_people", query="s"))
-        tools.used_chars = cc.TOOL_TOTAL_CHARS - 10
+        tools.used_bytes = cc.TOOL_RESULTS_LIMIT - 10
         self.assertIn("budget", self.call(specs, "names_used", address=ALICE)["error"])
         self.assertIn("budget", self.call(specs, "names_used", address=ALICE)["error"])
+
+    def test_non_latin_output_and_budget_errors_stay_within_the_byte_budget(self):
+        self.build()
+        tools, specs = self.tools([ALICE])
+        heavy = {"query": "x", "items": [{"name": "\U0001F600\u4e2d\u6587\u0627\u0644" * 20, "email": "x"}
+                                         for _ in range(20)]}
+        sent = []
+        with mock.patch.object(cc.AgentTools, "search_people", side_effect=lambda q: json.loads(json.dumps(heavy))):
+            for _ in range(60):
+                text = specs["search_people"].fn(query="xx")
+                if tools.overflow:
+                    break
+                self.assertLessEqual(cc.utf8_len(text), cc.TOOL_RESULT_BYTES)
+                sent.append(text)
+        # Everything a run could still send fits the bytes the reservation holds for it.
+        self.assertLessEqual(sum(cc.tool_charge(t) for t in sent), cc.TOOL_TOTAL_BYTES)
+        self.assertEqual(sent.count(cc.BUDGET_ERROR), cc.BUDGET_ERRORS)  # bounded, then overflow
+        self.assertTrue(tools.overflow)
+        self.assertGreater(len(sent), cc.BUDGET_ERRORS)
+
+    def test_feedback_and_the_final_answer_request_fit_their_budget(self):
+        errors = ["person 1 lists an address that is not in this cluster: " + "\u4e2d" * 2000]
+        message = cc.feedback_message(errors)
+        self.assertLessEqual(cc.utf8_len(message) + cc.FRAMING_TOKENS, cc.FEEDBACK_BYTES)
+        self.assertTrue(message.endswith(cc.FEEDBACK_END))
+        self.assertLessEqual(cc.utf8_len(cc.FINAL_ANSWER_NOW) + cc.FRAMING_TOKENS, cc.FEEDBACK_BYTES)
 
     def test_a_raising_tool_returns_a_sanitized_error_and_prints_nothing(self):
         self.build()
@@ -456,11 +482,17 @@ class ToolTests(CleanupCase):
             cc.logging.getLogger("anthropic.lib.tools._beta_runner").exception("Error calling tool")
         self.assertEqual(self.stderr.getvalue(), "")
 
-    def test_results_fit_the_per_result_cap(self):
-        big = {"items": [{"subject": "x" * 300} for _ in range(20)]}
+    def test_results_fit_the_per_result_cap_in_bytes(self):
+        big = {"items": [{"subject": "\u00e9\U0001F600" * 150} for _ in range(20)]}
         text = cc.AgentTools.fit(big)
-        self.assertLessEqual(len(text), cc.TOOL_RESULT_CHARS)
+        self.assertLessEqual(cc.utf8_len(text), cc.TOOL_RESULT_BYTES)
         self.assertTrue(json.loads(text)["truncated"])
+        snippet = {"message_id": 1, "greeting": "", "snippet": "\"\u4e2d\U0001F600" * 600}
+        text = cc.AgentTools.fit(snippet)
+        self.assertLessEqual(cc.utf8_len(text), cc.TOOL_RESULT_BYTES)
+        self.assertTrue(json.loads(text)["snippet"].endswith("..."))
+        self.assertEqual(cc.AgentTools.fit({"error": "\u4e2d" * 2000}),
+                         cc.canonical_json({"error": "the result was too large to return"}))
 
 
 # ---- answers and escalation -------------------------------------------------------------------
@@ -578,13 +610,14 @@ class PricingTests(unittest.TestCase):
         self.assertEqual((missing.input_tokens, missing.output_tokens, missing.kind), (0, 7, "usage"))
 
     def test_worst_case_formula(self):
-        extra = -(-(cc.TOOL_TOTAL_CHARS + cc.FEEDBACK_CHARS) // 3)
-        haiku = sum(2000 + extra + k * 6000 for k in range(6)) * 0.125 + 6 * 6000 * 0.50
+        fixed = 2000 * 1.2 + 64                                  # count_tokens with its margin
+        extra = cc.TOOL_TOTAL_BYTES + cc.FEEDBACK_BYTES          # bytes bound the tokens
+        haiku = sum(fixed + extra + k * (6000 + 64) for k in range(6)) * 0.125 + 6 * 6000 * 0.50
         self.assertAlmostEqual(cc.worst_case_cost("haiku", 2000), haiku / 1e6)
         # Opus 5.5 rates only (cache-write input price), no doubling: the judge sends no fallback.
-        judge = sum(2000 + extra + k * 10000 for k in range(8)) * 5.0 + 8 * 10000 * 20.0
+        judge = sum(fixed + extra + k * (10000 + 64) for k in range(8)) * 5.0 + 8 * 10000 * 20.0
         self.assertAlmostEqual(cc.worst_case_cost("judge", 2000), judge / 1e6)
-        self.assertLess(cc.worst_case_cost("judge", 20000), 4.0)
+        self.assertLess(cc.worst_case_cost("judge", 20000), 5.0)
 
 
 class BudgetTests(unittest.TestCase):
@@ -610,6 +643,29 @@ class BudgetTests(unittest.TestCase):
         self.assertAlmostEqual(budget.reserved, 0.6)
         self.assertIsNotNone(budget.reserve(0.25))
         self.assertIsNone(budget.reserve(0.25))
+
+    def test_concurrent_charges_within_reservations_never_exceed_the_cap(self):
+        budget = cc.Budget("judge", 2.0)
+        start = threading.Barrier(16)
+
+        def run():
+            start.wait()
+            for _ in range(5):
+                hold = budget.reserve(0.35)
+                if hold is None:
+                    continue
+                for _ in range(7):
+                    hold.charge(0.05)  # the run spends its whole reservation
+                hold.settle()
+
+        threads = [threading.Thread(target=run) for _ in range(16)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertLessEqual(budget.spent, budget.cap + 1e-9)
+        self.assertAlmostEqual(budget.reserved, 0.0)
+        self.assertGreater(budget.refused, 0)
 
     def test_charge_beyond_the_reservation_marks_an_overrun(self):
         hold = cc.Budget("judge", 10.0).reserve(1.0)
@@ -816,6 +872,23 @@ class ReviewTests(CleanupCase):
         self.assertEqual((alice["status"], alice["turns"]), ("invalid", limit))
         self.assertEqual(alice["tool_calls"], {"search_people": limit - 1})
         self.assertIn("stop reason tool_use, in a tool call", alice["error"])
+
+    def test_a_run_calling_tools_past_the_budget_reserve_ends_before_sending_them(self):
+        self.build()
+        heavy = {"query": "x", "items": [{"name": "\u4e2d" * 200, "email": "x"} for _ in range(10)]}
+
+        def script(payload, params):
+            if payload["cluster"]["rows"][0]["addresses"] == [ALICE]:
+                burst = FakeMessage([Block(type="tool_use", id=f"toolu_{i}", name="search_people",
+                                           input={"query": "xx"}) for i in range(30)], "tool_use", cc.HAIKU_MODEL)
+                return [burst, final(answer(person([ALICE], first="Alice")))]
+            return default_script(payload, params)
+
+        with mock.patch.object(cc.AgentTools, "search_people", side_effect=lambda q: json.loads(json.dumps(heavy))):
+            self.review(script, phase="haiku")
+        alice = self.alice_entry()
+        self.assertEqual((alice["status"], alice["turns"]), ("invalid", 1))  # the next request was never made
+        self.assertIn("past the tool output budget", alice["error"])
 
     def test_internal_tool_errors_are_counted_in_the_decision(self):
         self.build()

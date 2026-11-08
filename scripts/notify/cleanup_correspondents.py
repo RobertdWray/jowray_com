@@ -82,9 +82,19 @@ class Limits:
 
 
 LIMITS = {"haiku": Limits(6, 6000), "joint": Limits(6, 6000), "judge": Limits(8, 10000)}
-TOOL_RESULT_CHARS = 2000      # one tool result
-TOOL_TOTAL_CHARS = 12000      # all tool results of one agent run
-FEEDBACK_CHARS = 1000         # the validation-retry message
+# Everything that varies within a run is bounded in UTF-8 bytes, which are never fewer
+# than the tokens they encode to, so the reservation needs no estimate for it.
+TOOL_RESULT_BYTES = 2000      # one tool result
+TOOL_TOTAL_BYTES = 12000      # every tool result of one agent run, error results included
+FEEDBACK_BYTES = 1000         # the one retry message
+# Charged per tool result, retry message and replayed turn on top of its content: the
+# block markers, role and tool_use id that frame it in the prompt.
+FRAMING_TOKENS = 64
+BUDGET_ERRORS = 4             # budget errors held back so a run can always be told to stop
+# The fixed part of a prompt (system prompt, tools, schema, first user message) is
+# measured with count_tokens, which the API documents as an estimate; the reservation
+# takes it with this margin.
+COUNT_MARGIN, COUNT_PAD = 1.2, 64
 READ_MESSAGE_CALLS = 4
 SNIPPET_CHARS = 1500
 SNIPPET_HEAD, SNIPPET_TAIL = 15, 8
@@ -197,17 +207,33 @@ def attempt_cost(attempt: Attempt):
     return cost, label
 
 
+def utf8_len(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def clip_bytes(text: str, limit: int) -> str:
+    """text cut to at most limit UTF-8 bytes, never inside a character."""
+    return text.encode("utf-8")[:max(0, limit)].decode("utf-8", "ignore")
+
+
+def fixed_prompt_tokens(counted_tokens: int) -> int:
+    """The bound used for the measured (or, in a dry run, estimated) fixed prompt."""
+    return math.ceil(counted_tokens * COUNT_MARGIN) + COUNT_PAD
+
+
 def worst_case_cost(phase: str, base_tokens: int) -> float:
     """A run's worst case: every turn at the highest input price, every turn at max_tokens.
 
-    Turn k's prompt is at most the measured first prompt, plus the tool-output and
-    retry-message budgets (characters / 3), plus k replayed turns of max_tokens.
-    Each phase is priced at its own model's rates: the judge sends no server-side
-    fallback, so no other model can run (ruling P1, revised).
+    Turn k's prompt is at most the fixed prompt (count_tokens with its margin), plus
+    every tool result and the retry message (bounded in UTF-8 bytes, so in tokens),
+    plus k replayed turns of max_tokens, each with its framing. Each phase is priced
+    at its own model's rates: the judge sends no server-side fallback, so no other
+    model can run (ruling P1, revised).
     """
     limits = LIMITS[phase]
-    extra = math.ceil((TOOL_TOTAL_CHARS + FEEDBACK_CHARS) / 3)
-    turns = [base_tokens + extra + k * limits.max_tokens for k in range(limits.max_iterations)]
+    extra = TOOL_TOTAL_BYTES + FEEDBACK_BYTES
+    turns = [fixed_prompt_tokens(base_tokens) + extra + k * (limits.max_tokens + FRAMING_TOKENS)
+             for k in range(limits.max_iterations)]
     model = JUDGE_MODEL if phase == "judge" else HAIKU_MODEL
     price = price_for(model, max(turns))[0]
     input_price = max(price.input, price.write_5m, price.read)  # 5-minute cache only
@@ -832,6 +858,19 @@ TOOL_SCHEMAS = {
 }
 
 
+BUDGET_ERROR = canonical_json({"error": "the tool output budget for this review is used up; "
+                                        "give your final answer now"})
+
+
+def tool_charge(text: str) -> int:
+    """What one tool result costs the run's budget: its bytes plus its framing."""
+    return utf8_len(text) + FRAMING_TOKENS
+
+
+# Results may use the budget up to this point; the rest is held for budget errors.
+TOOL_RESULTS_LIMIT = TOOL_TOTAL_BYTES - BUDGET_ERRORS * tool_charge(BUDGET_ERROR)
+
+
 def tool_params() -> list:
     """The tool definitions as sent (sorted by name, so the prompt prefix caches)."""
     return [{"name": n, "description": d, "input_schema": s, "strict": True}
@@ -844,7 +883,8 @@ class AgentTools:
     def __init__(self, cluster: dict, paths: Paths, people_index: list):
         self.addresses = set(cluster_addresses(cluster))
         self.paths, self.people_index = paths, people_index
-        self.used_chars = self.reads = self.errors = 0
+        self.used_bytes = self.reads = self.errors = 0
+        self.overflow = False
         self.calls: collections.Counter = collections.Counter()
         self._mail = self._offsets = None
 
@@ -884,38 +924,51 @@ class AgentTools:
                 for p in tool_params()]
 
     def run(self, name, method, *args) -> str:
-        """Every tool call goes through here. It never raises: the SDK's tool runner would
-        log an escaping exception's traceback to the console and send its text (which can
-        quote mail) to the model, so an unexpected failure becomes a sanitized error."""
+        """Every tool call goes through here, and every result it returns (errors too) is
+        charged against the run's byte budget, which the reservation covers.
+
+        It never raises: the SDK's tool runner would log an escaping exception's traceback
+        to the console and send its text (which can quote mail) to the model, so an
+        unexpected failure becomes a sanitized error. Once the budget for results is used
+        up, calls get BUDGET_ERROR from a held-back reserve; a run that keeps calling past
+        that reserve is marked overflowing and ended before those results are sent.
+        """
         self.calls[name] += 1
-        if self.used_chars >= TOOL_TOTAL_CHARS:
-            return canonical_json({"error": "the tool output budget for this review is used up; "
-                                            "give your final answer now"})
-        try:
-            result = method(*args)
-        except Exception as exc:  # any failure, reported by its type only
-            self.errors += 1
-            result = {"error": f"internal tool error ({type(exc).__name__})"}
-        text = self.fit(result)
-        if self.used_chars + len(text) > TOOL_TOTAL_CHARS:
-            self.used_chars = TOOL_TOTAL_CHARS
-            return canonical_json({"error": "this result would exceed the tool output budget; "
-                                            "give your final answer now"})
-        self.used_chars += len(text)
-        return text
+        if self.used_bytes < TOOL_RESULTS_LIMIT:
+            try:
+                result = method(*args)
+            except Exception as exc:  # any failure, reported by its type only
+                self.errors += 1
+                result = {"error": f"internal tool error ({type(exc).__name__})"}
+            text = self.fit(result)
+            if self.used_bytes + tool_charge(text) <= TOOL_RESULTS_LIMIT:
+                self.used_bytes += tool_charge(text)
+                return text
+            self.used_bytes = TOOL_RESULTS_LIMIT  # used up: later calls do not run
+        if self.used_bytes + tool_charge(BUDGET_ERROR) <= TOOL_TOTAL_BYTES:
+            self.used_bytes += tool_charge(BUDGET_ERROR)
+            return BUDGET_ERROR
+        self.overflow = True  # never sent: converse() ends the run before another request
+        return BUDGET_ERROR
 
     @staticmethod
     def fit(result: dict) -> str:
-        """Serialize within TOOL_RESULT_CHARS, dropping list items or shortening the snippet."""
+        """Serialize within TOOL_RESULT_BYTES, dropping list items or shortening the
+        snippet; a result that still does not fit becomes a short error."""
         text = json.dumps(result, ensure_ascii=False)
-        while len(text) > TOOL_RESULT_CHARS and result.get("items"):
+        while utf8_len(text) > TOOL_RESULT_BYTES and result.get("items"):
             result["items"].pop()
             result["truncated"] = True
             text = json.dumps(result, ensure_ascii=False)
-        if len(text) > TOOL_RESULT_CHARS and isinstance(result.get("snippet"), str):
-            result["snippet"] = result["snippet"][:max(0, len(result["snippet"]) - (len(text) - TOOL_RESULT_CHARS) - 3)] + "..."
+        while utf8_len(text) > TOOL_RESULT_BYTES and result.get("snippet"):
+            # JSON never encodes a character in fewer bytes than UTF-8, so cutting the
+            # excess (plus the ellipsis) from the snippet always shrinks the result enough.
+            keep = utf8_len(result["snippet"]) - (utf8_len(text) - TOOL_RESULT_BYTES) - 3
+            result["snippet"] = clip_bytes(result["snippet"], keep) + "..." if keep > 0 else ""
             text = json.dumps(result, ensure_ascii=False)
-        return text[:TOOL_RESULT_CHARS]
+        if utf8_len(text) > TOOL_RESULT_BYTES:
+            return canonical_json({"error": "the result was too large to return"})
+        return text
 
     def guard_address(self, address: str):
         canonical = rc.canon(address)
@@ -1359,9 +1412,10 @@ def build_manifest(paths: Paths, prompts: dict, sdk_version: str, head: str) -> 
         "effort": EFFORT, "judge_fallbacks": "none",
         "limits": {phase: {"max_iterations": limit.max_iterations, "max_tokens": limit.max_tokens}
                    for phase, limit in LIMITS.items()},
-        "tool_caps": {"result_chars": TOOL_RESULT_CHARS, "total_chars": TOOL_TOTAL_CHARS,
+        "tool_caps": {"result_bytes": TOOL_RESULT_BYTES, "total_bytes": TOOL_TOTAL_BYTES,
+                      "budget_errors": BUDGET_ERRORS, "framing_tokens": FRAMING_TOKENS,
                       "read_message_calls": READ_MESSAGE_CALLS, "snippet_chars": SNIPPET_CHARS,
-                      "feedback_chars": FEEDBACK_CHARS},
+                      "feedback_bytes": FEEDBACK_BYTES},
         "anthropic": sdk_version,
         "git_head": head,
         "sha256": {
@@ -1450,6 +1504,14 @@ def has_tool_call(message) -> bool:
 
 FINAL_ANSWER_NOW = ("Your answer was cut off at the output limit. Give your final answer now, complete "
                     "and shorter, in the required format, without calling a tool.")
+FEEDBACK_END = ". Give a corrected, complete answer in the required format."
+
+
+def feedback_message(errors) -> str:
+    """The validation-retry message, within FEEDBACK_BYTES (the errors can quote the
+    model's own text, so they are cut by bytes)."""
+    room = FEEDBACK_BYTES - FRAMING_TOKENS - utf8_len(FEEDBACK_END)
+    return clip_bytes("Your answer could not be used: " + "; ".join(errors), room) + FEEDBACK_END
 
 
 class Reviewer:
@@ -1588,6 +1650,9 @@ class Reviewer:
                         # Run the calls now (the runner reuses this result for its next request)
                         # so the history can continue the conversation after a failed answer.
                         response = runner.generate_tool_call_response()
+                        if tools.overflow:  # results past the budget are never sent
+                            return {"status": "invalid", "turns": turns + used,
+                                    "error": "tool calls continued past the tool output budget"}
                         if response is not None:
                             history.extend([message.to_param(), response])
                             continue
@@ -1608,8 +1673,7 @@ class Reviewer:
                     decision, errors = None, ["the final answer was not valid JSON"]
                 if not errors:
                     return {"status": "ok", "turns": turns, "decision": decision}
-                retry = ("Your answer could not be used: " + "; ".join(errors))[:FEEDBACK_CHARS - 80]
-                retry += ". Give a corrected, complete answer in the required format."
+                retry = feedback_message(errors)
             elif stop == "max_tokens" and not has_tool_call(final):
                 errors = ["the answer was cut off at the output limit"]
                 retry = FINAL_ANSWER_NOW
