@@ -3,7 +3,8 @@
 // contributor and memory below is invented") into a memorial of its own, with files that have no bytes behind them,
 // so the pages, filters, timeline and player states can be checked without real memories.
 //
-// It refuses any database host other than localhost, 127.0.0.1 or ::1, and has no flag to override that: the
+// It refuses any database host other than localhost, 127.0.0.1 or ::1 (and any `host`/`hostaddr` query parameter,
+// which node-postgres would use instead), and has no flag to override that: the
 // preview and production databases hold real memories, and invented names on a memorial are not acceptable there.
 //
 //   DATABASE_URL_UNPOOLED=postgresql://postgres@127.0.0.1:54329/<db> npx tsx scripts/seed-sample-memories.ts
@@ -45,11 +46,26 @@ interface SampleData {
   memories: SampleMemory[];
 }
 
-/** The loopback check, exported for its test. Throws for anything that is not plainly this machine. */
+/**
+ * Query parameters that node-postgres (pg-connection-string, behind PrismaPg) reads as the server's address instead
+ * of the URL's host name: `?host=` replaces it outright. `hostaddr` is libpq's numeric address; node-postgres ignores
+ * it today, but a URL carrying it was written for another client and is refused as well.
+ */
+const HOST_PARAMETERS = ["host", "hostaddr"] as const;
+
+/**
+ * The loopback check, exported for its test. Throws for anything that is not plainly this machine: the URL's single
+ * host name must be loopback (a comma-separated host list is not one name and fails the same test), and no query
+ * parameter may name another host (TCR round 1, B1-4).
+ */
 export function assertLoopback(connectionString: string): string {
   const url = new URL(connectionString);
   if (!LOOPBACK.has(url.hostname)) {
     throw new Error(`seed-sample-memories only writes to a database on this machine (localhost, 127.0.0.1, ::1); refusing host "${url.hostname}"`);
+  }
+  const named = HOST_PARAMETERS.filter((name) => url.searchParams.has(name));
+  if (named.length > 0) {
+    throw new Error(`seed-sample-memories takes the database host only from the URL's host name; refusing the ${named.join(" and ")} query parameter`);
   }
   return url.hostname;
 }

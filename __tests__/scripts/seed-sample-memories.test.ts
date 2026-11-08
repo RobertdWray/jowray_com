@@ -18,6 +18,19 @@ describe("seed-sample-memories (plan 2026-11-08 finding #14: local databases onl
     expect(() => assertLoopback(url)).toThrow(/refusing host/);
   });
 
+  // node-postgres (pg-connection-string, behind PrismaPg) lets a `host` query parameter replace the URL's host, so a
+  // loopback-looking URL could still write to Neon (TCR round 1, B1-4). The check refuses any such parameter.
+  it.each([
+    "postgresql://u:p@localhost:54329/db?host=ep-cool-name-123.us-east-1.aws.neon.tech",
+    "postgresql://u@127.0.0.1:54329/db?sslmode=require&host=ep-cool-name-123.us-east-1.aws.neon.tech",
+    "postgresql://u@127.0.0.1:54329/db?%68ost=ep-cool-name-123.us-east-1.aws.neon.tech",
+    "postgresql://u@localhost/db?host=localhost",
+    "postgresql://u@localhost/db?hostaddr=10.0.0.5",
+    "postgresql://u@localhost,ep-cool-name-123.us-east-1.aws.neon.tech/db",
+  ])("refuses %s, whose host comes from somewhere other than a single loopback host name", (url) => {
+    expect(() => assertLoopback(url)).toThrow(/refusing/);
+  });
+
   it("parses the canvas seed as data: 100 invented memories, 23 places", () => {
     const data = parseSample(readFileSync(new URL("../../design/reference/see-memories/data/memories.js", import.meta.url), "utf8"));
     expect(data.memories).toHaveLength(100);
