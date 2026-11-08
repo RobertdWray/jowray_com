@@ -2,7 +2,7 @@
 
 Personal `/s/<token>` links let family-approved correspondents open the share form with a greeting, name and email already filled in. The local importer creates the links and keeps them in a private ledger for the later mail merge.
 
-**Status:** [PR #91](https://github.com/RobertdWray/jowray_com/pull/91) delivered it for [issue #59](https://github.com/RobertdWray/jowray_com/issues/59) ([notify plan §8](../plans/2026-11-07-notify-correspondents.md)); merged and deployed 2026-11-08 (`81fd36a`). The `Invite` migration ran on production the same minute. The production `/s/` checks (D1) were exercised with one rehearsal invite for Rob's own address, the WAF rate limit covers `/s/` (D2), and S1 switched the project's server-side Sentry scrubbers off. All are recorded in the [public-safe evidence](../plans/evidence/2026-11-notify/post-merge.md). The real import of correspondents (D6) waits for Rob's explicit go, after the family review. No invitation has been sent.
+**Status:** [PR #91](https://github.com/RobertdWray/jowray_com/pull/91) delivered it for [issue #59](https://github.com/RobertdWray/jowray_com/issues/59) ([notify plan §8](../plans/2026-11-07-notify-correspondents.md)); merged and deployed 2026-11-08 UTC (`81fd36a`). The `Invite` migration finished on production 16 seconds after the merge. The production `/s/` checks (D1) were exercised with one rehearsal invite for Rob's own address, the WAF rate limit covers `/s/` (D2), and S1 switched the project's server-side Sentry scrubbers off. All are recorded in the [public-safe evidence](../plans/evidence/2026-11-notify/post-merge.md). The real import of correspondents (D6) waits for Rob's explicit go, after the family review. No invitation has been sent.
 
 ## What we built
 
@@ -85,6 +85,8 @@ UPDATE "Invite" SET "revokedAt" = CURRENT_TIMESTAMP WHERE "id" = '<inviteId>';
 
 Neon preview branches copy production `Invite` rows (D17); creating a preview does not anonymize them. After each deploy that touches this feature, re-check the headers, an unknown token's plain form and token removal in Sentry, as D1 did on 2026-11-08 ([evidence](../plans/evidence/2026-11-notify/post-merge.md)). The Vercel WAF rule "Public paths rate limit" includes `/s/` (1200 requests per IP per 10 minutes).
 
+Since S1 (2026-11-08), the project's server-side Data Scrubber and Default Scrubbers are off, so the SDK scrubber is the only token control. Rollback sets both Sentry project flags back to `true` ([evidence](../plans/evidence/2026-11-notify/post-merge.md)).
+
 **After the first real send, fix forward only (D27).** Reverting PR-2 would make delivered links 404. Before any real send, the additive table can remain while code is reverted. Do not rotate delivered links as a recovery shortcut.
 
 ## Key files
@@ -135,7 +137,7 @@ Recorded results:
 - F3, Low: an admin revoke button; SQL is the current operation.
 - F5/F7, Low: final thank-you copy and separating other people's unsent draft cards on shared devices. The undated R6 copy and identity prefill do not close these.
 - F8, Low: consider scrubbing Invite rows copied into Neon previews (D17).
-- S1, done 2026-11-08: the project's server-side Data Scrubber and Default Scrubbers are off, so the SDK scrubber is now the only token control. Rollback sets both flags back to `true` ([evidence](../plans/evidence/2026-11-notify/post-merge.md)).
+- F14, Low: the `/how-it-was-built` data-model diagram's alt text does not list `Invite` (`app/how-it-was-built/detailed-diagrams.tsx`).
 - F13, Low: Sentry's `scrubUrl` does not catch a token behind an encoded segment letter (`/%73/<token>`); analytics drops that case. Check whether Next routes such a path to the invite page.
 - Plan/code differences: §8.5 described POST only; code also has the authenticated GET preflight and includes `memorialSlug`/`siteUrl` in both responses. Despite §16 declining per-batch checkpoints, the importer persists each batch's issued links, including valid links before an `exists`/`revoked` stop. The prefill code compares draft names with the chosen fallback name and ignores a blank draft relationship when emails match. D21 also covers Next's RSC `{"n":…,"k":…}` response segments, beyond the original tuple-only plan. This document follows the code.
 

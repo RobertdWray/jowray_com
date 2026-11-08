@@ -7,7 +7,8 @@ These are public-safe summaries of the checks recorded on 2026-11-08 after PR-2 
 | Item | Value |
 |---|---|
 | PR-2 [#91](https://github.com/RobertdWray/jowray_com/pull/91) (invite links, token privacy, replay unmasking) | merged 2026-11-08T02:07:47Z, `81fd36a` |
-| Production migration `20261107120000_invites` | `finished_at` 2026-11-08T02:08:03Z, `rolled_back_at` null |
+| Production deployment of `81fd36a` | Vercel Production deployment Ready (about one minute's build) |
+| Production migration `20261107120000_invites` | `finished_at` 2026-11-08T02:08:03Z (16 seconds after the merge), `rolled_back_at` null |
 | PR-1 [#92](https://github.com/RobertdWray/jowray_com/pull/92) (harvester hardening, runbook) | merged 2026-11-08T02:23:07Z, `eba20e5` |
 | Review | one Team Code Review round per PR (George + Oscar), the repairs, then an Opus regression review per PR: "no serious regressions" |
 
@@ -33,7 +34,12 @@ On the preview, the replays recorded the form placeholders unmasked, with 0 star
 | `dataScrubberDefaults` | true | false |
 | `sensitiveFields`, `safeFields`, `scrubIPAddresses`, `relayPiiConfig` | empty, empty, false, none | unchanged |
 
-The organisation-level scrubbing was already off. A synthetic event (environment `s1-check`) whose story contained the word "author" arrived as `[Filtered]` before the switch and verbatim after it. After the switch, a production pageload of the rehearsal link still showed the token only in the replay's Meta-event `href`, and 0 times in 16 `POST /s/[inviteToken]` spans and in the other production spans. Rollback: set both flags back to `true`.
+The organisation-level scrubbing was already off. A synthetic event (environment `s1-check`) whose story contained the word "author" arrived as `[Filtered]` before the switch and verbatim after it. Two departures from §8.10:
+
+- That "after" event was sent about 2.5 minutes after the switch, inside Relay's usual ~6-minute config cache, and was already unfiltered.
+- Step 6 used this synthetic event instead of a production Server Function submission, to avoid creating a real memory and an admin alert.
+
+At 02:49Z, after the cache window, a production pageload of the rehearsal link still showed the token only in the replay's Meta-event `href`. It appeared 0 times in 16 `POST /s/[inviteToken]` spans and in the other production spans. Rollback: set both flags back to `true`.
 
 ## D2: WAF
 
@@ -41,4 +47,8 @@ Rule "Public paths rate limit": before, 4 path prefixes (`/share`, `/api/upload`
 
 ## D3: harvest
 
-Two real harvests of both accounts, plus a run of the merged harvester into a separate private folder, gave identical counts, each in under a minute, with counts-only console output. Household display names are excluded automatically, and no household alias was found. A batch of Sent-folder messages with no From header, all written within three minutes on 2026-11-06, is correctly ignored. The family review (D4) and the steps after it have not been done.
+Two real harvests of both accounts, plus a run of the final harvester into a separate private folder before PR #92 merged, gave identical counts, each in under a minute, with counts-only console output. Household display names are excluded automatically, and no household alias was found. A batch of Sent-folder messages has no From header and timestamps inside one three-minute window on 2026-11-06, four days after Jo died. It is a sync or copy artefact, not correspondence, and is correctly ignored. The family review (D4) and the steps after it have not been done.
+
+## Rob's instruction (2026-11-08)
+
+After the merges, Rob wrote: "I would like to hit the final button before we send any emails to people." Nothing is scheduled or sent to a correspondent until Rob releases the Send Later hold himself on go-day (plan R1; runbook §11).
