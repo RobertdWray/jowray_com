@@ -2316,8 +2316,26 @@ def apply_unit(cluster, decision, phase, source, people, removals, changes) -> N
                                   confidence=max((p["confidence"] for p in owners), key=CONFIDENCE.index)))
 
 
+def take_from_removals(removals: list, addresses: set) -> list:
+    """Take these addresses out of the removals, in order. The rest of each removal keeps
+    its own reason, source and confidence; an emptied removal is dropped."""
+    taken = []
+    for removal in list(removals):
+        inside = [a for a in removal.addresses if a in addresses]
+        if inside:
+            taken.extend(inside)
+            removal.addresses = [a for a in removal.addresses if a not in addresses]
+            if not removal.addresses:
+                removals.remove(removal)
+    return taken
+
+
 def apply_overrides(overrides, rows, people, removals, changes, counts, rank_of) -> None:
-    """cleanup-overrides.csv always wins: remove, keep, merge_with, set_name, set_primary."""
+    """cleanup-overrides.csv always wins: remove, keep, merge_with, set_name, set_primary.
+
+    remove and keep act on the matched addresses only: the other addresses of a person
+    or a removal keep what the review decided for them.
+    """
     source = list(rank_of)
     unmatched = [o["row"] for o in overrides if not any(override_matches(o, a) for a in source)]
     if unmatched:
@@ -2334,28 +2352,27 @@ def apply_overrides(overrides, rows, people, removals, changes, counts, rank_of)
         for o in (x for x in overrides if x["action"] == action):
             counts[f"overrides: {action}"] += 1
             hits = [a for a in source if override_matches(o, a)]
+            matched = set(hits)
             if action == "remove":
-                kept_hits = [a for a in hits if owner(a)]
+                moved = [a for a in hits if owner(a)]
                 for person in people:
-                    person.addresses = [a for a in person.addresses if a not in kept_hits]
-                for removal in removals:
-                    if set(removal.addresses) & set(hits):
-                        removal.source = "override"
-                        removal.reason = "override"
-                if kept_hits:
-                    removals.append(Removal(kept_hits, "override", "override", "high", o["note"]))
+                    person.addresses = [a for a in person.addresses if a not in matched]
                 people[:] = [p for p in people if p.addresses]
+                moved += take_from_removals(removals, matched)
+                if moved:
+                    removals.append(Removal(moved, "override", "override", "high", o["note"]))
                 changes.append(change("remove", note_ranks(hits), reason=o["note"] or "override",
                                       confidence="high", phase="override"))
             elif action == "keep":
-                if any(r.source == "override" and set(r.addresses) & set(hits) for r in removals):
+                if any(r.source == "override" and set(r.addresses) & matched for r in removals):
                     rc.die(f"override row {o['row']} keeps an address another override removes")
-                for removal in [r for r in removals if set(r.addresses) & set(hits)]:
-                    removals.remove(removal)
-                    row = next(r for r in rows if r["rank"] == rank_of[removal.addresses[0]])
-                    person = harvested_person(row, note="kept by override")
-                    person.addresses = list(removal.addresses)
-                    people.append(person)
+                restored = set(take_from_removals(removals, matched))
+                for row in rows:  # one harvested person per source row, its matched addresses only
+                    mine = [a for a in row["addresses"] if a in restored]
+                    if mine:
+                        person = harvested_person(row, note="kept by override")
+                        person.addresses = mine
+                        people.append(person)
                 changes.append(change("keep", note_ranks(hits), reason=o["note"] or "override",
                                       confidence="high", phase="override"))
             elif action == "merge_with":

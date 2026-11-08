@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import csv
 import json
@@ -1141,6 +1142,47 @@ class ApplyTests(CleanupCase):
                 self.apply()
         self.assertEqual({p: p.read_bytes() for p in before}, before)
         self.assertNotIn("Alice", self.stderr.getvalue())
+
+    def run_overrides(self, rows, people, removals, *overrides):
+        parsed = [{"row": i, "match": m, "action": a, "value": "", "note": "synthetic"}
+                  for i, (m, a) in enumerate(overrides, 1)]
+        rank_of = {a: r["rank"] for r in rows for a in r["addresses"]}
+        cc.apply_overrides(parsed, rows, people, removals, [], collections.Counter(), rank_of)
+        cc.validate_partition(rows, people, removals, (set(), set()), set())
+        return ({tuple(p.addresses): (p.first_name, p.note) for p in people},
+                {tuple(r.addresses): (r.reason, r.source) for r in removals})
+
+    def test_remove_then_keep_acts_on_the_matched_addresses_only(self):
+        a, b, c = "a@x.example.com", "b@y.example.org", "c@x.example.com"
+        rows = [row(1, "Ann", "Fiction", [a, b]), row(2, "Cy", "Fiction", [c])]
+        people, removals = self.run_overrides(
+            rows, [], [cc.Removal([a, b, c], "business_or_vendor", "model", "high", "why")],
+            (a, "remove"), (b, "keep"))
+        self.assertEqual(people, {(b,): ("Ann", "kept by override")})       # row 1's matched address only
+        self.assertEqual(removals, {(c,): ("business_or_vendor", "model"),  # untouched: still the model's
+                                    (a,): ("override", "override")})
+
+    def test_domain_overrides_split_people_and_removals(self):
+        a, b, c, d = "a@x.example.com", "b@y.example.org", "c@x.example.com", "d@x.example.com"
+        rows = [row(1, "Ann", "Fiction", [a, b]), row(2, "Cy", "Fiction", [c]), row(3, "Di", "Fiction", [d, "d@z.example.net"])]
+        kept = cc.Person([d, "d@z.example.net"], "Di", "Fiction", "Di Fiction")
+        people, removals = self.run_overrides(
+            rows, [kept], [cc.Removal([a, b, c], "automated", "judge", "high", "why")],
+            ("@x.example.com", "remove"), ("@y.example.org", "keep"))
+        self.assertEqual(people, {("d@z.example.net",): ("Di", ""), (b,): ("Ann", "kept by override")})
+        self.assertEqual(removals, {(d, a, c): ("override", "override")})
+        # keep restores only what it matches; the rest of the removal stays as decided.
+        people, removals = self.run_overrides(
+            rows[:1], [], [cc.Removal([a, b], "spam_or_scam", "model", "high", "why")], ("@x.example.com", "keep"))
+        self.assertEqual(people, {(a,): ("Ann", "kept by override")})
+        self.assertEqual(removals, {(b,): ("spam_or_scam", "model")})
+
+    def test_keeping_an_address_another_override_removes_is_refused(self):
+        a = "a@x.example.com"
+        with self.assertRaises(SystemExit):
+            self.run_overrides([row(1, "Ann", "Fiction", [a])], [cc.Person([a], "Ann", "Fiction", "Ann Fiction")], [],
+                               (a, "remove"), ("@x.example.com", "keep"))
+        self.assertIn("keeps an address another override removes", self.stderr.getvalue())
 
     def test_partition_validation(self):
         rows = [row(1, "A", "B", ["a@example.com", "b@example.com"])]
