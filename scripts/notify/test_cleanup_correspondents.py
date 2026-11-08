@@ -313,6 +313,9 @@ class PrepareCommandTests(CleanupCase):
         for c in clusters:
             self.assertNotIn("notify", c["rows"][0])
         self.assertEqual(stat.S_IMODE(paths.clusters.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(paths.prepared.stat().st_mode), 0o600)
+        prepared = json.loads(paths.prepared.read_text(encoding="utf-8"))["sha256"]
+        self.assertEqual(prepared, cc.prepare_fingerprint(paths))
         self.assertEqual(stat.S_IMODE(paths.offsets.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(paths.cleanup.stat().st_mode), 0o700)
         self.assertIn("2 guidance domains", self.stdout.getvalue())
@@ -613,6 +616,11 @@ class PricingTests(unittest.TestCase):
         (missing,) = cc.attempts_from_usage(SimpleNamespace(input_tokens=None, output_tokens=7), cc.HAIKU_MODEL)
         self.assertEqual((missing.input_tokens, missing.output_tokens, missing.kind), (0, 7, "usage"))
 
+    def test_the_commit_is_recorded_but_not_hashed(self):
+        manifest = {"prompt_version": "x", "git_head": "one", "sha256": {"tools": "t"}}
+        self.assertEqual(cc.manifest_hash_of(manifest), cc.manifest_hash_of({**manifest, "git_head": "two"}))
+        self.assertNotEqual(cc.manifest_hash_of(manifest), cc.manifest_hash_of({**manifest, "prompt_version": "y"}))
+
     def test_worst_case_formula(self):
         fixed = 2000 * 1.2 + 64                                  # count_tokens with its margin
         extra = cc.TOOL_TOTAL_BYTES + cc.FEEDBACK_BYTES          # bytes bound the tokens
@@ -758,6 +766,10 @@ class ReviewTests(CleanupCase):
         self.assertIn("haiku: 0 clusters to review, 5 cached", self.stdout.getvalue())
         self.assertIn("No API call was made", self.stdout.getvalue())
         self.paths.guidance.write_text(GUIDANCE + "\nOne more synthetic rule.\n", encoding="utf-8")
+        with self.assertRaises(SystemExit):  # the clusters' hints come from the guidance
+            cc.run_review(self.paths, cc.ReviewOptions(dry_run=True))
+        self.assertIn("1 input changed since prepare (cleanup-guidance.md); rerun prepare", self.stderr.getvalue())
+        self.assertEqual(cc.main(["prepare", "--out", str(self.out)]), 0)
         self.clear()
         before = self.paths.decisions.read_bytes()
         cc.run_review(self.paths, cc.ReviewOptions(dry_run=True))
@@ -826,6 +838,7 @@ class ReviewTests(CleanupCase):
         spent = cc.spend_totals(cc.read_jsonl(self.paths.spend, repair=False)[0])["haiku"]["actual"]
         self.assertGreater(spent, 0)
         self.paths.guidance.write_text(GUIDANCE + "\nchanged\n", encoding="utf-8")  # new manifest
+        self.assertEqual(cc.main(["prepare", "--out", str(self.out)]), 0)
         code, client = self.review(default_script, phase="haiku", haiku_budget=spent + 0.01)
         self.assertEqual((code, client.calls), (0, []))  # every reservation is refused
         entries = cc.read_jsonl(self.paths.decisions, repair=False)[0]
@@ -1110,12 +1123,79 @@ class ApplyTests(CleanupCase):
                     cc.validate_partition(rows, people, removals, (set(), set()),
                                           {"a@example.com"} if name == "household" else set())
 
-    def test_inputs_changed_since_review_are_refused(self):
-        self.reviewed()
-        self.write("private/correspondents.csv", self.paths.correspondents.read_bytes() + b"\n")
+    def outputs(self):
+        return {p: p.read_bytes() for p in (self.paths.identities, self.paths.removed, self.paths.changes)}
+
+    def assert_apply_refused(self, message):
+        before = self.outputs()
+        self.clear_console()
         with self.assertRaises(SystemExit):
             self.apply()
-        self.assertIn("changed since the last review", self.stderr.getvalue())
+        self.assertIn(message, self.stderr.getvalue())
+        self.assertEqual(self.outputs(), before)
+        self.assert_private_console()
+
+    def test_inputs_changed_since_prepare_are_refused(self):
+        self.reviewed()
+        self.assertEqual(self.apply(), 0)
+        original = self.paths.correspondents.read_bytes()
+        self.write("private/correspondents.csv", original + b"\n")
+        self.assert_apply_refused("1 input changed since prepare (correspondents.csv); rerun prepare")
+        with self.assertRaises(SystemExit):
+            cc.run_review(self.paths, cc.ReviewOptions(dry_run=True))
+        self.assertIn("rerun prepare", self.stderr.getvalue())
+        self.write("private/correspondents.csv", original)
+        self.write("private/cleanup/clusters.jsonl", self.paths.clusters.read_bytes() + b"\n")  # a hand edit
+        self.assert_apply_refused("1 input changed since prepare (clusters.jsonl); rerun prepare")
+
+    def test_a_guidance_or_prompt_edit_after_review_refuses_apply(self):
+        self.reviewed()
+        self.assertEqual(self.apply(), 0)
+        # A guidance edit is caught by prepare's fingerprint, and after prepare by the manifest.
+        self.paths.guidance.write_text(GUIDANCE + "\nA new synthetic rule.\n", encoding="utf-8")
+        self.assert_apply_refused("1 input changed since prepare (cleanup-guidance.md); rerun prepare")
+        self.assertEqual(cc.main(["prepare", "--out", str(self.out)]), 0)
+        self.assert_apply_refused("2 review inputs changed since the last review "
+                                  "(system_prompt_haiku, system_prompt_judge); rerun review")
+        self.paths.guidance.write_text(GUIDANCE, encoding="utf-8")
+        self.assertEqual(cc.main(["prepare", "--out", str(self.out)]), 0)
+        self.assertEqual(self.apply(), 0)
+        # An edit to the generic prompt in the repo.
+        edited = self.root / "edited_prompt.md"
+        edited.write_text(cc.PROMPT_FILE.read_text(encoding="utf-8").replace("## Tools", "## Tools\n\nNew rule."),
+                          encoding="utf-8")
+        with mock.patch.object(cc, "PROMPT_FILE", edited):
+            self.assert_apply_refused("(system_prompt_haiku, system_prompt_judge); rerun review")
+        # Only the decision-relevant parts count: a new commit does not.
+        manifest = json.loads(self.paths.manifest.read_text(encoding="utf-8"))
+        manifest["git_head"] = "another-commit"
+        self.paths.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        self.assertEqual(self.apply(), 0)
+
+    def test_operator_files_in_another_encoding_stop_with_a_clear_message(self):
+        self.reviewed()
+        self.paths.guidance.write_bytes(GUIDANCE.encode("utf-16"))
+        with self.assertRaises(SystemExit):
+            cc.main(["prepare", "--out", str(self.out)])
+        self.assertIn("cleanup-guidance.md is not valid UTF-8", self.stderr.getvalue())
+        self.paths.guidance.write_text(GUIDANCE, encoding="utf-8")
+        self.paths.manifest.write_bytes(b"\xff\xfe{")
+        self.clear_console()
+        with self.assertRaises(SystemExit):
+            self.apply()
+        self.assertIn("cleanup/manifest.json is not valid UTF-8", self.stderr.getvalue())
+        self.paths.manifest.write_text("[]", encoding="utf-8")
+        self.clear_console()
+        with self.assertRaises(SystemExit):
+            self.apply()
+        self.assertIn("cleanup/manifest.json is damaged", self.stderr.getvalue())
+        self.paths.manifest.unlink()
+        self.paths.overrides.write_bytes(b"\xff\xfem\x00a\x00t")  # UTF-16 with an odd byte count
+        self.clear_console()
+        with self.assertRaises(SystemExit):
+            self.apply()
+        self.assertIn("cleanup-overrides.csv could not be decoded", self.stderr.getvalue())
+        self.assertNotIn("Traceback", self.stderr.getvalue())
 
     def test_joint_decision_supersedes_member_decisions(self):
         def script(payload, params):

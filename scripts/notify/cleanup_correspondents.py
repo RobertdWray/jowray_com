@@ -312,11 +312,11 @@ class Paths:
         self.offsets, self.clusters = self.cleanup / "offsets.sqlite", self.cleanup / "clusters.jsonl"
         self.decisions, self.spend = self.cleanup / "decisions.jsonl", self.cleanup / "spend.jsonl"
         self.manifest, self.changes = self.cleanup / "manifest.json", self.cleanup / "changes.csv"
-        self.lock = self.cleanup / ".lock"
+        self.lock, self.prepared = self.cleanup / ".lock", self.cleanup / "prepare.json"
 
     def outputs(self) -> list:
         return [self.cleanup, self.offsets, self.clusters, self.decisions, self.spend, self.manifest,
-                self.changes, self.identities, self.removed, self.lock]
+                self.changes, self.identities, self.removed, self.lock, self.prepared]
 
 
 def prepare_out(value: str, allow_inside_git: bool, create: bool = True) -> Paths:
@@ -366,6 +366,44 @@ def text_sha256(text: str) -> str:
 
 def canonical_json(value) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def read_operator_text(path: Path, label: str) -> str:
+    """A text file the operator writes or keeps (UTF-8, with or without a BOM); any other
+    encoding stops with a clear message instead of a decode error."""
+    try:
+        return path.read_bytes().decode("utf-8-sig")
+    except UnicodeDecodeError:
+        rc.die(f"{label} is not valid UTF-8; save it as UTF-8 and rerun")
+
+
+def read_operator_json(path: Path, label: str, remedy: str) -> dict:
+    try:
+        value = json.loads(read_operator_text(path, label))
+    except ValueError:
+        value = None
+    if not isinstance(value, dict):
+        rc.die(f"{label} is damaged; {remedy}")
+    return value
+
+
+def prepare_fingerprint(paths: Paths) -> dict:
+    """What clusters.jsonl was built from (the guidance supplies the domain hints), and
+    clusters.jsonl itself, so a hand edit is caught too."""
+    return {"correspondents.csv": file_sha256(paths.correspondents), "mail.sqlite": file_sha256(paths.mail),
+            "cleanup-guidance.md": file_sha256(paths.guidance), "clusters.jsonl": file_sha256(paths.clusters)}
+
+
+def check_prepared(paths: Paths) -> None:
+    """Refuse clusters built from inputs that have changed since prepare."""
+    if not paths.prepared.is_file():
+        rc.die("cleanup/prepare.json not found; rerun prepare")
+    recorded = read_operator_json(paths.prepared, "cleanup/prepare.json", "rerun prepare").get("sha256") or {}
+    current = prepare_fingerprint(paths)
+    changed = sorted(name for name, digest in current.items() if recorded.get(name) != digest)
+    if changed:
+        rc.die(f"{rc.quantity(len(changed), 'input')} changed since prepare ({', '.join(changed)}); "
+               "rerun prepare")
 
 
 def read_jsonl(path: Path, repair: bool):
@@ -1467,8 +1505,27 @@ def build_manifest(paths: Paths, prompts: dict, sdk_version: str, head: str) -> 
     }
 
 
+# Recorded in manifest.json for information only: a new commit (a docs change, say) must
+# not make every paid decision stale. Everything that shapes a decision is hashed.
+MANIFEST_INFO_ONLY = ("git_head",)
+
+
 def manifest_hash_of(manifest: dict) -> str:
-    return text_sha256(canonical_json(manifest))
+    return text_sha256(canonical_json({k: v for k, v in manifest.items() if k not in MANIFEST_INFO_ONLY}))
+
+
+def manifest_differences(recorded: dict, current: dict) -> list:
+    """Names of the decision-relevant manifest parts that differ (no values)."""
+    names = []
+    for key in sorted(set(recorded) | set(current)):
+        if key in MANIFEST_INFO_ONLY or recorded.get(key) == current.get(key):
+            continue
+        if key == "sha256" and isinstance(recorded.get(key), dict):
+            parts = set(recorded[key]) | set(current.get(key) or {})
+            names.extend(sorted(p for p in parts if recorded[key].get(p) != (current.get(key) or {}).get(p)))
+        else:
+            names.append(key)
+    return names
 
 
 def write_json(path: Path, value) -> None:
@@ -1943,7 +2000,8 @@ def run_review(paths: Paths, options: ReviewOptions, sdk: Sdk | None = None, hea
         rc.die("mail.sqlite not found in --out")
     if not paths.guidance.is_file():
         rc.die("cleanup-guidance.md not found in --out; write the private guidance first")
-    prompts = render_prompts(paths.guidance.read_text(encoding="utf-8"))
+    check_prepared(paths)
+    prompts = render_prompts(read_operator_text(paths.guidance, "cleanup-guidance.md"))
     if sdk is None and not options.dry_run:
         sdk = real_sdk()
     version = sdk.version if sdk is not None else installed_sdk_version()
@@ -2055,7 +2113,10 @@ def harvested_person(row, note="") -> Person:
 
 
 def load_overrides(path: Path) -> list:
-    _, rows = rc.read_private_csv(path, ("match", "action"))
+    try:
+        _, rows = rc.read_private_csv(path, ("match", "action"))
+    except UnicodeError:
+        rc.die("cleanup-overrides.csv could not be decoded; save it as CSV UTF-8 and rerun")
     overrides = []
     for number, row in enumerate(rows, 1):
         action = row["action"].strip().casefold()
@@ -2378,24 +2439,31 @@ def write_apply_outputs(paths: Paths, rows, result: ApplyResult, source_fields) 
         rc.write_people_csv(staged[paths.changes], result.changes, CHANGE_COLUMNS)
 
 
+def applicable_manifest_hash(paths: Paths, recorded: dict) -> str:
+    """The recorded manifest's hash, only if every decision-relevant input still matches
+    it: the rendered prompts (with the current guidance), tools, schema, models, limits
+    and data files. The SDK version is taken as recorded: apply calls no API."""
+    if not paths.guidance.is_file():
+        rc.die("cleanup-guidance.md not found in --out; the review decisions depend on it")
+    prompts = render_prompts(read_operator_text(paths.guidance, "cleanup-guidance.md"))
+    current = build_manifest(paths, prompts, recorded.get("anthropic"), recorded.get("git_head"))
+    if manifest_hash_of(current) != manifest_hash_of(recorded):
+        changed = manifest_differences(recorded, current)
+        rc.die(f"{rc.quantity(len(changed), 'review input')} changed since the last review "
+               f"({', '.join(changed)}); rerun review --dry-run, then review")
+    return manifest_hash_of(recorded)
+
+
 def run_apply(paths: Paths, use_overrides: bool, exclude_files) -> int:
     rows = load_correspondents(paths.correspondents)
     clusters = load_clusters(paths)
     source_fields = [c for c in rc.read_private_csv(paths.correspondents, ("email",))[0] if c and c != "notify"]
+    check_prepared(paths)
     manifest_hash = None
     if paths.manifest.is_file():
-        try:
-            manifest = json.loads(paths.manifest.read_text(encoding="utf-8"))
-        except ValueError:
-            rc.die("cleanup/manifest.json is damaged; rerun review --dry-run, then review")
-        recorded = manifest.get("sha256", {})
-        current = {"correspondents.csv": file_sha256(paths.correspondents), "clusters.jsonl": file_sha256(paths.clusters),
-                   "mail.sqlite": file_sha256(paths.mail), "offsets.sqlite": file_sha256(paths.offsets)}
-        changed = [name for name, digest in current.items() if recorded.get(name) != digest]
-        if changed:
-            rc.die(f"{rc.quantity(len(changed), 'input')} changed since the last review "
-                   "(rerun review --dry-run, then review)")
-        manifest_hash = manifest_hash_of(manifest)
+        manifest = read_operator_json(paths.manifest, "cleanup/manifest.json",
+                                      "rerun review --dry-run, then review")
+        manifest_hash = applicable_manifest_hash(paths, manifest)
     else:
         print("No review manifest yet: every cluster is kept as harvested.")
     decisions, _ = read_jsonl(paths.decisions, repair=False)
@@ -2482,12 +2550,16 @@ def run_prepare(paths: Paths) -> int:
         rc.die("mail.sqlite not found in --out")
     with contextlib.closing(rc.open_readonly_db(paths.mail)) as conn:
         typed = household_typed_names(conn, [a for r in rows for a in r["addresses"]])
-    domains = parse_guidance_domains(paths.guidance.read_text(encoding="utf-8")) if paths.guidance.is_file() else []
+    guidance = read_operator_text(paths.guidance, "cleanup-guidance.md") if paths.guidance.is_file() else ""
+    domains = parse_guidance_domains(guidance)
     clusters, counts = build_clusters(rows, typed, domains)
-    with rc.atomic_outputs([paths.clusters]) as staged:
+    text = "".join(canonical_json(cluster) + "\n" for cluster in clusters)
+    fingerprint = {**prepare_fingerprint(paths), "clusters.jsonl": text_sha256(text)}
+    with rc.atomic_outputs([paths.clusters, paths.prepared]) as staged:
         with rc.open_private(staged[paths.clusters]) as f:
-            for cluster in clusters:
-                f.write(canonical_json(cluster) + "\n")
+            f.write(text)
+        with rc.open_private(staged[paths.prepared]) as f:
+            f.write(json.dumps({"sha256": fingerprint}, sort_keys=True, indent=1) + "\n")
     sizes = collections.Counter(len(c["rows"]) for c in clusters)
     hints = collections.Counter(h["hint"] for c in clusters for h in c["hints"])
     print(f"{rc.quantity(len(rows), 'row')} -> {rc.quantity(len(clusters), 'cluster')} "
