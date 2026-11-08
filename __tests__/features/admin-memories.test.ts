@@ -19,7 +19,7 @@ const T1 = new Date("2026-11-04T11:00:00.000Z");
 
 type ContributorRow = { id: string; name: string | null; email: string | null; relationship: string | null; phone: string | null; contactOptIn: boolean; mailingListOptIn: boolean; updatedAt: Date }
 type MemoryRow = { id: string; memorialId: string; contributorId: string | null; type: string; source: string; sourceRef: string | null; visibility: string; approxDateText: string | null; place: string | null; contributorNote: string | null; notifyWhenPosted: boolean; consentVersion: string; consentedAt: Date | null; status: string; claimTokenHash: string; submissionId: string | null; submissionIndex: number | null; createdAt: Date; updatedAt: Date; deletedAt: Date | null; latitude: number | null; longitude: number | null; tags: string[]; approxYear: number | null; approxMonth: number | null }
-type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; durationSeconds: number | null; width: number | null; height: number | null; caption: string | null; approxDateText: string | null; place: string | null; sortOrder: number; deletedAt: Date | null; purgedAt: Date | null; createdAt: Date; blobUrl: string | null; storageKey: string; exif: unknown; replacesMediaId: string | null; derivatives: Array<{ kind: string; status: string }>; latitude: number | null; longitude: number | null }
+type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; durationSeconds: number | null; width: number | null; height: number | null; caption: string | null; approxDateText: string | null; place: string | null; sortOrder: number; deletedAt: Date | null; purgedAt: Date | null; createdAt: Date; updatedAt: Date; blobUrl: string | null; storageKey: string; exif: unknown; replacesMediaId: string | null; derivatives: Array<{ kind: string; status: string }>; latitude: number | null; longitude: number | null }
 interface Rev { memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown>; createdAt?: Date; id?: string }
 interface EmailRow { memoryId: string; emailType: string; status: string; sentAt: Date | null; attempts: number; createdAt: Date; recipientEmail: string }
 
@@ -117,7 +117,7 @@ function memoryRow(over: Partial<MemoryRow>): MemoryRow {
   return { id: MEM, memorialId: "memorial_1", contributorId: CON, type: "PHOTO", source: "WEB_UPLOAD", sourceRef: null, visibility: "FAMILY", approxDateText: "Summer 1998", place: null, contributorNote: "old note", notifyWhenPosted: true, consentVersion: "2026-11-v2", consentedAt: T0, status: "PENDING", claimTokenHash: "h".repeat(64), submissionId: null, submissionIndex: null, createdAt: T0, updatedAt: T0, deletedAt: null, latitude: null, longitude: null, tags: [], approxYear: null, approxMonth: null, ...over };
 }
 function mediaRow(over: Partial<MediaRow>): MediaRow {
-  return { id: "med_1", memoryId: MEM, status: "READY", mimeType: "image/jpeg", originalFilename: "a.jpg", durationSeconds: null, width: 10, height: 10, caption: null, approxDateText: null, place: null, sortOrder: 0, deletedAt: null, purgedAt: null, createdAt: T0, blobUrl: "https://blob/x", storageKey: "originals/x/a.jpg", exif: { gps: 1 }, replacesMediaId: null, derivatives: [{ kind: "WEB_IMAGE", status: "READY" }, { kind: "THUMBNAIL", status: "READY" }], latitude: null, longitude: null, ...over };
+  return { id: "med_1", memoryId: MEM, status: "READY", mimeType: "image/jpeg", originalFilename: "a.jpg", durationSeconds: null, width: 10, height: 10, caption: null, approxDateText: null, place: null, sortOrder: 0, deletedAt: null, purgedAt: null, createdAt: T0, updatedAt: T0, blobUrl: "https://blob/x", storageKey: "originals/x/a.jpg", exif: { gps: 1 }, replacesMediaId: null, derivatives: [{ kind: "WEB_IMAGE", status: "READY" }, { kind: "THUMBNAIL", status: "READY" }], latitude: null, longitude: null, ...over };
 }
 const versions = () => ({ memoryVersion: memories.find((m) => m.id === MEM)!.updatedAt.toISOString(), contributorVersion: contributors[0]!.updatedAt.toISOString() });
 
@@ -401,12 +401,15 @@ describe("sibling memories sharing one contributor (V8)", () => {
   });
 });
 
+/** The version the admin page and get_memory hand out with the memory, as the approver read it. */
+const reviewVersion = async () => (await getMemoryForAdmin(MEM))!.reviewVersion;
+
 describe("setMemoryStatusAsAdmin (V9)", () => {
   it("moves between PENDING, APPROVED and HIDDEN with one ADMIN revision each; a no-op writes nothing", async () => {
-    expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status: "APPROVED" })).toEqual({ ok: true });
+    expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status: "APPROVED", reviewVersion: await reviewVersion() })).toEqual({ ok: true });
     expect(memories[0]!.status).toBe("APPROVED");
     expect(revisions[0]).toMatchObject({ changedVia: "ADMIN", before: { status: "PENDING" }, after: { status: "APPROVED", consentVersion: "2026-11-v2" } });
-    expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status: "APPROVED" })).toEqual({ ok: true });
+    expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status: "APPROVED", reviewVersion: await reviewVersion() })).toEqual({ ok: true });
     expect(revisions).toHaveLength(1);
     expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status: "HIDDEN" })).toEqual({ ok: true });
     expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status: "PENDING" })).toEqual({ ok: true });
@@ -418,15 +421,57 @@ describe("setMemoryStatusAsAdmin (V9)", () => {
   it("refuses a DRAFT (only Share leaves it), a deleted memory, a missing one and DRAFT as a target", async () => {
     memories[0]!.status = "DRAFT";
     memories[0]!.consentedAt = null;
-    expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status: "APPROVED" })).toEqual({ ok: false, code: "draft" });
+    expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status: "APPROVED", reviewVersion: await reviewVersion() })).toEqual({ ok: false, code: "draft" });
     expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status: "PENDING" })).toEqual({ ok: false, code: "draft" });
     memories[0]!.status = "PENDING";
     expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status: "DRAFT" })).toEqual({ ok: false, code: "invalid" });
+    const read = await reviewVersion();
     memories[0]!.deletedAt = T1;
-    expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status: "APPROVED" })).toEqual({ ok: false, code: "not_found" });
-    expect(await setMemoryStatusAsAdmin({ memoryId: MEM2, status: "APPROVED" })).toEqual({ ok: false, code: "not_found" });
+    expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status: "APPROVED", reviewVersion: read })).toEqual({ ok: false, code: "not_found" });
+    expect(await setMemoryStatusAsAdmin({ memoryId: MEM2, status: "APPROVED", reviewVersion: read })).toEqual({ ok: false, code: "not_found" });
     expect(revisions).toHaveLength(0);
     expect(memories[0]!.status).toBe("PENDING");
+  });
+});
+
+describe("approval needs the review version the approver read (TCR round 1, B1-3)", () => {
+  it("getMemoryForAdmin hands out a review version", async () => {
+    expect(await reviewVersion()).toMatch(/^rv1\./);
+  });
+
+  it("refuses APPROVED without a review version, before anything is locked", async () => {
+    expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status: "APPROVED" })).toEqual({ ok: false, code: "invalid" });
+    expect(lockCalls).toHaveLength(0);
+  });
+
+  it.each([
+    ["the contributor edited the memory", () => { memories[0]!.updatedAt = T1; }],
+    ["the contributor changed their name", () => { contributors[0]!.updatedAt = T1; }],
+    ["a file was added", () => { media.push(mediaRow({ id: "med_new", status: "PENDING", updatedAt: T1 })); }],
+    ["a file finished uploading", () => { media[0]!.status = "READY"; media[0]!.updatedAt = T1; }],
+    ["a file was removed", () => { media[0]!.deletedAt = T1; }],
+  ])("answers stale and writes nothing when %s after the page was read", async (_what, change) => {
+    const read = await reviewVersion();
+    change();
+    expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status: "APPROVED", reviewVersion: read })).toEqual({ ok: false, code: "stale" });
+    expect(memories[0]!.status).toBe("PENDING");
+    expect(revisions).toHaveLength(0);
+    // Judged under the memory lock.
+    expect(lockCalls).toEqual([expect.stringContaining('"Memory"')]);
+  });
+
+  it("approves with the version just read", async () => {
+    contributors[0]!.updatedAt = T1;
+    expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status: "APPROVED", reviewVersion: await reviewVersion() })).toEqual({ ok: true });
+    expect(memories[0]!.status).toBe("APPROVED");
+  });
+
+  it.each(["HIDDEN", "PENDING"] as const)("never needs a version to take a memory off the site (%s), even a stale one", async (status) => {
+    memories[0]!.status = "APPROVED";
+    expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status })).toEqual({ ok: true });
+    memories[0]!.status = "APPROVED";
+    expect(await setMemoryStatusAsAdmin({ memoryId: MEM, status, reviewVersion: "rv1.stale" })).toEqual({ ok: true });
+    expect(memories[0]!.status).toBe(status);
   });
 });
 

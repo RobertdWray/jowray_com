@@ -7,6 +7,7 @@
 import { PrismaPg } from "@prisma/adapter-pg";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { getMemoryForAdmin } from "@/features/admin/get-memory";
 import { shareDraftAsAdmin } from "@/features/admin/share-draft";
 import { lockMemory } from "@/features/memories/lock";
 import { notifyAdminsOfMemory } from "@/features/memories/notify-admins";
@@ -98,8 +99,9 @@ describe.skipIf(!client)("share draft invariants (real Postgres, A1/A3)", () => 
     const error = await attempt(async (tx, memorialId) => {
       const contributor = await tx.contributor.create({ data: { memorialId, name: "Test sender", email: "sender@example.invalid" } });
       const memory = await tx.memory.create({ data: { ...draft(memorialId), contributorId: contributor.id, contributorNote: "A memory shared with the family." } });
-      const { updatedAt } = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { updatedAt: true } });
-      expect(await shareDraftAsAdmin({ memoryId: memory.id, memoryVersion: updatedAt.toISOString(), status })).toEqual({ ok: true, status, memoryVersion: expect.any(String) });
+      // get_memory's two versions, as the skill reads them; APPROVED also needs reviewVersion (TCR round 1, B1-3).
+      const { memoryVersion, reviewVersion } = (await getMemoryForAdmin(memory.id))!;
+      expect(await shareDraftAsAdmin({ memoryId: memory.id, memoryVersion, status, ...(status === "APPROVED" && { reviewVersion }) })).toEqual({ ok: true, status, memoryVersion: expect.any(String) });
       const where = { memoryId: memory.id, emailType: "ADMIN_NEW_MEMORY" } as const;
       const before = await tx.emailLog.findMany({ where });
       expect(before).toEqual([expect.objectContaining({ emailType: "ADMIN_NEW_MEMORY", status: "SKIPPED", errorMessage: "admin_shared" })]);

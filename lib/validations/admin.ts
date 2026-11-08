@@ -114,18 +114,45 @@ export const adminMemoryChangesSchema = z.object({
 export type AdminMemoryChangesInput = z.infer<typeof adminMemoryChangesSchema>;
 export type AdminMemoryChanges = AdminMemoryChangesInput["changes"];
 
-/** The status buttons: never DRAFT (sharing on behalf uses adminShareDraftSchema). */
-export const adminStatusSchema = z.object({
+/**
+ * The review version an approval vouches for (TCR round 1, B1-3): `reviewVersion` from the admin page or MCP
+ * `get_memory`, computed by lib/review-version.ts. Opaque to callers; bounded so a junk value is refused, not hashed.
+ */
+const reviewVersionSchema = z
+  .string()
+  .min(1)
+  .max(100)
+  .describe("`reviewVersion` from get_memory, read just before this call: approving checks the memory, its contributor and its files are exactly what you read");
+
+/** Approving publishes (D1), so APPROVED must say what was read; PENDING and HIDDEN take a memory off and never need it. */
+const approvalNeedsVersion = (input: { status: string; reviewVersion?: string }) => input.status !== "APPROVED" || input.reviewVersion !== undefined;
+const APPROVAL_NEEDS_VERSION = { message: "APPROVED needs the reviewVersion you read", path: ["reviewVersion"] };
+
+/** The status buttons' fields: never DRAFT (sharing on behalf uses adminShareDraftSchema). */
+export const adminStatusObjectSchema = z.object({
   memoryId: z.uuid(),
   status: z.enum(["PENDING", "APPROVED", "HIDDEN"]),
+  reviewVersion: reviewVersionSchema.optional(),
 });
 
+/** The status buttons, with the APPROVED rule (B1-3). MCP `set_status` uses a strict copy of the same fields and rule. */
+export const adminStatusSchema = adminStatusObjectSchema.refine(approvalNeedsVersion, APPROVAL_NEEDS_VERSION);
+
 /** Share on the sender's behalf, only on Rob's explicit word that this sender agreed. */
-export const adminShareDraftSchema = z.object({
+export const adminShareDraftObjectSchema = z.object({
   memoryId: z.uuid().describe("The DRAFT memory to share on the sender's behalf"),
   memoryVersion: isoDate,
   status: z.enum(["PENDING", "APPROVED"]).describe("The shared status; APPROVED + PUBLIC shows on See memories once the family turns it on"),
+  reviewVersion: reviewVersionSchema.optional(),
 });
+
+/** Sharing straight to APPROVED publishes too, so it needs the review version like set_status (B1-3). */
+export const adminShareDraftSchema = adminShareDraftObjectSchema.refine(approvalNeedsVersion, APPROVAL_NEEDS_VERSION);
+
+/** Apply the APPROVED rule to a strict copy of either object schema (MCP). */
+export function withApprovalRule<T extends z.ZodType<{ status: string; reviewVersion?: string }>>(schema: T): T {
+  return schema.refine(approvalNeedsVersion, APPROVAL_NEEDS_VERSION);
+}
 export type AdminShareDraftInput = z.infer<typeof adminShareDraftSchema>;
 
 /**

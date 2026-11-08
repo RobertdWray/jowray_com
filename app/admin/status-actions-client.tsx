@@ -15,6 +15,8 @@ export interface StatusActionsProps {
   deleted: boolean;
   /** Live files whose bytes are gone or going (`purgedAt` set). */
   purgedFiles: number;
+  /** What this page shows, as `getMemoryForAdmin` read it; Approve sends it back so a change made since is caught (TCR round 1, B1-3). */
+  reviewVersion: string;
 }
 
 type Confirm = "delete" | "restore" | "reissue" | null;
@@ -52,9 +54,12 @@ export function StatusActions({ memory }: { memory: StatusActionsProps }) {
 
   function onStatus(status: "PENDING" | "APPROVED" | "HIDDEN") {
     return run(async () => {
-      const result = await setStatus({ memoryId: memory.id, status });
+      const result = await setStatus({ memoryId: memory.id, status, ...(status === "APPROVED" && { reviewVersion: memory.reviewVersion }) });
       if (result.ok) {
         return status === "APPROVED" ? "Approved." : status === "HIDDEN" ? "Hidden." : "Back to pending.";
+      }
+      if (result.code === "stale") {
+        return "Not approved: this memory changed since you opened it. The page now shows the latest version; read it again before approving.";
       }
       return result.code === "draft" ? "Only the person who sent this can share it; wait for them to press Share." : unauthorizedOr(result.code, "That could not be changed.");
     });

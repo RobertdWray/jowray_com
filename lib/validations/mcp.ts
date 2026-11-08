@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { sourceInputSchema } from "@/lib/source-input";
-import { adminCoordinatesSchema, adminFinalizeUploadSchema, adminRequestUploadSchema, adminDeletedSchema, adminMemoryChangesSchema, adminMemoryIdSchema, adminShareDraftSchema, adminStatusSchema, MEMORY_STATUSES } from "@/lib/validations/admin";
+import { adminCoordinatesSchema, adminFinalizeUploadSchema, adminRequestUploadSchema, adminDeletedSchema, adminMemoryChangesSchema, adminMemoryIdSchema, adminShareDraftObjectSchema, adminStatusObjectSchema, MEMORY_STATUSES, withApprovalRule } from "@/lib/validations/admin";
 import { draftMemoryObjectSchema } from "@/lib/validations/memory";
 
 /**
@@ -58,10 +58,10 @@ export const mcpCoordinatesSchema = adminCoordinatesSchema.strict();
 export const mcpMemoryChangesSchema = adminMemoryChangesSchema.strict();
 
 /** `set_status`. */
-export const mcpStatusSchema = adminStatusSchema.strict();
+export const mcpStatusSchema = withApprovalRule(adminStatusObjectSchema.strict());
 
 /** `share_draft`. */
-export const mcpShareDraftSchema = adminShareDraftSchema.strict();
+export const mcpShareDraftSchema = withApprovalRule(adminShareDraftObjectSchema.strict());
 
 /** `set_deleted`. */
 export const mcpDeletedSchema = adminDeletedSchema.strict();

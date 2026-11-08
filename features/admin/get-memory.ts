@@ -1,5 +1,6 @@
 import "server-only";
 
+import { reviewVersionOf } from "@/features/admin/review-version";
 import { LIVE_MEDIA_ORDER } from "@/features/memories/media-state";
 import type { AdminMemoryStatus } from "@/lib/validations/admin";
 import { coordinatesOf, type Coordinates } from "@/lib/validations/memory";
@@ -68,6 +69,11 @@ export interface AdminMemoryView {
   deletedAt: Date | null;
   /** `Memory.updatedAt` as ISO; sent back with a save. */
   memoryVersion: string;
+  /**
+   * What an approval vouches for (TCR round 1, B1-3): the memory, its contributor and its live files as read here.
+   * `set_status` APPROVED (and `share_draft` to APPROVED) refuse with `stale` once any of them has changed.
+   */
+  reviewVersion: string;
   contributor: AdminContributorView | null;
   media: AdminMediaView[];
   revisions: AdminRevisionView[];
@@ -140,11 +146,13 @@ export async function getMemoryForAdmin(id: string, options: AdminViewOptions = 
     where: { id },
     include: {
       contributor: { select: { id: true, name: true, email: true, relationship: true, phone: true, contactOptIn: true, mailingListOptIn: true, updatedAt: true } },
+      // The live files, as REVIEW_FACTS_SELECT reads them (`updatedAt` is for the review version only).
       media: {
         where: { deletedAt: null },
         select: {
           id: true,
           status: true,
+          updatedAt: true,
           mimeType: true,
           originalFilename: true,
           durationSeconds: true,
@@ -191,6 +199,7 @@ export async function getMemoryForAdmin(id: string, options: AdminViewOptions = 
     updatedAt: memory.updatedAt,
     deletedAt: memory.deletedAt,
     memoryVersion: memory.updatedAt.toISOString(),
+    reviewVersion: reviewVersionOf(memory),
     contributor: memory.contributor
       ? {
           id: memory.contributor.id,

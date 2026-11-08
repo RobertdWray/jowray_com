@@ -111,7 +111,7 @@ export function MemoryAside({ memory }: { memory: AdminMemoryView }) {
     <div className="flex min-w-0 flex-col gap-6">
       <section aria-label="Status" className="flex min-w-0 flex-col gap-3">
         <h3 className="text-label font-bold">Status</h3>
-        <StatusActions memory={{ id: memory.id, status: memory.status, deleted: memory.deletedAt !== null, purgedFiles: memory.media.filter((m) => m.purged).length }} />
+        <StatusActions memory={{ id: memory.id, status: memory.status, deleted: memory.deletedAt !== null, purgedFiles: memory.media.filter((m) => m.purged).length, reviewVersion: memory.reviewVersion }} />
       </section>
       <section aria-label="Files" className="flex min-w-0 flex-col gap-3">
         <h3 className="text-label font-bold">Files</h3>

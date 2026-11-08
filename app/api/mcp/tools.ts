@@ -61,7 +61,7 @@ const TOOLS = {
   get_memory: {
     title: "Get a memory",
     description:
-      "One memory with its contributor, files, coordinates, revision history and emails. `memoryVersion` and `contributor.contributorVersion` are what update_memory and set_coordinates need. Each file's `coordinates` is where the camera was (often a home); never propose it for set_coordinates.",
+      "One memory with its contributor, files, coordinates, revision history and emails. `memoryVersion` and `contributor.contributorVersion` are what update_memory and set_coordinates need. `reviewVersion` is what set_status (and share_draft) need to approve: it covers the memory, its contributor and its files, so approve only right after reading them. Each file's `coordinates` is where the camera was (often a home); never propose it for set_coordinates.",
     inputSchema: mcpMemoryIdSchema,
     annotations: { readOnlyHint: true },
   },
@@ -87,13 +87,13 @@ const TOOLS = {
   set_status: {
     title: "Set a memory's status",
     description:
-      "Moves a shared memory between PENDING, APPROVED and HIDDEN. A DRAFT is refused (`draft`); use `share_draft`. APPROVED with visibility PUBLIC shows the memory on See memories once the family has turned those pages on (PUBLIC_MEMORIES_ENABLED); PENDING or HIDDEN takes it off.",
+      "Moves a shared memory between PENDING, APPROVED and HIDDEN. A DRAFT is refused (`draft`); use `share_draft`. APPROVED with visibility PUBLIC shows the memory on See memories once the family has turned those pages on (PUBLIC_MEMORIES_ENABLED); PENDING or HIDDEN takes it off. APPROVED needs `reviewVersion` from get_memory, read just before: on `stale` the memory, its contributor or a file changed since, so call get_memory again, show Rob what changed and ask before approving again. PENDING and HIDDEN never need it.",
     inputSchema: mcpStatusSchema,
     annotations: { destructiveHint: true, idempotentHint: true },
   },
   share_draft: {
     title: "Share a draft on the sender's behalf",
-    description: "Records the sender's consent and moves a DRAFT to PENDING or APPROVED, with the same consent stamp as the sender's own Share. Call it only when Rob says in this conversation that this named sender agreed; never infer consent from a reply or a message's tone. Read `memoryVersion` from `get_memory` first. On `stale`, re-read and show Rob what changed before asking again. APPROVED with visibility PUBLIC shows the memory on See memories once the family has turned those pages on (PUBLIC_MEMORIES_ENABLED). No admin alert is sent, now or later. The sender's preferences and claim link are unchanged.",
+    description: "Records the sender's consent and moves a DRAFT to PENDING or APPROVED, with the same consent stamp as the sender's own Share. Call it only when Rob says in this conversation that this named sender agreed; never infer consent from a reply or a message's tone. Read `memoryVersion` from `get_memory` first, and for APPROVED also `reviewVersion` (it covers the files and the sender's name too). On `stale`, re-read and show Rob what changed before asking again. APPROVED with visibility PUBLIC shows the memory on See memories once the family has turned those pages on (PUBLIC_MEMORIES_ENABLED). No admin alert is sent, now or later. The sender's preferences and claim link are unchanged.",
     inputSchema: mcpShareDraftSchema,
     annotations: { destructiveHint: true, idempotentHint: true },
   },
