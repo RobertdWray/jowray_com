@@ -58,8 +58,7 @@ export function ThankYou({ memories, emailed, onAnother }: { memories: SentMemor
           Thank you. Your {several ? `${memories.length} memories are` : "memory is"} on {several ? "their" : "its"} way to Richard, Rob and Tracy. We read every single one, usually more than once.
         </p>
         <p className="max-w-[30em] text-body">
-          On November 10th, after we have some stories, photos and videos collected, we&apos;ll be sharing them with everyone and will email an update to all who
-          have contributed.
+          Once we have some stories, photos and videos collected, we&apos;ll share them with everyone and email an update to all who have contributed.
         </p>
         <div className="flex flex-wrap justify-center gap-4">
           <PrimaryButton onClick={onAnother}>Tell another one</PrimaryButton>
