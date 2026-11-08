@@ -655,10 +655,20 @@ def candidate_edges(rows, household_typed) -> list:
         for key in (exact_name_key(row), rc.name_key(row.get("name", ""))):
             if key:
                 keys[key].add(row["rank"])
+    # Rows the household wrote to under one full name are linked to the rows of that name
+    # and to each other, even when a row's own name is blank or a single word.
+    typed_ranks = collections.defaultdict(set)
     for row in rows:
         for address in row["addresses"]:
             for typed in household_typed.get(address, {}):
-                for other in sorted(keys.get(rc.name_key(typed) or "", ())):
+                key = rc.name_key(typed)
+                if key:
+                    typed_ranks[key].add(row["rank"])
+    for row in rows:
+        for address in row["addresses"]:
+            for typed in household_typed.get(address, {}):
+                key = rc.name_key(typed) or ""
+                for other in sorted(keys.get(key, set()) | typed_ranks.get(key, set())):
                     add(row["rank"], other, "household_typed")
     return edges
 

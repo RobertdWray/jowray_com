@@ -283,6 +283,14 @@ class PrepareTests(unittest.TestCase):
         edges = self.kinds(rows, {"rf@example.com": {"Robert Fiction": 3}})
         self.assertEqual(edges[(1, 2)], "household_typed")
 
+    def test_rows_written_to_under_one_typed_name_are_linked_even_without_names(self):
+        rows = [row(1, addresses=["rf@example.com"], name=""), row(2, first="Robert", addresses=["r.f@example.net"]),
+                row(3, addresses=["other@example.org"], name="")]
+        typed = {"rf@example.com": {"Robert Fiction": 3}, "r.f@example.net": {"Robert Fiction": 1},
+                 "other@example.org": {"Robert": 2}}  # a one-word typed name links nothing
+        edges = self.kinds(rows, typed)
+        self.assertEqual(edges, {(1, 2): "household_typed"})
+
     def test_cap_split_by_first_name_and_singletons(self):
         roberts = [row(i, first, "Sample") for i, first in enumerate(
             ("Robert", "Bob", "Rob", "Bobby", "Robbie", "Robert"), 1)]
