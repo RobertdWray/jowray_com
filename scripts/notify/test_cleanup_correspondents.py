@@ -765,6 +765,58 @@ class ReviewTests(CleanupCase):
         code, client = self.review(default_script, phase="haiku")
         self.assertEqual(len(client.calls), 5)  # budget refusals are not cached
 
+    def alice_entry(self):
+        entries = cc.read_jsonl(self.paths.decisions, repair=False)[0]
+        return next(e for e in entries if e["ranks"] == [self.rank(ALICE)])
+
+    def test_a_tool_call_cut_off_at_max_tokens_never_runs(self):
+        self.build()
+
+        def script(payload, params):
+            if payload["cluster"]["rows"][0]["addresses"] == [ALICE]:
+                return [FakeMessage([Block(type="text", text="Checking."),
+                                     Block(type="tool_use", id="toolu_cut", name="names_used",
+                                           input={"address": ALICE})], "max_tokens", cc.HAIKU_MODEL)]
+            return default_script(payload, params)
+
+        self.review(script, phase="haiku")
+        alice = self.alice_entry()
+        self.assertEqual((alice["status"], alice["tool_calls"], alice["turns"]), ("invalid", {}, 1))
+        self.assertIn("stop reason max_tokens, in a tool call", alice["error"])
+        self.assertEqual(sum(c[1] == [self.rank(ALICE)] for c in self.last_client_calls), 1)  # not replayed
+
+    def test_an_answer_cut_off_at_max_tokens_is_replayed_once(self):
+        self.build()
+        replays = []
+
+        def script(payload, params):
+            if payload["cluster"]["rows"][0]["addresses"] == [ALICE]:
+                if len(params["messages"]) == 1:
+                    return [final('{"people": [', stop="max_tokens")]
+                replays.append(params["messages"])
+            return default_script(payload, params)
+
+        self.review(script, phase="haiku")
+        self.assertEqual(len(replays), 1)
+        self.assertEqual([m["role"] for m in replays[0]], ["user", "assistant", "user"])
+        self.assertEqual(replays[0][-1]["content"], cc.FINAL_ANSWER_NOW)
+        self.assertEqual(self.alice_entry()["status"], "ok")
+
+    def test_the_last_allowed_turn_never_runs_its_tool_calls(self):
+        self.build()
+        limit = cc.LIMITS["haiku"].max_iterations
+
+        def script(payload, params):
+            if payload["cluster"]["rows"][0]["addresses"] == [ALICE]:
+                return [tool_call("search_people", query="sample") for _ in range(limit + 2)]
+            return default_script(payload, params)
+
+        self.review(script, phase="haiku")
+        alice = self.alice_entry()
+        self.assertEqual((alice["status"], alice["turns"]), ("invalid", limit))
+        self.assertEqual(alice["tool_calls"], {"search_people": limit - 1})
+        self.assertIn("stop reason tool_use, in a tool call", alice["error"])
+
     def test_internal_tool_errors_are_counted_in_the_decision(self):
         self.build()
         with mock.patch.object(cc.AgentTools, "names_used", side_effect=KeyError("Alice secret")):

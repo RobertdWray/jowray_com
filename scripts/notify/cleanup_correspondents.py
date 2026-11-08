@@ -1444,6 +1444,14 @@ def final_text(message) -> str:
                    if getattr(b, "type", None) == "text")
 
 
+def has_tool_call(message) -> bool:
+    return any(getattr(b, "type", None) == "tool_use" for b in (getattr(message, "content", None) or []))
+
+
+FINAL_ANSWER_NOW = ("Your answer was cut off at the output limit. Give your final answer now, complete "
+                    "and shorter, in the required format, without calling a tool.")
+
+
 class Reviewer:
     def __init__(self, paths: Paths, rows, prompts, manifest_hash, sdk: Sdk | None,
                  budgets: dict, decisions: JsonlLog, spend: JsonlLog, dry_run: bool):
@@ -1540,7 +1548,14 @@ class Reviewer:
         self.count(f"{entry['phase']} {entry['status']}")
 
     def converse(self, phase, cluster, params, tools: AgentTools, hold: Hold) -> dict:
-        """The tool-runner conversation, with one validation retry inside the same bounds."""
+        """The tool-runner conversation, with at most one retry inside the same bounds.
+
+        A turn's tool calls run only when it stopped for tool_use and another turn is
+        still allowed, and every assistant turn enters the history exactly once. A turn
+        cut off at max_tokens never runs a tool: without a tool call it is replayed once
+        with a request for the final answer; with one it cannot be replayed (a tool call
+        needs its result), so the run is invalid.
+        """
         wrapped = [self.sdk.wrap_tool(spec) for spec in tools.specs()]
         history = list(params["messages"])
         remaining, turns, errors = LIMITS[phase].max_iterations, 0, []
@@ -1548,39 +1563,49 @@ class Reviewer:
             runner = self.sdk.client.beta.messages.tool_runner(
                 tools=wrapped, max_iterations=remaining, **{**params, "messages": list(history)})
             final, used = None, 0
-            for message in runner:
-                used += 1
-                self.record_spend(phase, cluster["cluster_id"], params["model"], message.usage, hold)
-                if hold.overrun:  # stop between turns, before any further tool call or request
-                    runner.close()
-                    return {"status": "budget", "turns": turns + used,
-                            "error": "the run reached its reserved worst case"}
-                # Run this turn's tool calls now (the runner reuses the cached result) so the
-                # conversation can be continued after a validation failure.
-                response = runner.generate_tool_call_response()
-                if response is not None:
-                    history.extend([message.to_param(), response])
-                final = message
+            try:
+                for message in runner:
+                    used += 1
+                    self.record_spend(phase, cluster["cluster_id"], params["model"], message.usage, hold)
+                    if hold.overrun:  # stop between turns, before any further tool call or request
+                        return {"status": "budget", "turns": turns + used,
+                                "error": "the run reached its reserved worst case"}
+                    if getattr(message, "stop_reason", None) == "tool_use" and used < remaining:
+                        # Run the calls now (the runner reuses this result for its next request)
+                        # so the history can continue the conversation after a failed answer.
+                        response = runner.generate_tool_call_response()
+                        if response is not None:
+                            history.extend([message.to_param(), response])
+                            continue
+                    final = message
+                    break
+            finally:
+                runner.close()  # a turn the loop did not continue never runs its tool calls
             remaining, turns = remaining - used, turns + used
             if final is None:
                 return {"status": "invalid", "turns": turns, "error": "no response"}
             stop = getattr(final, "stop_reason", None)
             if stop == "refusal":
                 return {"status": "refused", "turns": turns}
-            if stop != "end_turn":
-                errors = [f"the review ended before a final answer (stop reason {stop})"]
-            else:
+            if stop == "end_turn":
                 try:
                     decision, errors = validate_answer(json.loads(final_text(final)), cluster)
                 except ValueError:
                     decision, errors = None, ["the final answer was not valid JSON"]
                 if not errors:
                     return {"status": "ok", "turns": turns, "decision": decision}
-            if attempt == 2 or remaining <= 0 or stop not in ("end_turn", "max_tokens"):
+                retry = ("Your answer could not be used: " + "; ".join(errors))[:FEEDBACK_CHARS - 80]
+                retry += ". Give a corrected, complete answer in the required format."
+            elif stop == "max_tokens" and not has_tool_call(final):
+                errors = ["the answer was cut off at the output limit"]
+                retry = FINAL_ANSWER_NOW
+            else:
+                errors = [f"the review ended before a final answer (stop reason {stop}"
+                          + (", in a tool call)" if has_tool_call(final) else ")")]
                 break
-            feedback = ("Your answer could not be used: " + "; ".join(errors))[:FEEDBACK_CHARS - 80]
-            feedback += ". Give a corrected, complete answer in the required format."
-            history.extend([final.to_param(), {"role": "user", "content": feedback}])
+            if attempt == 2 or remaining <= 0:
+                break
+            history.extend([final.to_param(), {"role": "user", "content": retry}])
         # The private decisions file keeps the reasons (they can name cluster addresses).
         return {"status": "invalid", "turns": turns, "error": "; ".join(errors)[:300]}
 
