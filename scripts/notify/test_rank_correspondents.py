@@ -439,11 +439,17 @@ class SourceTests(TempTestCase):
                          [("mid:keep@example.com",)])
 
 
+def address_scores(conn, half_life, ref_ts):
+    """Both scoring passes, with every address its own person (per-address tallies)."""
+    _, ignored = rank_correspondents.collect_address_stats(conn, {OWNER})
+    return rank_correspondents.score_people(conn, lambda a: a, {OWNER}, half_life, ref_ts), ignored
+
+
 class ScoringTests(TempTestCase):
     def score(self, messages, ref_ts=MAIL_TIME, half_life=10.0):
         box = self.mbox("mail/Inbox", messages)
         conn, _, _, _ = self.database([box])
-        return rank_correspondents.score_addresses(conn, {OWNER}, half_life, ref_ts)
+        return address_scores(conn, half_life, ref_ts)
 
     def test_weight_tier_boundaries(self):
         for n, expected in ((0, 4.0), (1, 4.0), (2, 3.0), (3, 3.0), (4, 1.5),
@@ -492,8 +498,9 @@ class ScoringTests(TempTestCase):
         # An .eml has no envelope, so no date fallback can fill this missing timestamp.
         eml = self.write("undated.eml", headers(date=None))
         conn, _, _, _ = self.database([eml])
-        stats, _ = rank_correspondents.score_addresses(conn, {OWNER}, 10, MAIL_TIME)
-        self.assertEqual(stats[ALICE].recv_score, 0.75)
+        scores, _ = address_scores(conn, 10, MAIL_TIME)
+        self.assertEqual(scores[ALICE].recv_score, 0.75)
+        stats, _ = rank_correspondents.collect_address_stats(conn, {OWNER})
         self.assertIsNone(stats[ALICE].first_ts)
 
     def test_received_bulk_and_automated_add_nothing(self):
@@ -515,12 +522,14 @@ class ScoringTests(TempTestCase):
         self.assertFalse(ignored)
 
     def test_two_way_bonus_is_applied_to_people(self):
-        stats, _ = self.score([headers(message_id="in"),
-                              headers(message_id="out", sender=OWNER,
-                                      to="Alice Example <alice@example.com>")])
+        messages = [headers(message_id="in"),
+                    headers(message_id="out", sender=OWNER, to="Alice Example <alice@example.com>")]
+        stats, _ = self.score(messages)
         self.assertEqual((stats[ALICE].sent_score, stats[ALICE].recv_score), (4.0, 1.5))
-        people, dropped, _ = rank_correspondents.build_people(
-            stats, {}, (set(), set()), {OWNER}, set(), set(), 2)
+        conn, _, _, _ = self.database([self.root / "mail/Inbox"])
+        ranking = rank_correspondents.rank_from_db(conn, [OWNER], excl=(set(), set()), book={},
+                                                   min_received=2, half_life=10.0)
+        people, dropped = ranking.people, ranking.dropped
         self.assertFalse(dropped)
         self.assertEqual(len(people), 1)
         self.assertEqual(people[0]["score"], 6.9)  # (4 + 1.5) * 1.25, rounded to one decimal
@@ -534,27 +543,52 @@ class ScoringTests(TempTestCase):
         self.assertEqual(dict(counts), {"read": 4, "duplicates": 2})
         self.assertEqual(sum(folders.values()), 2)
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM participants").fetchone()[0], 4)
-        stats, _ = rank_correspondents.score_addresses(conn, {OWNER}, 10, MAIL_TIME)
+        stats, _ = address_scores(conn, 10, MAIL_TIME)
         self.assertEqual((stats[ALICE].she_wrote, stats[ALICE].they_wrote), (1, 1))
         self.assertEqual((stats[ALICE].sent_score, stats[ALICE].recv_score), (4.0, 1.5))
 
 
+def hand_stats(address, name="", sent=0, received=0, timestamp=MAIL_TIME, subject="A picnic"):
+    """One address's evidence and its tally, as if from separate one-recipient messages."""
+    value = rank_correspondents.AddrStats()
+    value.touch(timestamp, address, name, subject)
+    if sent:
+        value.last_sent_ts = timestamp
+    tally = rank_correspondents.Tally()
+    tally.she_wrote = tally.she_wrote_direct = sent
+    tally.they_wrote = received
+    tally.sent_score = 4.0 * sent
+    tally.recv_score = 1.5 * received
+    return value, tally
+
+
+def hand_people(entries, book=None, excluded=None, own_keys=None, lists=None, min_received=2,
+                self_addrs=(OWNER,)):
+    """build_people over hand-built entries; tallies of one person's addresses are summed."""
+    book = book or {}
+    stats = {address: value for address, (value, _) in entries.items()}
+    keys = rank_correspondents.person_keys(stats, book)
+    scores = {}
+    for address, (_, tally) in entries.items():
+        total = scores.setdefault(keys[address], rank_correspondents.Tally())
+        for field in ("sent_score", "recv_score", "she_wrote", "she_wrote_direct", "they_wrote"):
+            setattr(total, field, getattr(total, field) + getattr(tally, field))
+    return rank_correspondents.build_people(stats, scores, book, excluded or (set(), set()),
+                                            list(self_addrs), own_keys or set(), lists or set(),
+                                            min_received)
+
+
 class PeopleTests(TempTestCase):
     def stats(self, address, name="", sent=0, received=0, timestamp=MAIL_TIME, subject="A picnic"):
-        value = rank_correspondents.AddrStats()
-        value.she_wrote = value.she_wrote_direct = sent
-        value.they_wrote = received
-        value.sent_score = 4.0 * sent
-        value.recv_score = 1.5 * received
-        value.touch(timestamp, address, name, subject)
-        return value
+        return hand_stats(address, name, sent, received, timestamp, subject)
 
     def people(self, stats, book=None, excluded=None, own_keys=None, lists=None, min_received=2):
-        return rank_correspondents.build_people(stats, book or {}, excluded or (set(), set()),
-                                                {OWNER}, own_keys or set(), lists or set(),
-                                                min_received)
+        return hand_people(stats, book, excluded, own_keys, lists, min_received)
 
-    def test_full_name_grouping_uses_latest_address_and_aggregates(self):
+    def test_full_name_grouping_prefers_household_sent_address_and_aggregates(self):
+        # Rulings R2/R5 (plan §2): the household's own most recent address wins over a
+        # newer address the person wrote from. Before the cleanup plan the latest-seen
+        # address (alice@) was chosen here.
         older = dt.datetime(2020, 1, 2, 12, tzinfo=dt.timezone.utc).timestamp()
         stats = {
             "alice-old@example.com": self.stats("alice-old@example.com", "Example, Alice A.",
@@ -563,11 +597,11 @@ class PeopleTests(TempTestCase):
             BOB: self.stats(BOB, "Bob Sample", sent=1),
         }
         people, dropped, own = self.people(stats)
-        self.assertEqual([p["send_to"] for p in people], [ALICE, BOB])
+        self.assertEqual([p["send_to"] for p in people], ["alice-old@example.com", BOB])
         alice = people[0]
         self.assertEqual((alice["she_wrote"], alice["they_wrote"], alice["score"]), (1, 1, 6.9))
         self.assertEqual((alice["first_year"], alice["last_year"], alice["years_active"]), (2020, 2024, 2))
-        self.assertEqual(alice["other_addresses"], "alice-old@example.com (last 2020)")
+        self.assertEqual(alice["other_addresses"], "alice@example.com (last 2024)")
         self.assertEqual(alice["names_seen"], "Example, Alice A. / Dr. Alice Example")
         self.assertEqual(alice["recent_subjects"], "A picnic")
         self.assertEqual([p["rank"] for p in people], [1, 2])
@@ -846,11 +880,8 @@ class NameHardeningTests(QuietTestCase):
                 self.assertEqual(rank_correspondents.last_name_of(name), last)
 
     def test_list_last_name_is_empty(self):
-        stats = rank_correspondents.AddrStats()
-        stats.she_wrote = 1
-        stats.touch(MAIL_TIME, ALICE, "Picnic List", "")
-        people, _, _ = rank_correspondents.build_people(
-            {ALICE: stats}, {}, (set(), set()), [OWNER], set(), {ALICE}, 2)
+        people, _, _ = hand_people({ALICE: hand_stats(ALICE, "Picnic List", sent=1, subject="")},
+                                   lists={ALICE})
         self.assertEqual(people[0].get("last_name"), "")
 
 
@@ -1925,6 +1956,347 @@ class OutputSafetyTests(PipelineTestCase):
         with mock.patch.object(csv.DictWriter, "writerows", fail_second):
             self.assert_private_refusal(lambda: self.command("schedule", out))
         self.assertEqual(self.snapshot(out), before)
+
+
+FULLWIDTH_INFO = "ｉｎｆｏ@example.com"     # ｉｎｆｏ@
+SUPERSCRIPT_INFO = "ⁱⁿᶠᵒ@example.com"   # ⁱⁿᶠᵒ@
+FULLWIDTH_JOHN = "ｊｏｈｎ@example.com"     # ｊｏｈｎ@ (not a role word)
+
+
+class LookalikeTests(TempTestCase):
+    def test_nfkc_folds_fullwidth_and_superscript_role_addresses(self):
+        for address in (FULLWIDTH_INFO, SUPERSCRIPT_INFO, "ｉｎｆｏ+news@example.com"):
+            with self.subTest(address=address):
+                self.assertEqual(rank_correspondents.canon(address), address)
+                self.assertTrue(rank_correspondents.looks_automated(address))
+                self.assertTrue(rank_correspondents.has_lookalike(address))
+        self.assertFalse(rank_correspondents.looks_automated(FULLWIDTH_JOHN))
+        self.assertTrue(rank_correspondents.has_lookalike(FULLWIDTH_JOHN))
+
+    def test_accents_and_ascii_are_not_lookalikes(self):
+        for address in (ALICE, "josé@example.com", "josé@example.com", "INFO@example.com"):
+            with self.subTest(address=address):
+                self.assertFalse(rank_correspondents.has_lookalike(address))
+
+    def test_rank_drops_lookalike_role_sender_and_flags_lookalike_person(self):
+        box = self.mbox("mail/Inbox", [
+            headers(message_id="spam-1", sender="Eye Health <" + FULLWIDTH_INFO + ">"),
+            headers(message_id="spam-2", sender="Eye Health <" + FULLWIDTH_INFO + ">"),
+            headers(message_id="john-1", sender="John Fiction <" + FULLWIDTH_JOHN + ">"),
+            headers(message_id="john-2", sender="John Fiction <" + FULLWIDTH_JOHN + ">"),
+        ])
+        out = self.root / "out"
+        self.assertEqual(rank_correspondents.rank_main([str(box), "--self", OWNER, "--out", str(out)]), 0)
+        with (out / "correspondents.csv").open(encoding="utf-8-sig", newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        self.assertEqual([r["email"] for r in rows], [FULLWIDTH_JOHN])
+        self.assertEqual(rows[0]["flags"], "look-alike address")
+        self.assertIn("2 automated messages", self.stdout.getvalue())
+
+
+class IterMboxTests(TempTestCase):
+    def test_offsets_cover_the_file_and_read_mbox_is_unchanged(self):
+        one = headers(message_id="one", newline="\r\n")
+        two = headers(message_id="two")
+        path = self.mbox("mail/Inbox", [one, two, headers(message_id="three")],
+                         body=b"body text\n\nFrom this is just prose\nNot a header\n\nend")
+        data = path.read_bytes()
+        found = list(rank_correspondents.iter_mbox(path))
+        self.assertEqual([(h, e) for h, e, _, _ in found], list(rank_correspondents.read_mbox(path)))
+        self.assertEqual(found[0][2], 0)
+        self.assertEqual(found[-1][3], len(data))
+        for (header, _env, start, end), following in zip(found, found[1:] + [None]):
+            self.assertTrue(data[start:end].startswith(b"From "))
+            self.assertIn(header, data[start:end])
+            if following is not None:
+                self.assertEqual(end, following[2])
+
+    def test_header_cap_and_envelope_only_message_offsets(self):
+        cap = rank_correspondents.MAX_HEADER_LINES
+        oversized = b"From: alice@example.com\n" + b"X-Synthetic: value\n" * (cap + 2)
+        envelope = b"From owner@example.com Tue Jan  2 12:00:00 2024\n"
+        data = envelope + oversized + b"\nbody\n\n" + envelope + envelope + headers(message_id="last")
+        path = self.write("mail/Capped", data)
+        found = list(rank_correspondents.iter_mbox(path))
+        self.assertEqual(len(found), 2)  # an envelope with no header lines is not a message
+        self.assertEqual([(h, e) for h, e, _, _ in found], list(rank_correspondents.read_mbox(path)))
+        self.assertEqual((found[0][2], found[0][3]), (0, len(envelope) + len(oversized) + len(b"\nbody\n\n")))
+        self.assertEqual(found[1][3], len(data))
+
+
+class PersonScoringTests(TempTestCase):
+    def ranking(self, messages, **kwargs):
+        box = self.mbox("mail/Inbox", messages)
+        conn, _, _, _ = self.database([box])
+        return rank_correspondents.rank_from_db(conn, [OWNER], excl=(set(), set()), book={},
+                                                min_received=2, half_life=10.0, **kwargs)
+
+    def test_one_message_to_two_aliases_counts_once(self):
+        # Before person-level scoring: n = 2 addresses, weight 3 each, she_wrote 2.
+        people = self.ranking([headers(sender=OWNER, to="Alice Example <alice@example.com>, "
+                                                       "Alice Example <alice-old@example.com>")]).people
+        self.assertEqual(len(people), 1)
+        alice = people[0]
+        self.assertEqual((alice["she_wrote"], alice["she_wrote_direct"], alice["score"]), (1, 1, 4.0))
+        self.assertEqual(alice["other_addresses"], "alice-old@example.com (last 2024)")
+
+    def test_sent_weight_counts_distinct_people(self):
+        people = self.ranking([headers(sender=OWNER, to="Alice Example <alice@example.com>, "
+                                       "Alice Example <alice-old@example.com>, Bob Sample <bob@example.com>")]).people
+        # Two people, not three addresses: weight 3 (2-3 recipients) for each.
+        self.assertEqual({p["email"]: (p["score"], p["she_wrote"]) for p in people},
+                         {ALICE: (3.0, 1), BOB: (3.0, 1)})
+
+    def test_inbound_to_cc_still_counts_addresses(self):
+        # NG6: the inbound weight keeps counting To/Cc addresses.
+        people = self.ranking([headers(message_id="in-" + str(i), to="Owner Example <owner@example.com>, "
+                                       "Alice Example <alice@example.com>, Alice Example <alice-old@example.com>",
+                                       sender="Bob Sample <bob@example.com>") for i in range(2)]).people
+        self.assertEqual([(p["email"], p["score"]) for p in people], [(BOB, 2.0)])
+
+    def test_rank_main_matches_rank_from_db_on_its_own_database(self):
+        mail = self.mbox("mail/Inbox", [
+            headers(message_id="out", sender=OWNER, to="Alice Example <alice@example.com>"),
+            headers(message_id="in", sender="Bob Sample <bob@example.com>"),
+            headers(message_id="in2", sender="Bob Sample <bob@example.com>", subject="Later")])
+        out = self.root / "out"
+        self.assertEqual(rank_correspondents.rank_main([str(mail), "--self", OWNER, "--out", str(out)]), 0)
+        with (out / "correspondents.csv").open(encoding="utf-8-sig", newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        with contextlib.closing(rank_correspondents.open_readonly_db(out / "mail.sqlite")) as conn:
+            people = rank_correspondents.rank_from_db(conn, [OWNER], excl=(set(), set()), book={},
+                                                      min_received=2, half_life=10.0).people
+        self.assertEqual(rows, [{c: str(rank_correspondents.csv_cell(p[c])) for c in rank_correspondents.CSV_COLUMNS}
+                                for p in people])
+
+    def test_primary_rule_order(self):
+        old, new = MAIL_TIME - 365 * 86400, MAIL_TIME
+
+        def member(address, sent=None, seen=None):
+            stats = rank_correspondents.AddrStats()
+            stats.last_sent_ts, stats.last_ts = sent, seen if seen is not None else sent
+            return (address, stats, "")
+
+        written, newer = member("alice-old@example.com", sent=old), member(ALICE, seen=new)
+        choose = rank_correspondents.choose_primary
+        self.assertIs(choose([newer, written]), written)                 # household-sent beats latest seen
+        self.assertIs(choose([newer, written], ALICE), newer)            # an override beats both
+        role = member("info@example.com", sent=new)
+        self.assertIs(choose([role, written]), written)                  # non-automated preferred
+        self.assertIs(choose([role, member("support@example.com", seen=new)]), role)
+        self.assertIs(choose([member(BOB, seen=old), newer]), newer)     # else latest seen
+        self.assertIs(choose([newer, member(BOB, seen=new)]), newer)     # ties keep the given order
+
+
+class RescoreTests(PipelineTestCase):
+    SOURCE_FIELDS = rank_correspondents.CSV_COLUMNS
+    IDENTITY_FIELDS = list(rank_correspondents.IDENTITY_CORE) + ["relationship", "suggested_notify",
+                                                                 "cleanup_note"]
+
+    def setUp(self):
+        super().setUp()
+        self.box = box = self.mbox("mail/Inbox", [
+            headers(message_id="both", sender=OWNER, to="Alice Example <alice@example.com>, "
+                                                       "Alice Example <alice-old@example.com>"),
+            headers(message_id="old", sender=OWNER, to="alice-old@example.com",
+                    date="Mon, 02 Jan 2023 12:00:00 +0000"),
+            headers(message_id="in", sender="Alice Example <alice@example.com>"),
+            headers(message_id="info", sender="Info Desk <info@example.org>"),
+            headers(message_id="bob", sender=OWNER, to="Bob Sample <bob@example.com>"),
+        ])
+        self.out = self.root / "out"
+        self.assertEqual(rank_correspondents.rank_main([str(box), "--self", OWNER, "--out", str(self.out)]), 0)
+        self.db = self.out / "mail.sqlite"
+        self.source = self.csv_file("in/source.csv", self.SOURCE_FIELDS, [
+            self.source_row(1, ALICE, "alice-old@example.com (last 2024)", "Alice", "Example"),
+            self.source_row(2, "info@example.org", "", "Info", "Desk"),
+            self.source_row(3, BOB, "", "Bob", "Sample"),
+            self.source_row(4, "carol@example.com", "", "Carol", "Fiction"),
+        ], bom=True)
+        self.clear_console()
+
+    def source_row(self, rank, email, others, first, last):
+        row = {c: "" for c in self.SOURCE_FIELDS}
+        row.update(rank=str(rank), email=email, other_addresses=others, first_name=first,
+                   last_name=last, name=first + " " + last, account=OWNER)
+        return row
+
+    def identity(self, address, person, first, last, primary="", note=""):
+        return {"address": address, "person_id": person, "first_name": first, "last_name": last,
+                "display_name": first + " " + last, "primary": primary, "relationship": "friend",
+                "suggested_notify": "likely", "cleanup_note": note}
+
+    def identities(self, rows=None, name="identities"):
+        rows = rows if rows is not None else [
+            self.identity(ALICE, "p-alice", "Alice", "Example"),
+            self.identity("alice-old@example.com", "p-alice", "Alice", "Example"),
+            self.identity("info@example.org", "p-info", "Info", "Desk", note="=kept by review"),
+            self.identity(BOB, "p-bob", "Bobby", "Sample")]
+        return self.csv_file(f"in/{name}.csv", self.IDENTITY_FIELDS, rows, bom=True)
+
+    def removed(self, addresses=("carol@example.com",), name="removed", reason="business_or_vendor",
+                source="model"):
+        fields = ["rank", "email", "removed_addresses", "removed_reason", "removed_source", "confidence", "why"]
+        return self.csv_file(f"in/{name}.csv", fields, [
+            {"rank": "4", "email": a, "removed_addresses": a, "removed_reason": reason,
+             "removed_source": source, "confidence": "high", "why": "synthetic"} for a in addresses])
+
+    def rescore(self, identities=None, removed=None, extra=(), out=None):
+        out = out or self.out
+        return rank_correspondents.main([
+            "rescore", "--db", str(self.db), "--self", OWNER,
+            "--identities", str(identities or self.identities()), "--removed", str(removed or self.removed()),
+            "--source", str(self.source), "--out", str(out)] + list(extra))
+
+    def cleaned(self, out=None):
+        return self.read_csv((out or self.out) / "correspondents_cleaned.csv")
+
+    def test_closed_world_identities_bypass_drops_and_count_once(self):
+        before = hashlib.sha256(self.db.read_bytes()).hexdigest()
+        source_before = self.source.read_bytes()
+        self.assertEqual(self.rescore(), 0)
+        fields, rows = self.cleaned()
+        self.assertEqual(fields, rank_correspondents.CSV_COLUMNS + ["relationship", "suggested_notify",
+                                                                    "cleanup_note"])
+        by_email = {r["email"]: r for r in rows}
+        # Exactly the identity people: the automated, below-threshold info@ is kept; carol is not.
+        self.assertEqual(set(by_email), {ALICE, "info@example.org", BOB})
+        alice = by_email[ALICE]
+        # Household-sent primary: alice@ was written to on the newest household message.
+        self.assertEqual(alice["other_addresses"], "alice-old@example.com (last 2024)")
+        self.assertEqual((alice["she_wrote"], alice["she_wrote_direct"], alice["they_wrote"]), ("2", "2", "1"))
+        self.assertEqual((by_email[BOB]["first_name"], by_email[BOB]["name"]), ("Bobby", "Bobby Sample"))
+        self.assertEqual(by_email["info@example.org"]["cleanup_note"], "'=kept by review")
+        self.assertEqual({r["relationship"] for r in rows}, {"friend"})
+        self.assertEqual(hashlib.sha256(self.db.read_bytes()).hexdigest(), before)
+        self.assertEqual(self.source.read_bytes(), source_before)
+        output = self.out / "correspondents_cleaned.csv"
+        self.assertTrue(output.read_bytes().startswith(b"\xef\xbb\xbf"))
+        self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+        self.assertIn("Kept 3 people; 0 source rows merged", self.stdout.getvalue())
+        self.assertIn("Removed 1 row: business_or_vendor (model).", self.stdout.getvalue())
+        self.assert_quiet()
+        # The cleaned file is a valid review sheet.
+        self.assertEqual(len(rank_correspondents.reviewed_rows(output, marked_only=False)), 3)
+
+    def test_set_primary_override_wins(self):
+        rows = [self.identity(ALICE, "p-alice", "Alice", "Example"),
+                self.identity("alice-old@example.com", "p-alice", "Alice", "Example", primary="y"),
+                self.identity("info@example.org", "p-info", "Info", "Desk"),
+                self.identity(BOB, "p-bob", "Bob", "Sample")]
+        self.assertEqual(self.rescore(identities=self.identities(rows)), 0)
+        emails = {r["email"] for r in self.cleaned()[1]}
+        self.assertIn("alice-old@example.com", emails)
+
+    def test_reconciliation_refuses_gap_overlap_and_foreign_addresses(self):
+        foreign = [self.identity(a, "p-" + a[0], "X", "Y") for a in (
+            ALICE, "alice-old@example.com", "info@example.org", BOB, "dylan@example.com")]
+        cases = {  # each case writes its own files, so no case reads another's fixture
+            "gap": (lambda: (self.identities(name="gap-identities"),
+                             self.removed(addresses=(), name="gap-removed")),
+                    "1 missing, 0 overlapping, 0 not in the source"),
+            "overlap": (lambda: (self.identities(name="overlap-identities"),
+                                 self.removed(addresses=("carol@example.com", BOB), name="overlap-removed")),
+                        "0 missing, 1 overlapping, 0 not in the source"),
+            "foreign": (lambda: (self.identities(foreign, name="foreign-identities"),
+                                 self.removed(name="foreign-removed")),
+                        "0 missing, 0 overlapping, 1 not in the source"),
+        }
+        for name, (fixtures, message) in cases.items():
+            with self.subTest(case=name):
+                identities, removed = fixtures()
+                self.assert_private_refusal(lambda: self.rescore(identities=identities, removed=removed))
+                self.assertIn("identities and removals do not reconcile with the source: " + message,
+                              self.stderr.getvalue())
+                self.assertFalse((self.out / "correspondents_cleaned.csv").exists())
+
+    def test_only_known_removal_categories_reach_the_console(self):
+        self.assertEqual(self.rescore(removed=self.removed(reason="carol fiction", source="my sister")), 0)
+        self.assertIn("Removed 1 row: other (other).", self.stdout.getvalue())
+        self.assert_quiet()
+        self.assertEqual(rank_correspondents.safe_label("spam_or_scam", rank_correspondents.REMOVED_REASONS),
+                         "spam_or_scam")
+        self.assertEqual(rank_correspondents.safe_label("judge", rank_correspondents.REMOVED_SOURCES), "judge")
+
+    def test_self_addresses_must_match_the_database_in_order(self):
+        out = self.root / "two-accounts"
+        self.assertEqual(rank_correspondents.rank_main([str(self.box), "--self", OWNER, "--self", SECOND,
+                                                        "--out", str(out)]), 0)
+        self.clear_console()
+
+        def rescore(*accounts):
+            args = ["rescore", "--db", str(out / "mail.sqlite"), "--identities", str(self.identities()),
+                    "--removed", str(self.removed()), "--source", str(self.source), "--out", str(out)]
+            for account in accounts:
+                args += ["--self", account]
+            return rank_correspondents.main(args)
+
+        self.assert_private_refusal(lambda: rescore(SECOND, OWNER))  # the primary decides ties
+        self.assertIn("in the same order", self.stderr.getvalue())
+        self.assert_private_refusal(lambda: rescore(OWNER))
+        self.assertEqual(rescore(OWNER, SECOND), 0)
+
+    def test_excluded_or_household_identity_is_refused(self):
+        exclusion = self.write("in/exclude.txt", b"bob@example.com\n")
+        self.assert_private_refusal(lambda: self.rescore(extra=("--exclude", str(exclusion))))
+        self.assertIn("excluded", self.stderr.getvalue())
+        rows = [self.identity(a, "p-1", "Alice", "Example") for a in (ALICE, "alice-old@example.com")]
+        rows += [self.identity(a, "p-" + a[0], "X", "Y") for a in ("info@example.org", BOB, OWNER)]
+        self.assert_private_refusal(lambda: self.rescore(identities=self.identities(rows)))
+        self.assertIn("household", self.stderr.getvalue())
+        self.assertFalse((self.out / "correspondents_cleaned.csv").exists())
+
+    def test_inconsistent_identity_rows_and_self_mismatch_are_refused(self):
+        rows = [self.identity(ALICE, "p-alice", "Alice", "Example"),
+                self.identity("alice-old@example.com", "p-alice", "Alicia", "Example"),
+                self.identity("info@example.org", "p-info", "Info", "Desk"),
+                self.identity(BOB, "p-bob", "Bob", "Sample")]
+        self.assert_private_refusal(lambda: self.rescore(identities=self.identities(rows)))
+        self.assertIn("disagree", self.stderr.getvalue())
+        self.assert_private_refusal(lambda: rank_correspondents.main([
+            "rescore", "--db", str(self.db), "--self", SECOND, "--identities", str(self.identities()),
+            "--removed", str(self.removed()), "--source", str(self.source), "--out", str(self.out)]))
+
+    def test_refuses_inside_git_symlinked_output_and_input_collision(self):
+        repo = self.root / "repo"
+        (repo / ".git").mkdir(parents=True)
+        self.assert_private_refusal(lambda: self.rescore(out=repo / "out"))
+        self.assertFalse((repo / "out").exists())
+        target = self.write("outside", b"outside\n")
+        link = self.out / "correspondents_cleaned.csv"
+        link.symlink_to(target)
+        self.assert_private_refusal(lambda: self.rescore())
+        self.assertEqual(target.read_bytes(), b"outside\n")
+        link.unlink()
+        self.assert_private_refusal(lambda: rank_correspondents.main([
+            "rescore", "--db", str(self.db), "--self", OWNER, "--identities", str(self.identities()),
+            "--removed", str(self.removed()), "--source", str(self.out / "correspondents_cleaned.csv"),
+            "--out", str(self.out)]))
+
+    def test_help_and_missing_arguments_are_private(self):
+        with self.assertRaises(SystemExit) as error:
+            rank_correspondents.main(["rescore", "--help"])
+        self.assertEqual(error.exception.code, 0)
+        self.assertIn("--identities", self.stdout.getvalue())
+        self.assert_private_refusal(lambda: rank_correspondents.main(["rescore", "--db", "Alice@example.com"]))
+
+
+class RepeatableExcludeTests(PipelineTestCase):
+    def test_every_exclude_file_applies(self):
+        box = self.mbox("mail/Sent", [headers(message_id=a, sender=OWNER, to=a)
+                                      for a in (ALICE, BOB, "carol@example.com")])
+        one = self.write("one.txt", b"alice@example.com\n")
+        two = self.write("two.txt", b"@example.com\n# all of them\n")
+        three = self.write("three.txt", b"bob@example.com\n")
+        out = self.root / "out"
+        for files, expected in (([one], {BOB, "carol@example.com"}), ([one, three], {"carol@example.com"}),
+                                ([two], set())):
+            with self.subTest(files=[f.name for f in files]):
+                args = [str(box), "--self", OWNER, "--out", str(out)]
+                for path in files:
+                    args += ["--exclude", str(path)]
+                self.assertEqual(rank_correspondents.rank_main(args), 0)
+                self.assertEqual({r["email"] for r in self.read_csv(out / "correspondents.csv")[1]}, expected)
 
 
 if __name__ == "__main__":

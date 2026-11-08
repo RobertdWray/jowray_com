@@ -48,3 +48,21 @@ jobs:
         env:
           TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/jowray_test
       - run: npm run build
+
+  # The private-list tools in scripts/notify are standard-library Python (the harvester must
+  # keep running on macOS's Python 3.9). The tests use synthetic data, a fake API client, no
+  # secrets and no network. cleanup_correspondents.py imports the anthropic SDK only on its
+  # API path, so nothing is installed here.
+  python-notify:
+    name: python-notify (${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m unittest discover -s scripts/notify -p "test_*.py"
