@@ -51,9 +51,7 @@ export function ClaimForm({ claimToken, memory }: { claimToken: string; memory: 
       });
       setMessage(
         result.ok
-          ? result.shared
-            ? "Thank you. Your memory is with the family."
-            : claimSaveMessage(result)
+          ? claimSaveMessage(result)
           : result.code === "last_words"
             ? draft
               ? "Keep a few words, or add a photo or a recording first: a memory cannot be empty."
