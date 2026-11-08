@@ -13,9 +13,10 @@ export type AdminStatusResult = { ok: true } | { ok: false; code: "invalid" | "n
 
 /**
  * Approve, hide or send back to pending (plan §4.4). Never from DRAFT: only
- * the sender's Share leaves it, and the CHECK constraint would refuse a
- * non-DRAFT status with `consentedAt` null anyway. No side effects beyond the
- * ADMIN revision; nothing public reads APPROVED/HIDDEN yet and nothing emails.
+ * the sender's Share or share_draft leaves it, and the CHECK constraint would
+ * refuse a non-DRAFT status with `consentedAt` null anyway. Writes one ADMIN
+ * revision and sends no email. See memories reads APPROVED + PUBLIC (Everyone),
+ * not deleted, once the family turns on PUBLIC_MEMORIES_ENABLED (D1, D15).
  */
 export async function setMemoryStatusAsAdmin(raw: unknown): Promise<AdminStatusResult> {
   const parsed = adminStatusSchema.safeParse(raw);

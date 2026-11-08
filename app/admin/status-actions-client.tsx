@@ -182,7 +182,7 @@ export function StatusActions({ memory }: { memory: StatusActionsProps }) {
               </SecondaryButton>
             )}
           </div>
-          <p className="text-small text-walnut-soft">Approving doesn&rsquo;t publish anything yet; the public memorial pages aren&rsquo;t built.</p>
+          <p className="text-small text-walnut-soft">Approving shows the memory on See memories once its visibility is Everyone and the family has turned the pages on.</p>
         </div>
       )}
       <div className="flex flex-col gap-2 border-t-2 border-wood-light pt-4">

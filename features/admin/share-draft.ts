@@ -18,9 +18,11 @@ export type ShareDraftResult =
 
 /**
  * Share a DRAFT on its sender's behalf (R4, R7). Only Rob's explicit word that
- * the named sender agreed justifies a call. APPROVED publishes nothing public
- * yet (R4a). Record the sender's consent stamp and an ADMIN revision (R6),
- * preserving every preference and the claim link (D8). The status, stamp and
+ * the named sender agreed justifies a call. APPROVED + PUBLIC (Everyone) appears
+ * on See memories once the family turns on PUBLIC_MEMORIES_ENABLED (D1, D15).
+ * Record the sender's consent stamp and an ADMIN revision (R6), preserving every
+ * preference and the claim link (D8). A later claim-link content edit sends an
+ * approved memory back to PENDING for review (D17). The status, stamp and
  * permanent admin-alert suppression commit together (R5, D11) in this one
  * transaction; helpers use its client and never open another (D12).
  */

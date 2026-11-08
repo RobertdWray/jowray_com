@@ -755,7 +755,7 @@ Built with claude session
 - What: `Memory.notifyWhenPosted` (on by default) is stored and nothing sends it. New `EmailType` `MEMORY_POSTED`, template in `services/email/templates/`, trigger when `status` becomes `APPROVED`, honour `notifyWhenPosted` and the per-recipient cap; admin-drafted memories are eligible. The thank-you screen says "On November 10th … we'll email an update to all who have contributed", which relies on this or the Phase 2 mailer (M-J-03). Removing the checkbox was declined.
 - Why deferred / reasoning given: Phase 2 mailer; PR #31 declined "posted" email on APPROVED.
 - Verdict: OPEN (Phase 2)
-- Evidence: no `MEMORY_POSTED` in `EmailType`; `features/admin/set-status.ts:18` "nothing public reads APPROVED/HIDDEN yet and nothing emails"; `Memory.notifyWhenPosted` stored (`schema.prisma:134`) and shown read-only on `app/admin/memory-detail.tsx:35`; the promise is live copy at `app/share/thank-you-client.tsx:61` ("On November 10th … we'll be sharing them with everyone").
+- Evidence: no `MEMORY_POSTED` in `EmailType`; `features/admin/set-status.ts:18` "nothing public reads APPROVED/HIDDEN yet and nothing emails" (2026-11-08 update: See memories now reads APPROVED + PUBLIC, not deleted, behind `PUBLIC_MEMORIES_ENABLED` (D1, D15); the pages wait for Rob's inventory sign-off. The posted email is still future work); `Memory.notifyWhenPosted` stored (`schema.prisma:134`) and shown read-only on `app/admin/memory-detail.tsx:35`; the promise is live copy at `app/share/thank-you-client.tsx:61` ("On November 10th … we'll be sharing them with everyone").
 - Remaining work (if any): the email belongs to the Phase 2 mailer; the launch-relevant piece is only that the thank-you copy makes a dated promise someone must keep (by hand if need be).
 - Launch impact: LATER — nothing breaks; the promise is an obligation on Rob, not on the code.
 - Merge with: M-J-03
@@ -941,12 +941,12 @@ Built with claude session
 ### M-E-14: Every future lister of memories must decide explicitly what to do with DRAFT
 - Sources: PR30-45
 - Kind: Risk/open question
-- What: Standing rule from the draft plan; the admin list shows DRAFT chips; Phase 2 public pages must exclude DRAFT (and HIDDEN/PRIVATE) explicitly.
+- What: Standing rule from the draft plan; the admin list shows DRAFT chips. Public readers now use `features/memories/public.ts` `PUBLIC_MEMORY_WHERE` as the single rule: APPROVED + PUBLIC + not deleted (2026-11-08, D1). DRAFT, PENDING, HIDDEN, FAMILY and PRIVATE are excluded.
 - Why deferred / reasoning given: rule for future code.
 - Verdict: NOT-DEBT (standing rule)
-- Evidence: admin list includes DRAFT deliberately with chips (`list-memories.ts` `adminStatusCounts` DRAFT/PENDING/APPROVED/HIDDEN); today no public `findMany` over `Memory` exists (Phase 2 not built), so nothing violates it.
-- Remaining work: none now; the rule belongs in the Phase 2 plan (M-J-01) as an acceptance line.
-- Launch impact: NEVER — no public lister exists in the collection-only launch.
+- Evidence: admin list includes DRAFT deliberately with chips (`list-memories.ts` `adminStatusCounts` DRAFT/PENDING/APPROVED/HIDDEN). `listPublicMemories` and `getPublicMemory` in `features/memories/public.ts` use `PUBLIC_MEMORY_WHERE`; the public media route checks the same status, visibility and deletion rule. See memories stays behind `PUBLIC_MEMORIES_ENABLED` (2026-11-08, D1, D15).
+- Remaining work: every future public reader must keep this rule; it is covered by the See memories tests.
+- Launch impact: NEVER — the public readers enforce the rule; the pages wait for Rob's inventory sign-off before the flag is turned on.
 - Merge with: M-J-01 (carry the rule there)
 
 ## F. Sentry, logging, observability
@@ -1445,10 +1445,10 @@ Built with claude session
 ### M-J-01: Phase 2 "Analyze and show": transcription, description, tags, search, timeline, gallery, public pages
 - Sources: DOC-20, DOC-54, DOC-107, DOC-115, DOC-242, PR3-N12, I17-4, PR16-8, PR28-13, DOC-208, PR16-15, DOC-215, PR31-21, DOC-109
 - Kind: Non-goal
-- What: Design-doc Phase 2: `ANALYSIS` rows per media file per model run, `DERIVED_MEDIA` (now `DerivedMedia`), pgvector/tsvector search, tag cloud, timeline, gallery, a scheduled analysis cron over `analysis_status = not_started`; public pages reading `APPROVED`/`HIDDEN` (today "approving does not publish anything"); Phase 2 family pages serve the same derived copies and reuse `notifyWhenPosted` rows; family-side titles are a Phase 2 idea (D8). `ELEVENLABS_API_KEY` is unused and to be retired when Phase 2 starts (Gemini transcribes instead); `GEMINI_API_KEY` / `GOOGLE_API_KEY` are placeholders.
+- What: Design-doc Phase 2: `ANALYSIS` rows per media file per model run, `DERIVED_MEDIA` (now `DerivedMedia`), pgvector/tsvector search, tag cloud, timeline, gallery, a scheduled analysis cron over `analysis_status = not_started`; public pages reading `APPROVED`/`HIDDEN` (today "approving does not publish anything"; superseded 2026-11-08: See memories reads APPROVED + PUBLIC, not deleted, behind `PUBLIC_MEMORIES_ENABLED`, D1/D15); Phase 2 family pages serve the same derived copies and reuse `notifyWhenPosted` rows; family-side titles are a Phase 2 idea (D8). `ELEVENLABS_API_KEY` is unused and to be retired when Phase 2 starts (Gemini transcribes instead); `GEMINI_API_KEY` / `GOOGLE_API_KEY` are placeholders.
 - Why deferred / reasoning given: Rob: Phase 2 is explicitly not being built now; collection only.
-- Verdict: NOT-DEBT (confirmed nothing implements it)
-- Evidence: Code grep over `app/ features/ services/ integrations/ lib/ server/ prisma/` for `transcri|pgvector|tsvector|gallery|timeline|elevenlabs|@google/genai|GoogleGenerativeAI`: only `prisma/schema.prisma:38` `enum AnalysisStatus` and `:138` `analysisStatus … @default(NOT_STARTED)` (schema placeholders, never read), and the admin-only `app/admin/media-gallery.tsx` (view-only media list for admins, not a public gallery). `package.json` has no Gemini/ElevenLabs/vector dependency. `docs/environment.md:24` `ELEVENLABS_API_KEY` "Unused; to be retired", `:95` `GEMINI_API_KEY` "Phase 2; unused in Phase 1". No public page reads APPROVED/HIDDEN; `features/admin/set-status.ts` only changes status. AGENTS.md/brief: Phase 2 is explicitly not being built.
+- Verdict: NOT-DEBT (confirmed nothing implements it). 2026-11-08 update: See memories implements the gallery, timeline and tag cloud behind the flag; AI tagging, relational `Tag`/`MemoryTag` tables and transcripts remain future work (F11).
+- Evidence: Code grep over `app/ features/ services/ integrations/ lib/ server/ prisma/` for `transcri|pgvector|tsvector|gallery|timeline|elevenlabs|@google/genai|GoogleGenerativeAI`: only `prisma/schema.prisma:38` `enum AnalysisStatus` and `:138` `analysisStatus … @default(NOT_STARTED)` (schema placeholders, never read), and the admin-only `app/admin/media-gallery.tsx` (view-only media list for admins, not a public gallery). `package.json` has no Gemini/ElevenLabs/vector dependency. `docs/environment.md:24` `ELEVENLABS_API_KEY` "Unused; to be retired", `:95` `GEMINI_API_KEY` "Phase 2; unused in Phase 1". No public page reads APPROVED/HIDDEN; `features/admin/set-status.ts` only changes status. AGENTS.md/brief: Phase 2 is explicitly not being built. 2026-11-08 update: See memories now reads APPROVED + PUBLIC, not deleted, behind `PUBLIC_MEMORIES_ENABLED` (D1, D15); the pages wait for Rob's inventory sign-off.
 - Remaining work: none now. Housekeeping only: remove `ELEVENLABS_API_KEY` from Vercel/`.env` when Phase 2 starts (already documented).
 - Launch impact: NEVER — phase 2 by Rob's decision.
 - Merge with: none.
