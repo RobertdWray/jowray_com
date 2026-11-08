@@ -1391,7 +1391,7 @@ def escalation_reasons(cluster: dict, status: str, decision, members_disagree: b
             if direct >= REMOVE_DIRECT_MAX:
                 reasons.append("removes someone the household wrote to directly")
                 break
-            if direct >= TWO_WAY_REMOVAL_ESCALATE_DIRECT and any(two_way(r) for r in touched):
+            if direct >= TWO_WAY_REMOVAL_ESCALATE_DIRECT and two_way(touched):
                 reasons.append("removes a two-way correspondent the household wrote to directly")
                 break
     lookalikes = lookalike_addresses(cluster)
@@ -1402,9 +1402,11 @@ def escalation_reasons(cluster: dict, status: str, decision, members_disagree: b
     return reasons
 
 
-def two_way(row: dict) -> bool:
-    """The harvester's "two-way": the household wrote to the row and the row wrote back."""
-    return as_int(row.get("she_wrote")) > 0 and as_int(row.get("they_wrote")) > 0
+def two_way(rows) -> bool:
+    """The harvester's "two-way", for a person: over all their rows, the household wrote to
+    them and they wrote back (one alias can carry each direction)."""
+    return (sum(as_int(r.get("she_wrote")) for r in rows) > 0
+            and sum(as_int(r.get("they_wrote")) for r in rows) > 0)
 
 
 def lookalike_addresses(cluster: dict) -> set:

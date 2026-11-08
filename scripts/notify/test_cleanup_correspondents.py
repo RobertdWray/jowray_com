@@ -725,6 +725,19 @@ class RemovalEscalationTests(unittest.TestCase):
         for they_wrote in (0, 3):
             self.assertEqual(self.reasons(8, they_wrote, 5), ["removes someone the household wrote to directly"])
 
+    def test_two_way_is_judged_over_the_removed_persons_rows(self):
+        # One row the household wrote to, one row that wrote to the household: together the
+        # removed person is a two-way correspondent written to directly twice.
+        cluster = {"ranks": [1, 2], "rows": [
+            {**row(1, "Pat", "Fiction", ["pat1@example.com"], she_wrote="2", direct="2"), "they_wrote": "0"},
+            {**row(2, "Pat", "Fiction", ["pat2@example.com"], she_wrote="0", direct="0"), "they_wrote": "3"}]}
+        decision, errors = cc.validate_answer(answer(person(
+            ["pat1@example.com", "pat2@example.com"], keep=False, relationship="business_or_vendor",
+            notify="unlikely")), cluster)
+        self.assertEqual(errors, [])
+        self.assertEqual(cc.escalation_reasons(cluster, "ok", decision),
+                         ["removes a two-way correspondent the household wrote to directly"])
+
     def test_direct_messages_add_up_across_the_removed_persons_rows(self):
         self.assertEqual(self.reasons(1, 1, 1, rows=2),
                          ["removes a two-way correspondent the household wrote to directly"])
@@ -963,13 +976,20 @@ class BudgetWaitReviewTests(CleanupCase):
         self.build()
         made, calls, lock = self.capture(), [], threading.Lock()
         worst = cc.worst_case_cost("haiku", 2000)  # FakeClient counts 2,000 prompt tokens
+        both_waiting = threading.Event()
 
         def script(payload, params):
             with lock:
                 calls.append(payload["cluster"]["ranks"])
                 n = len(calls)
-            if n in (2, 3):  # the two runs that fit hold their space until the other two wait
+            # The two runs that fit hold their space until the other two wait for it. Only run
+            # 2 samples the count, which cannot change while both holders block; run 3 waits
+            # for its signal (two samplers could miss the moment once one holder moved on).
+            if n == 2:
                 assert wait_until(lambda: made["haiku"].waiting == 2)
+                both_waiting.set()
+            elif n == 3:
+                assert both_waiting.wait(5)
             return default_script(payload, params)
 
         # Room for two runs at once, eight workers, four jobs after the first one.
@@ -992,13 +1012,16 @@ class BudgetWaitReviewTests(CleanupCase):
             with lock:
                 calls.append(payload["cluster"]["ranks"])
                 n = len(calls)
-            if n in (2, 3):
+            if n == 2:  # one holder stops the review once both other runs wait for space
                 assert wait_until(lambda: made["haiku"].waiting == 2)
                 made["reviewer"].stop.set()  # as an interrupt or a failure would
                 assert wait_until(lambda: made["haiku"].waiting == 0)
+            elif n == 3:  # the other holder keeps its space until the stop is set
+                assert made["reviewer"].stop.wait(5)
             return default_script(payload, params)
 
-        with mock.patch.object(cc.Budget, "STOP_POLL_SECONDS", 0.01):
+        # cc.Budget is the capturing mock here: patch the real class's poll interval.
+        with mock.patch.object(REAL_BUDGET, "STOP_POLL_SECONDS", 0.01):
             self.review(script, phase="haiku", concurrency=8, haiku_budget=2.5 * worst)
         entries = cc.read_jsonl(self.paths.decisions, repair=False)[0]
         waiters = [e for e in entries if e["status"] == "stopped" and "run" not in e]
