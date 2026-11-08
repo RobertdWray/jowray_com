@@ -91,7 +91,8 @@ export const NOUN: Record<MediaKind, { one: string; many: string; title: string;
   VOICE: { one: "a voice recording", many: "voice recordings", title: "Voice recording", alt: "Your voice recording", tap: "Tap to play on your private page" },
 };
 
-const RESERVED_CONTENT_IDS = new Set<string>(Object.values(EMAIL_ASSETS).map((asset) => asset.contentId));
+/** The brand marks' content ids: a preview may never use one (`buildMediaCards` throws; the admin preview loader skips). */
+export const RESERVED_CONTENT_IDS: ReadonlySet<string> = new Set<string>(Object.values(EMAIL_ASSETS).map((asset) => asset.contentId));
 
 /** Decoded size of a base64 string without allocating the bytes. */
 function base64Bytes(value: string): number {

@@ -19,6 +19,7 @@ export type {
   EmailAttachment,
   EmailTransport,
   MediaKind,
+  MediaPreview,
   MemoryConfirmationContent,
   MemoryConfirmationInput,
   MemoryMediaSummary,
