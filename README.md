@@ -137,7 +137,7 @@ Each feature has a one-to-two page document: what we built, why, the decisions R
 | 📬 | [Email and cron](docs/features/email-and-cron.md) | One fixed-content receipt per send with every private link and a card per file (never the visitor's words or pictures); a family alert with no links; per-inbox, hourly and daily caps; an idempotent delivery log; the ten-minute reconcile cron and the three-phase purge. |
 | ↩️ | [Email replies and forwarding](docs/features/email-forwarding.md) | Reply to a site email and Cloudflare forwards it to the family inbox; the footer and receipts show the same family contact address. |
 | 🔭 | [Sentry telemetry](docs/features/sentry-telemetry.md) | 100 % traces and unmasked replays for the alpha, with claim/invite tokens and upload tickets scrubbed from covered event fields by a linear-time scanner, proven by a test that runs the real SDK. |
-| 📊 | [Vercel Web Analytics](docs/features/analytics.md) | Page-view analytics for Rob in Vercel, with claim/invite URLs scrubbed and unsafe routes dropped; live intake still needs checking. |
+| 📊 | [Vercel Web Analytics and Speed Insights](docs/features/analytics.md) | Page views and Core Web Vitals for Rob in Vercel, with claim/invite URLs scrubbed and unsafe routes dropped; live intake still needs checking. |
 | 🔒 | [Privacy note](docs/features/privacy.md) | The footer's Privacy button opens Rob's note about what the family alpha records and links to how the site was built. |
 
 ---
