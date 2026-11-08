@@ -127,6 +127,13 @@ Private inputs, written by the operator:
 | `cleanup-overrides.csv` | Columns `match` (an address, or `@domain` for `remove` and `keep`), `action` (`remove`, `keep`, `merge_with`, `set_name`, `set_primary`), `value` and `note`. `set_name` takes `First\|Last` or `First Last`; `merge_with` takes the other address. Every override must match an address of the list. Overrides always win, and `remove` and `keep` change only the addresses they match: the rest of a person or a removal keeps what the review decided. `keep` restores each matched address with its harvested row's names. Keeping an address that another override removes stops `apply`. |
 | `cleanup-pilot.txt` | Addresses or `@domains`, one per line, that the pilot must include. |
 
+The cleanup's tests run with the harvester's (`python3 -m unittest discover -s scripts/notify -p "test_*.py"`, standard library only; CI runs them on Python 3.9 and 3.12). One more test drives the real `anthropic` 1.17.0 tool runner on an in-process transport, with no network and no spend; it is skipped unless that SDK is installed. Run it before changing the agent loop or the SDK pin:
+
+```bash
+uv run --no-project --with anthropic==1.17.0 --with "pydantic>=2.14,<3" \
+  python -m unittest discover -s scripts/notify -p "test_*.py"
+```
+
 Run in Bash from the repo root. Quit Thunderbird before `index`. Only `review` calls the API and needs `ANTHROPIC_API_KEY` in the shell (never print it); `index`, `prepare`, `review --dry-run`, `apply`, `spend` and `rescore` make no API call. `uv run` installs the exact dependency tree locked in `scripts/notify/cleanup_correspondents.py.lock` (`anthropic` 1.17.0, `pydantic` 2.14.x); after changing the script's dependency header, run `uv lock --script scripts/notify/cleanup_correspondents.py` and commit the lock. One cleanup command runs at a time: `index`, `prepare`, `review` and `apply` hold `cleanup/.lock`, and a second one stops with "another cleanup command is running" (`review --dry-run` and `spend` only read, so they don't wait).
 
 ```bash
