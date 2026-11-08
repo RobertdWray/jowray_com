@@ -48,6 +48,7 @@ import contextlib
 import email.errors
 import email.parser
 import email.policy
+import fcntl
 import hashlib
 import html.parser
 import json
@@ -311,10 +312,11 @@ class Paths:
         self.offsets, self.clusters = self.cleanup / "offsets.sqlite", self.cleanup / "clusters.jsonl"
         self.decisions, self.spend = self.cleanup / "decisions.jsonl", self.cleanup / "spend.jsonl"
         self.manifest, self.changes = self.cleanup / "manifest.json", self.cleanup / "changes.csv"
+        self.lock = self.cleanup / ".lock"
 
     def outputs(self) -> list:
         return [self.cleanup, self.offsets, self.clusters, self.decisions, self.spend, self.manifest,
-                self.changes, self.identities, self.removed]
+                self.changes, self.identities, self.removed, self.lock]
 
 
 def prepare_out(value: str, allow_inside_git: bool, create: bool = True) -> Paths:
@@ -328,6 +330,24 @@ def prepare_out(value: str, allow_inside_git: bool, create: bool = True) -> Path
         rc.private_directory(out, secure_existing=True)
         rc.private_directory(paths.cleanup, secure_existing=True)
     return paths
+
+
+@contextlib.contextmanager
+def command_lock(paths: Paths):
+    """Hold <out>/cleanup/.lock for the whole command. Two cleanup processes would each
+    spend the whole remaining cap (a lock in memory does not span processes), and one's
+    start-up repair could cut the other's half-written log line. The operating system
+    releases the lock when the process ends, however it ends."""
+    fd = os.open(paths.lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            rc.die("another cleanup command is running; wait for it to finish")
+        yield
+    finally:
+        os.close(fd)
 
 
 def file_sha256(path: Path) -> str | None:
@@ -2525,10 +2545,14 @@ def main(argv=None) -> int:
         ap = parser("index", "Index where each message sits in the mail files (quit Thunderbird first).")
         ap.add_argument("paths", nargs="+", help="the same mail folders the harvester read")
         args = ap.parse_args(rest)
-        return run_index(prepare_out(args.out, args.allow_inside_git), args.paths)
+        paths = prepare_out(args.out, args.allow_inside_git)
+        with command_lock(paths):
+            return run_index(paths, args.paths)
     if command == "prepare":
         args = parser("prepare", "Group rows that might be one person into clusters.").parse_args(rest)
-        return run_prepare(prepare_out(args.out, args.allow_inside_git))
+        paths = prepare_out(args.out, args.allow_inside_git)
+        with command_lock(paths):
+            return run_prepare(paths)
     if command == "review":
         ap = parser("review", "Review the clusters with Claude (Haiku 5.5, then the Opus 5.5 judge).")
         ap.add_argument("--phase", choices=("all",) + PHASES, default="all")
@@ -2546,8 +2570,10 @@ def main(argv=None) -> int:
             rc.die("budgets must be finite and not negative")
         options = ReviewOptions(args.phase, args.sample, args.match, args.concurrency, args.judge_concurrency,
                                 args.haiku_budget_usd, args.judge_budget_usd, args.dry_run)
-        try:
-            return run_review(prepare_out(args.out, args.allow_inside_git, create=not args.dry_run), options)
+        paths = prepare_out(args.out, args.allow_inside_git, create=not args.dry_run)
+        try:  # a dry run writes nothing, so it needs no lock
+            with contextlib.nullcontext() if args.dry_run else command_lock(paths):
+                return run_review(paths, options)
         except KeyboardInterrupt:
             rc.die("review interrupted; queued clusters were cancelled and stopped ones are retried "
                    "by the next review")
@@ -2558,7 +2584,9 @@ def main(argv=None) -> int:
         ap.add_argument("--exclude", metavar="FILE", action="append", default=[],
                         help="exclusion files (default: exclude.txt in --out when present)")
         args = ap.parse_args(rest)
-        return run_apply(prepare_out(args.out, args.allow_inside_git), not args.no_overrides, args.exclude)
+        paths = prepare_out(args.out, args.allow_inside_git)
+        with command_lock(paths):
+            return run_apply(paths, not args.no_overrides, args.exclude)
     args = parser("spend", "Print the spend so far by phase and model.").parse_args(rest)
     return run_spend(prepare_out(args.out, args.allow_inside_git, create=False))
 

@@ -6,9 +6,11 @@ import contextlib
 import csv
 import json
 import stat
+import subprocess
 import sys
 import threading
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -1287,6 +1289,49 @@ class DurableSpendTests(CleanupCase):
         self.assertTrue(set(kinds[1:-2]) <= {"attempt"})
         after = cc.spend_totals([e for e in self.lines() if e.get("run") == reserve["run"]])
         self.assertAlmostEqual(after["haiku"]["actual"] + after["haiku"]["uncertain"], reserve["amount_usd"])
+
+
+class LockTests(CleanupCase):
+    CHILD = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+import cleanup_correspondents as cc
+with cc.command_lock(cc.Paths(Path(sys.argv[2]))):
+    print("locked", flush=True)
+    sys.stdin.readline()
+"""
+
+    def test_a_second_process_is_refused_while_a_command_runs(self):
+        self.build()
+        child = subprocess.Popen([sys.executable, "-c", self.CHILD, str(Path(cc.__file__).parent), str(self.out)],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(child.wait, 10)
+        try:
+            self.assertEqual(child.stdout.readline().strip(), "locked")
+            for command in (["prepare"], ["apply"], ["review"], ["index", str(self.box)]):
+                with self.subTest(command=command[0]):
+                    with self.assertRaises(SystemExit):
+                        cc.main(command + ["--out", str(self.out)])
+                    self.assertIn("another cleanup command is running", self.stderr.getvalue())
+            # Read-only commands do not wait for the lock.
+            self.assertEqual(cc.main(["review", "--dry-run", "--out", str(self.out)]), 0)
+            self.assertEqual(cc.main(["spend", "--out", str(self.out)]), 0)
+        finally:
+            child.stdin.close()
+            child.stdout.close()
+        self.assertEqual(child.wait(10), 0)
+        self.assertEqual(cc.main(["prepare", "--out", str(self.out)]), 0)  # released with the process
+        self.assertEqual(stat.S_IMODE(self.paths.lock.stat().st_mode), 0o600)
+
+    def test_a_symlinked_lock_file_is_refused(self):
+        self.build()
+        target = self.write("elsewhere", b"outside\n")
+        self.paths.lock.unlink()
+        self.paths.lock.symlink_to(target)
+        with self.assertRaises(SystemExit):
+            cc.main(["prepare", "--out", str(self.out)])
+        self.assertEqual(target.read_bytes(), b"outside\n")
 
 
 class JudgeRefusalTests(CleanupCase):
