@@ -4,7 +4,7 @@ import Form from "next/form";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef } from "react";
 
-import { SEARCH_DEBOUNCE_MS, syncedQuery } from "@/lib/memories/client-logic";
+import { createDebounce, type Debounce, SEARCH_DEBOUNCE_MS, syncedQuery } from "@/lib/memories/client-logic";
 import type { ExploreFilters } from "@/lib/memories/types";
 
 import { inputClass } from "../../_components/field-classes";
@@ -22,13 +22,9 @@ export function SearchForm({
 }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const cancelPendingSearch = useCallback(() => {
-    if (timerRef.current !== null) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-  }, []);
+  const pendingRef = useRef<Debounce | null>(null);
+  const pendingSearch = () => (pendingRef.current ??= createDebounce(SEARCH_DEBOUNCE_MS));
+  const cancelPendingSearch = useCallback(() => pendingRef.current?.cancel(), []);
 
   // Clean up both when a navigation supplies new filters and when this form unmounts.
   useEffect(() => cancelPendingSearch, [filters, cancelPendingSearch]);
@@ -59,12 +55,11 @@ export function SearchForm({
         className={inputClass}
         onInput={(event) => {
           const value = event.currentTarget.value;
-          cancelPendingSearch();
-          timerRef.current = setTimeout(() => {
-            timerRef.current = null;
-            router.replace(searchHref(filters, value), { scroll: false });
-          }, SEARCH_DEBOUNCE_MS);
+          pendingSearch().schedule(() => router.replace(searchHref(filters, value), { scroll: false }));
         }}
+        // A press elsewhere (a filter chip, any link on the page) takes focus first: unsent typing is abandoned there, so
+        // a late timer can never replace that navigation with the old filters (TCR round 1, B2-3).
+        onBlur={cancelPendingSearch}
       />
       {(["place", "decade", "tag", "kind"] as const).map((name) => (
         filters[name] !== undefined && <input key={name} type="hidden" name={name} value={filters[name]} />

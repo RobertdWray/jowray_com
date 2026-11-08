@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 
-import { decadeFromHash } from "@/lib/memories/client-logic";
+import { decadeFromHash, decadeFromLink } from "@/lib/memories/client-logic";
 
 /** Server-rendered labels and content for one decade on the timeline. */
 export interface TimelineDecadeItem {
@@ -26,7 +26,10 @@ function serverHash() {
   return "";
 }
 
-/** Show every decade on desktop and one at a time on phones, opening hash-linked decades after hydration. */
+/**
+ * Show every decade on desktop and one at a time on phones, opening hash-linked decades after hydration and whenever a
+ * link to a decade is pressed, even one whose fragment is already current.
+ */
 export function TimelineDecades({ items, defaultOpen }: { items: TimelineDecadeItem[]; defaultOpen: string | null }) {
   const hash = useSyncExternalStore(subscribeToHash, readHash, serverHash);
   const [selection, setSelection] = useState({ hash: "", openId: defaultOpen });
@@ -39,6 +42,27 @@ export function TimelineDecades({ items, defaultOpen }: { items: TimelineDecadeI
       openId: decadeFromHash(hash, items.map((item) => item.id)) ?? selection.openId,
     });
   }
+
+  // A jump link pressed again (its fragment already current, so no hashchange) must still open its decade (TCR round
+  // 1, B2-4): every plain click on a same-page link to a decade opens it. A new fragment is opened by the block above
+  // as well; both agree. The listener lives on the document because the jump links are server-rendered elsewhere.
+  // A stable dependency for the listener: decade ids are DOM ids, so they never contain a space.
+  const ids = items.map((item) => item.id).join(" ");
+  useEffect(() => {
+    const decadeIds = ids.split(" ");
+    const onClick = (event: MouseEvent) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || !(event.target instanceof Element)) {
+        return;
+      }
+      const link = event.target.closest("a[href]");
+      const openId = link ? decadeFromLink(link.getAttribute("href") ?? "", window.location.href, decadeIds) : null;
+      if (openId !== null) {
+        setSelection({ hash: window.location.hash, openId });
+      }
+    };
+    document.addEventListener("click", onClick);
+    return () => document.removeEventListener("click", onClick);
+  }, [ids]);
 
   return (
     <>
