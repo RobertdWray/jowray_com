@@ -70,7 +70,7 @@ function mediaRow(over: Partial<Media> = {}): Media {
     durationSeconds: null, width: null, height: null, capturedAt: null, exif: null, caption: null, approxDateText: null, place: null,
     deletedAt: null, replacesMediaId: null, purgedAt: null, sortOrder: 0,
     createdAt: new Date(NOW), updatedAt: new Date(NOW), reservedUntil: new Date(NOW + 4_500_000),
-    gpsCheckedAt: null, gpsAttempts: 0, gpsClaimedAt: null, latitude: null, longitude: null,
+    gpsCheckedAt: null, gpsScanComplete: null, gpsAttempts: 0, gpsClaimedAt: null, latitude: null, longitude: null,
     ...over,
   };
 }

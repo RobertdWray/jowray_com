@@ -97,8 +97,14 @@ function expectFound(result: VideoLocationResult, coordinates = LIBERTY) {
   }
 }
 
+/** An absence the reader could not vouch for: it stopped early (a limit, a malformed or unsupported box, a bad value). */
 function expectAbsent(result: VideoLocationResult, reason: RegExp) {
-  expect(result).toEqual({ status: "absent", reason: expect.stringMatching(reason) });
+  expect(result).toEqual({ status: "absent", reason: expect.stringMatching(reason), complete: false });
+}
+
+/** A complete parse of the movie box that met no location key: the only absence the public pages may trust (D16). */
+function expectClean(result: VideoLocationResult) {
+  expect(result).toEqual({ status: "absent", reason: "No supported location metadata", complete: true });
 }
 
 describe("readVideoLocation fixtures", () => {
@@ -133,7 +139,7 @@ describe("readVideoLocation fixtures", () => {
 
   it("decides absent for the fixture with no location", async () => {
     const bytes = await readFile(new URL("../fixtures/no-location.mov", import.meta.url));
-    expectAbsent(await parse(bytes), /location/i);
+    expectClean(await parse(bytes));
   });
 });
 
@@ -263,11 +269,11 @@ describe("metadata lookup", () => {
   });
 
   it("does not treat a missing key as the location key", async () => {
-    expectAbsent(await parse(box("moov", mdta(LOCATION, { itemIndex: 2 }))), /location|key/i);
+    expectClean(await parse(box("moov", mdta(LOCATION, { itemIndex: 2 }))));
   });
 
   it("requires the mdta namespace on the matching key", async () => {
-    expectAbsent(await parse(box("moov", mdta(LOCATION, { keys: [{ name: LOCATION_KEY, namespace: "abcd" }] }))), /location|key/i);
+    expectClean(await parse(box("moov", mdta(LOCATION, { keys: [{ name: LOCATION_KEY, namespace: "abcd" }] }))));
   });
 
   it("prefers mdta over ©xyz regardless of child order", async () => {
@@ -299,7 +305,9 @@ describe("metadata lookup", () => {
   });
 
   it("does not search unrelated containers for location metadata", async () => {
-    expectAbsent(await parse(box("moov", box("trak", mdta(), xyz()))), /location/i);
+    // A known coverage limit, not a promise: track-level metadata is never read, so this complete parse reports clean
+    // (TCR round 1 bucket 4, issue #83; stripped copies, F1, are the real fix).
+    expectClean(await parse(box("moov", box("trak", mdta(), xyz()))));
   });
 
   it.each([false, true])("ignores malformed track descendants (metadata first=%s)", async (metadataFirst) => {
@@ -338,7 +346,7 @@ describe("metadata lookup", () => {
 
   it.each(["mdta", "©xyz"] as const)("reports unsupported encoding when no %s data child is UTF-8", async (layout) => {
     expect(await parse(locationDataMovie(layout, data(text(LOCATION), 21), data(text(LOCATION), 2)))).toEqual({
-      status: "absent", reason: "Unsupported location data encoding: expected UTF-8 type 1",
+      status: "absent", reason: "Unsupported location data encoding: expected UTF-8 type 1", complete: false,
     });
   });
 
@@ -422,7 +430,7 @@ describe("ISO 6709 decimal degrees", () => {
     "+0+0/", "-0+0/", "+0-0/", "-0-0/",
     "+00.0000+000.0000/", "-00.000000-000.000000/", "+00-000", "+0+0+10CRSWGS_84/",
   ])("reports zero location coordinates as absent for %s", async (value) => {
-    const expected = { status: "absent", reason: "Zero location coordinates" };
+    const expected = { status: "absent", reason: "Zero location coordinates", complete: false };
     expect(await parse(box("moov", mdta(value)))).toEqual(expected);
     expect(await parse(box("moov", xyz(value)))).toEqual(expected);
   });

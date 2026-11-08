@@ -90,7 +90,7 @@ async function freshPhoto(tx: Tx, bytes: Uint8Array): Promise<string> {
   return media.id;
 }
 
-const select = { latitude: true, longitude: true, gpsCheckedAt: true, gpsAttempts: true, gpsClaimedAt: true } as const;
+const select = { latitude: true, longitude: true, gpsCheckedAt: true, gpsAttempts: true, gpsClaimedAt: true, gpsScanComplete: true } as const;
 
 describe.skipIf(!client)("extractPhotoGps on real Postgres", () => {
   beforeEach(() => {
@@ -135,24 +135,25 @@ describe.skipIf(!client)("extractPhotoGps on real Postgres", () => {
     });
     expect(error).toBeNull();
     expect(seen[0]).toBe("absent");
-    expect(seen[1]).toEqual({ latitude: null, longitude: null, gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null });
+    // A photo's decision leaves gpsScanComplete null: it describes MP4-family scans only (TCR round 1, B1-1).
+    expect(seen[1]).toEqual({ latitude: null, longitude: null, gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null, gpsScanComplete: null });
     expect(seen[2]).toBe("failed");
     // A failure leaves its claim in place, to expire (final review, item 2).
-    expect(seen[3]).toEqual({ latitude: null, longitude: null, gpsCheckedAt: null, gpsAttempts: 1, gpsClaimedAt: expect.any(Date) });
+    expect(seen[3]).toEqual({ latitude: null, longitude: null, gpsCheckedAt: null, gpsAttempts: 1, gpsClaimedAt: expect.any(Date), gpsScanComplete: null });
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
   });
 
   it.each([
-    { fixture: "location-mdta.mov", mimeType: "video/quicktime", outcome: "found" },
-    { fixture: "location-xyz.mp4", mimeType: "video/mp4", outcome: "found" },
-    { fixture: "no-location.mov", mimeType: "video/quicktime", outcome: "absent" },
-  ])("video $fixture satisfies the coordinate CHECKs and stamps $outcome", async ({ fixture, mimeType, outcome }) => {
+    { fixture: "location-mdta.mov", mimeType: "video/quicktime", outcome: "found", complete: true },
+    { fixture: "location-xyz.mp4", mimeType: "video/mp4", outcome: "found", complete: true },
+    { fixture: "no-location.mov", mimeType: "video/quicktime", outcome: "absent", complete: true },
+  ])("video $fixture satisfies the coordinate CHECKs and stamps $outcome (scan complete: $complete)", async ({ fixture, mimeType, outcome, complete }) => {
     const error = await rolledBack(async (tx) => {
       const mediaId = await freshPhoto(tx, new Uint8Array(readFileSync(new URL(`../fixtures/${fixture}`, import.meta.url))));
       await tx.media.update({ where: { id: mediaId }, data: { mimeType } });
       expect(await extractPhotoGps({ mediaId })).toBe(outcome);
       const row = await tx.media.findUniqueOrThrow({ where: { id: mediaId }, select });
-      expect(row).toMatchObject({ gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null });
+      expect(row).toMatchObject({ gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null, gpsScanComplete: complete });
       if (outcome === "found") {
         expect(row.latitude).toBeCloseTo(40.6892, 4);
         expect(row.longitude).toBeCloseTo(-74.0445, 4);
@@ -160,6 +161,21 @@ describe.skipIf(!client)("extractPhotoGps on real Postgres", () => {
         expect(row).toMatchObject({ latitude: null, longitude: null });
       }
       expect(await extractPhotoGps({ mediaId })).toBe("skipped");
+    });
+    expect(error).toBeNull();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it("a video the reader gave up on is decided with gpsScanComplete false (Media_gps_scan_decided holds; TCR round 1, B1-1)", async () => {
+    // A movie box whose header claims more bytes than the file holds: malformed, so the reader stops without parsing it.
+    const truncated = new Uint8Array(16);
+    new DataView(truncated.buffer).setUint32(0, 4096);
+    truncated.set(new TextEncoder().encode("moov"), 4);
+    const error = await rolledBack(async (tx) => {
+      const mediaId = await freshPhoto(tx, truncated);
+      await tx.media.update({ where: { id: mediaId }, data: { mimeType: "video/quicktime" } });
+      expect(await extractPhotoGps({ mediaId })).toBe("absent");
+      expect(await tx.media.findUniqueOrThrow({ where: { id: mediaId }, select })).toEqual({ latitude: null, longitude: null, gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null, gpsScanComplete: false });
     });
     expect(error).toBeNull();
     expect(captureExceptionMock).not.toHaveBeenCalled();

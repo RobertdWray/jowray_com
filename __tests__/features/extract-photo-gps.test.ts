@@ -377,7 +377,7 @@ describe("extractPhotoGps: video location (A20-A22)", () => {
     media[0]!.mimeType = mimeType;
     blobs.set(key, videoFixture(fixture));
     expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("found");
-    expect(media[0]).toMatchObject({ gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null });
+    expect(media[0]).toMatchObject({ gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null, gpsScanComplete: true });
     expect(media[0]!.latitude).toBeCloseTo(40.6892, 4);
     expect(media[0]!.longitude).toBeCloseTo(-74.0445, 4);
     expect(headMock).toHaveBeenCalledExactlyOnceWith(key, { signal: expect.any(AbortSignal) });
@@ -403,8 +403,9 @@ describe("extractPhotoGps: video location (A20-A22)", () => {
       }
     };
     expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("absent");
-    expect(media[0]).toMatchObject({ latitude: null, longitude: null, gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null });
-    expect(photoGpsLines()).toEqual([{ level: "info", action: "photo_gps", mediaId: "med_1", outcome: "absent", attempt: 1, reason: "No supported location metadata" }]);
+    // The only absence that lets the original play publicly (TCR round 1, B1-1).
+    expect(media[0]).toMatchObject({ latitude: null, longitude: null, gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null, gpsScanComplete: true });
+    expect(photoGpsLines()).toEqual([{ level: "info", action: "photo_gps", mediaId: "med_1", outcome: "absent", attempt: 1, reason: "No supported location metadata", complete: true }]);
     expect(captureExceptionMock).not.toHaveBeenCalled();
     expectNoCoordinatesLogged();
   });
@@ -431,9 +432,10 @@ describe("extractPhotoGps: video location (A20-A22)", () => {
     blobs.set(key, header);
     headMock.mockResolvedValueOnce({ size });
     expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("absent");
-    expect(media[0]).toMatchObject({ latitude: null, longitude: null, gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null });
+    // Decided (no retry would read it differently), but not vouched for: it never plays publicly (TCR round 1, B1-1).
+    expect(media[0]).toMatchObject({ latitude: null, longitude: null, gpsCheckedAt: expect.any(Date), gpsAttempts: 1, gpsClaimedAt: null, gpsScanComplete: false });
     expect(readRangeMock).toHaveBeenCalledExactlyOnceWith(key, 0, 8, { signal: expect.any(AbortSignal) });
-    expect(photoGpsLines()).toEqual([{ level: "info", action: "photo_gps", mediaId: "med_1", outcome: "absent", attempt: 1, reason: "moov byte limit (maxMoovBytes) exceeded" }]);
+    expect(photoGpsLines()).toEqual([{ level: "info", action: "photo_gps", mediaId: "med_1", outcome: "absent", attempt: 1, reason: "moov byte limit (maxMoovBytes) exceeded", complete: false }]);
     expectNoCoordinatesLogged();
   });
 

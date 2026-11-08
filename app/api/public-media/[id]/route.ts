@@ -10,7 +10,7 @@ export const maxDuration = 60;
  * A file of a memory on See memories (plan docs/plans/2026-11-08-see-memories.md, D6, D15, D16, D18), for anyone,
  * without a token. The body lives in features/media/serve-media.ts with caller `public`: APPROVED + PUBLIC memories
  * only, photos only from their server-made copies, recordings and videos only when they cannot carry a location or
- * were scanned clean, and its own allowance. `download` is never honoured and `v=original` is the web copy. While the
+ * a complete scan found none, and its own allowance. `download` is never honoured and `v=original` is the web copy. While the
  * launch flag is off every request is the same 404, before the database is touched.
  */
 export async function GET(request: NextRequest, context: RouteContext<"/api/public-media/[id]">): Promise<Response> {

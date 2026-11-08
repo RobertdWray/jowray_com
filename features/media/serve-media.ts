@@ -14,7 +14,7 @@ import {
 import { isStagingKey } from "@/lib/derived-keys";
 import { attachmentDisposition, extensionFor, isAllowedMime } from "@/lib/media-types";
 import { createLogger, logError } from "@/lib/logger";
-import { originalPlayablePublicly } from "@/lib/memories/playability";
+import { type LocationFacts, originalPlayablePublicly } from "@/lib/memories/playability";
 import { getMediaServingEnv, type MediaServingEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 import { createStorageService } from "@/services/storage";
@@ -115,7 +115,7 @@ export interface ServeMediaOptions {
  * checked here as well as by the route's `authorize`, and regardless of
  * `allowDeletedMemory`). It never gets an original photo or a download: `original` becomes the web
  * copy and `download` is ignored. A recording or video plays only when its
- * original cannot carry a location or its scan found none (D16). Its
+ * original cannot carry a location or a complete scan found none (D16). Its
  * allowance is counted in `public:` scopes against the `MEDIA_PUBLIC_*`
  * limits (D18).
  */
@@ -205,10 +205,10 @@ export async function serveMedia({ id, variant: askedVariant, download: askedDow
 
 /**
  * The public caller's own gate (D1, D16): the memory is APPROVED, PUBLIC and not deleted, and a non-photo original
- * cannot carry a location or was scanned clean. Photos are judged by the derived-copy branch, which never serves
+ * cannot carry a location or a complete scan found none. Photos are judged by the derived-copy branch, which never serves
  * their original.
  */
-function isPublicFile(media: { mimeType: string; gpsCheckedAt: Date | null; latitude: number | null; longitude: number | null; memory: { status: string; visibility: string; deletedAt: Date | null } }): boolean {
+function isPublicFile(media: LocationFacts & { memory: { status: string; visibility: string; deletedAt: Date | null } }): boolean {
   if (media.memory.status !== "APPROVED" || media.memory.visibility !== "PUBLIC" || media.memory.deletedAt !== null) {
     return false;
   }

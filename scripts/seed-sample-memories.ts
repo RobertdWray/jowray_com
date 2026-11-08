@@ -156,7 +156,8 @@ async function main(): Promise<void> {
       } else if (sample.type === "VIDEO") {
         // Alternate a MOV scanned clean (playable) and one whose scan found a location (waiting, D16).
         const located = index % 2 === 1;
-        addFile("video/quicktime", { durationSeconds: sample.durationSeconds, gpsCheckedAt: now, latitude: located ? 40.6892 : null, longitude: located ? -74.0445 : null });
+        // A complete scan, as extractPhotoGps records it, so the clean ones play (D16, TCR round 1 B1-1).
+        addFile("video/quicktime", { durationSeconds: sample.durationSeconds, gpsCheckedAt: now, gpsScanComplete: true, latitude: located ? 40.6892 : null, longitude: located ? -74.0445 : null });
       }
     });
     await prisma.contributor.createMany({ data: contributors });

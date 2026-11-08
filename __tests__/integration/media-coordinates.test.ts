@@ -121,6 +121,24 @@ describe.skipIf(!client)("Media coordinate constraints and the PlaceLookup cache
     expectCheckViolation(error, constraint);
   });
 
+  it.each([true, false])("refuses gpsScanComplete=%s without gpsCheckedAt (Media_gps_scan_decided, TCR round 1 B1-1)", async (gpsScanComplete) => {
+    const error = await rolledBack(async (tx) => tx.media.create({ data: { ...photo(await freshMemoryId(tx), { latitude: null, longitude: null, gpsCheckedAt: null }), mimeType: "video/quicktime", gpsScanComplete } }));
+    expectCheckViolation(error, "Media_gps_scan_decided");
+  });
+
+  it("accepts gpsScanComplete on a decided row and keeps it when the stamp stays", async () => {
+    const stored: unknown[] = [];
+    const error = await rolledBack(async (tx) => {
+      const memoryId = await freshMemoryId(tx);
+      for (const gpsScanComplete of [true, false, null]) {
+        const row = await tx.media.create({ data: { ...photo(memoryId, { latitude: null, longitude: null, gpsCheckedAt: CHECKED }), mimeType: "video/quicktime", gpsScanComplete }, select: { gpsScanComplete: true } });
+        stored.push(row.gpsScanComplete);
+      }
+    });
+    expect(error).toBeNull();
+    expect(stored).toEqual([true, false, null]);
+  });
+
   it("refuses an update that breaks the pair, a range or the checked stamp on an existing row", async () => {
     for (const [data, constraint] of [
       [{ longitude: null }, "Media_coordinates_pair"],

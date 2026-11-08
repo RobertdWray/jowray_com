@@ -36,6 +36,7 @@ function mediaRow(over: Row = {}): Row {
     latitude: EXACT_LAT,
     longitude: EXACT_LON,
     gpsCheckedAt: CHECKED,
+    gpsScanComplete: null,
     // What the query returns when the stub does not apply the select: the test proves none of it reaches the DTO.
     storageKey: SECRET_KEY,
     blobUrl: SECRET_URL,
@@ -98,6 +99,8 @@ describe("listPublicMemories", () => {
     const media = select.media as { where: unknown; select: Record<string, unknown> };
     expect(media.where).toEqual({ deletedAt: null, purgedAt: null, status: "READY" });
     expect(media.select).not.toHaveProperty("storageKey");
+    // D16 needs the scan's completeness, not just its stamp (TCR round 1, B1-1).
+    expect(media.select).toMatchObject({ gpsCheckedAt: true, gpsScanComplete: true, latitude: true, longitude: true });
     expect(media.select.derivatives).toEqual({ where: { status: "READY" }, select: { kind: true, width: true, height: true, storageKey: true } });
   });
 
@@ -156,11 +159,13 @@ describe("listPublicMemories", () => {
   });
 
   it.each([
-    ["a recording a browser made", { mimeType: "audio/webm", gpsCheckedAt: null, latitude: null, longitude: null }, "yes"],
-    ["an M4A scanned clean", { mimeType: "audio/x-m4a", gpsCheckedAt: CHECKED, latitude: null, longitude: null }, "yes"],
-    ["an M4A not scanned yet", { mimeType: "audio/mp4", gpsCheckedAt: null, latitude: null, longitude: null }, "waiting"],
-    ["a MOV with a location", { mimeType: "video/quicktime", gpsCheckedAt: CHECKED, latitude: 40.68, longitude: -74.04 }, "waiting"],
-    ["a MOV scanned clean", { mimeType: "video/quicktime", gpsCheckedAt: CHECKED, latitude: null, longitude: null }, "yes"],
+    ["a recording a browser made", { mimeType: "audio/webm", gpsCheckedAt: null, gpsScanComplete: null, latitude: null, longitude: null }, "yes"],
+    ["an M4A scanned clean", { mimeType: "audio/x-m4a", gpsCheckedAt: CHECKED, gpsScanComplete: true, latitude: null, longitude: null }, "yes"],
+    ["an M4A not scanned yet", { mimeType: "audio/mp4", gpsCheckedAt: null, gpsScanComplete: null, latitude: null, longitude: null }, "waiting"],
+    ["a MOV with a location", { mimeType: "video/quicktime", gpsCheckedAt: CHECKED, gpsScanComplete: true, latitude: 40.68, longitude: -74.04 }, "waiting"],
+    ["a MOV scanned clean", { mimeType: "video/quicktime", gpsCheckedAt: CHECKED, gpsScanComplete: true, latitude: null, longitude: null }, "yes"],
+    ["a MOV whose scan gave up", { mimeType: "video/quicktime", gpsCheckedAt: CHECKED, gpsScanComplete: false, latitude: null, longitude: null }, "waiting"],
+    ["an MP4 decided before the completeness flag", { mimeType: "video/mp4", gpsCheckedAt: CHECKED, gpsScanComplete: null, latitude: null, longitude: null }, "waiting"],
   ])("marks %s as playable %s (D16) and takes its duration", async (_name, location, playable) => {
     rows = [memoryRow({ type: location.mimeType.startsWith("video/") ? "VIDEO" : "VOICE", media: [mediaRow({ ...location, durationSeconds: 47, derivatives: [] })] })];
     const [memory] = await listPublicMemories();

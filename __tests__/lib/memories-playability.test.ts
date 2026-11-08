@@ -4,23 +4,34 @@ import { originalPlayablePublicly, publicPlayability } from "@/lib/memories/play
 import { ALLOWED_MIME_TYPES } from "@/lib/media-types";
 
 const CHECKED = new Date("2026-11-07T12:00:00Z");
-const clean = { gpsCheckedAt: CHECKED, latitude: null, longitude: null };
-const located = { gpsCheckedAt: CHECKED, latitude: 39.4815, longitude: -76.6447 };
-const unscanned = { gpsCheckedAt: null, latitude: null, longitude: null };
+/** A complete parse with no location: the only MP4-family state that plays (TCR round 1, B1-1). */
+const clean = { gpsCheckedAt: CHECKED, latitude: null, longitude: null, gpsScanComplete: true };
+const located = { gpsCheckedAt: CHECKED, latitude: 39.4815, longitude: -76.6447, gpsScanComplete: true };
+const unscanned = { gpsCheckedAt: null, latitude: null, longitude: null, gpsScanComplete: null };
+/** Decided absent, but the reader stopped early (a limit, a malformed or unsupported box): not vouched for. */
+const gaveUp = { gpsCheckedAt: CHECKED, latitude: null, longitude: null, gpsScanComplete: false };
+/** Decided absent before the completeness flag existed: waits until a rescan. */
+const legacy = { gpsCheckedAt: CHECKED, latitude: null, longitude: null, gpsScanComplete: null };
 
 describe("originalPlayablePublicly (plan 2026-11-08 D16)", () => {
   it.each(["audio/webm", "audio/ogg", "audio/wav", "audio/mpeg", "video/webm"])("plays a %s original without a location scan (no location reader, browser-recorded formats)", (mimeType) => {
     expect(originalPlayablePublicly({ mimeType, ...unscanned })).toBe(true);
   });
 
-  it.each(["video/quicktime", "video/mp4", "audio/mp4", "audio/x-m4a"])("plays a %s original only once its scan decided there is no location", (mimeType) => {
+  it.each(["video/quicktime", "video/mp4", "audio/mp4", "audio/x-m4a"])("plays a %s original only once a complete scan found no location", (mimeType) => {
     expect(originalPlayablePublicly({ mimeType, ...clean })).toBe(true);
     expect(originalPlayablePublicly({ mimeType, ...unscanned })).toBe(false);
     expect(originalPlayablePublicly({ mimeType, ...located })).toBe(false);
   });
 
+  it.each(["video/quicktime", "video/mp4", "audio/mp4", "audio/x-m4a"])("never plays a %s original whose scan gave up or predates the completeness flag (TCR round 1, B1-1)", (mimeType) => {
+    expect(originalPlayablePublicly({ mimeType, ...gaveUp })).toBe(false);
+    expect(originalPlayablePublicly({ mimeType, ...legacy })).toBe(false);
+  });
+
   it("refuses a gated original whose coordinates exist even without a decision stamp (never trust a half-written row)", () => {
-    expect(originalPlayablePublicly({ mimeType: "video/quicktime", gpsCheckedAt: null, latitude: 39.4, longitude: -76.6 })).toBe(false);
+    expect(originalPlayablePublicly({ mimeType: "video/quicktime", gpsCheckedAt: null, latitude: 39.4, longitude: -76.6, gpsScanComplete: true })).toBe(false);
+    expect(originalPlayablePublicly({ mimeType: "video/quicktime", gpsCheckedAt: null, latitude: null, longitude: null, gpsScanComplete: true })).toBe(false);
   });
 
   it.each(["image/jpeg", "image/heic", "image/png", "image/gif", "image/webp", "image/heif"])("never streams a %s original: photos are shown only from server-made copies", (mimeType) => {
@@ -63,6 +74,7 @@ describe("publicPlayability", () => {
     expect(publicPlayability({ mimeType: "video/quicktime", ...clean, webCopyReady: false })).toBe("yes");
     expect(publicPlayability({ mimeType: "video/quicktime", ...located, webCopyReady: false })).toBe("waiting");
     expect(publicPlayability({ mimeType: "audio/x-m4a", ...unscanned, webCopyReady: false })).toBe("waiting");
+    expect(publicPlayability({ mimeType: "video/mp4", ...gaveUp, webCopyReady: false })).toBe("waiting");
     expect(publicPlayability({ mimeType: "audio/webm", ...unscanned, webCopyReady: false })).toBe("yes");
   });
 });

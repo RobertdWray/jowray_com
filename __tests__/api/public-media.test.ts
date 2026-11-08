@@ -28,6 +28,7 @@ interface MediaRow {
   latitude: number | null;
   longitude: number | null;
   gpsCheckedAt: Date | null;
+  gpsScanComplete: boolean | null;
   derivatives: Array<{ kind: "WEB_IMAGE" | "THUMBNAIL"; status: "READY" | "PENDING" | "FAILED"; storageKey: string; mimeType: string; sizeBytes: number | null }>;
   memory: { claimTokenHash: string; deletedAt: Date | null; status: Status; visibility: Visibility };
 }
@@ -108,6 +109,7 @@ function photo(over: Partial<MediaRow> = {}): MediaRow {
     latitude: 39.4815,
     longitude: -76.6447,
     gpsCheckedAt: CHECKED,
+    gpsScanComplete: null,
     derivatives: [
       { kind: "WEB_IMAGE", status: "READY", storageKey: "derived/mem_1/web.jpg", mimeType: "image/jpeg", sizeBytes: 400_000 },
       { kind: "THUMBNAIL", status: "READY", storageKey: "derived/mem_1/thumb.jpg", mimeType: "image/jpeg", sizeBytes: 90_000 },
@@ -116,7 +118,7 @@ function photo(over: Partial<MediaRow> = {}): MediaRow {
     ...over,
   };
 }
-function recording(id: string, mimeType: string, location: Pick<MediaRow, "latitude" | "longitude" | "gpsCheckedAt">): MediaRow {
+function recording(id: string, mimeType: string, location: Pick<MediaRow, "latitude" | "longitude" | "gpsCheckedAt" | "gpsScanComplete">): MediaRow {
   return { ...photo({ id, mimeType, storageKey: `originals/mem_1/${id}`, derivatives: [], sizeBytes: 3_000_000 }), ...location };
 }
 
@@ -125,12 +127,16 @@ const ENV_KEYS = ["PUBLIC_MEMORIES_ENABLED", "MEDIA_PUBLIC_DAILY_EGRESS_BYTES", 
 beforeEach(() => {
   media = [
     photo(),
-    recording("med_mov_located", "video/quicktime", { latitude: 40.6892, longitude: -74.0445, gpsCheckedAt: CHECKED }),
-    recording("med_mov_unscanned", "video/quicktime", { latitude: null, longitude: null, gpsCheckedAt: null }),
-    recording("med_mov_clean", "video/quicktime", { latitude: null, longitude: null, gpsCheckedAt: CHECKED }),
-    recording("med_m4a_unscanned", "audio/mp4", { latitude: null, longitude: null, gpsCheckedAt: null }),
-    recording("med_m4a_clean", "audio/x-m4a", { latitude: null, longitude: null, gpsCheckedAt: CHECKED }),
-    recording("med_webm", "audio/webm", { latitude: null, longitude: null, gpsCheckedAt: null }),
+    recording("med_mov_located", "video/quicktime", { latitude: 40.6892, longitude: -74.0445, gpsCheckedAt: CHECKED, gpsScanComplete: true }),
+    recording("med_mov_unscanned", "video/quicktime", { latitude: null, longitude: null, gpsCheckedAt: null, gpsScanComplete: null }),
+    recording("med_mov_clean", "video/quicktime", { latitude: null, longitude: null, gpsCheckedAt: CHECKED, gpsScanComplete: true }),
+    // Decided absent, but the reader gave up (a limit, a malformed box) or ran before the flag existed (TCR round 1, B1-1).
+    recording("med_mov_gave_up", "video/quicktime", { latitude: null, longitude: null, gpsCheckedAt: CHECKED, gpsScanComplete: false }),
+    recording("med_mp4_legacy", "video/mp4", { latitude: null, longitude: null, gpsCheckedAt: CHECKED, gpsScanComplete: null }),
+    recording("med_m4a_unscanned", "audio/mp4", { latitude: null, longitude: null, gpsCheckedAt: null, gpsScanComplete: null }),
+    recording("med_m4a_clean", "audio/x-m4a", { latitude: null, longitude: null, gpsCheckedAt: CHECKED, gpsScanComplete: true }),
+    recording("med_m4a_gave_up", "audio/x-m4a", { latitude: null, longitude: null, gpsCheckedAt: CHECKED, gpsScanComplete: false }),
+    recording("med_webm", "audio/webm", { latitude: null, longitude: null, gpsCheckedAt: null, gpsScanComplete: null }),
   ];
   presignMock.mockClear();
   getMock.mockClear();
@@ -202,7 +208,7 @@ describe("GET /api/public-media/[id]: who may see", () => {
 });
 
 describe("GET /api/public-media/[id]: location (D16)", () => {
-  it.each(["med_mov_located", "med_mov_unscanned", "med_m4a_unscanned"])("404s %s: a video or M4A whose scan found a location or has not decided", async (id) => {
+  it.each(["med_mov_located", "med_mov_unscanned", "med_m4a_unscanned", "med_mov_gave_up", "med_mp4_legacy", "med_m4a_gave_up"])("404s %s: a video or M4A whose scan found a location, has not decided, gave up or predates the completeness flag", async (id) => {
     expect((await request(id)).status).toBe(404);
     expect(presignMock).not.toHaveBeenCalled();
     expect(getMock).not.toHaveBeenCalled();

@@ -28,7 +28,8 @@ const FRIEND = "A friend of Jo's";
  * The only columns the public pages may see. Explicit `select` keeps private columns out by construction: no
  * email, claim token hash, blob URL, EXIF, file name or original storage key. A derived copy's storage key is read
  * only to refuse a staged one (as the media route does) and never leaves this module. The coordinates are read to
- * decide playability (D16) and to round the memory's town point (D2); neither leaves unrounded.
+ * decide playability (D16, with the scan's completeness) and to round the memory's town point (D2); neither leaves
+ * unrounded.
  */
 const PUBLIC_SELECT = {
   id: true,
@@ -56,6 +57,7 @@ const PUBLIC_SELECT = {
       latitude: true,
       longitude: true,
       gpsCheckedAt: true,
+      gpsScanComplete: true,
       derivatives: { where: { status: "READY" }, select: { kind: true, width: true, height: true, storageKey: true } },
     },
     orderBy: [...LIVE_MEDIA_ORDER],

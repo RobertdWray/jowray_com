@@ -14,8 +14,11 @@ const log = createLogger({ category: "upload" });
 
 export type PhotoGpsOutcome = "found" | "absent" | "failed" | "skipped";
 
-/** Video absence carries a deterministic parser reason to the committed decision's log. */
-type MediaGpsRead = Exclude<GpsRead, { status: "absent" }> | { status: "absent"; reason?: string };
+/**
+ * Video absence carries a deterministic parser reason to the committed decision's log, and whether the reader parsed
+ * the whole movie box (`complete`, TCR round 1 B1-1); photo absence carries neither.
+ */
+type MediaGpsRead = Exclude<GpsRead, { status: "absent" }> | { status: "absent"; reason?: string; complete?: boolean };
 
 /** Reads a media row may claim (D3). A row left undecided at the cap is never read again; cron step (h) selects below it. */
 export const MAX_GPS_ATTEMPTS = 3;
@@ -65,7 +68,9 @@ class OriginalMissingError extends Error {
  *    bytes; one that loses the update is `skipped`.
  * 3. Read: a JPEG's 128 KiB prefix first, the whole original only when the prefix found nothing and its metadata
  *    continues past it; any other image whole. MOV/MP4 use head for size and bounded range reads for metadata.
- * 4. Record: found sets the pair and the stamp, absent only the stamp, and both clear the claim; only while the row is
+ * 4. Record: found sets the pair and the stamp, absent only the stamp, and both clear the claim; an MP4-family file
+ *    also records `gpsScanComplete` (true for found and for a complete parse with no location, false when the reader
+ *    stopped early), so a give-up never counts as clean on See memories (TCR round 1, B1-1); only while the row is
  *    still undecided, the file not removed and its memory not deleted, so a file removed while it was read keeps no
  *    point (final review, item 5). A failure (unreadable bytes, a missing original, any throw) leaves the row
  *    undecided and its claim in place to expire, for a later attempt, and is reported to Sentry with `step: photo_gps`
@@ -118,15 +123,18 @@ export async function extractPhotoGps({ mediaId, deadlineMs = GPS_READ_DEADLINE_
       return failed(mediaId, attempt, read.error);
     }
     // The decision clears the claim. A file removed (or whose memory was deleted) while it was read keeps no point.
+    // An MP4-family decision also records whether the scan was complete: only a complete one with no location lets the
+    // original play on See memories (plan 2026-11-08 D16, TCR round 1 B1-1). Photos never stream their original.
+    const scan = isMp4Container(row.mimeType) ? { gpsScanComplete: read.status === "found" || read.complete === true } : {};
     const decided = await db.media.updateMany({
       where: { id: mediaId, gpsCheckedAt: null, deletedAt: null, memory: { deletedAt: null } },
-      data: read.status === "found" ? { ...read.coordinates, gpsCheckedAt: new Date(), gpsClaimedAt: null } : { gpsCheckedAt: new Date(), gpsClaimedAt: null },
+      data: read.status === "found" ? { ...read.coordinates, gpsCheckedAt: new Date(), gpsClaimedAt: null, ...scan } : { gpsCheckedAt: new Date(), gpsClaimedAt: null, ...scan },
     });
     if (decided.count === 0) {
       // Another worker decided while this one read (its decision stands), or the file was removed meanwhile.
       return skipped(mediaId, "decided_elsewhere_or_removed", attempt);
     }
-    log.info({ action: "photo_gps", mediaId, outcome: read.status, attempt, ...(read.status === "absent" && read.reason !== undefined ? { reason: read.reason } : {}) }, "media GPS recorded");
+    log.info({ action: "photo_gps", mediaId, outcome: read.status, attempt, ...(read.status === "absent" && read.reason !== undefined ? { reason: read.reason } : {}), ...(read.status === "absent" && read.complete !== undefined ? { complete: read.complete } : {}) }, "media GPS recorded");
     return read.status;
   } catch (error) {
     return failed(mediaId, attempt, error);
