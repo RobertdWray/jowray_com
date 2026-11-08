@@ -140,6 +140,7 @@ vi.mock("@/services/storage", () => ({ createStorageService: () => ({ del: delMo
 
 import { GET } from "@/app/api/cron/reconcile-uploads/route";
 import { isEligible, MAX_PIXELS } from "@/features/memories/derived-claims";
+import { ALLOWED_MIME_TYPES } from "@/lib/media-types";
 import { MAX_VIDEO_PIXELS } from "@/lib/video-frames";
 
 function run(auth?: string) {
@@ -790,7 +791,9 @@ describe("step (g2): video posters (video-posters plan T7, ruling R11)", () => {
     row.derivatives = [...(row.derivatives ?? []).filter((d) => d.kind !== "POSTER"), poster({ status: "READY", claimedAt: new Date() })];
     return "derived";
   }
-  const posterQuery = () => dbStub.media.findMany.mock.calls.map(([args]) => args).filter(({ where }) => JSON.stringify(where.mimeType) === JSON.stringify({ startsWith: "video/" })).at(-1);
+  /** (g2)'s read: the only media query whose OR names the POSTER kind ((g)'s names the photo copies). */
+  const isPosterQuery = (where: Record<string, unknown>) => JSON.stringify(where.OR ?? []).includes("POSTER");
+  const posterQuery = () => dbStub.media.findMany.mock.calls.map(([args]) => args).filter(({ where }) => isPosterQuery(where)).at(-1);
   beforeEach(() => {
     events = []; emails = []; memories = []; media = [];
     isolationCalls.length = 0;
@@ -846,6 +849,31 @@ describe("step (g2): video posters (video-posters plan T7, ruling R11)", () => {
     expect(media.filter((m) => matches(m as unknown as Record<string, unknown>, where)).map((m) => m.id)).toEqual(["med_ok", "med_mp4", "med_webm"]);
   });
 
+  it("selects only the video types the site accepts, taken from lib/media-types (ruling R13)", async () => {
+    media = [
+      video("med_mov", minutesAgo(100)),
+      video("med_avi", minutesAgo(500), { mimeType: "video/x-msvideo", storageKey: "dev/originals/mem_1/v.avi" }),
+      video("med_mkv", minutesAgo(500), { mimeType: "video/x-matroska", storageKey: "dev/originals/mem_1/v.mkv" }),
+      video("med_param", minutesAgo(500), { mimeType: "video/mp4;codecs=avc1" }),
+    ];
+    await run(`Bearer ${SECRET}`);
+    const where = posterQuery()!.where;
+    expect(where.mimeType).toEqual({ in: ALLOWED_MIME_TYPES.filter((mime) => mime.startsWith("video/")) });
+    expect(where.mimeType).toEqual({ in: ["video/mp4", "video/quicktime", "video/webm"] });
+    expect(media.filter((m) => matches(m as unknown as Record<string, unknown>, where)).map((m) => m.id)).toEqual(["med_mov"]);
+  });
+
+  it("a disallowed video type, never eligible for derivePoster, cannot hold the batch and starve newer videos (R13)", async () => {
+    derivePosterMock.mockImplementation(async ({ mediaId }) => makePoster(mediaId));
+    media = [
+      video("med_avi_1", minutesAgo(900), { mimeType: "video/x-msvideo" }),
+      video("med_avi_2", minutesAgo(800), { mimeType: "video/x-msvideo" }),
+      video("med_new", minutesAgo(10), { mimeType: "video/mp4" }),
+    ];
+    await run(`Bearer ${SECRET}`);
+    expect(derivePosterMock.mock.calls.map(([a]) => a.mediaId)).toEqual(["med_new"]);
+  });
+
   it("works through a backlog two per run, oldest first, and a run after the last poster is a no-op", async () => {
     derivePosterMock.mockImplementation(async ({ mediaId }) => makePoster(mediaId));
     media = [
@@ -896,7 +924,7 @@ describe("step (g2): video posters (video-posters plan T7, ruling R11)", () => {
         const startedAt = Date.now();
         dbStub.media.findMany.mockImplementation(async (args) => {
           const rows = await findMedia(args);
-          if (JSON.stringify(args.where.mimeType) === JSON.stringify({ startsWith: "video/" })) {
+          if (isPosterQuery(args.where)) {
             vi.setSystemTime(startedAt + elapsedMs);
           }
           return rows;

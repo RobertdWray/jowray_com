@@ -612,15 +612,25 @@ describe("finalizeUploadAsAdmin: the video poster (video-posters plan T7, ruling
     expect(taskNames).toEqual(names);
     expect(poster).not.toHaveBeenCalled(); // scheduled, never run before the reply
     await posterTask()();
-    expect(poster).toHaveBeenCalledExactlyOnceWith({ mediaId: MID, deadlineMs: 25_000 });
+    // The call's 25 s less the 3 s kept back for put, publish and the Sentry flush (ruling R12).
+    expect(poster).toHaveBeenCalledExactlyOnceWith({ mediaId: MID, deadlineMs: 22_000 });
   });
 
-  it("hands derivePoster what is left of the call's 25 s when the task runs, not when it was scheduled", async () => {
+  it("keeps 3 s of the call's deadline back, as the hash and derive tasks do, so put, publish and the flush fit in maxDuration 30 (R12)", async () => {
+    videoReservation("video/quicktime", MOV);
+    await finalizeUploadAsAdmin(args);
+    // 10 s of the call's 25 s left: the poster is handed 7 s, never the whole 10.
+    vi.mocked(Date.now).mockReturnValue(NOW + 15_000);
+    await posterTask()();
+    expect(poster).toHaveBeenCalledExactlyOnceWith({ mediaId: MID, deadlineMs: 7_000 });
+  });
+
+  it("hands derivePoster what is left of the call's 25 s (less the margin) when the task runs, not when it was scheduled", async () => {
     videoReservation("video/quicktime", MOV);
     await finalizeUploadAsAdmin(args);
     vi.mocked(Date.now).mockReturnValue(NOW + 9_000);
     await posterTask()();
-    expect(poster).toHaveBeenCalledExactlyOnceWith({ mediaId: MID, deadlineMs: 16_000 });
+    expect(poster).toHaveBeenCalledExactlyOnceWith({ mediaId: MID, deadlineMs: 13_000 });
   });
 
   it("the budget is what the inline hash and GPS read left: their time comes off the poster's", async () => {
@@ -632,7 +642,7 @@ describe("finalizeUploadAsAdmin: the video poster (video-posters plan T7, ruling
     });
     expect(await finalizeUploadAsAdmin(args)).toMatchObject({ status: "READY", memoryType: "VIDEO" });
     await posterTask()();
-    expect(poster).toHaveBeenCalledExactlyOnceWith({ mediaId: MID, deadlineMs: 13_000 });
+    expect(poster).toHaveBeenCalledExactlyOnceWith({ mediaId: MID, deadlineMs: 10_000 });
   });
 
   it("passes even a spent budget through: derivePoster's own floor defers it, and cron (g2) backstops", async () => {
@@ -640,7 +650,7 @@ describe("finalizeUploadAsAdmin: the video poster (video-posters plan T7, ruling
     await finalizeUploadAsAdmin(args);
     vi.mocked(Date.now).mockReturnValue(NOW + 26_000);
     await posterTask()();
-    expect(poster).toHaveBeenCalledExactlyOnceWith({ mediaId: MID, deadlineMs: -1_000 });
+    expect(poster).toHaveBeenCalledExactlyOnceWith({ mediaId: MID, deadlineMs: -4_000 });
   });
 
   it("schedules none for a photo, and none for a voice recording", async () => {

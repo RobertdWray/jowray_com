@@ -15,6 +15,7 @@ import { safeEqualHex } from "@/lib/claim-token";
 import { posterStagingKeyFor } from "@/lib/derived-keys";
 import { createLogger, logError } from "@/lib/logger";
 import { LOCATION_READER_MIME_TYPES } from "@/lib/media-location";
+import { ALLOWED_VIDEO_MIME_TYPES } from "@/lib/media-types";
 import { reconcileRun } from "@/lib/sentry/metrics";
 import { storagePrefix } from "@/lib/site-url";
 import { UPLOAD_WINDOW_MS } from "@/lib/upload-ticket";
@@ -740,7 +741,8 @@ export async function GET(request: NextRequest): Promise<Response> {
       });
     }
 
-    // (g2) Video posters (video-posters plan T7): READY videos of this environment whose POSTER row is missing, a stale
+    // (g2) Video posters (video-posters plan T7): READY videos of an allowed type (R13: one derivePoster would refuse
+    // must never hold the batch, which is ordered oldest first) of this environment whose POSTER row is missing, a stale
     // claim, a retryable failure with attempts left, or a pixel refusal made under a ceiling other than today's video
     // one. The backfill for videos stored before posters existed, and the retry path for the upload callback and MCP
     // finalize, which defer below derivePoster's floor. Same eligibility as derivePoster (`isEligible(…,
@@ -752,7 +754,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       where: {
         status: "READY",
         deletedAt: null,
-        mimeType: { startsWith: "video/" },
+        mimeType: { in: [...ALLOWED_VIDEO_MIME_TYPES] },
         storageKey: { startsWith: storagePrefix() },
         memory: { deletedAt: null },
         OR: [
