@@ -397,10 +397,24 @@ describe("finalizeUpload", () => {
     expect(result).toMatchObject({ status: "READY", emailed: true });
     expect(notifyMock).not.toHaveBeenCalled(); // nothing runs before the response
     await afterCalls[0]!();
-    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_1" });
+    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_1", previewsUntil: expect.any(Number) });
     expect(media[0]?.checksumSha256).toBeNull(); // the checksum is the second callback
     notifyMock.mockRejectedValueOnce(new Error("SENDGRID_API_KEY is required"));
     await expect(afterCalls[0]!()).resolves.toBeUndefined();
+  });
+
+  it("lets the alert wait up to 15 s for its thumbnail or poster, counted from when its after() task starts (T14, C22)", async () => {
+    const T0 = new Date("2026-11-08T12:00:00Z").getTime();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(T0);
+      await finalizeUpload({ ticket: mintUploadTicket(claims), claimToken: CLAIM });
+      vi.setSystemTime(T0 + 2_000); // the response has gone; the task starts later
+      await afterCalls[afterNames.indexOf("finalize.admin_alert")]!();
+      expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_1", previewsUntil: T0 + 2_000 + 15_000 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("derives the web copy and thumbnail after the response once a file is READY", async () => {
@@ -491,7 +505,7 @@ describe("finalizeUpload", () => {
     expect(result.status).toBe("READY");
     expect(afterNames).toEqual(["finalize.admin_alert", "finalize.checksum_and_derive", "finalize.photo_gps"]); // the cron hashes large files; MP4 still gets a location task
     for (const cb of afterCalls) { await cb(); }
-    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_1" });
+    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_1", previewsUntil: expect.any(Number) });
     expect(media[0]?.checksumSha256).toBeNull();
     expect(dbStub.media.update.mock.calls.some((c) => "checksumSha256" in ((c[0] as { data: Record<string, unknown> }).data ?? {}))).toBe(false);
   });

@@ -91,6 +91,16 @@ describe("confirmMemory", () => {
     }
   });
 
+  it("carries no uploaded picture: no derived copy is selected and no preview is sent, now that the admin alert has them (issue #46; T14)", async () => {
+    memory!.media = [readyPhoto(), readyPhoto({ id: "med_2", mimeType: "video/quicktime", originalFilename: "clip.mov", durationSeconds: 12 })];
+    await confirmMemory({ memoryId: "mem_1", claimToken: TOKEN });
+    const query = dbStub.memory.findUnique.mock.calls.at(-1)![0] as { select: { media: { select: Record<string, unknown> } } };
+    expect(Object.keys(query.select.media.select)).not.toContain("derivatives");
+    const arg = sendMock.mock.calls.at(-1)![0] as { media: unknown[] };
+    expect(arg.media).toEqual([{ kind: "PHOTO", durationSeconds: null }, { kind: "VIDEO", durationSeconds: 12 }]);
+    expect(JSON.stringify(arg)).not.toMatch(/preview|contentBase64|cid:/);
+  });
+
   it("lists only READY files, in upload order, with their kind and duration", async () => {
     memory!.type = "VOICE";
     memory!.media = [

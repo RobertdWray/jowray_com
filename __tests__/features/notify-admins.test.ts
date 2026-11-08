@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type * as AdminPreviewsModule from "@/features/memories/admin-previews";
 import { resetEnvCache } from "@/server/config/env";
+import type * as EmailModule from "@/services/email";
 
 interface MediaRow { id: string; status: "PENDING" | "READY" | "FAILED"; mimeType: string; originalFilename: string | null; durationSeconds: number | null; deletedAt?: Date | null; createdAt?: Date }
 interface MemoryRow {
@@ -21,7 +23,10 @@ interface MemoryRow {
   media: MediaRow[];
 }
 let memory: MemoryRow | null = null;
+/** The alert's EmailLog row, as the advisory read sees it. */
+let alertRow: { status: "PENDING" | "SENDING" | "SENT" | "FAILED" | "SKIPPED"; updatedAt: Date; errorMessage: string | null } | null = null;
 const dbStub = {
+  emailLog: { findUnique: vi.fn(async (_arg: unknown) => alertRow) },
   memory: {
     findUnique: vi.fn(async ({ include }: { include?: { media?: { where?: { deletedAt?: null } } } } = {}) =>
       memory && include?.media?.where && "deletedAt" in include.media.where ? { ...memory, media: memory.media.filter((m) => (m.deletedAt ?? null) === null) } : memory),
@@ -31,8 +36,22 @@ const dbStub = {
 vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 const sendMock = vi.fn(async (_arg: unknown): Promise<{ sent: boolean; messageId?: string; skipped?: string }> => ({ sent: true, messageId: "m1" }));
 const confirmationMock = vi.fn();
-vi.mock("@/services/email", () => ({ sendAdminNewMemory: (arg: unknown) => sendMock(arg), sendMemoryConfirmation: (arg: unknown) => confirmationMock(arg) }));
+// The real EmailLog rules (deliveryClosed); only the sends are stubbed.
+vi.mock("@/services/email", async (importOriginal) => ({
+  ...(await importOriginal<typeof EmailModule>()),
+  sendAdminNewMemory: (arg: unknown) => sendMock(arg),
+  sendMemoryConfirmation: (arg: unknown) => confirmationMock(arg),
+}));
+type Preview = { contentId: string; contentBase64: string; width: number; height: number };
+const waitMock = vi.fn(async (_arg: { memoryId: string; until: number }) => undefined);
+const loadMock = vi.fn(async (_media: unknown, _signal: AbortSignal) => new Map<string, Preview>());
+vi.mock("@/features/memories/admin-previews", async (importOriginal) => ({
+  ...(await importOriginal<typeof AdminPreviewsModule>()),
+  waitForAdminPreviews: (arg: { memoryId: string; until: number }) => waitMock(arg),
+  loadAdminPreviews: (media: unknown, signal: AbortSignal) => loadMock(media, signal),
+}));
 
+import { PREVIEW_COPIES, PREVIEW_READ_TIMEOUT_MS } from "@/features/memories/admin-previews";
 import { notifyAdminsOfMemory } from "@/features/memories/notify-admins";
 
 function readyPhoto(over: Partial<MediaRow> = {}): MediaRow {
@@ -59,9 +78,16 @@ beforeEach(() => {
     contributor: { name: "Jo", email: "jo@example.com", relationship: "former student", contactOptIn: true, mailingListOptIn: false },
     media: [readyPhoto()],
   };
+  alertRow = null;
   sendMock.mockClear();
   confirmationMock.mockClear();
   dbStub.memory.update.mockClear();
+  dbStub.memory.findUnique.mockClear();
+  dbStub.emailLog.findUnique.mockClear();
+  waitMock.mockReset();
+  waitMock.mockResolvedValue(undefined);
+  loadMock.mockReset();
+  loadMock.mockResolvedValue(new Map());
   process.env.CONSENT_VERSION = "2026-11-v1";
   resetEnvCache();
 });
@@ -185,5 +211,104 @@ describe("multi-file submissions", () => {
     memory!.uploadLeaseUntil = new Date(Date.now() - 1_000);
     memory!.media = [readyPhoto(), { id: "med_2", status: "PENDING", mimeType: "image/jpeg", originalFilename: "b.jpg", durationSeconds: null, createdAt: new Date(Date.now() - 16 * 60_000) }];
     expect((await notifyAdminsOfMemory({ memoryId: "mem_1" })).sent).toBe(true);
+  });
+});
+
+describe("admin alert previews (video posters T14)", () => {
+  const PREVIEW: Preview = { contentId: "preview-med_1", contentBase64: "/9j/AA==", width: 1000, height: 562 };
+  const order = (mock: { mock: { invocationCallOrder: number[] } }, call = 0) => mock.mock.invocationCallOrder[call]!;
+  const sentMedia = () => (sendMock.mock.calls.at(-1)?.[0] as { media: Array<{ preview: unknown }> }).media;
+
+  it("loads the previews and passes them through to the alert; with no deadline (the cron) it never waits", async () => {
+    memory!.media = [readyPhoto(), readyPhoto({ id: "med_2", mimeType: "video/quicktime", originalFilename: "clip.mov" })];
+    loadMock.mockResolvedValueOnce(new Map([["med_2", PREVIEW]]));
+    expect((await notifyAdminsOfMemory({ memoryId: "mem_1" })).sent).toBe(true);
+    expect(waitMock).not.toHaveBeenCalled();
+    expect(dbStub.memory.findUnique).toHaveBeenCalledTimes(1);
+    expect(loadMock).toHaveBeenCalledTimes(1);
+    expect((loadMock.mock.calls[0]![0] as Array<{ id: string }>).map((m) => m.id)).toEqual(["med_1", "med_2"]);
+    expect(sentMedia()).toEqual([
+      { kind: "PHOTO", originalFilename: "IMG_0001.jpg", durationSeconds: null, preview: null },
+      { kind: "VIDEO", originalFilename: "clip.mov", durationSeconds: null, preview: PREVIEW },
+    ]);
+  });
+
+  it("selects each file's READY THUMBNAIL and POSTER rows for the loader, and gives every read one 5 s budget", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    try {
+      await notifyAdminsOfMemory({ memoryId: "mem_1" });
+      const query = dbStub.memory.findUnique.mock.calls[0]![0] as { include: { media: { select: Record<string, unknown> } } };
+      expect(query.include.media.select.derivatives).toEqual(PREVIEW_COPIES);
+      expect(query.include.media.select.id).toBe(true);
+      expect(timeout).toHaveBeenCalledWith(PREVIEW_READ_TIMEOUT_MS);
+      expect(PREVIEW_READ_TIMEOUT_MS).toBe(5_000);
+      expect(loadMock.mock.calls[0]![1]).toBe(timeout.mock.results[0]!.value);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
+  it("with previewsUntil, waits for the copies first, then re-reads the memory and its copies, then loads and sends", async () => {
+    const until = Date.now() + 15_000;
+    loadMock.mockResolvedValueOnce(new Map([["med_1", PREVIEW]]));
+    expect((await notifyAdminsOfMemory({ memoryId: "mem_1", previewsUntil: until })).sent).toBe(true);
+    expect(waitMock).toHaveBeenCalledWith({ memoryId: "mem_1", until });
+    expect(dbStub.memory.findUnique).toHaveBeenCalledTimes(2);
+    expect(order(waitMock)).toBeLessThan(order(dbStub.memory.findUnique, 1));
+    expect(order(dbStub.memory.findUnique, 1)).toBeLessThan(order(loadMock));
+    expect(order(loadMock)).toBeLessThan(order(sendMock));
+    expect(sentMedia()[0]!.preview).toEqual(PREVIEW);
+  });
+
+  it("never waits on a deadline that has already passed (a long send used it up); it still loads", async () => {
+    await notifyAdminsOfMemory({ memoryId: "mem_1", previewsUntil: Date.now() - 1 });
+    expect(waitMock).not.toHaveBeenCalled();
+    expect(dbStub.memory.findUnique).toHaveBeenCalledTimes(1);
+    expect(loadMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-checks readiness after the wait: a memory deleted meanwhile gets no alert", async () => {
+    waitMock.mockImplementationOnce(async () => { memory!.deletedAt = new Date(); });
+    expect(await notifyAdminsOfMemory({ memoryId: "mem_1", previewsUntil: Date.now() + 15_000 })).toEqual({ sent: false, skipped: "deleted" });
+    expect(loadMock).not.toHaveBeenCalled();
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["already SENT", { status: "SENT" as const, updatedAt: new Date(Date.now() - 60 * 60_000), errorMessage: null }],
+    ["being sent (a fresh SENDING claim)", { status: "SENDING" as const, updatedAt: new Date(Date.now() - 60_000), errorMessage: null }],
+    ["terminally skipped (an on-behalf share)", { status: "SKIPPED" as const, updatedAt: new Date(), errorMessage: "admin_shared" }],
+  ])("skips the wait and the load when the alert is %s, and lets the email service answer", async (_label, row) => {
+    alertRow = row;
+    sendMock.mockResolvedValueOnce({ sent: false, skipped: "already_sent" });
+    expect(await notifyAdminsOfMemory({ memoryId: "mem_1", previewsUntil: Date.now() + 15_000 })).toEqual({ sent: false, skipped: "already_sent" });
+    expect(dbStub.emailLog.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { memoryId_emailType: { memoryId: "mem_1", emailType: "ADMIN_NEW_MEMORY" } } }));
+    expect(waitMock).not.toHaveBeenCalled();
+    expect(loadMock).not.toHaveBeenCalled();
+    expect(sentMedia()[0]!.preview).toBeNull();
+  });
+
+  it.each([
+    ["no row yet", null],
+    ["a stale SENDING claim (abandoned)", { status: "SENDING" as const, updatedAt: new Date(Date.now() - 16 * 60_000), errorMessage: null }],
+    ["FAILED (retrying)", { status: "FAILED" as const, updatedAt: new Date(), errorMessage: "SendGrid 503" }],
+    ["an ordinary skip", { status: "SKIPPED" as const, updatedAt: new Date(), errorMessage: "outbound_disabled" }],
+  ])("waits and loads when the alert row is %s", async (_label, row) => {
+    alertRow = row;
+    await notifyAdminsOfMemory({ memoryId: "mem_1", previewsUntil: Date.now() + 15_000 });
+    expect(waitMock).toHaveBeenCalledTimes(1);
+    expect(loadMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs the readiness checks before anything else: a memory that gets no alert reads no EmailLog, waits for and loads nothing", async () => {
+    memory!.media = [readyPhoto({ status: "PENDING" })];
+    expect(await notifyAdminsOfMemory({ memoryId: "mem_1", previewsUntil: Date.now() + 15_000 })).toEqual({ sent: false, skipped: "not_ready" });
+    memory!.status = "DRAFT";
+    expect(await notifyAdminsOfMemory({ memoryId: "mem_1", previewsUntil: Date.now() + 15_000 })).toEqual({ sent: false, skipped: "draft" });
+    memory = null;
+    expect(await notifyAdminsOfMemory({ memoryId: "mem_1", previewsUntil: Date.now() + 15_000 })).toEqual({ sent: false, skipped: "not_found" });
+    expect(dbStub.emailLog.findUnique).not.toHaveBeenCalled();
+    expect(waitMock).not.toHaveBeenCalled();
+    expect(loadMock).not.toHaveBeenCalled();
   });
 });

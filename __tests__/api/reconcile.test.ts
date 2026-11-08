@@ -324,6 +324,8 @@ describe("GET /api/cron/reconcile-uploads", () => {
     // (Task 15) plus the sibling of a send whose lease ran out; nothing from the send still under its lease, and no sibling-less text anchors (they have no admin row yet but are alerted: mem_subfail0 and mem_subnoemail0 are ready text memories);
     // plus the two shared admin drafts (one of them younger than 30 minutes: a Share has no request-path alert to wait for)
     expect(notifyMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5", "mem_draft_shared", "mem_draft_shared_young", "mem_noemail", "mem_skipped", "mem_sub1", "mem_subfail0", "mem_subnoemail0"]);
+    // (d) and (e2) load whatever previews exist and never wait for more: no deadline is passed (T14).
+    expect(notifyMock.mock.calls.every(([arg]) => Object.keys(arg).join() === "memoryId")).toBe(true);
     // admin-drafted memories: never confirmed by the site (DRAFT or shared), never alerted while DRAFT (see the fixture comments)
     expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_draft");
     expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_draft_shared");

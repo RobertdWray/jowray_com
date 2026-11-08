@@ -3,6 +3,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 
 import { extractPhotoGps, GPS_READ_DEADLINE_MS } from "@/features/media/extract-photo-gps";
+import { ADMIN_PREVIEW_WAIT_MS } from "@/features/memories/admin-previews";
 import { confirmMemory } from "@/features/memories/confirm";
 import { deriveMedia } from "@/features/memories/derive-media";
 import { lockMemory } from "@/features/memories/lock";
@@ -443,8 +444,11 @@ export async function finalizeUpload({
       emailed = await confirmQuietly(memory.id, claimToken);
       // After the response: the admin alert, then the checksum (small files) and
       // the web copy and thumbnail (photos; other kinds return not_eligible at once).
+      // The tasks run side by side, so the alert can wait (up to ADMIN_PREVIEW_WAIT_MS
+      // from its own start) for the thumbnail made here or the poster the upload
+      // callback makes, and carry it (T14).
       afterWithFlush("finalize.admin_alert", async () => {
-        await notifyAdminsQuietly(memory.id);
+        await notifyAdminsQuietly(memory.id, { previewsUntil: Date.now() + ADMIN_PREVIEW_WAIT_MS });
       });
     }
     scheduleReadyFollowUps({ mediaId: outcome.mediaId, mimeType: verified.claims.mimeType, sizeBytes: outcome.sizeBytes });
@@ -466,7 +470,7 @@ export async function confirmQuietly(memoryId: string, claimToken: string): Prom
 }
 
 /** Same contract for the family-admin alert: reported, never thrown, left to the cron on failure. */
-export async function notifyAdminsQuietly(memoryId: string, options: { settleNow?: boolean } = {}): Promise<boolean> {
+export async function notifyAdminsQuietly(memoryId: string, options: { settleNow?: boolean; previewsUntil?: number } = {}): Promise<boolean> {
   try {
     return (await notifyAdminsOfMemory({ memoryId, ...options })).sent;
   } catch (error) {

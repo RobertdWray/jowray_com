@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { hashClaimToken } from "@/lib/claim-token";
 import { resetEnvCache } from "@/server/config/env";
@@ -65,8 +65,11 @@ vi.mock("@/services/email", () => ({ sendSubmissionConfirmation: (arg: unknown) 
 
 const recordMediaAsIs = async ({ mediaId }: { mediaId: string }) => { const row = media.find((m) => m.id === mediaId)!; return { status: row.status, mediaId, memoryId: row.memoryId, sizeBytes: 1 }; };
 const recordMediaMock = vi.fn(recordMediaAsIs);
-const notifyMock = vi.fn(async (_memoryId: string) => true);
-vi.mock("@/features/memories/ingest-upload", () => ({ recordMedia: (arg: { mediaId: string }) => recordMediaMock(arg), notifyAdminsQuietly: (id: string) => notifyMock(id) }));
+const notifyMock = vi.fn(async (_memoryId: string, _options?: { settleNow?: boolean; previewsUntil?: number }) => true);
+vi.mock("@/features/memories/ingest-upload", () => ({
+  recordMedia: (arg: { mediaId: string }) => recordMediaMock(arg),
+  notifyAdminsQuietly: (id: string, options?: { settleNow?: boolean; previewsUntil?: number }) => notifyMock(id, options),
+}));
 
 const storageGetMock = vi.fn(async (pathname: string) => ({ stream: new Blob([Buffer.from(`bytes-of-${pathname}`)]).stream(), contentType: "image/jpeg", contentLength: 10 }));
 vi.mock("@/services/storage", () => ({ createStorageService: () => ({ get: storageGetMock, head: vi.fn(), del: vi.fn(), put: vi.fn(), presignGet: vi.fn() }) }));
@@ -219,6 +222,29 @@ describe("completeSubmission (request path)", () => {
     expect(afterCalls.length).toBeGreaterThan(0);
     for (const cb of afterCalls) { await cb(); }
     expect(notifyMock.mock.calls.map((c) => c[0])).toEqual(["mem_0", "mem_2"]);
+  });
+
+  describe("the admin alerts' preview wait (video posters T14)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      notifyMock.mockImplementation(async () => true);
+    });
+
+    it("gives every alert of the send ONE deadline, 15 s from the start of the after() task, so N memories wait at most 15 s in total", async () => {
+      const T0 = new Date("2026-11-08T12:00:00Z").getTime();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(T0);
+      await completeSubmission({ claimTokens: [T(0), T(1), T(2)] });
+      // The response has gone; the task starts 3 s later, and each alert takes 6 s of waiting.
+      vi.setSystemTime(T0 + 3_000);
+      notifyMock.mockImplementation(async () => { vi.setSystemTime(Date.now() + 6_000); return true; });
+      for (const cb of afterCalls) { await cb(); }
+      expect(notifyMock.mock.calls).toEqual([
+        ["mem_0", { settleNow: true, previewsUntil: T0 + 18_000 }],
+        ["mem_1", { settleNow: true, previewsUntil: T0 + 18_000 }],
+        ["mem_2", { settleNow: true, previewsUntil: T0 + 18_000 }],
+      ]);
+    });
   });
 });
 
