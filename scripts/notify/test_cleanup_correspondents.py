@@ -1084,6 +1084,70 @@ class MoreReviewTests(CleanupCase):
         self.assertEqual(third["co_participants"], ["Dylan Pretend"])
 
 
+class DrainTests(CleanupCase):
+    """After a failure or an interrupt, queued jobs never count tokens, reserve or call."""
+
+    def statuses(self):
+        return [e["status"] for e in cc.read_jsonl(self.paths.decisions, repair=False)[0]]
+
+    def test_a_worker_exception_cancels_the_queue(self):
+        self.build()
+        calls = []
+
+        def script(payload, params):
+            calls.append(payload["cluster"]["ranks"])
+            if len(calls) == 2:
+                raise RuntimeError("synthetic Alice Example failure")
+            return default_script(payload, params)
+
+        client = FakeClient(script)
+        with self.assertRaises(RuntimeError):
+            cc.run_review(self.paths, cc.ReviewOptions(phase="haiku", concurrency=1), sdk=fake_sdk(client))
+        self.assertEqual((len(client.calls), client.counts), (2, 2))
+        self.assertEqual(self.statuses()[0], "ok")
+        self.assertTrue(set(self.statuses()[1:]) <= {"stopped"})  # nothing else was bought
+        self.assertNotIn("Alice", self.stdout.getvalue() + self.stderr.getvalue())
+
+    def test_an_interrupt_stops_running_jobs_at_their_next_turn_and_cancels_the_rest(self):
+        self.build()
+        started, gate, calls = threading.Event(), threading.Event(), []
+
+        def script(payload, params):
+            calls.append(payload["cluster"]["ranks"])
+            if len(calls) == 2:
+                started.set()
+                gate.wait(5)
+                address = payload["cluster"]["rows"][0]["addresses"][0]
+                return [tool_call("names_used", address=address),
+                        final(answer(person([address], first="X")))]
+            return default_script(payload, params)
+
+        def interrupted(futures):
+            started.wait(5)
+            threading.Timer(0.2, gate.set).start()
+            raise KeyboardInterrupt
+
+        client = FakeClient(script)
+        with mock.patch.object(cc.concurrent.futures, "as_completed", interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                cc.run_review(self.paths, cc.ReviewOptions(phase="haiku", concurrency=1), sdk=fake_sdk(client))
+        self.assertEqual((len(client.calls), client.counts), (2, 2))
+        entries = cc.read_jsonl(self.paths.decisions, repair=False)[0]
+        self.assertEqual([(e["status"], e["turns"]) for e in entries], [("ok", entries[0]["turns"]), ("stopped", 1)])
+        self.assertEqual(entries[1]["tool_calls"], {})  # the stopped run never ran its tool call
+        # A stopped run is not cached: the next review buys it (and the cancelled ones).
+        code, again = self.review(default_script, phase="haiku")
+        self.assertEqual((code, len(again.calls)), (0, 4))
+
+    def test_main_reports_an_interrupt_without_a_traceback(self):
+        self.build()
+        with mock.patch.object(cc, "run_review", side_effect=KeyboardInterrupt):
+            with self.assertRaises(SystemExit) as error:
+                cc.main(["review", "--out", str(self.out)])
+        self.assertEqual(error.exception.code, 2)
+        self.assertIn("review interrupted", self.stderr.getvalue())
+
+
 class JudgeRefusalTests(CleanupCase):
     def test_judge_refusal_is_cached_and_left_for_rob(self):
         self.build()

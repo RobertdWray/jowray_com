@@ -1461,6 +1461,8 @@ class Reviewer:
         self.people_index = people_index(rows)
         self.counts: collections.Counter = collections.Counter()
         self.lock = threading.Lock()
+        # Set by any failure or interrupt: no run reserves or starts a turn after it.
+        self.stop = threading.Event()
 
     def count(self, name: str, n: int = 1) -> None:
         with self.lock:
@@ -1514,11 +1516,19 @@ class Reviewer:
                  "cluster_id": cluster["cluster_id"], "members": cluster.get("members"),
                  "ranks": cluster["ranks"], "status": None, "decision": None, "turns": 0,
                  "cost_usd": 0.0, "error": None}
+        if self.stop.is_set():
+            entry["status"] = "stopped"
+            self.finish(entry)
+            return entry
         params = self.params(phase, payload)
         try:
             worst = worst_case_cost(phase, self.base_tokens(params))
         except self.sdk.api_errors as exc:
             entry.update(status="error", error=type(exc).__name__)
+            self.finish(entry)
+            return entry
+        if self.stop.is_set():  # checked again right before the reservation
+            entry["status"] = "stopped"
             self.finish(entry)
             return entry
         hold = self.budgets[budget_group(phase)].reserve(worst)
@@ -1560,6 +1570,8 @@ class Reviewer:
         history = list(params["messages"])
         remaining, turns, errors = LIMITS[phase].max_iterations, 0, []
         for attempt in (1, 2):
+            if self.stop.is_set():
+                return {"status": "stopped", "turns": turns}
             runner = self.sdk.client.beta.messages.tool_runner(
                 tools=wrapped, max_iterations=remaining, **{**params, "messages": list(history)})
             final, used = None, 0
@@ -1571,6 +1583,8 @@ class Reviewer:
                         return {"status": "budget", "turns": turns + used,
                                 "error": "the run reached its reserved worst case"}
                     if getattr(message, "stop_reason", None) == "tool_use" and used < remaining:
+                        if self.stop.is_set():  # no new turn once the review is stopping
+                            return {"status": "stopped", "turns": turns + used}
                         # Run the calls now (the runner reuses this result for its next request)
                         # so the history can continue the conversation after a failed answer.
                         response = runner.generate_tool_call_response()
@@ -1610,20 +1624,38 @@ class Reviewer:
         return {"status": "invalid", "turns": turns, "error": "; ".join(errors)[:300]}
 
     def run_jobs(self, phase: str, jobs: list, concurrency: int) -> None:
-        """The first job runs alone so the prompt cache is warm before the fan-out [C3]."""
+        """The first job runs alone so the prompt cache is warm before the fan-out [C3].
+
+        Any exception or interrupt sets the stop flag, so no run reserves or starts a
+        turn after it, and cancels the jobs still queued; running jobs end at their next
+        turn as "stopped" (not cached, so the next review retries them).
+        """
         if not jobs:
             return
-        done = 0
-        self.review(phase, *jobs[0])
-        done += 1
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
-            futures = [pool.submit(self.review, phase, *job) for job in jobs[1:]]
+
+        def guarded(job):
+            try:
+                return self.review(phase, *job)
+            except BaseException:
+                self.stop.set()  # before this worker can take the next queued job
+                raise
+
+        guarded(jobs[0])
+        done = 1
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, concurrency))
+        try:
+            futures = [pool.submit(guarded, job) for job in jobs[1:]]
             for future in concurrent.futures.as_completed(futures):
                 future.result()
                 done += 1
                 if done % 50 == 0:
                     print(f"  ... {phase}: {done:,} of {len(jobs):,} reviewed, "
                           f"${self.budgets[budget_group(phase)].spent:,.4f} spent", flush=True)
+        except BaseException:
+            self.stop.set()
+            pool.shutdown(wait=True, cancel_futures=True)
+            raise
+        pool.shutdown(wait=True)
 
 
 # ---- review ----------------------------------------------------------------------------------
@@ -2332,7 +2364,11 @@ def main(argv=None) -> int:
             rc.die("budgets must be finite and not negative")
         options = ReviewOptions(args.phase, args.sample, args.match, args.concurrency, args.judge_concurrency,
                                 args.haiku_budget_usd, args.judge_budget_usd, args.dry_run)
-        return run_review(prepare_out(args.out, args.allow_inside_git, create=not args.dry_run), options)
+        try:
+            return run_review(prepare_out(args.out, args.allow_inside_git, create=not args.dry_run), options)
+        except KeyboardInterrupt:
+            rc.die("review interrupted; queued clusters were cancelled and stopped ones are retried "
+                   "by the next review")
     if command == "apply":
         ap = parser("apply", "Apply high-confidence decisions and the overrides; write identities.csv, "
                              "correspondents_removed.csv and cleanup/changes.csv.")
