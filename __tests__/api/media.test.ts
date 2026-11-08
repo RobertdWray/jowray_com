@@ -236,6 +236,15 @@ describe("variants", () => {
       expect(presignMock).not.toHaveBeenCalledWith(expect.objectContaining({ pathname: "originals/mem_1/v.mp4" }));
     });
 
+    it("charges the original's size when a READY poster row lacks its own (the safe over-estimate, TCR B2-8)", async () => {
+      media.find((m) => m.id === "med_video")!.derivatives = [poster({ sizeBytes: null })];
+      const res = await request("med_video", `?t=${TOKEN}&v=thumb`, from("203.0.113.21"));
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("https://blob.test/derived/mem_1/poster.jpg?signed=1");
+      expect(counterOf("media:med_video")).toBe(BigInt(VIDEO_BYTES));
+      expect(counterOf("global")).toBe(BigInt(VIDEO_BYTES));
+    });
+
     it("404s without a READY poster and never presigns the original", async () => {
       for (const derivatives of [[], [poster({ status: "PENDING" })], [poster({ status: "FAILED" })]]) {
         media.find((m) => m.id === "med_video")!.derivatives = derivatives;
