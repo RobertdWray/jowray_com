@@ -100,6 +100,8 @@ class FakeRunner:
     def __iter__(self):
         used = 0
         while self.turns and used < self.max_iterations and not self.closed:
+            if isinstance(self.turns[0], BaseException):  # this request fails
+                raise self.turns.pop(0)
             self.last, self.cached = self.turns.pop(0), None
             used += 1
             yield self.last
@@ -612,12 +614,21 @@ class PricingTests(unittest.TestCase):
     def test_worst_case_formula(self):
         fixed = 2000 * 1.2 + 64                                  # count_tokens with its margin
         extra = cc.TOOL_TOTAL_BYTES + cc.FEEDBACK_BYTES          # bytes bound the tokens
-        haiku = sum(fixed + extra + k * (6000 + 64) for k in range(6)) * 0.125 + 6 * 6000 * 0.50
-        self.assertAlmostEqual(cc.worst_case_cost("haiku", 2000), haiku / 1e6)
+        haiku = [(fixed + extra + k * (6000 + 64)) * 0.125 + 6000 * 0.50 for k in range(6)]
+        self.assertEqual(len(cc.turn_bounds("haiku", 2000)), 6)
+        for bound, expected in zip(cc.turn_bounds("haiku", 2000), haiku):
+            self.assertAlmostEqual(bound, expected / 1e6)
+        # Every turn, plus the retry allowance of the one turn an API error can end on.
+        self.assertAlmostEqual(cc.worst_case_cost("haiku", 2000), (sum(haiku) + 2 * haiku[-1]) / 1e6)
         # Opus 5.5 rates only (cache-write input price), no doubling: the judge sends no fallback.
-        judge = sum(fixed + extra + k * (10000 + 64) for k in range(8)) * 5.0 + 8 * 10000 * 20.0
-        self.assertAlmostEqual(cc.worst_case_cost("judge", 2000), judge / 1e6)
-        self.assertLess(cc.worst_case_cost("judge", 20000), 5.0)
+        judge = [(fixed + extra + k * (10000 + 64)) * 5.0 + 10000 * 20.0 for k in range(8)]
+        self.assertAlmostEqual(cc.worst_case_cost("judge", 2000), (sum(judge) + 2 * judge[-1]) / 1e6)
+        self.assertLess(cc.worst_case_cost("judge", 20000), 6.5)
+        # The charge for an errored turn always fits the reservation, whichever turn it is.
+        for phase in ("haiku", "judge"):
+            bounds = cc.turn_bounds(phase, 2000)
+            for k in range(len(bounds)):
+                self.assertLessEqual(sum(bounds[:k]) + 3 * bounds[k], cc.worst_case_cost(phase, 2000) + 1e-12)
 
 
 class BudgetTests(unittest.TestCase):
@@ -810,7 +821,7 @@ class ReviewTests(CleanupCase):
     def test_budget_refusal_persists_across_restarts_and_is_retried(self):
         self.build()
         self.review(default_script, phase="haiku")
-        spent = cc.spent_by_group(cc.read_jsonl(self.paths.spend, repair=False)[0])["haiku"]
+        spent = cc.spend_totals(cc.read_jsonl(self.paths.spend, repair=False)[0])["haiku"]["actual"]
         self.assertGreater(spent, 0)
         self.paths.guidance.write_text(GUIDANCE + "\nchanged\n", encoding="utf-8")  # new manifest
         code, client = self.review(default_script, phase="haiku", haiku_budget=spent + 0.01)
@@ -1219,6 +1230,63 @@ class DrainTests(CleanupCase):
                 cc.main(["review", "--out", str(self.out)])
         self.assertEqual(error.exception.code, 2)
         self.assertIn("review interrupted", self.stderr.getvalue())
+
+
+class DurableSpendTests(CleanupCase):
+    def lines(self, kind=None):
+        entries = cc.read_jsonl(self.paths.spend, repair=False)[0]
+        return [e for e in entries if kind is None or cc.spend_kind(e) == kind]
+
+    def test_an_api_error_charges_the_turns_retry_worst_case_and_never_releases_it(self):
+        self.build()
+
+        def script(payload, params):
+            if payload["cluster"]["rows"][0]["addresses"] == [ALICE]:
+                return [tool_call("names_used", address=ALICE), FakeAPIError("overloaded")]
+            return default_script(payload, params)
+
+        code, _ = self.review(script, phase="haiku")
+        self.assertEqual(code, 1)  # an API error asks for a rerun
+        entries = cc.read_jsonl(self.paths.decisions, repair=False)[0]
+        alice = next(e for e in entries if e["ranks"] == [self.rank(ALICE)])
+        self.assertEqual((alice["status"], alice["error"]), ("error", "FakeAPIError"))
+        (uncertain,) = self.lines("uncertain")
+        bounds = cc.turn_bounds("haiku", 2000)  # FakeClient counts 2,000 prompt tokens
+        self.assertAlmostEqual(uncertain["cost_usd"], 3 * bounds[1], places=7)  # the second turn failed
+        self.assertEqual(uncertain["run"], alice["run"])
+        reserve = next(e for e in self.lines("reserve") if e["run"] == alice["run"])
+        settle = next(e for e in self.lines("settle") if e["run"] == alice["run"])
+        self.assertLessEqual(settle["cost_usd"], reserve["amount_usd"])  # within the reservation
+        self.assertAlmostEqual(alice["cost_usd"], settle["cost_usd"])
+        totals = cc.spend_totals(self.lines())
+        self.assertAlmostEqual(totals["haiku"]["uncertain"], uncertain["cost_usd"])
+        self.assertIn(f"(${uncertain['cost_usd']:,.4f} of it uncertain)", self.stdout.getvalue())
+        self.assertEqual(cc.main(["spend", "--out", str(self.out)]), 0)
+        self.assertIn(f"Uncertain: ${uncertain['cost_usd']:,.4f}", self.stdout.getvalue())
+        self.assert_private_console()
+
+    def test_a_crash_between_reserve_and_settle_counts_as_uncertain_spend(self):
+        self.build()
+        with mock.patch.object(cc.Hold, "settle", side_effect=SystemExit(9)):  # dies mid-run
+            with self.assertRaises(SystemExit):
+                self.review(default_script, phase="haiku", concurrency=1)
+        (reserve,) = self.lines("reserve")
+        self.assertEqual(self.lines("settle"), [])
+        recorded = sum(e["cost_usd"] for e in self.lines("attempt"))
+        totals = cc.spend_totals(self.lines())
+        self.assertAlmostEqual(totals["haiku"]["uncertain"], reserve["amount_usd"] - recorded)
+        self.assertAlmostEqual(totals["haiku"]["actual"], recorded)
+        self.assertEqual(cc.main(["spend", "--out", str(self.out)]), 0)  # read-only: settles nothing
+        self.assertEqual(self.lines("settle"), [])
+        # The next review settles the orphan durably; the counted spend does not change.
+        code, client = self.review(default_script, phase="haiku")
+        self.assertEqual(code, 0)
+        self.assertIn("1 interrupted run settled", self.stdout.getvalue())
+        kinds = [cc.spend_kind(e) for e in self.lines() if e.get("run") == reserve["run"]]
+        self.assertEqual((kinds[0], kinds[-2:]), ("reserve", ["uncertain", "settle"]))
+        self.assertTrue(set(kinds[1:-2]) <= {"attempt"})
+        after = cc.spend_totals([e for e in self.lines() if e.get("run") == reserve["run"]])
+        self.assertAlmostEqual(after["haiku"]["actual"] + after["haiku"]["uncertain"], reserve["amount_usd"])
 
 
 class JudgeRefusalTests(CleanupCase):

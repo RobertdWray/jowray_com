@@ -56,6 +56,7 @@ import math
 import os
 import random
 import re
+import secrets
 import sqlite3
 import subprocess
 import sys
@@ -105,7 +106,9 @@ PILOT_SEED = "cleanup-pilot-1"
 REMOVE_DIRECT_MAX = 5         # removing someone written to directly this often escalates
 DEFAULT_CONCURRENCY, DEFAULT_JUDGE_CONCURRENCY = 15, 4
 DEFAULT_HAIKU_BUDGET, DEFAULT_JUDGE_BUDGET = 15.0, 40.0
-CLIENT_MAX_RETRIES = 6
+# SDK retries per request, and the request timeout. A request that ends in an error is
+# charged (retries + 1) times its turn's worst case as uncertain spend.
+CLIENT_MAX_RETRIES, CLIENT_TIMEOUT = 2, 600.0
 WHY_CHARS, NOTE_CHARS, EVIDENCE_ITEMS, QUESTION_CHARS = 240, 120, 4, 240
 # A dry run measures nothing over the network: it estimates prompt tokens as UTF-8
 # bytes / 2 plus 1,000. That over-counts English and JSON (about 3 bytes per token on
@@ -221,8 +224,8 @@ def fixed_prompt_tokens(counted_tokens: int) -> int:
     return math.ceil(counted_tokens * COUNT_MARGIN) + COUNT_PAD
 
 
-def worst_case_cost(phase: str, base_tokens: int) -> float:
-    """A run's worst case: every turn at the highest input price, every turn at max_tokens.
+def turn_bounds(phase: str, base_tokens: int) -> list:
+    """Each turn's worst case: its prompt at the highest input price, max_tokens out.
 
     Turn k's prompt is at most the fixed prompt (count_tokens with its margin), plus
     every tool result and the retry message (bounded in UTF-8 bytes, so in tokens),
@@ -232,12 +235,25 @@ def worst_case_cost(phase: str, base_tokens: int) -> float:
     """
     limits = LIMITS[phase]
     extra = TOOL_TOTAL_BYTES + FEEDBACK_BYTES
-    turns = [fixed_prompt_tokens(base_tokens) + extra + k * (limits.max_tokens + FRAMING_TOKENS)
-             for k in range(limits.max_iterations)]
+    prompts = [fixed_prompt_tokens(base_tokens) + extra + k * (limits.max_tokens + FRAMING_TOKENS)
+               for k in range(limits.max_iterations)]
     model = JUDGE_MODEL if phase == "judge" else HAIKU_MODEL
-    price = price_for(model, max(turns))[0]
+    price = price_for(model, max(prompts))[0]
     input_price = max(price.input, price.write_5m, price.read)  # 5-minute cache only
-    return (sum(turns) * input_price + limits.max_iterations * limits.max_tokens * price.output) / 1e6
+    return [(p * input_price + limits.max_tokens * price.output) / 1e6 for p in prompts]
+
+
+def worst_case_cost(phase: str, base_tokens: int) -> float:
+    """A run's reservation: every turn at its worst case, plus the retry allowance.
+
+    A request that ends in an API error is charged (CLIENT_MAX_RETRIES + 1) times its
+    turn's worst case, because the SDK may have retried it and a billed attempt leaves
+    no usage record. The error ends the run, so only one turn carries that charge, and
+    the turns are increasing: turns before it plus (retries + 1) x that turn is at most
+    every turn plus retries x the last one.
+    """
+    turns = turn_bounds(phase, base_tokens)
+    return sum(turns) + CLIENT_MAX_RETRIES * turns[-1]
 
 
 # ---- budgets: reservations make the caps hard ceilings ------------------------------
@@ -1478,7 +1494,7 @@ def real_sdk() -> Sdk:
                                    input_schema=spec.input_schema, strict=True)
 
     try:
-        client = anthropic.Anthropic(max_retries=CLIENT_MAX_RETRIES)
+        client = anthropic.Anthropic(max_retries=CLIENT_MAX_RETRIES, timeout=CLIENT_TIMEOUT)
     except anthropic.AnthropicError as exc:
         rc.die(f"could not create the API client ({type(exc).__name__}); check ANTHROPIC_API_KEY")
     return Sdk(client, wrap, (anthropic.APIError,), anthropic.__version__)
@@ -1512,6 +1528,17 @@ def feedback_message(errors) -> str:
     model's own text, so they are cut by bytes)."""
     room = FEEDBACK_BYTES - FRAMING_TOKENS - utf8_len(FEEDBACK_END)
     return clip_bytes("Your answer could not be used: " + "; ".join(errors), room) + FEEDBACK_END
+
+
+@dataclass
+class RunState:
+    """One agent run's accounting: its id, its turns' worst cases, and whether a request
+    is in flight (an exception then may follow a billed attempt)."""
+    run_id: str
+    cluster_id: str
+    bounds: list
+    turn: int = 0
+    in_request: bool = False
 
 
 class Reviewer:
@@ -1557,20 +1584,32 @@ class Reviewer:
     def worst_case(self, phase: str, payload: dict) -> float:
         return worst_case_cost(phase, self.base_tokens(self.params(phase, payload)))
 
-    def record_spend(self, phase, cluster_id, model, usage, hold: Hold) -> None:
+    def record_spend(self, phase, run: RunState, model, usage, hold: Hold) -> None:
         for attempt in attempts_from_usage(usage, model):
             cost, label = attempt_cost(attempt)
             if label == "table-max":
                 self.count("attempts priced at the table maximum (unknown model)")
             self.spend.append({
                 "ts": round(time.time(), 3), "manifest": self.manifest_hash, "phase": phase,
-                "cluster_id": cluster_id, "kind": attempt.kind, "model": attempt.model,
+                "run": run.run_id, "cluster_id": run.cluster_id, "kind": attempt.kind, "model": attempt.model,
                 "priced_as": label, "input_tokens": attempt.input_tokens,
                 "cache_creation_input_tokens": attempt.cache_write_tokens,
                 "cache_creation_1h_input_tokens": attempt.cache_write_1h_tokens,
                 "cache_read_input_tokens": attempt.cache_read_tokens,
                 "output_tokens": attempt.output_tokens, "cost_usd": round(cost, 8)})
             hold.charge(cost)
+
+    def spend_line(self, entry: str, phase: str, run: RunState, **fields) -> None:
+        self.spend.append({"ts": round(time.time(), 3), "manifest": self.manifest_hash, "entry": entry,
+                           "phase": phase, "run": run.run_id, "cluster_id": run.cluster_id, **fields})
+
+    def charge_uncertain(self, phase: str, run: RunState, hold: Hold, reason: str) -> None:
+        """A request ended without a usage record: charge its retry worst case, durably
+        first, and never release it (it may have been billed)."""
+        cost = (CLIENT_MAX_RETRIES + 1) * run.bounds[min(run.turn, len(run.bounds) - 1)]
+        self.spend_line("uncertain", phase, run, reason=reason, cost_usd=round(cost, 8))
+        hold.charge(cost)
+        self.count(f"{phase} runs charged uncertain spend")
 
     def review(self, phase: str, cluster: dict, payload: dict, key: str) -> dict:
         """Run one agent (reserving its worst case first) and append its decision line."""
@@ -1584,11 +1623,13 @@ class Reviewer:
             return entry
         params = self.params(phase, payload)
         try:
-            worst = worst_case_cost(phase, self.base_tokens(params))
+            base = self.base_tokens(params)  # count_tokens is free: nothing to account for
         except self.sdk.api_errors as exc:
             entry.update(status="error", error=type(exc).__name__)
             self.finish(entry)
             return entry
+        run = RunState(secrets.token_hex(8), cluster["cluster_id"], turn_bounds(phase, base))
+        worst = worst_case_cost(phase, base)
         if self.stop.is_set():  # checked again right before the reservation
             entry["status"] = "stopped"
             self.finish(entry)
@@ -1598,14 +1639,23 @@ class Reviewer:
             entry["status"] = "budget"
             self.finish(entry)
             return entry
+        # Durable before the first request: a crash leaves a reservation without a settle
+        # line, which every later review counts as spent (uncertain).
+        self.spend_line("reserve", phase, run, amount_usd=round(worst, 8))
+        entry["run"] = run.run_id
         tools = AgentTools(cluster, self.paths, self.people_index)
         try:
-            entry.update(self.converse(phase, cluster, params, tools, hold))
-        except self.sdk.api_errors as exc:
+            entry.update(self.converse(phase, cluster, params, tools, hold, run))
+        except BaseException as exc:
+            if run.in_request:  # it may have been billed (and retried) without a usage record
+                self.charge_uncertain(phase, run, hold, type(exc).__name__)
+            if not isinstance(exc, self.sdk.api_errors):
+                raise
             entry.update(status="error", error=type(exc).__name__)
         finally:
             hold.settle()
             tools.close()
+            self.spend_line("settle", phase, run, cost_usd=round(hold.cost, 8))
             entry["cost_usd"] = round(hold.cost, 8)
             entry["tool_calls"] = dict(tools.calls)
             entry["tool_errors"] = tools.errors
@@ -1619,7 +1669,7 @@ class Reviewer:
         self.decisions.append(entry)
         self.count(f"{entry['phase']} {entry['status']}")
 
-    def converse(self, phase, cluster, params, tools: AgentTools, hold: Hold) -> dict:
+    def converse(self, phase, cluster, params, tools: AgentTools, hold: Hold, run: RunState) -> dict:
         """The tool-runner conversation, with at most one retry inside the same bounds.
 
         A turn's tool calls run only when it stopped for tool_use and another turn is
@@ -1638,9 +1688,16 @@ class Reviewer:
                 tools=wrapped, max_iterations=remaining, **{**params, "messages": list(history)})
             final, used = None, 0
             try:
-                for message in runner:
+                turns_of = iter(runner)
+                while True:
+                    run.in_request = True  # the runner sends the next request inside next()
+                    message = next(turns_of, None)
+                    run.in_request = False
+                    if message is None:
+                        break
                     used += 1
-                    self.record_spend(phase, cluster["cluster_id"], params["model"], message.usage, hold)
+                    run.turn += 1
+                    self.record_spend(phase, run, params["model"], message.usage, hold)
                     if hold.overrun:  # stop between turns, before any further tool call or request
                         return {"status": "budget", "turns": turns + used,
                                 "error": "the run reached its reserved worst case"}
@@ -1789,11 +1846,57 @@ def phase_jobs(phase: str, units: list, selected_ids: set, clusters: list, entri
     return jobs, cached
 
 
-def spent_by_group(spend_entries) -> dict:
-    totals = collections.Counter()
+# ---- spend.jsonl: attempts, reservations, settlements and uncertain spend -------------------
+# An attempt line (no "entry" field) is one billed attempt from usage.iterations. Each run
+# also writes "reserve" before its first request and "settle" when it ends, and an
+# "uncertain" line when a request may have been billed without a usage record.
+def spend_kind(entry: dict) -> str:
+    return entry.get("entry") or "attempt"
+
+
+def orphaned_runs(spend_entries) -> list:
+    """(reserve line, recorded cost) for every reservation that has no settle line: its
+    process ended mid-run, so anything up to the reservation may have been billed."""
+    reserves, settled, recorded = {}, set(), collections.Counter()
     for entry in spend_entries:
-        totals[budget_group(entry.get("phase", ""))] += float(entry.get("cost_usd") or 0.0)
+        kind, run = spend_kind(entry), entry.get("run")
+        if kind == "reserve":
+            reserves[run] = entry
+        elif kind == "settle":
+            settled.add(run)
+        elif run is not None:
+            recorded[run] += float(entry.get("cost_usd") or 0.0)
+    return [(entry, recorded[run]) for run, entry in reserves.items() if run not in settled]
+
+
+def spend_totals(spend_entries) -> dict:
+    """{"haiku": {"actual", "uncertain"}, "judge": {...}} in USD. Actual spend is the
+    attempt lines; uncertain spend is the uncertain lines plus, for every unsettled
+    reservation, what it reserved beyond what its run recorded."""
+    totals = {g: {"actual": 0.0, "uncertain": 0.0} for g in ("haiku", "judge")}
+    for entry in spend_entries:
+        kind = spend_kind(entry)
+        if kind in ("attempt", "uncertain"):
+            group = totals[budget_group(entry.get("phase", ""))]
+            group["actual" if kind == "attempt" else "uncertain"] += float(entry.get("cost_usd") or 0.0)
+    for entry, recorded in orphaned_runs(spend_entries):
+        totals[budget_group(entry.get("phase", ""))]["uncertain"] += max(
+            0.0, float(entry.get("amount_usd") or 0.0) - recorded)
     return totals
+
+
+def settle_orphans(spend: JsonlLog) -> int:
+    """Settle the reservations a crashed process left open, charging each one's unrecorded
+    remainder as uncertain spend. Only a review holding the command lock calls this, so
+    no other process can still be running them."""
+    orphans = orphaned_runs(spend.entries)
+    for entry, recorded in orphans:
+        fields = {k: entry.get(k) for k in ("manifest", "phase", "run", "cluster_id")}
+        spend.append({"ts": round(time.time(), 3), "entry": "uncertain", **fields,
+                      "reason": "the process ended before the run settled",
+                      "cost_usd": round(max(0.0, float(entry.get("amount_usd") or 0.0) - recorded), 8)})
+        spend.append({"ts": round(time.time(), 3), "entry": "settle", **fields, "cost_usd": None})
+    return len(orphans)
 
 
 @dataclass
@@ -1829,9 +1932,10 @@ def run_review(paths: Paths, options: ReviewOptions, sdk: Sdk | None = None, hea
     decisions = JsonlLog(paths.decisions, repair=not options.dry_run)
     spend = JsonlLog(paths.spend, repair=not options.dry_run)
     stale = sum(1 for e in decisions.entries if e.get("manifest") != manifest_hash)
-    spent = spent_by_group(spend.entries)
-    budgets = {"haiku": Budget("haiku", options.haiku_budget, spent["haiku"]),
-               "judge": Budget("judge", options.judge_budget, spent["judge"])}
+    orphans = 0 if options.dry_run else settle_orphans(spend)
+    totals = spend_totals(spend.entries)
+    budgets = {g: Budget(g, cap, totals[g]["actual"] + totals[g]["uncertain"])
+               for g, cap in (("haiku", options.haiku_budget), ("judge", options.judge_budget))}
     selected = select_clusters(clusters, options.sample, load_match(options.match) if options.match else None)
     selected_ids = {c["cluster_id"] for c in selected}
     reviewer = Reviewer(paths, rows, prompts, manifest_hash, sdk, budgets, decisions, spend, options.dry_run)
@@ -1839,6 +1943,9 @@ def run_review(paths: Paths, options: ReviewOptions, sdk: Sdk | None = None, hea
           f"manifest {manifest_hash[:12]}; {rc.quantity(stale, 'stale decision')} not reused.")
     if decisions.partial or spend.partial:
         print(f"{rc.quantity(decisions.partial + spend.partial, 'partial trailing line')} dropped.")
+    if orphans:
+        print(f"{rc.quantity(orphans, 'interrupted run')} settled; the unrecorded part of each "
+              "reservation counts as uncertain spend.")
     phases = PHASES if options.phase == "all" else (options.phase,)
     if options.dry_run:
         return dry_run_report(reviewer, phases, selected_ids, clusters, decisions, manifest_hash, budgets)
@@ -1855,8 +1962,11 @@ def run_review(paths: Paths, options: ReviewOptions, sdk: Sdk | None = None, hea
     for name, count in sorted(reviewer.counts.items()):
         print(f"  {name}: {count:,}")
     print(f"{rc.quantity(escalations, 'escalation')} in total.")
+    totals = spend_totals(spend.entries)
     for budget in budgets.values():
+        uncertain = totals[budget.name]["uncertain"]
         print(f"{budget.name}: ${budget.spent:,.4f} of ${budget.cap:,.2f} spent"
+              + (f" (${uncertain:,.4f} of it uncertain)" if uncertain else "")
               + (f"; {rc.quantity(budget.refused, 'run')} refused by the cap" if budget.refused else ""))
     errors = sum(v for k, v in reviewer.counts.items() if k.endswith(" error"))
     if errors:
@@ -2374,14 +2484,22 @@ def run_spend(paths: Paths) -> int:
     entries, partial = read_jsonl(paths.spend, repair=False)
     totals = collections.defaultdict(lambda: [0.0, 0])
     for e in entries:
+        if spend_kind(e) != "attempt":
+            continue
         item = totals[(e.get("phase", "?"), e.get("priced_as") or e.get("model", "?"))]
         item[0] += float(e.get("cost_usd") or 0.0)
         item[1] += 1
     for (phase, model), (cost, n) in sorted(totals.items()):
         print(f"{phase} {model}: ${cost:,.4f} ({rc.quantity(n, 'attempt')})")
-    groups = spent_by_group(entries)
-    print(f"Total: ${sum(groups.values()):,.4f} (haiku and joint ${groups['haiku']:,.4f}, "
-          f"judge ${groups['judge']:,.4f})" + (" ; 1 partial trailing line ignored" if partial else ""))
+    groups = spend_totals(entries)
+    actual = {g: v["actual"] for g, v in groups.items()}
+    uncertain = {g: v["uncertain"] for g, v in groups.items()}
+    print(f"Actual: ${sum(actual.values()):,.4f} (haiku and joint ${actual['haiku']:,.4f}, "
+          f"judge ${actual['judge']:,.4f})" + (" ; 1 partial trailing line ignored" if partial else ""))
+    print(f"Uncertain: ${sum(uncertain.values()):,.4f} (haiku and joint ${uncertain['haiku']:,.4f}, "
+          f"judge ${uncertain['judge']:,.4f}): runs that ended in an API error or were interrupted, or "
+          "are still running; counted against the caps.")
+    print(f"Total counted against the caps: ${sum(actual.values()) + sum(uncertain.values()):,.4f}")
     return 0
 
 
