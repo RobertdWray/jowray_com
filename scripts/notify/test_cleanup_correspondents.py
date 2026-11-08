@@ -580,6 +580,9 @@ class ValidatorTests(unittest.TestCase):
         self.assertTrue(text.endswith(cc.UNTRUSTED_CLOSE))
         self.assertEqual(data(text.split("\n\n", 1)[1])["cluster"]["rows"][0]["recent_subjects"], planted)
 
+    def test_every_removal_category_is_echoed_by_the_console(self):
+        self.assertLessEqual(set(cc.RELATIONSHIPS) | {"override"}, rc.REMOVED_REASONS)
+
     def test_output_schema_is_strict_and_within_limits(self):
         def walk(schema):
             if schema.get("type") == "object":

@@ -2030,9 +2030,19 @@ def reconcile(source_rows, identities, removed):
     }
 
 
-def safe_label(value: str) -> str:
-    """Echo category labels only; anything else (a hand edit) is reported as "other"."""
-    return value if re.fullmatch(r"[a-z][a-z_ -]{0,39}", value) else "other"
+# The removal categories cleanup_correspondents.py writes: the relationship values of its
+# answer schema, plus its override and the loaders' default. Only these are echoed.
+REMOVED_REASONS = frozenset((
+    "family", "friend", "neighbor_or_community", "church_or_club", "caregiver_or_medical",
+    "professional_advisor", "business_or_vendor", "staff_where_they_lived", "organization_or_list",
+    "political_or_advocacy", "spam_or_scam", "automated", "unknown", "override", "unspecified"))
+REMOVED_SOURCES = frozenset(("model", "judge", "override", "unspecified"))
+
+
+def safe_label(value: str, allowed) -> str:
+    """Echo a known category only. Anything else (a hand edit, which could be a person's
+    name) is reported as "other", so the console stays free of private text."""
+    return value if value in allowed else "other"
 
 
 def open_readonly_db(path: Path) -> sqlite3.Connection:
@@ -2089,9 +2099,10 @@ def rescore_main(argv: list[str]) -> int:
     report = reconcile(source_rows, identities, removed)
     book = load_contacts(args.contacts)
     with closing(open_readonly_db(db)) as conn:
-        known = {a for (a,) in conn.execute("SELECT addr FROM self_addresses")}
-        if known != set(self_addrs):
-            die("--self does not match the household addresses recorded in --db")
+        # The order matters too: the first --self is the primary account, which wins ties.
+        known = [a for (a,) in conn.execute("SELECT addr FROM self_addresses ORDER BY rowid")]
+        if known != list(self_addrs):
+            die("--self must list the household addresses recorded in --db, in the same order")
         ranking = rank_from_db(conn, self_addrs, excl=excl, book=book, identities=identities,
                                min_received=2, half_life=args.half_life)
     expected = {("id", ident.person_id) for ident in identities.values()}
@@ -2103,7 +2114,8 @@ def rescore_main(argv: list[str]) -> int:
     print(f"Kept {quantity(report['people'], 'person', 'people')}; "
           f"{quantity(report['merged rows'], 'source row')} merged into shared people.")
     for (reason, origin), count in sorted(report["removed"].items()):
-        print(f"Removed {quantity(count, 'row')}: {safe_label(reason)} ({safe_label(origin)}).")
+        print(f"Removed {quantity(count, 'row')}: {safe_label(reason, REMOVED_REASONS)} "
+              f"({safe_label(origin, REMOVED_SOURCES)}).")
     print(f"Wrote {quantity(len(ranking.people), 'person', 'people')} to <out>/correspondents_cleaned.csv")
     return 0
 

@@ -2095,7 +2095,7 @@ class RescoreTests(PipelineTestCase):
 
     def setUp(self):
         super().setUp()
-        box = self.mbox("mail/Inbox", [
+        self.box = box = self.mbox("mail/Inbox", [
             headers(message_id="both", sender=OWNER, to="Alice Example <alice@example.com>, "
                                                        "Alice Example <alice-old@example.com>"),
             headers(message_id="old", sender=OWNER, to="alice-old@example.com",
@@ -2126,19 +2126,20 @@ class RescoreTests(PipelineTestCase):
                 "display_name": first + " " + last, "primary": primary, "relationship": "friend",
                 "suggested_notify": "likely", "cleanup_note": note}
 
-    def identities(self, rows=None):
+    def identities(self, rows=None, name="identities"):
         rows = rows if rows is not None else [
             self.identity(ALICE, "p-alice", "Alice", "Example"),
             self.identity("alice-old@example.com", "p-alice", "Alice", "Example"),
             self.identity("info@example.org", "p-info", "Info", "Desk", note="=kept by review"),
             self.identity(BOB, "p-bob", "Bobby", "Sample")]
-        return self.csv_file("in/identities.csv", self.IDENTITY_FIELDS, rows, bom=True)
+        return self.csv_file(f"in/{name}.csv", self.IDENTITY_FIELDS, rows, bom=True)
 
-    def removed(self, addresses=("carol@example.com",)):
+    def removed(self, addresses=("carol@example.com",), name="removed", reason="business_or_vendor",
+                source="model"):
         fields = ["rank", "email", "removed_addresses", "removed_reason", "removed_source", "confidence", "why"]
-        return self.csv_file("in/removed.csv", fields, [
-            {"rank": "4", "email": a, "removed_addresses": a, "removed_reason": "business_or_vendor",
-             "removed_source": "model", "confidence": "high", "why": "synthetic"} for a in addresses])
+        return self.csv_file(f"in/{name}.csv", fields, [
+            {"rank": "4", "email": a, "removed_addresses": a, "removed_reason": reason,
+             "removed_source": source, "confidence": "high", "why": "synthetic"} for a in addresses])
 
     def rescore(self, identities=None, removed=None, extra=(), out=None):
         out = out or self.out
@@ -2188,18 +2189,52 @@ class RescoreTests(PipelineTestCase):
         self.assertIn("alice-old@example.com", emails)
 
     def test_reconciliation_refuses_gap_overlap_and_foreign_addresses(self):
-        cases = {
-            "gap": (self.identities(), self.removed(addresses=())),
-            "overlap": (self.identities(), self.removed(addresses=("carol@example.com", BOB))),
-            "foreign": (self.identities([self.identity(a, "p-" + a[0], "X", "Y") for a in (
-                ALICE, "alice-old@example.com", "info@example.org", BOB, "dylan@example.com")]),
-                self.removed()),
+        foreign = [self.identity(a, "p-" + a[0], "X", "Y") for a in (
+            ALICE, "alice-old@example.com", "info@example.org", BOB, "dylan@example.com")]
+        cases = {  # each case writes its own files, so no case reads another's fixture
+            "gap": (lambda: (self.identities(name="gap-identities"),
+                             self.removed(addresses=(), name="gap-removed")),
+                    "1 missing, 0 overlapping, 0 not in the source"),
+            "overlap": (lambda: (self.identities(name="overlap-identities"),
+                                 self.removed(addresses=("carol@example.com", BOB), name="overlap-removed")),
+                        "0 missing, 1 overlapping, 0 not in the source"),
+            "foreign": (lambda: (self.identities(foreign, name="foreign-identities"),
+                                 self.removed(name="foreign-removed")),
+                        "0 missing, 0 overlapping, 1 not in the source"),
         }
-        for name, (identities, removed) in cases.items():
+        for name, (fixtures, message) in cases.items():
             with self.subTest(case=name):
+                identities, removed = fixtures()
                 self.assert_private_refusal(lambda: self.rescore(identities=identities, removed=removed))
-                self.assertIn("do not reconcile", self.stderr.getvalue())
+                self.assertIn("identities and removals do not reconcile with the source: " + message,
+                              self.stderr.getvalue())
                 self.assertFalse((self.out / "correspondents_cleaned.csv").exists())
+
+    def test_only_known_removal_categories_reach_the_console(self):
+        self.assertEqual(self.rescore(removed=self.removed(reason="carol fiction", source="my sister")), 0)
+        self.assertIn("Removed 1 row: other (other).", self.stdout.getvalue())
+        self.assert_quiet()
+        self.assertEqual(rank_correspondents.safe_label("spam_or_scam", rank_correspondents.REMOVED_REASONS),
+                         "spam_or_scam")
+        self.assertEqual(rank_correspondents.safe_label("judge", rank_correspondents.REMOVED_SOURCES), "judge")
+
+    def test_self_addresses_must_match_the_database_in_order(self):
+        out = self.root / "two-accounts"
+        self.assertEqual(rank_correspondents.rank_main([str(self.box), "--self", OWNER, "--self", SECOND,
+                                                        "--out", str(out)]), 0)
+        self.clear_console()
+
+        def rescore(*accounts):
+            args = ["rescore", "--db", str(out / "mail.sqlite"), "--identities", str(self.identities()),
+                    "--removed", str(self.removed()), "--source", str(self.source), "--out", str(out)]
+            for account in accounts:
+                args += ["--self", account]
+            return rank_correspondents.main(args)
+
+        self.assert_private_refusal(lambda: rescore(SECOND, OWNER))  # the primary decides ties
+        self.assertIn("in the same order", self.stderr.getvalue())
+        self.assert_private_refusal(lambda: rescore(OWNER))
+        self.assertEqual(rescore(OWNER, SECOND), 0)
 
     def test_excluded_or_household_identity_is_refused(self):
         exclusion = self.write("in/exclude.txt", b"bob@example.com\n")

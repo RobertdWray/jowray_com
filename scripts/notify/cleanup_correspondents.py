@@ -2137,7 +2137,7 @@ class Person:
 class Removal:
     addresses: list
     reason: str
-    source: str          # model | judge | override | rule
+    source: str          # model | judge | override
     confidence: str
     why: str
 
@@ -2549,7 +2549,8 @@ def run_apply(paths: Paths, use_overrides: bool, exclude_files) -> int:
     print(f"{rc.quantity(len(rows), 'row')} in; {rc.quantity(len(result.people), 'person', 'people')} kept; "
           f"{rc.quantity(sum(len(r.addresses) for r in result.removals), 'address', 'addresses')} removed.")
     for (origin, reason), count in sorted(removed_by.items()):
-        print(f"  removed ({origin}, {rc.safe_label(reason)}): {count:,}")
+        print(f"  removed ({rc.safe_label(origin, rc.REMOVED_SOURCES)}, "
+              f"{rc.safe_label(reason, rc.REMOVED_REASONS)}): {count:,}")
     kinds = collections.Counter((c["kind"], c["status"]) for c in result.changes)
     for (kind, status), count in sorted(kinds.items()):
         print(f"  {kind} ({status}): {count:,}")
