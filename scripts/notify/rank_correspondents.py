@@ -29,10 +29,23 @@ STEP 1, rank (macOS, Thunderbird, her Hotmail account):
 
   --exclude is a text file of addresses ("someone@example.com") or domains
   ("example.com"), one per line, # for comments: family, people already told.
-  A person is dropped if any of their addresses match.
+  A person is dropped if any of their addresses match. Repeat it for more files.
 
   --contacts is her address book exported as CSV (Outlook.com: People, Manage
   contacts, Export contacts). It adds names and an "in her address book" flag.
+
+STEP 1b, optional: re-rank after the list is cleaned up (cleanup_correspondents.py
+writes identities.csv and correspondents_removed.csv):
+
+  python3 rank_correspondents.py rescore --db ~/jo-mail-review/mail.sqlite \\
+      --self someone@example.com --identities ~/jo-mail-review/identities.csv \\
+      --removed ~/jo-mail-review/correspondents_removed.csv \\
+      --source ~/jo-mail-review/correspondents.csv --out ~/jo-mail-review
+
+  Reads mail.sqlite read-only and writes correspondents_cleaned.csv: exactly the
+  cleaned-up people, re-scored, with the cleanup's extra columns appended. It
+  refuses to write unless every address of every source row is either kept in
+  one person or listed in one removal.
 
 STEP 2, family review: mark notify and correct names and accounts, then export
 as CSV UTF-8. Pass --self once per account, primary first, in every command.
@@ -62,9 +75,12 @@ How the score works (the constants below are the knobs):
     they wrote to her   1.5 (to 1-2 people), 1 (3-5), 0.5 (6-15), 0.15 (more),
                         0.3 if she was only Bcc'd
   Mailing-list, bulk and automated mail (List-*, Precedence, Auto-Submitted,
-  bulk-sender headers, noreply@ and friends) adds nothing. Junk, Drafts,
-  Outbox and Templates are skipped. Addresses that share the same full name
-  count as one person, and the most recently used one becomes email.
+  bulk-sender headers, noreply@ and friends, including look-alike spellings such
+  as fullwidth "ｉｎｆｏ@") adds nothing. Junk, Drafts, Outbox and Templates are
+  skipped. Addresses that share the same full name count as one person, and each
+  message counts once per person: two of someone's addresses on one message are
+  one recipient. email is the address the household most recently wrote to, else
+  the most recently seen one (non-automated addresses first).
 """
 
 from __future__ import annotations
@@ -342,9 +358,22 @@ def last_name_of(name: str) -> str:
 
 def looks_automated(addr: str) -> bool:
     local, _, domain = addr.rpartition("@")
-    if ROLE_LOCAL.match(local) or ESP_SUBDOMAIN.match(domain):
+    # Fold compatibility look-alikes (fullwidth "ｉｎｆｏ", superscript "ⁱⁿᶠᵒ") before the
+    # role match, so a disguised role address is recognised as one.
+    folded = unicodedata.normalize("NFKC", local).casefold()
+    if ROLE_LOCAL.match(folded) or ESP_SUBDOMAIN.match(domain):
         return True
     return any(domain == d or domain.endswith("." + d) for d in AUTOMATED_DOMAINS)
+
+
+def has_lookalike(addr: str) -> bool:
+    """True when the local part uses compatibility characters that NFKC folds away.
+
+    Comparing against NFC (not the raw text) keeps decomposed accents, which only
+    differ canonically, from counting as look-alikes. Plain ASCII never differs.
+    """
+    local = addr.rpartition("@")[0]
+    return unicodedata.normalize("NFKC", local) != unicodedata.normalize("NFC", local)
 
 
 def parse_addrs(values: list[str]) -> list[tuple[str, str]]:
@@ -525,28 +554,47 @@ def read_header_file(p: Path) -> bytes:
     return b"".join(lines)
 
 
-def read_mbox(path: Path):
-    """Stream (header block, envelope text) for each message. Read-only, low memory."""
+def iter_mbox(path: Path):
+    """Stream (header block, envelope text, start, end) for each message.
+
+    start is the byte offset of the message's "From " envelope line and end is the
+    next message's start (or the end of the file), so a later reader can find the
+    message again. Only header lines are kept in memory; bodies are skipped, never
+    decoded. Read-only, low memory.
+    """
     with open(path, "rb") as f:
         prev_blank, collecting, buf, env = True, False, [], None
+        start, pos, pending = 0, 0, None  # pending: a finished header awaiting its end offset
         for line in f:
+            line_start, pos = pos, pos + len(line)
             if line.startswith(b"From ") and (prev_blank or ENVELOPE.match(line)):
                 if collecting and buf:
-                    yield b"".join(buf), env
-                buf, collecting = [], True
+                    pending = (b"".join(buf), env, start)
+                if pending is not None:
+                    yield pending + (line_start,)
+                    pending = None
+                buf, collecting, start = [], True, line_start
                 env = line[5:].decode("ascii", "replace").strip()
                 prev_blank = False
                 continue
             blank = line in (b"\n", b"\r\n")
             if collecting:
                 if blank or len(buf) >= MAX_HEADER_LINES:
-                    yield b"".join(buf), env
+                    pending = (b"".join(buf), env, start)
                     buf, collecting = [], False
                 else:
                     buf.append(line)
             prev_blank = blank
         if collecting and buf:
-            yield b"".join(buf), env
+            pending = (b"".join(buf), env, start)
+        if pending is not None:
+            yield pending + (pos,)
+
+
+def read_mbox(path: Path):
+    """Stream (header block, envelope text) for each message. Read-only, low memory."""
+    for header_bytes, env, _start, _end in iter_mbox(path):
+        yield header_bytes, env
 
 
 def read_source(kind: str, path: Path):
@@ -826,21 +874,21 @@ def assign_accounts(conn, self_addrs):
 
 
 # ---- scoring ----------------------------------------------------------------------
+# Two passes. Pass 1 (collect_address_stats) gathers per-address evidence: names,
+# dates and subjects. The addresses are then resolved to people (person_keys), and
+# pass 2 (score_people) weighs each message once per person, so two aliases of one
+# person on the same message count as one recipient and one message.
 class AddrStats:
-    __slots__ = ("sent_score", "recv_score", "she_wrote", "she_wrote_direct", "they_wrote",
-                 "first_ts", "last_ts", "years", "names", "raw_last", "subjects",
-                 "account_scores", "account_bases")
+    """Evidence for one address: when it was seen, under which names and subjects."""
+    __slots__ = ("first_ts", "last_ts", "last_sent_ts", "years", "names", "raw_last", "subjects")
 
     def __init__(self):
-        self.sent_score = self.recv_score = 0.0
-        self.she_wrote = self.she_wrote_direct = self.they_wrote = 0
         self.first_ts = self.last_ts = None
+        self.last_sent_ts = None  # newest household-sent message to this address
         self.years: set[int] = set()
         self.names: collections.Counter = collections.Counter()
         self.raw_last: dict[str, float] = {}
         self.subjects: list[tuple[float, str]] = []
-        self.account_scores: collections.Counter = collections.Counter()
-        self.account_bases: collections.Counter = collections.Counter()
 
     def touch(self, ts, raw, name, subject):
         if ts is not None:
@@ -871,10 +919,31 @@ def recv_weight(n: int) -> float:
     return RECV_WEIGHT_MASS
 
 
-def score_addresses(conn, self_addrs: set[str], half_life: float, ref_ts: float):
+class Tally:
+    """Weighted message counts for one person (pass 2)."""
+    __slots__ = ("sent_score", "recv_score", "she_wrote", "she_wrote_direct", "they_wrote",
+                 "account_scores", "account_bases")
+
+    def __init__(self):
+        self.sent_score = self.recv_score = 0.0
+        self.she_wrote = self.she_wrote_direct = self.they_wrote = 0
+        self.account_scores: collections.Counter = collections.Counter()
+        self.account_bases: collections.Counter = collections.Counter()
+
+
+@dataclass
+class ScoredMessage:
+    ts: float | None
+    subject: str
+    account: str | None
+    basis: str | None
+    recipients: dict | None  # household-sent: address -> (raw, name); else None
+    sender: tuple | None     # inbound: (address, raw, name, To/Cc address set); else None
+
+
+def scored_messages(conn, self_addrs, ignored: collections.Counter | None = None):
+    """Yield the messages that carry weight, after the same skips for both passes."""
     self_addrs = set(self_addrs)
-    stats: dict[str, AddrStats] = {}
-    ignored = collections.Counter()
     rows = conn.execute(
         "SELECT m.id, m.ts, m.from_addr, m.is_from_self, m.is_bulk, m.folder_kind, m.subject, "
         "p.role, p.addr, p.addr_raw, p.name, m.account, m.account_basis "
@@ -883,7 +952,6 @@ def score_addresses(conn, self_addrs: set[str], half_life: float, ref_ts: float)
         group = list(group)
         _, ts, from_addr, is_self, bulk, fk, subject = group[0][:7]
         account, basis = group[0][11:13]
-        decay = 0.5 ** (max(0.0, (ref_ts - ts) / YEAR_SECONDS) / half_life) if ts else 0.5
         if is_self:
             recips: dict[str, tuple[str, str]] = {}
             for r in group:
@@ -891,26 +959,18 @@ def score_addresses(conn, self_addrs: set[str], half_life: float, ref_ts: float)
                 if role in ("to", "cc", "bcc") and addr not in self_addrs:
                     if addr not in recips or (name and not recips[addr][1]):
                         recips[addr] = (raw, name)
-            if not recips:
-                continue
-            n = len(recips)
-            w = sent_weight(n) * decay
-            for addr, (raw, name) in recips.items():
-                s = stats.setdefault(addr, AddrStats())
-                s.sent_score += w
-                s.account_scores[account] += w
-                s.account_bases[account, basis] += w
-                s.she_wrote += 1
-                s.she_wrote_direct += n <= DIRECT_MAX
-                s.touch(ts, raw, name, subject)
+            if recips:
+                yield ScoredMessage(ts, subject, account, basis, recips, None)
             continue
         if bulk:
-            ignored["bulk"] += 1
+            if ignored is not None:
+                ignored["bulk"] += 1
             continue
         if not from_addr or from_addr in self_addrs or fk == "sent":
             continue
         if looks_automated(from_addr):
-            ignored["automated"] += 1
+            if ignored is not None:
+                ignored["automated"] += 1
             continue
         to_cc, raw, name = set(), from_addr, ""
         for r in group:
@@ -919,14 +979,53 @@ def score_addresses(conn, self_addrs: set[str], half_life: float, ref_ts: float)
                 to_cc.add(addr)
             elif role == "from" and addr == from_addr:
                 raw, name = r_raw, r_name
-        w = recv_weight(len(to_cc)) if to_cc & self_addrs else BCC_ONLY_WEIGHT
-        s = stats.setdefault(from_addr, AddrStats())
-        s.recv_score += w * decay
-        s.account_scores[account] += w * decay
-        s.account_bases[account, basis] += w * decay
-        s.they_wrote += 1
-        s.touch(ts, raw, name, subject)
+        yield ScoredMessage(ts, subject, account, basis, None, (from_addr, raw, name, to_cc))
+
+
+def collect_address_stats(conn, self_addrs):
+    """Pass 1: per-address names, dates, subjects and the newest household-sent date."""
+    stats: dict[str, AddrStats] = {}
+    ignored = collections.Counter()
+    for m in scored_messages(conn, self_addrs, ignored):
+        if m.recipients is not None:
+            for addr, (raw, name) in m.recipients.items():
+                s = stats.setdefault(addr, AddrStats())
+                s.touch(m.ts, raw, name, m.subject)
+                if m.ts is not None:
+                    s.last_sent_ts = m.ts if s.last_sent_ts is None else max(s.last_sent_ts, m.ts)
+        else:
+            addr, raw, name, _ = m.sender
+            stats.setdefault(addr, AddrStats()).touch(m.ts, raw, name, m.subject)
     return stats, ignored
+
+
+def score_people(conn, resolve, self_addrs, half_life: float, ref_ts: float):
+    """Pass 2: weigh every message once per person. resolve maps an address to a person key."""
+    self_addrs = set(self_addrs)
+    scores: dict = {}
+    for m in scored_messages(conn, self_addrs):
+        ts = m.ts
+        decay = 0.5 ** (max(0.0, (ref_ts - ts) / YEAR_SECONDS) / half_life) if ts else 0.5
+        if m.recipients is not None:
+            persons = list(dict.fromkeys(resolve(addr) for addr in m.recipients))
+            n = len(persons)  # distinct non-household people, not addresses
+            w = sent_weight(n) * decay
+            for person in persons:
+                t = scores.setdefault(person, Tally())
+                t.sent_score += w
+                t.account_scores[m.account] += w
+                t.account_bases[m.account, m.basis] += w
+                t.she_wrote += 1
+                t.she_wrote_direct += n <= DIRECT_MAX
+            continue
+        addr, _, _, to_cc = m.sender
+        w = recv_weight(len(to_cc)) if to_cc & self_addrs else BCC_ONLY_WEIGHT
+        t = scores.setdefault(resolve(addr), Tally())
+        t.recv_score += w * decay
+        t.account_scores[m.account] += w * decay
+        t.account_bases[m.account, m.basis] += w * decay
+        t.they_wrote += 1
+    return scores
 
 
 # ---- people ---------------------------------------------------------------------
@@ -949,6 +1048,16 @@ def load_exclusions(path: str | None):
                 warn("--exclude: 1 invalid address ignored")
         else:
             domains.add(line.lstrip("@"))
+    return addrs, domains
+
+
+def load_exclusion_files(paths):
+    """Merge every --exclude file (the option is repeatable)."""
+    addrs, domains = set(), set()
+    for path in paths or ():
+        more_addrs, more_domains = load_exclusions(path)
+        addrs |= more_addrs
+        domains |= more_domains
     return addrs, domains
 
 
@@ -1002,45 +1111,104 @@ def load_contacts(path: str | None) -> dict[str, str]:
     return book
 
 
-def build_people(stats, book, excl, self_addrs, own_keys, list_addrs, min_received):
+@dataclass(frozen=True)
+class Identity:
+    """One address of a cleaned-up person (identities.csv), authoritative for rescore."""
+    person_id: str
+    first_name: str
+    last_name: str
+    display_name: str
+    primary: bool
+    extra: tuple = ()  # (column, value) pairs appended to the output
+
+
+def person_keys(stats, book, identities=None) -> dict:
+    """Resolve each address to a person: its identity, else its full name, else itself."""
+    keys = {}
+    for addr, s in stats.items():
+        if identities and addr in identities:
+            keys[addr] = ("id", identities[addr].person_id)
+            continue
+        nm = book.get(addr) or (s.names.most_common(1)[0][0] if s.names else "")
+        k = name_key(nm)
+        keys[addr] = ("name", k) if k else ("addr", addr)
+    return keys
+
+
+def choose_primary(members, override: str | None = None):
+    """The address to write to (rulings R2, R5); members are (address, AddrStats, name).
+
+    1. a manual override (identities.csv primary, from a set_primary override);
+    2. else the address the household most recently sent to;
+    3. else the most recently seen address.
+    Non-automated addresses are preferred at steps 2 and 3. Ties keep the given order.
+    """
+    for m in members:
+        if m[0] == override:
+            return m
+    human = [m for m in members if not looks_automated(m[0])]
+    for pool in (human, members):
+        sent = [m for m in pool if m[1].last_sent_ts is not None]
+        if sent:
+            return max(sent, key=lambda m: m[1].last_sent_ts)
+        if pool:
+            return max(pool, key=lambda m: m[1].last_ts or 0.0)
+    raise ValueError("a person needs at least one address")
+
+
+def build_people(stats, scores, book, excl, self_addrs, own_keys, list_addrs, min_received,
+                 identities=None):
+    """Group addresses into people and build the output rows.
+
+    scores maps person keys (person_keys) to Tally objects. With identities, the
+    result is exactly the identity people (closed world): they skip the household-name,
+    exclusion, automated and threshold drops, because the cleanup decision is
+    authoritative and rescore refuses excluded or household identities beforehand.
+    """
     self_addrs = list(self_addrs)
-    for addr in book:
+    for addr in itertools.chain(book, identities or ()):
         stats.setdefault(addr, AddrStats())
+    keys = person_keys(stats, book, identities)
     groups: dict[tuple, list] = {}
     for addr, s in stats.items():
         nm = book.get(addr) or (s.names.most_common(1)[0][0] if s.names else "")
-        k = name_key(nm)
-        groups.setdefault(("name", k) if k else ("addr", addr), []).append((addr, s, nm))
+        groups.setdefault(keys[addr], []).append((addr, s, nm))
 
     people, dropped, own_other = [], collections.Counter(), []
     for gk, members in groups.items():
         addrs = [m[0] for m in members]
-        if any(a in self_addrs for a in addrs):
+        identity = gk[0] == "id"
+        if identities is not None and not identity:
             continue
-        if gk[0] == "name" and gk[1] in own_keys:
-            own_other.extend(max(s.raw_last, key=s.raw_last.get) if s.raw_last else a
-                             for a, s, _ in members)
-            continue
-        if any(is_excluded(a, excl) for a in addrs):
-            dropped["excluded"] += 1
-            continue
+        if not identity:
+            if any(a in self_addrs for a in addrs):
+                continue
+            if gk[0] == "name" and gk[1] in own_keys:
+                own_other.extend(max(s.raw_last, key=s.raw_last.get) if s.raw_last else a
+                                 for a, s, _ in members)
+                continue
+            if any(is_excluded(a, excl) for a in addrs):
+                dropped["excluded"] += 1
+                continue
         ss = [m[1] for m in members]
-        she_wrote = sum(s.she_wrote for s in ss)
-        they_wrote = sum(s.they_wrote for s in ss)
+        tally = scores.get(gk) or Tally()
+        she_wrote, they_wrote = tally.she_wrote, tally.they_wrote
         in_book = any(a in book for a in addrs)
         is_list = any(a in list_addrs for a in addrs)
         automated = all(looks_automated(a) for a in addrs)
-        if automated and she_wrote < 3 and not in_book:
-            dropped["automated"] += 1
-            continue
-        if not (she_wrote >= 1 or they_wrote >= min_received or in_book):
-            dropped["below threshold"] += 1
-            continue
-        score = sum(s.sent_score + s.recv_score for s in ss)
+        if not identity:
+            if automated and she_wrote < 3 and not in_book:
+                dropped["automated"] += 1
+                continue
+            if not (she_wrote >= 1 or they_wrote >= min_received or in_book):
+                dropped["below threshold"] += 1
+                continue
+        score = tally.sent_score + tally.recv_score
         if she_wrote and they_wrote:
             score *= TWO_WAY_BONUS
         members.sort(key=lambda m: (m[1].last_ts or 0.0), reverse=True)
-        primary = next((m for m in members if not looks_automated(m[0])), members[0])
+        override = next((a for a in addrs if identity and identities[a].primary), None)
+        primary = choose_primary(members, override)
         others = [m for m in members if m is not primary]
 
         def best_raw(s: AddrStats, addr: str) -> str:
@@ -1073,18 +1241,27 @@ def build_people(stats, book, excl, self_addrs, own_keys, list_addrs, min_receiv
             flags.append("mailing list: one email reaches the group")
         if automated:
             flags.append("looks automated")
-        account_scores, account_bases = collections.Counter(), collections.Counter()
-        for s in ss:
-            account_scores.update(s.account_scores)
-            account_bases.update(s.account_bases)
+        if any(has_lookalike(a) for a in addrs):
+            flags.append("look-alike address")
+        account_scores, account_bases = tally.account_scores, tally.account_bases
         account = max(self_addrs, key=lambda a: account_scores[a])
         basis = (max(ACCOUNT_BASES, key=lambda b: account_bases[account, b]) if account_scores[account]
                  else "folder" if she_wrote or they_wrote else "none")
+        if identity:
+            ident = identities[addrs[0]]
+            first, last = ident.first_name, ident.last_name
+            display = ident.display_name or display
+            extra = dict(ident.extra)
+        else:
+            first = "" if is_list else first_name_of(display)
+            last = "" if is_list else last_name_of(display)
+            extra = {}
         people.append({
+            **extra,
             "notify": "",
             "name": display,
-            "first_name": "" if is_list else first_name_of(display),
-            "last_name": "" if is_list else last_name_of(display),
+            "first_name": first,
+            "last_name": last,
             "email": best_raw(primary[1], primary[0]),
             "account": account,
             "account_basis": basis,
@@ -1092,7 +1269,7 @@ def build_people(stats, book, excl, self_addrs, own_keys, list_addrs, min_receiv
             "send_to": best_raw(primary[1], primary[0]),
             "score": round(score, 1),
             "she_wrote": she_wrote,
-            "she_wrote_direct": sum(s.she_wrote_direct for s in ss),
+            "she_wrote_direct": tally.she_wrote_direct,
             "they_wrote": they_wrote,
             "first_year": year_of(min(firsts)) if firsts else "",
             "last_year": year_of(max(lasts)) if lasts else "",
@@ -1103,11 +1280,44 @@ def build_people(stats, book, excl, self_addrs, own_keys, list_addrs, min_receiv
             "recent_subjects": " | ".join(subjects),
             "flags": "; ".join(flags),
             "_last_ts": max(lasts) if lasts else 0.0,
+            "_person": gk,
         })
     people.sort(key=lambda p: (-p["score"], -p["_last_ts"]))
     for i, p in enumerate(people, 1):
         p["rank"] = i
     return people, dropped, own_other
+
+
+@dataclass
+class Ranking:
+    people: list
+    dropped: collections.Counter
+    own_other: list
+    ignored: collections.Counter
+
+
+def rank_from_db(conn, self_addrs, *, excl, book, identities=None, household_names=(),
+                 min_received: int, half_life: float) -> Ranking:
+    """Everything after loading: household names, lists, both passes and the people.
+
+    Used by rank (on its freshly built database) and by rescore (read-only, with
+    identities). The reference time is the newest message, as in rank.
+    """
+    own_keys = {name_key(n) for (n,) in conn.execute(
+        "SELECT DISTINCT from_name FROM messages WHERE is_from_self = 1 AND from_name <> ''")}
+    own_keys.update(name_key(n) for n in household_names)
+    own_keys.discard(None)
+    list_addrs = {a for (a,) in conn.execute(
+        "SELECT DISTINCT list_post FROM messages WHERE list_post IS NOT NULL")}
+    ref_ts = conn.execute("SELECT MAX(ts) FROM messages").fetchone()[0] or NOW
+    stats, ignored = collect_address_stats(conn, self_addrs)
+    for addr in itertools.chain(book, identities or ()):
+        stats.setdefault(addr, AddrStats())
+    keys = person_keys(stats, book, identities)
+    scores = score_people(conn, lambda a: keys.get(a) or ("addr", a), self_addrs, half_life, ref_ts)
+    people, dropped, own_other = build_people(stats, scores, book, excl, self_addrs, own_keys,
+                                              list_addrs, min_received, identities=identities)
+    return Ranking(people, dropped, own_other, ignored)
 
 
 # ---- output -----------------------------------------------------------------------
@@ -1132,13 +1342,18 @@ def csv_cell(v):
     return v
 
 
+def write_people_csv(path: Path, people, columns) -> None:
+    """UTF-8 with BOM (for Excel), formula-guarded cells, mode 0600."""
+    with open_private(path, encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(columns)
+        for p in people:
+            w.writerow([csv_cell(p.get(c, "")) for c in columns])
+
+
 def write_outputs(conn, people, out_dir: Path, csv_path: Path | None = None) -> Path:
     csv_path = csv_path if csv_path is not None else out_dir / "correspondents.csv"
-    with open_private(csv_path, encoding="utf-8-sig") as f:
-        w = csv.writer(f)
-        w.writerow(CSV_COLUMNS)
-        for p in people:
-            w.writerow([csv_cell(p[c]) for c in CSV_COLUMNS])
+    write_people_csv(csv_path, people, CSV_COLUMNS)
     conn.execute("DROP TABLE IF EXISTS people")
     conn.execute("CREATE TABLE people (" + ", ".join(
         f"{c} {'INTEGER' if c in ('rank', 'she_wrote', 'she_wrote_direct', 'they_wrote', 'years_active') else 'REAL' if c == 'score' else 'TEXT'}"
@@ -1211,7 +1426,8 @@ def guard_output_symlinks(out: Path) -> None:
     """Check named outputs without following links, including dangling links."""
     paths = [out / name for name in (
         "correspondents.csv", "mail.sqlite", "mail.sqlite-journal", "mail.sqlite-wal",
-        "mail.sqlite-shm", "evidence", "send_list.csv", "schedule.log")]
+        "mail.sqlite-shm", "evidence", "send_list.csv", "schedule.log",
+        "correspondents_cleaned.csv")]
     paths.extend(out.glob("send_list_*.csv"))
     count = sum(p.is_symlink() for p in paths)
     # Do not inspect a child through a symlinked evidence directory.
@@ -1280,7 +1496,8 @@ def rank_main(argv: list[str]) -> int:
     ap.add_argument("--household-name", action="append", default=[], metavar="NAME",
                     help="exclude this household display name (repeatable)")
     ap.add_argument("--verbose", action="store_true", help="print personal details from the ranking")
-    ap.add_argument("--exclude", metavar="FILE", help="addresses or domains to leave out, one per line")
+    ap.add_argument("--exclude", metavar="FILE", action="append", default=[],
+                    help="addresses or domains to leave out, one per line (repeatable)")
     ap.add_argument("--contacts", metavar="CSV", help="her address book exported as CSV")
     ap.add_argument("--out", default="~/jo-mail-review", help="output directory (default: %(default)s)")
     ap.add_argument("--half-life", type=float, default=DEFAULT_HALF_LIFE, metavar="YEARS",
@@ -1327,27 +1544,21 @@ def rank_main(argv: list[str]) -> int:
             n_self = conn.execute("SELECT COUNT(*) FROM messages WHERE is_from_self = 1").fetchone()[0]
             n_missed_alias = conn.execute("SELECT COUNT(*) FROM messages WHERE folder_kind = 'sent' "
                 "AND is_from_self = 0 AND from_addr IS NOT NULL").fetchone()[0] if args.self_addrs else None
-            own_keys = {name_key(n) for (n,) in conn.execute(
-                "SELECT DISTINCT from_name FROM messages WHERE is_from_self = 1 AND from_name <> ''")}
-            given_keys = [name_key(n) for n in args.household_name]
-            ignored_household_names = given_keys.count(None)
-            own_keys.update(given_keys)
-            own_keys.discard(None)
+            ignored_household_names = [name_key(n) for n in args.household_name].count(None)
             household_names = conn.execute("SELECT from_name, COUNT(*) FROM messages "
                 "WHERE is_from_self = 1 AND from_name <> '' GROUP BY from_name ORDER BY 2 DESC, from_name").fetchall()
             with open_private(staged[evidence_path]) as f:
                 for name, count in household_names:
                     f.write(f"{count}\t{name}\n")
-            list_addrs = {a for (a,) in conn.execute(
-                "SELECT DISTINCT list_post FROM messages WHERE list_post IS NOT NULL")}
-            ref_ts = conn.execute("SELECT MAX(ts) FROM messages").fetchone()[0] or NOW
             y0, y1 = conn.execute("SELECT MIN(year), MAX(year) FROM messages").fetchone()
 
-            stats, ignored = score_addresses(conn, self_addrs, args.half_life, ref_ts)
             book = load_contacts(args.contacts)
-            excl = load_exclusions(args.exclude)
-            people, dropped, own_other = build_people(stats, book, excl, self_addrs, own_keys,
-                                                      list_addrs, args.min_received)
+            excl = load_exclusion_files(args.exclude)
+            ranking = rank_from_db(conn, self_addrs, excl=excl, book=book,
+                                   household_names=args.household_name,
+                                   min_received=args.min_received, half_life=args.half_life)
+            people, dropped, own_other, ignored = (ranking.people, ranking.dropped,
+                                                   ranking.own_other, ranking.ignored)
             write_outputs(conn, people, out_dir, csv_path=staged[csv_path])
 
     skip_labels = {"duplicates": ("duplicate copy", "duplicate copies"),
@@ -1698,12 +1909,225 @@ def schedule_main(argv: list[str]) -> int:
     return 0
 
 
+# ---- rescore: person-level ranking of the cleaned-up identities -------------------
+IDENTITY_CORE = ("address", "person_id", "first_name", "last_name", "display_name", "primary")
+OTHER_ADDRESS = re.compile(r"\s*\(last [^()]*\)\s*$")
+
+
+def read_private_csv(path: Path, required) -> tuple[list[str], list[dict]]:
+    """Read a CSV the tools wrote (or a spreadsheet saved it): BOM, guards, strict quoting."""
+    reader = csv.DictReader(io.StringIO(read_text_any(path), newline=""), strict=True)
+    fields = [unguard_cell(c).strip() for c in (reader.fieldnames or [])]
+    named = [c for c in fields if c]
+    if len(named) != len(set(named)):
+        die("CSV header contains duplicate column names")
+    if not set(required).issubset(fields):
+        die("CSV header is missing required columns")
+    reader.fieldnames = fields
+    rows = []
+    for i, raw in enumerate(reader, 1):
+        if None in raw:
+            die(f"malformed CSV at row {i}")
+        row = {k: unguard_cell(v or "") for k, v in raw.items() if k}
+        if any(v.strip() for v in row.values()):
+            rows.append(row)
+    return fields, rows
+
+
+def row_addresses(row: dict) -> list[str]:
+    """Canonical addresses of a correspondents.csv row: email, then other_addresses.
+
+    other_addresses holds "raw (last YYYY)" entries separated by "; ". Raises
+    ValueError for an entry that is not an address.
+    """
+    found = []
+    for value in [row.get("email") or row.get("send_to") or ""] + (row.get("other_addresses") or "").split(";"):
+        value = OTHER_ADDRESS.sub("", value).strip()
+        if not value:
+            continue
+        address = canon(value)
+        if address is None:
+            raise ValueError("invalid address")
+        if address not in found:
+            found.append(address)
+    return found
+
+
+def load_identities(path: Path):
+    """identities.csv -> ({address: Identity}, extra columns). Refuses inconsistent people."""
+    fields, rows = read_private_csv(path, IDENTITY_CORE)
+    extra_columns = [c for c in fields if c and c not in IDENTITY_CORE]
+    clashes = set(extra_columns) & (set(CSV_COLUMNS) | {"send_to"})
+    if clashes:
+        die("identities.csv repeats an output column name")
+    identities, people = {}, {}
+    for i, row in enumerate(rows, 1):
+        address = canon(row["address"])
+        person = row["person_id"].strip()
+        if not address or not person:
+            die(f"invalid identity at row {i}")
+        if address in identities:
+            die(f"address appears twice in identities.csv (row {i})")
+        primary = row["primary"].strip().casefold()
+        if primary not in YES | NO:
+            die(f"invalid primary value at identity row {i}")
+        ident = Identity(person, row["first_name"].strip(), row["last_name"].strip(),
+                         row["display_name"].strip(), primary in YES,
+                         tuple((c, row.get(c, "")) for c in extra_columns))
+        first = people.setdefault(person, ident)
+        if (first.first_name, first.last_name, first.display_name, first.extra) != (
+                ident.first_name, ident.last_name, ident.display_name, ident.extra):
+            die(f"identity rows for one person disagree (row {i})")
+        identities[address] = ident
+    primaries = collections.Counter(ident.person_id for ident in identities.values() if ident.primary)
+    if any(n > 1 for n in primaries.values()):
+        die("a person has more than one primary address")
+    return identities, extra_columns
+
+
+def load_removed(path: Path):
+    """correspondents_removed.csv -> [(row number, addresses, reason, source)]."""
+    _, rows = read_private_csv(path, ("removed_addresses", "removed_reason", "removed_source"))
+    removed = []
+    for i, row in enumerate(rows, 1):
+        addresses = [canon(a) for a in row["removed_addresses"].split(";") if a.strip()]
+        if not addresses or None in addresses:
+            die(f"invalid removed_addresses at removed row {i}")
+        removed.append((i, addresses, row["removed_reason"].strip() or "unspecified",
+                        row["removed_source"].strip() or "unspecified"))
+    return removed
+
+
+def reconcile(source_rows, identities, removed):
+    """Closed-world check: every source address is in exactly one person or one removal.
+
+    Returns per-reason aggregates; refuses (exits) on a gap, an overlap or a foreign address.
+    """
+    source = {}
+    for i, row in enumerate(source_rows, 1):
+        try:
+            addresses = row_addresses(row)
+        except ValueError:
+            die(f"invalid address in source row {i}")
+        for address in addresses:
+            source.setdefault(address, i)
+    removed_at = collections.Counter()
+    for _, addresses, _, _ in removed:
+        removed_at.update(addresses)
+    overlap = sum(1 for a in identities if removed_at[a]) + sum(1 for n in removed_at.values() if n > 1)
+    gaps = sum(1 for a in source if a not in identities and not removed_at[a])
+    foreign = sum(1 for a in itertools.chain(identities, removed_at) if a not in source)
+    if gaps or overlap or foreign:
+        die(f"identities and removals do not reconcile with the source: {gaps} missing, "
+            f"{overlap} overlapping, {foreign} not in the source; re-run cleanup apply")
+    rows_by_person = collections.defaultdict(set)
+    for address, ident in identities.items():
+        rows_by_person[ident.person_id].add(source[address])
+    return {
+        "people": len(rows_by_person),
+        "merged rows": sum(len(r) for r in rows_by_person.values() if len(r) > 1),
+        "removed": collections.Counter((reason, origin) for _, _, reason, origin in removed),
+    }
+
+
+# The removal categories cleanup_correspondents.py writes: the relationship values of its
+# answer schema, plus its override and the loaders' default. Only these are echoed.
+REMOVED_REASONS = frozenset((
+    "family", "friend", "neighbor_or_community", "church_or_club", "caregiver_or_medical",
+    "professional_advisor", "business_or_vendor", "staff_where_they_lived", "organization_or_list",
+    "political_or_advocacy", "spam_or_scam", "automated", "unknown", "override", "unspecified"))
+REMOVED_SOURCES = frozenset(("model", "judge", "override", "unspecified"))
+
+
+def safe_label(value: str, allowed) -> str:
+    """Echo a known category only. Anything else (a hand edit, which could be a person's
+    name) is reported as "other", so the console stays free of private text."""
+    return value if value in allowed else "other"
+
+
+def open_readonly_db(path: Path) -> sqlite3.Connection:
+    if not path.is_file():
+        die("--db file not found")
+    return sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+
+
+@private_errors
+def rescore_main(argv: list[str]) -> int:
+    ap = PrivateArgumentParser(
+        prog="rank_correspondents.py rescore",
+        description="Re-rank the cleaned-up people (identities.csv) from the existing database, "
+                    "counting each message once per person. Reads mail.sqlite read-only and "
+                    "writes correspondents_cleaned.csv only.")
+    ap.add_argument("--db", required=True, help="the harvester's mail.sqlite (opened read-only)")
+    ap.add_argument("--self", dest="self_addrs", action="append", metavar="ADDRESS",
+                    help="required: household accounts, primary first, as for rank")
+    ap.add_argument("--identities", required=True, help="identities.csv from cleanup apply")
+    ap.add_argument("--removed", required=True, help="correspondents_removed.csv from cleanup apply")
+    ap.add_argument("--source", required=True, help="the correspondents.csv the cleanup started from")
+    ap.add_argument("--exclude", metavar="FILE", action="append", default=[],
+                    help="addresses or domains that must not be kept (repeatable)")
+    ap.add_argument("--contacts", metavar="CSV", help="her address book exported as CSV, as for rank")
+    ap.add_argument("--half-life", type=float, default=DEFAULT_HALF_LIFE, metavar="YEARS",
+                    help="older mail counts half as much every this many years (default: %(default)s)")
+    ap.add_argument("--out", default="~/jo-mail-review", help="output directory (default: %(default)s)")
+    ap.add_argument("--allow-inside-git", action="store_true", help=argparse.SUPPRESS)
+    args = ap.parse_args(argv)
+    if not args.self_addrs:
+        die("--self is required")
+    if not 0 < args.half_life < float("inf"):
+        die("--half-life must be positive and finite")
+    self_addrs, _ = resolve_self(None, args.self_addrs)
+    out = output_directory(args.out)
+    db = Path(args.db).expanduser().resolve()
+    inputs = [Path(p).expanduser().resolve() for p in (args.identities, args.removed, args.source)]
+    dst = out / "correspondents_cleaned.csv"
+    guard_git(out, args.allow_inside_git)
+    guard_output_symlinks(out)
+    guard_inputs([dst], [db] + inputs)
+    for path in inputs:
+        if not path.is_file():
+            die("an input CSV was not found")
+    identities, extra_columns = load_identities(inputs[0])
+    removed = load_removed(inputs[1])
+    _, source_rows = read_private_csv(inputs[2], ("email",))
+    excl = load_exclusion_files(args.exclude)
+    if any(is_excluded(a, excl) for a in identities):
+        die(f"{quantity(sum(is_excluded(a, excl) for a in identities), 'kept address', 'kept addresses')} "
+            "excluded by --exclude; remove them in cleanup apply")
+    if any(a in self_addrs for a in identities):
+        die("a kept address is a household (--self) address")
+    report = reconcile(source_rows, identities, removed)
+    book = load_contacts(args.contacts)
+    with closing(open_readonly_db(db)) as conn:
+        # The order matters too: the first --self is the primary account, which wins ties.
+        known = [a for (a,) in conn.execute("SELECT addr FROM self_addresses ORDER BY rowid")]
+        if known != list(self_addrs):
+            die("--self must list the household addresses recorded in --db, in the same order")
+        ranking = rank_from_db(conn, self_addrs, excl=excl, book=book, identities=identities,
+                               min_received=2, half_life=args.half_life)
+    expected = {("id", ident.person_id) for ident in identities.values()}
+    if {p["_person"] for p in ranking.people} != expected or len(ranking.people) != len(expected):
+        die("rescore lost or duplicated a person; nothing written")
+    private_directory(out, secure_existing=True)
+    with atomic_outputs([dst]) as staged:
+        write_people_csv(staged[dst], ranking.people, CSV_COLUMNS + extra_columns)
+    print(f"Kept {quantity(report['people'], 'person', 'people')}; "
+          f"{quantity(report['merged rows'], 'source row')} merged into shared people.")
+    for (reason, origin), count in sorted(report["removed"].items()):
+        print(f"Removed {quantity(count, 'row')}: {safe_label(reason, REMOVED_REASONS)} "
+              f"({safe_label(origin, REMOVED_SOURCES)}).")
+    print(f"Wrote {quantity(len(ranking.people), 'person', 'people')} to <out>/correspondents_cleaned.csv")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "send-list":
         return send_list_main(argv[1:])
     if argv and argv[0] == "schedule":
         return schedule_main(argv[1:])
+    if argv and argv[0] == "rescore":
+        return rescore_main(argv[1:])
     return rank_main(argv)
 
 
