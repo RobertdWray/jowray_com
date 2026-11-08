@@ -115,3 +115,48 @@ describe("adminCoordinatesSchema (MCP set_coordinates, plan 2026-11-06 §4.2)", 
     expect(schema.properties?.memoryVersion).toMatchObject({ type: "string", description: "ISO-8601 timestamp exactly as get_memory returned it" });
   });
 });
+
+describe("adminMemoryChangesSchema: tags, approxYear, approxMonth (plan 2026-11-08 D3, D4)", () => {
+  const parse = (changes: Record<string, unknown>) => adminMemoryChangesSchema.safeParse({ memoryId: MEMORY_ID, ...VERSIONS, changes });
+  const thisYear = new Date().getUTCFullYear();
+
+  it("normalises tags: trimmed, one spelling per slug (the first), order kept", () => {
+    const parsed = parse({ tags: ["  Café ", "cafe", "St. Mary's", "St Marys", "Ocean   City"] });
+    expect(parsed.success && parsed.data.changes.tags).toEqual(["Café", "St. Mary's", "Ocean City"]);
+    const empty = parse({ tags: [] });
+    expect(empty.success && empty.data.changes.tags).toEqual([]);
+  });
+
+  it("refuses a patch with no letter or digit, an empty one, one over 40 characters and more than 20", () => {
+    expect(parse({ tags: ["!!!"] }).success).toBe(false);
+    expect(parse({ tags: ["   "] }).success).toBe(false);
+    expect(parse({ tags: ["日本"] }).success).toBe(false);
+    expect(parse({ tags: ["x".repeat(41)] }).success).toBe(false);
+    expect(parse({ tags: ["x".repeat(40)] }).success).toBe(true);
+    expect(parse({ tags: Array.from({ length: 21 }, (_, i) => `t${i}`) }).success).toBe(false);
+    expect(parse({ tags: "quilting" }).success).toBe(false);
+  });
+
+  it("accepts a whole year from 1900 to this year, null to clear, and leaves it alone when absent", () => {
+    expect(parse({ approxYear: 1900 }).success).toBe(true);
+    expect(parse({ approxYear: thisYear }).success).toBe(true);
+    expect(parse({ approxYear: 1899 }).success).toBe(false);
+    expect(parse({ approxYear: thisYear + 1 }).success).toBe(false);
+    expect(parse({ approxYear: 1985.5 }).success).toBe(false);
+    expect(parse({ approxYear: "1985" }).success).toBe(false);
+    const cleared = parse({ approxYear: null });
+    expect(cleared.success && cleared.data.changes.approxYear).toBeNull();
+    const absent = parse({ place: "x" });
+    expect(absent.success && absent.data.changes.approxYear).toBeUndefined();
+  });
+
+  it("accepts a month 1–12 or null, and refuses a month sent with a cleared year", () => {
+    expect(parse({ approxMonth: 1 }).success).toBe(true);
+    expect(parse({ approxMonth: 12 }).success).toBe(true);
+    expect(parse({ approxMonth: 0 }).success).toBe(false);
+    expect(parse({ approxMonth: 13 }).success).toBe(false);
+    expect(parse({ approxMonth: null, approxYear: null }).success).toBe(true);
+    expect(parse({ approxMonth: 4, approxYear: 1985 }).success).toBe(true);
+    expect(parse({ approxMonth: 4, approxYear: null }).success).toBe(false);
+  });
+});

@@ -501,7 +501,7 @@ describe("tools/list contract (case 2)", () => {
           "annotations": {
             "destructiveHint": true,
           },
-          "description": "Edits a memory's words, date, place, visibility or the contributor's name and relationship; send only the keys you change. Read \`memoryVersion\` and \`contributor.contributorVersion\` from get_memory first. On \`stale\`, compare every editable field in \`current\` with the value you read before this edit: if any differs, including a field you are changing, show Rob what changed and ask before retrying; retry from \`current\` without asking only when none differs (only the versions moved).",
+          "description": "Edits a memory's words, date, place, visibility, patches (\`tags\`, the whole list), timeline year and month (\`approxYear\`, \`approxMonth\`; null clears, a month needs a year) or the contributor's name and relationship; send only the keys you change. Read \`memoryVersion\` and \`contributor.contributorVersion\` from get_memory first. On \`stale\`, compare every editable field in \`current\` with the value you read before this edit: if any differs, including a field you are changing, show Rob what changed and ask before retrying; retry from \`current\` without asking only when none differs (only the versions moved).",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
@@ -519,6 +519,32 @@ describe("tools/list contract (case 2)", () => {
                         "type": "null",
                       },
                     ],
+                  },
+                  "approxMonth": {
+                    "anyOf": [
+                      {
+                        "maximum": 12,
+                        "minimum": 1,
+                        "type": "integer",
+                      },
+                      {
+                        "type": "null",
+                      },
+                    ],
+                    "description": "The month (1–12) within approxYear; null clears it. Refused when the memory would have a month without a year.",
+                  },
+                  "approxYear": {
+                    "anyOf": [
+                      {
+                        "maximum": 9007199254740991,
+                        "minimum": 1900,
+                        "type": "integer",
+                      },
+                      {
+                        "type": "null",
+                      },
+                    ],
+                    "description": "The year the memory is from (1900 to this year), placing it on the See memories timeline; null clears it so the year is read from the approximate date text again.",
                   },
                   "name": {
                     "anyOf": [
@@ -563,6 +589,16 @@ describe("tools/list contract (case 2)", () => {
                         "type": "null",
                       },
                     ],
+                  },
+                  "tags": {
+                    "description": "The memory's patches (tags), replacing the whole list: at most 20, each at most 40 characters; [] clears them. Two spellings with the same slug (café, cafe) are one patch, the first kept.",
+                    "items": {
+                      "maxLength": 40,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "maxItems": 20,
+                    "type": "array",
                   },
                   "visibility": {
                     "enum": [
@@ -612,7 +648,7 @@ describe("tools/list contract (case 2)", () => {
             "destructiveHint": true,
             "idempotentHint": true,
           },
-          "description": "Moves a shared memory between PENDING, APPROVED and HIDDEN. A DRAFT is refused (\`draft\`); use \`share_draft\`.",
+          "description": "Moves a shared memory between PENDING, APPROVED and HIDDEN. A DRAFT is refused (\`draft\`); use \`share_draft\`. APPROVED with visibility PUBLIC shows the memory on See memories once the family has turned those pages on (PUBLIC_MEMORIES_ENABLED); PENDING or HIDDEN takes it off.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
@@ -645,7 +681,7 @@ describe("tools/list contract (case 2)", () => {
             "destructiveHint": true,
             "idempotentHint": true,
           },
-          "description": "Records the sender's consent and moves a DRAFT to PENDING or APPROVED, with the same consent stamp as the sender's own Share. Call it only when Rob says in this conversation that this named sender agreed; never infer consent from a reply or a message's tone. Read \`memoryVersion\` from \`get_memory\` first. On \`stale\`, re-read and show Rob what changed before asking again. APPROVED publishes nothing public yet (the public memorial pages are not built). No admin alert is sent, now or later. The sender's preferences and claim link are unchanged.",
+          "description": "Records the sender's consent and moves a DRAFT to PENDING or APPROVED, with the same consent stamp as the sender's own Share. Call it only when Rob says in this conversation that this named sender agreed; never infer consent from a reply or a message's tone. Read \`memoryVersion\` from \`get_memory\` first. On \`stale\`, re-read and show Rob what changed before asking again. APPROVED with visibility PUBLIC shows the memory on See memories once the family has turned those pages on (PUBLIC_MEMORIES_ENABLED). No admin alert is sent, now or later. The sender's preferences and claim link are unchanged.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
@@ -661,7 +697,7 @@ describe("tools/list contract (case 2)", () => {
                 "type": "string",
               },
               "status": {
-                "description": "The shared status; APPROVED publishes nothing public yet",
+                "description": "The shared status; APPROVED + PUBLIC shows on See memories once the family turns it on",
                 "enum": [
                   "PENDING",
                   "APPROVED",

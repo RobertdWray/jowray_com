@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { MIN_YEAR } from "@/lib/memories/approx-year";
+import { isUsableTag, MAX_TAG_LENGTH, MAX_TAGS, normalizeTags } from "@/lib/memories/tags";
 import { coordinatesSchema, MAX_DURATION_SECONDS, mediaWordsFields } from "@/lib/validations/memory";
 
 /**
@@ -43,10 +45,46 @@ const isoDate = z
   .describe("ISO-8601 timestamp exactly as get_memory returned it");
 
 /**
+ * The family's patches (tags) for a memory (plan 2026-11-08 D3): each 1–40
+ * characters with at least one Latin letter or digit, at most 20, stored as
+ * `normalizeTags` returns them (one spelling per slug, first one kept).
+ */
+const tagsSchema = z
+  .array(
+    z
+      .string()
+      .trim()
+      .min(1)
+      .max(MAX_TAG_LENGTH)
+      .refine(isUsableTag, { message: "A patch needs at least one letter or number" }),
+  )
+  .max(MAX_TAGS)
+  .transform((tags) => normalizeTags(tags))
+  .describe(`The memory's patches (tags), replacing the whole list: at most ${MAX_TAGS}, each at most ${MAX_TAG_LENGTH} characters; [] clears them. Two spellings with the same slug (café, cafe) are one patch, the first kept.`);
+
+/** A year the family is sure of; checked against the clock at parse time, so a long-running server never goes stale. */
+const approxYearSchema = z
+  .number()
+  .int()
+  .min(MIN_YEAR)
+  .refine((year) => year <= new Date().getUTCFullYear(), { message: "Expected a year no later than this year" })
+  .nullable()
+  .describe(`The year the memory is from (${MIN_YEAR} to this year), placing it on the See memories timeline; null clears it so the year is read from the approximate date text again.`);
+
+const approxMonthSchema = z
+  .number()
+  .int()
+  .min(1)
+  .max(12)
+  .nullable()
+  .describe("The month (1–12) within approxYear; null clears it. Refused when the memory would have a month without a year.");
+
+/**
  * One admin save: only the keys the user changed are present (dirty-field
  * submission), with the two versions the form was opened with. The contributor's
  * email and the person's own preferences are not editable here (plan §3.5), so
- * they are unknown keys and the object is strict.
+ * they are unknown keys and the object is strict. `null` clears a value;
+ * an absent key leaves it alone.
  */
 export const adminMemoryChangesSchema = z.object({
   memoryId: z.uuid(),
@@ -65,8 +103,13 @@ export const adminMemoryChangesSchema = z.object({
         .nullable()
         .optional(),
       visibility: z.enum(["PUBLIC", "FAMILY", "PRIVATE"]).optional(),
+      tags: tagsSchema.optional(),
+      approxYear: approxYearSchema.optional(),
+      approxMonth: approxMonthSchema.optional(),
     })
-    .strict(),
+    .strict()
+    // Both sent: a month with a cleared year is refused here; the stored year is checked in the locked update.
+    .refine((changes) => !(typeof changes.approxMonth === "number" && changes.approxYear === null), { message: "A month needs a year", path: ["approxMonth"] }),
 });
 export type AdminMemoryChangesInput = z.infer<typeof adminMemoryChangesSchema>;
 export type AdminMemoryChanges = AdminMemoryChangesInput["changes"];
@@ -81,7 +124,7 @@ export const adminStatusSchema = z.object({
 export const adminShareDraftSchema = z.object({
   memoryId: z.uuid().describe("The DRAFT memory to share on the sender's behalf"),
   memoryVersion: isoDate,
-  status: z.enum(["PENDING", "APPROVED"]).describe("The shared status; APPROVED publishes nothing public yet"),
+  status: z.enum(["PENDING", "APPROVED"]).describe("The shared status; APPROVED + PUBLIC shows on See memories once the family turns it on"),
 });
 export type AdminShareDraftInput = z.infer<typeof adminShareDraftSchema>;
 

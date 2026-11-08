@@ -4,6 +4,7 @@ import { TX_OPTIONS } from "@/features/memories/create-memory";
 import { lockContributor, lockMemory } from "@/features/memories/lock";
 import { appendRevision, hasWords, recomputeMemoryType } from "@/features/memories/media-state";
 import { createLogger } from "@/lib/logger";
+import { tagsEqual } from "@/lib/memories/tags";
 import { adminMemoryChangesSchema, type AdminMemoryChanges } from "@/lib/validations/admin";
 import { getDb } from "@/server/db/client";
 
@@ -17,6 +18,11 @@ export interface AdminMemoryEditable {
   place: string | null;
   note: string | null;
   visibility: "PUBLIC" | "FAMILY" | "PRIVATE";
+  /** The memory's patches, as stored (plan 2026-11-08 D3). */
+  tags: string[];
+  /** The year and month the family set; null = read the year from `approxDateText` (D4). */
+  approxYear: number | null;
+  approxMonth: number | null;
   memoryVersion: string;
   contributorVersion: string | null;
 }
@@ -27,13 +33,31 @@ export type AdminUpdateResult =
   | { ok: false; code: "invalid" | "not_found" | "last_words" }
   | { ok: false; code: "stale"; current: AdminMemoryEditable };
 
-const MEMORY_KEYS = ["approxDateText", "place", "note", "visibility"] as const;
+const MEMORY_KEYS = ["approxDateText", "place", "note", "visibility", "tags", "approxYear", "approxMonth"] as const;
 const CONTRIBUTOR_KEYS = ["name", "relationship"] as const;
 type MemoryKey = (typeof MEMORY_KEYS)[number];
 type ContributorKey = (typeof CONTRIBUTOR_KEYS)[number];
 
 /** Revision snapshots use the column names, like the claim page's revisions, so the history reads the same for both. */
-const REVISION_KEY: Record<keyof AdminMemoryChanges, string> = { name: "name", relationship: "relationship", approxDateText: "approxDateText", place: "place", note: "contributorNote", visibility: "visibility" };
+const REVISION_KEY: Record<keyof AdminMemoryChanges, string> = {
+  name: "name",
+  relationship: "relationship",
+  approxDateText: "approxDateText",
+  place: "place",
+  note: "contributorNote",
+  visibility: "visibility",
+  tags: "tags",
+  approxYear: "approxYear",
+  approxMonth: "approxMonth",
+};
+
+/** Whether a dirty key's value differs from the stored one (`tags` is a list, compared in order). */
+function differs(key: MemoryKey | ContributorKey, changes: AdminMemoryChanges, current: AdminMemoryEditable): boolean {
+  if (key === "tags") {
+    return changes.tags !== undefined && !tagsEqual(changes.tags, current.tags);
+  }
+  return changes[key] !== current[key];
+}
 
 /**
  * An admin save (plan §4.3): only dirty keys arrive, with the versions the
@@ -55,7 +79,7 @@ export async function updateMemoryAsAdmin(raw: unknown): Promise<AdminUpdateResu
     await lockMemory(tx, memoryId);
     const memory = await tx.memory.findUnique({
       where: { id: memoryId },
-      select: { id: true, contributorId: true, deletedAt: true, updatedAt: true, consentVersion: true, approxDateText: true, place: true, contributorNote: true, visibility: true },
+      select: { id: true, contributorId: true, deletedAt: true, updatedAt: true, consentVersion: true, approxDateText: true, place: true, contributorNote: true, visibility: true, tags: true, approxYear: true, approxMonth: true },
     });
     if (!memory || memory.deletedAt !== null) {
       return { code: "not_found" as const };
@@ -73,6 +97,9 @@ export async function updateMemoryAsAdmin(raw: unknown): Promise<AdminUpdateResu
       place: memory.place,
       note: memory.contributorNote,
       visibility: memory.visibility,
+      tags: memory.tags,
+      approxYear: memory.approxYear,
+      approxMonth: memory.approxMonth,
       memoryVersion: memory.updatedAt.toISOString(),
       contributorVersion: contributor?.updatedAt.toISOString() ?? null,
     };
@@ -82,11 +109,17 @@ export async function updateMemoryAsAdmin(raw: unknown): Promise<AdminUpdateResu
     if (wantsContributor && current.contributorVersion !== contributorVersion) {
       return { code: "stale" as const, current };
     }
-    const memoryWrites = dirtyMemoryKeys.filter((key) => changes[key] !== current[key]);
-    const contributorWrites = wantsContributor ? dirtyContributorKeys.filter((key) => changes[key] !== current[key]) : [];
+    const memoryWrites = dirtyMemoryKeys.filter((key) => differs(key, changes, current));
+    const contributorWrites = wantsContributor ? dirtyContributorKeys.filter((key) => differs(key, changes, current)) : [];
     const written: Array<MemoryKey | ContributorKey> = [...contributorWrites, ...memoryWrites];
     if (written.length === 0) {
       return { code: "ok" as const, written, current };
+    }
+    // A month needs a year, judged on the values the memory would hold after this save (the schema only sees what was sent).
+    const yearAfter = memoryWrites.includes("approxYear") ? (changes.approxYear ?? null) : current.approxYear;
+    const monthAfter = memoryWrites.includes("approxMonth") ? (changes.approxMonth ?? null) : current.approxMonth;
+    if (monthAfter !== null && yearAfter === null) {
+      return { code: "invalid" as const };
     }
     const note = memoryWrites.includes("note") ? (changes.note ?? null) : current.note;
     if (hasWords(current.note) && !hasWords(note)) {
@@ -110,6 +143,9 @@ export async function updateMemoryAsAdmin(raw: unknown): Promise<AdminUpdateResu
           ...(memoryWrites.includes("place") && { place: changes.place ?? null }),
           ...(memoryWrites.includes("note") && { contributorNote: note }),
           ...(memoryWrites.includes("visibility") && { visibility: changes.visibility }),
+          ...(memoryWrites.includes("tags") && { tags: changes.tags }),
+          ...(memoryWrites.includes("approxYear") && { approxYear: changes.approxYear ?? null }),
+          ...(memoryWrites.includes("approxMonth") && { approxMonth: changes.approxMonth ?? null }),
         },
       });
     }
@@ -127,7 +163,7 @@ export async function updateMemoryAsAdmin(raw: unknown): Promise<AdminUpdateResu
     }
     await appendRevision(tx, { memoryId, changedVia: "ADMIN", before, after, consentVersion: memory.consentVersion });
     // The committed snapshot (`@updatedAt` moved the versions), read inside the same transaction.
-    const memoryAfter = await tx.memory.findUniqueOrThrow({ where: { id: memoryId }, select: { updatedAt: true, approxDateText: true, place: true, contributorNote: true, visibility: true } });
+    const memoryAfter = await tx.memory.findUniqueOrThrow({ where: { id: memoryId }, select: { updatedAt: true, approxDateText: true, place: true, contributorNote: true, visibility: true, tags: true, approxYear: true, approxMonth: true } });
     const contributorAfter = contributorId === null ? null : await tx.contributor.findUniqueOrThrow({ where: { id: contributorId }, select: { updatedAt: true, name: true, relationship: true } });
     const committed: AdminMemoryEditable = {
       name: contributorAfter?.name ?? null,
@@ -136,6 +172,9 @@ export async function updateMemoryAsAdmin(raw: unknown): Promise<AdminUpdateResu
       place: memoryAfter.place,
       note: memoryAfter.contributorNote,
       visibility: memoryAfter.visibility,
+      tags: memoryAfter.tags,
+      approxYear: memoryAfter.approxYear,
+      approxMonth: memoryAfter.approxMonth,
       memoryVersion: memoryAfter.updatedAt.toISOString(),
       contributorVersion: contributorAfter?.updatedAt.toISOString() ?? null,
     };

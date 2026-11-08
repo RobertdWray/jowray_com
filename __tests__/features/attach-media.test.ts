@@ -168,7 +168,7 @@ beforeEach(() => {
   resetEnvCache();
   memory = {
     id: ID, memorialId: "memorial", contributorId: null, deletedAt: null, status: "DRAFT", type: "TEXT", source: "OTHER", sourceRef: null,
-    approxDateText: null, approxYear: null, approxMonth: null, place: null, latitude: null, longitude: null,
+    approxDateText: null, approxYear: null, approxMonth: null, place: null, latitude: null, longitude: null, tags: [],
     contributorNote: "Words", language: "en", visibility: "FAMILY", notifyWhenPosted: true,
     consentVersion: "v1", consentedAt: null, analysisStatus: "NOT_STARTED", claimTokenHash: "0".repeat(64),
     submissionId: null, submissionIndex: null, uploadLeaseUntil: null, createdAt: new Date(NOW), updatedAt: new Date(NOW),

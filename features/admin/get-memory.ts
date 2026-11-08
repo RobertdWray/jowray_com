@@ -53,6 +53,11 @@ export interface AdminMemoryView {
   approxDateText: string | null;
   place: string | null;
   contributorNote: string | null;
+  /** The memory's patches (plan 2026-11-08 D3). */
+  tags: string[];
+  /** The year and month the family set (D4); null = the year is read from `approxDateText`. */
+  approxYear: number | null;
+  approxMonth: number | null;
   notifyWhenPosted: boolean;
   consentVersion: string;
   consentedAt: Date | null;
@@ -174,6 +179,9 @@ export async function getMemoryForAdmin(id: string, options: AdminViewOptions = 
     approxDateText: memory.approxDateText,
     place: memory.place,
     contributorNote: memory.contributorNote,
+    tags: memory.tags,
+    approxYear: memory.approxYear,
+    approxMonth: memory.approxMonth,
     notifyWhenPosted: memory.notifyWhenPosted,
     consentVersion: memory.consentVersion,
     consentedAt: memory.consentedAt,
