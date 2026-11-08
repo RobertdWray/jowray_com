@@ -1561,6 +1561,7 @@ def build_manifest(paths: Paths, prompts: dict, sdk_version: str, head: str) -> 
                       "feedback_bytes": FEEDBACK_BYTES},
         "anthropic": sdk_version,
         "git_head": head,
+        "offsets_sha256": file_sha256(paths.offsets),
         "sha256": {
             "system_prompt_haiku": text_sha256(prompts["haiku"]),
             "system_prompt_judge": text_sha256(prompts["judge"]),
@@ -1569,14 +1570,16 @@ def build_manifest(paths: Paths, prompts: dict, sdk_version: str, head: str) -> 
             "correspondents.csv": file_sha256(paths.correspondents),
             "clusters.jsonl": file_sha256(paths.clusters),
             "mail.sqlite": file_sha256(paths.mail),
-            "offsets.sqlite": file_sha256(paths.offsets),
         },
     }
 
 
-# Recorded in manifest.json for information only: a new commit (a docs change, say) must
-# not make every paid decision stale. Everything that shapes a decision is hashed.
-MANIFEST_INFO_ONLY = ("git_head",)
+# Recorded in manifest.json for information only; everything that shapes a decision is
+# hashed. A new commit (a docs change, say) must not make every paid decision stale.
+# Nor must a rerun of index (after Thunderbird compacts a folder, say): decisions do not
+# depend on byte offsets, because read_message checks the message key at each offset
+# before it reads a snippet, and a moved message is reported, never read by mistake.
+MANIFEST_INFO_ONLY = ("git_head", "offsets_sha256")
 
 
 def manifest_hash_of(manifest: dict) -> str:
@@ -2076,8 +2079,7 @@ def run_review(paths: Paths, options: ReviewOptions, sdk: Sdk | None = None, hea
     if not paths.offsets.is_file():
         if not options.dry_run:
             rc.die("cleanup/offsets.sqlite not found; run index first")
-        print("Note: cleanup/offsets.sqlite is missing; run index before a real review "
-              "(the manifest, and so the cached counts, will change).")
+        print("Note: cleanup/offsets.sqlite is missing; run index before a real review.")
     if not paths.mail.is_file():
         rc.die("mail.sqlite not found in --out")
     if not paths.guidance.is_file():

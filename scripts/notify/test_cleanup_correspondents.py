@@ -1356,6 +1356,27 @@ class ApplyTests(CleanupCase):
         self.paths.manifest.write_text(json.dumps(manifest), encoding="utf-8")
         self.assertEqual(self.apply(), 0)
 
+    def test_a_reindex_with_new_offsets_keeps_the_bought_decisions(self):
+        self.reviewed()
+        self.assertEqual(self.apply(), 0)
+        before = self.outputs()
+        recorded = json.loads(self.paths.manifest.read_text(encoding="utf-8"))
+        offsets = self.paths.offsets.read_bytes()
+        # Thunderbird compacts or appends to a folder: every message moves, and index is rerun.
+        self.box.write_bytes(b"From x Tue Jan  2 12:00:00 2024\nSubject: padding\n\n" + self.box.read_bytes())
+        self.assertEqual(cc.main(["index", str(self.box), "--out", str(self.out)]), 0)
+        self.assertNotEqual(self.paths.offsets.read_bytes(), offsets)
+        current = cc.build_manifest(self.paths, cc.render_prompts(GUIDANCE), recorded["anthropic"],
+                                    recorded["git_head"])
+        self.assertNotEqual(current["offsets_sha256"], recorded["offsets_sha256"])  # recorded, not hashed
+        self.assertEqual(cc.manifest_hash_of(current), cc.manifest_hash_of(recorded))
+        self.clear_console()
+        self.assertEqual(cc.run_review(self.paths, cc.ReviewOptions(dry_run=True)), 0)
+        self.assertIn("0 stale decisions", self.stdout.getvalue())
+        self.assertIn("haiku: 0 clusters to review, 5 cached", self.stdout.getvalue())
+        self.assertEqual(self.apply(), 0)  # the cached decisions still apply, unchanged
+        self.assertEqual(self.outputs(), before)
+
     def test_operator_files_in_another_encoding_stop_with_a_clear_message(self):
         self.reviewed()
         self.paths.guidance.write_bytes(GUIDANCE.encode("utf-16"))
