@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ import cleanup_correspondents as cc
 import rank_correspondents as rc
 
 REAL_SDK = cc.real_sdk  # CleanupCase replaces cc.real_sdk; the offline SDK test calls the real one
+REAL_BUDGET, REAL_REVIEWER = cc.Budget, cc.Reviewer  # BudgetWaitReviewTests wraps them
 
 
 def pinned_sdk_installed() -> bool:
@@ -750,29 +752,124 @@ class PricingTests(unittest.TestCase):
                 self.assertLessEqual(sum(bounds[:k]) + 3 * bounds[k], cc.worst_case_cost(phase, 2000) + 1e-12)
 
 
+def wait_until(predicate, timeout=5.0) -> bool:
+    """Poll a condition another thread makes true (thread state is not otherwise observable)."""
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.002)
+    return True
+
+
 class BudgetTests(unittest.TestCase):
-    def test_reservations_block_over_cap_starts_under_concurrency(self):
-        budget = cc.Budget("haiku", 1.0)
-        start, holds = threading.Barrier(12), []
+    def thread(self, target):
+        worker = threading.Thread(target=target, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join, 5)
+        return worker
 
-        def take():
-            start.wait()
-            holds.append(budget.reserve(0.3))
+    def test_runs_wait_for_space_instead_of_being_refused(self):
+        # Cap 10, four runs of 4: two fit at once, and the other two wait for them.
+        budget = cc.Budget("judge", 10.0)
+        release = [threading.Event() for _ in range(4)]
+        granted, holds, violations, lock = [], {}, [], threading.Lock()
 
-        threads = [threading.Thread(target=take) for _ in range(12)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-        self.assertEqual(sum(h is not None for h in holds), 3)
-        self.assertEqual(budget.refused, 9)
-        hold = next(h for h in holds if h)
-        hold.charge(0.1)
-        hold.settle()
-        self.assertAlmostEqual(budget.spent, 0.1)
-        self.assertAlmostEqual(budget.reserved, 0.6)
-        self.assertIsNotNone(budget.reserve(0.25))
-        self.assertIsNone(budget.reserve(0.25))
+        def invariant():
+            with budget.lock:
+                if budget.spent + budget.reserved > budget.cap + 1e-9:
+                    violations.append((budget.spent, budget.reserved))
+
+        def run(i):
+            hold = budget.reserve(4.0)
+            invariant()
+            holds[i] = hold
+            if hold is None:
+                return
+            with lock:
+                granted.append(i)
+            release[i].wait(5)
+            hold.charge(1.0)
+            invariant()
+            hold.settle()
+            invariant()
+
+        workers = [self.thread(lambda i=i: run(i)) for i in range(4)]
+        self.assertTrue(wait_until(lambda: len(granted) == 2 and budget.waiting == 2))
+        first, second = list(granted)
+        release[first].set()   # spent 1, reserved 4: one more run of 4 fits (9 <= 10)
+        self.assertTrue(wait_until(lambda: len(granted) == 3 and budget.waiting == 1))
+        release[second].set()  # spent 2, reserved 4: the last run fits exactly (10 <= 10)
+        self.assertTrue(wait_until(lambda: len(granted) == 4))
+        for event in release:
+            event.set()
+        for worker in workers:
+            worker.join(5)
+        self.assertEqual(sorted(holds), [0, 1, 2, 3])
+        self.assertTrue(all(holds.values()))
+        self.assertEqual((budget.refused, budget.waited, budget.waiting, budget.holds), (0, 2, 0, 0))
+        self.assertEqual((budget.spent, budget.reserved), (4.0, 0.0))
+        self.assertEqual(violations, [])
+
+    def test_refused_only_when_it_cannot_fit_with_nothing_in_flight(self):
+        budget = cc.Budget("judge", 10.0, spent=7.0)
+        self.assertIsNone(budget.reserve(4.0))  # 7 + 4 > 10: no settle could ever make room
+        self.assertEqual((budget.refused, budget.waited), (1, 0))
+        self.assertIsNotNone(budget.reserve(3.0))  # exactly fits
+        held = cc.Budget("judge", 10.0)
+        first = held.reserve(6.0)
+        got = []
+        worker = self.thread(lambda: got.append(held.reserve(5.0)))  # 0 + 5 fits once the 6 is gone
+        self.assertTrue(wait_until(lambda: held.waiting == 1))
+        self.assertEqual((held.refused, got), (0, []))
+        first.settle()
+        worker.join(5)
+        self.assertIsNotNone(got[0])
+        self.assertEqual((held.refused, held.waited, held.reserved), (0, 1, 5.0))
+
+    def test_a_waiter_is_released_by_settle_and_by_charge(self):
+        budget = cc.Budget("judge", 10.0)
+        first = budget.reserve(8.0)
+        got = []
+        worker = self.thread(lambda: got.append(budget.reserve(4.0)))
+        self.assertTrue(wait_until(lambda: budget.waiting == 1))
+        first.settle()  # releases 8: the waiter fits
+        worker.join(5)
+        self.assertIsInstance(got[0], cc.Hold)
+        got[0].settle()
+        second = budget.reserve(8.0)
+        got.clear()
+        worker = self.thread(lambda: got.append(budget.reserve(4.0)))
+        self.assertTrue(wait_until(lambda: budget.waiting == 1))
+        second.charge(7.0)  # spent 7: 7 + 4 > 10, so the waiter can never fit and is refused now
+        worker.join(5)
+        self.assertEqual(got, [None])
+        self.assertEqual((budget.refused, budget.waiting), (1, 0))
+        second.settle()
+        self.assertEqual((budget.spent, budget.reserved, budget.holds), (7.0, 0.0, 0))
+        second.settle()  # settling twice changes nothing
+        self.assertEqual((budget.reserved, budget.holds), (0.0, 0))
+
+    def test_the_stop_event_releases_waiters(self):
+        budget = cc.Budget("judge", 10.0)
+        budget.reserve(8.0)
+        stop, outcome = threading.Event(), []
+
+        def wait_for_space():
+            try:
+                outcome.append(budget.reserve(4.0, stop=stop))
+            except cc.ReservationStopped:
+                outcome.append("stopped")
+
+        with mock.patch.object(cc.Budget, "STOP_POLL_SECONDS", 0.01):
+            worker = self.thread(wait_for_space)
+            self.assertTrue(wait_until(lambda: budget.waiting == 1))
+            stop.set()
+            worker.join(5)
+            self.assertEqual(outcome, ["stopped"])
+            with self.assertRaises(cc.ReservationStopped):  # already stopped: it does not wait
+                budget.reserve(4.0, stop=stop)
+        self.assertEqual((budget.reserved, budget.holds, budget.waiting, budget.refused), (8.0, 1, 0, 0))
 
     def test_concurrent_charges_within_reservations_never_exceed_the_cap(self):
         budget = cc.Budget("judge", 2.0)
@@ -804,6 +901,79 @@ class BudgetTests(unittest.TestCase):
         hold.charge(0.6)
         self.assertTrue(hold.overrun)
         self.assertAlmostEqual(hold.budget.reserved, 0.0)
+
+
+class BudgetWaitReviewTests(CleanupCase):
+    """Concurrency above cap / worst case waits for space; it never refuses runs that fit."""
+
+    def capture(self):
+        made = {}
+
+        def budget(name, cap, spent=0.0):
+            made[name] = REAL_BUDGET(name, cap, spent)
+            return made[name]
+
+        def reviewer(*args, **kwargs):
+            made["reviewer"] = REAL_REVIEWER(*args, **kwargs)
+            return made["reviewer"]
+
+        self.contexts.enter_context(mock.patch.object(cc, "Budget", side_effect=budget))
+        self.contexts.enter_context(mock.patch.object(cc, "Reviewer", side_effect=reviewer))
+        return made
+
+    def test_concurrency_above_the_cap_waits_and_spends_within_it(self):
+        self.build()
+        made, calls, lock = self.capture(), [], threading.Lock()
+        worst = cc.worst_case_cost("haiku", 2000)  # FakeClient counts 2,000 prompt tokens
+
+        def script(payload, params):
+            with lock:
+                calls.append(payload["cluster"]["ranks"])
+                n = len(calls)
+            if n in (2, 3):  # the two runs that fit hold their space until the other two wait
+                assert wait_until(lambda: made["haiku"].waiting == 2)
+            return default_script(payload, params)
+
+        # Room for two runs at once, eight workers, four jobs after the first one.
+        code, client = self.review(script, phase="haiku", concurrency=8, haiku_budget=2.5 * worst)
+        self.assertEqual(code, 0)
+        entries = cc.read_jsonl(self.paths.decisions, repair=False)[0]
+        self.assertEqual([e["status"] for e in entries], ["ok"] * 5)
+        budget = made["haiku"]
+        self.assertEqual((budget.refused, budget.waited, budget.holds), (0, 2, 0))
+        self.assertLessEqual(budget.spent, budget.cap)
+        self.assertIn("2 runs waited for space", self.stdout.getvalue())
+        self.assertNotIn("refused by the cap", self.stdout.getvalue())
+
+    def test_a_stop_releases_waiting_runs_as_stopped_and_they_are_retried(self):
+        self.build()
+        made, calls, lock = self.capture(), [], threading.Lock()
+        worst = cc.worst_case_cost("haiku", 2000)
+
+        def script(payload, params):
+            with lock:
+                calls.append(payload["cluster"]["ranks"])
+                n = len(calls)
+            if n in (2, 3):
+                assert wait_until(lambda: made["haiku"].waiting == 2)
+                made["reviewer"].stop.set()  # as an interrupt or a failure would
+                assert wait_until(lambda: made["haiku"].waiting == 0)
+            return default_script(payload, params)
+
+        with mock.patch.object(cc.Budget, "STOP_POLL_SECONDS", 0.01):
+            self.review(script, phase="haiku", concurrency=8, haiku_budget=2.5 * worst)
+        entries = cc.read_jsonl(self.paths.decisions, repair=False)[0]
+        waiters = [e for e in entries if e["status"] == "stopped" and "run" not in e]
+        self.assertEqual(len(waiters), 2)  # never reserved, never started
+        self.assertEqual(sum(e["status"] == "budget" for e in entries), 0)
+        reserved_runs = {e["run"] for e in cc.read_jsonl(self.paths.spend, repair=False)[0]
+                         if cc.spend_kind(e) == "reserve"}
+        self.assertEqual(len(reserved_runs), 3)
+        retried = [e["ranks"] for e in entries if e["status"] not in cc.CACHED_STATUSES]
+        code, again = self.review(default_script, phase="haiku")
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(c[1] for c in again.calls), sorted(retried))
+        self.assertTrue(all(w["ranks"] in [c[1] for c in again.calls] for w in waiters))
 
 
 class JsonlTests(TempTestCase):

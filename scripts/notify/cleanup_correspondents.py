@@ -267,29 +267,70 @@ def worst_case_cost(phase: str, base_tokens: int) -> float:
 
 
 # ---- budgets: reservations make the caps hard ceilings ------------------------------
+class ReservationStopped(Exception):
+    """The review stopped while a run waited for budget space; the run never started."""
+
+
 class Budget:
+    """A hard spend cap shared by concurrent runs.
+
+    A run reserves its worst case before it starts, and spent + reserved never exceeds
+    the cap (a run that overruns its own reservation is stopped between turns). A run
+    that fits once in-flight runs settle waits for them; it is refused only when it
+    cannot fit even with nothing else in flight (spent + amount > cap).
+    """
+
+    STOP_POLL_SECONDS = 1.0  # how often a waiting run checks the review's stop event
+
     def __init__(self, name: str, cap: float, spent: float = 0.0):
         self.name, self.cap, self.spent, self.reserved = name, cap, spent, 0.0
         self.refused = 0
+        self.waited = 0     # reservations that had to wait for space (reported)
+        self.waiting = 0    # runs waiting right now
+        self.holds = 0      # reservations not yet settled
         self.lock = threading.Lock()
+        self.space = threading.Condition(self.lock)  # notified whenever reserved or spent changes
 
-    def reserve(self, amount: float):
-        """Hold a run's worst case before it starts, or refuse it (None)."""
-        with self.lock:
-            if self.spent + self.reserved + amount > self.cap:
-                self.refused += 1
-                return None
-            self.reserved += amount
-            return Hold(self, amount)
+    def reserve(self, amount: float, stop: threading.Event | None = None):
+        """Hold a run's worst case before it starts.
+
+        Returns a Hold, or None when the run can never fit (spent + amount > cap).
+        While other runs hold the space it needs, it waits for them to charge or
+        settle; if `stop` is set meanwhile it raises ReservationStopped.
+        """
+        with self.space:
+            waited = False
+            while True:
+                if self.spent + amount > self.cap:
+                    self.refused += 1
+                    return None
+                if self.spent + self.reserved + amount <= self.cap:
+                    self.reserved += amount
+                    self.holds += 1
+                    self.waited += waited
+                    return Hold(self, amount)
+                # Only space held by runs in flight is missing (reserved > 0), and each of
+                # them notifies when it charges or settles.
+                if stop is not None and stop.is_set():
+                    raise ReservationStopped
+                waited = True
+                self.waiting += 1
+                try:
+                    self.space.wait(self.STOP_POLL_SECONDS if stop is not None else None)
+                finally:
+                    self.waiting -= 1
+                if stop is not None and stop.is_set():
+                    raise ReservationStopped
 
 
 class Hold:
     def __init__(self, budget: Budget, amount: float):
         self.budget, self.remaining, self.cost, self.overrun = budget, amount, 0.0, False
+        self.settled = False
 
     def charge(self, cost: float) -> None:
         budget = self.budget
-        with budget.lock:
+        with budget.space:
             budget.spent += cost
             self.cost += cost
             take = min(cost, self.remaining)
@@ -297,11 +338,21 @@ class Hold:
             budget.reserved = max(0.0, budget.reserved - take)
             if cost > take + 1e-12:
                 self.overrun = True
+            budget.space.notify_all()  # a waiter that can no longer fit is refused now
 
     def settle(self) -> None:
-        with self.budget.lock:
-            self.budget.reserved = max(0.0, self.budget.reserved - self.remaining)
+        """Release what the run did not spend (once) and wake the runs waiting for space."""
+        budget = self.budget
+        with budget.space:
+            if self.settled:
+                return
+            self.settled = True
+            budget.holds -= 1
+            # With nothing in flight nothing is reserved: drop floating-point leftovers so a
+            # waiter is never kept waiting for space no run holds.
+            budget.reserved = max(0.0, budget.reserved - self.remaining) if budget.holds else 0.0
             self.remaining = 0.0
+            budget.space.notify_all()
 
 
 def budget_group(phase: str) -> str:
@@ -1791,8 +1842,13 @@ class Reviewer:
             entry["status"] = "stopped"
             self.finish(entry)
             return entry
-        hold = self.budgets[budget_group(phase)].reserve(worst)
-        if hold is None:
+        try:  # waits while runs in flight hold the space this run needs
+            hold = self.budgets[budget_group(phase)].reserve(worst, stop=self.stop)
+        except ReservationStopped:
+            entry["status"] = "stopped"
+            self.finish(entry)
+            return entry
+        if hold is None:  # it cannot fit even with nothing else in flight
             entry["status"] = "budget"
             self.finish(entry)
             return entry
@@ -2129,6 +2185,7 @@ def run_review(paths: Paths, options: ReviewOptions, sdk: Sdk | None = None, hea
         uncertain = totals[budget.name]["uncertain"]
         print(f"{budget.name}: ${budget.spent:,.4f} of ${budget.cap:,.2f} spent"
               + (f" (${uncertain:,.4f} of it uncertain)" if uncertain else "")
+              + (f"; {rc.quantity(budget.waited, 'run')} waited for space" if budget.waited else "")
               + (f"; {rc.quantity(budget.refused, 'run')} refused by the cap" if budget.refused else ""))
     errors = sum(v for k, v in reviewer.counts.items() if k.endswith(" error"))
     if errors:
