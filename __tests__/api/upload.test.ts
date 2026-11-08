@@ -175,7 +175,8 @@ describe("POST /api/upload (upload completed callback)", () => {
     expect(extractGpsMock).toHaveBeenCalledExactlyOnceWith({ mediaId: "med_1" });
   });
 
-  it.each(["audio/mp4", "video/webm"])("schedules no photo GPS step for a blob of type %s (final review, item 4)", async (contentType) => {
+  // audio/mp4 is an MP4 container with a location reader now (plan 2026-11-08 D16); browser WebM recordings are not.
+  it.each(["audio/webm", "video/webm"])("schedules no photo GPS step for a blob of type %s (final review, item 4)", async (contentType) => {
     await completed(contentType);
     await afterCalls[0]!();
     expect(afterNames).toEqual(["upload.callback"]);

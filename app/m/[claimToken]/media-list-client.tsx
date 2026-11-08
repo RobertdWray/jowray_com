@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import type { ClaimMediaView } from "@/features/memories/claim";
 import { formatDuration } from "@/lib/format-duration";
 import { ACCEPT_ATTRIBUTE, isRenderableIn, normalizeMime } from "@/lib/media-types";
+import { REVIEW_AGAIN, REVIEW_AGAIN_AFTER } from "@/lib/memories/review-again";
 import { reportClientError } from "@/lib/sentry/report";
 import { uploadWithTicket } from "@/lib/upload-client";
 
@@ -94,7 +95,7 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
     return run(item.id, async () => {
       const result = await removeFile({ claimToken, mediaId: item.id });
       if (result.ok) {
-        return "Removed.";
+        return result.reopened ? `Removed. ${REVIEW_AGAIN_AFTER}` : "Removed.";
       }
       if (result.code === "last_file") {
         return "This is the only file in this memory. Add a few words or another file first, or replace it.";
@@ -116,7 +117,7 @@ export function MediaList({ claimToken, media, userAgent }: { claimToken: string
           place: String(form.get("place") ?? ""),
         },
       });
-      return result.ok ? "Saved." : "Could not save those words. Please reload the page and try again.";
+      return result.ok ? (result.reopened ? REVIEW_AGAIN : "Saved.") : "Could not save those words. Please reload the page and try again.";
     });
   }
 

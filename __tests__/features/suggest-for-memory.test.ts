@@ -62,14 +62,15 @@ describe("suggestPlacesForMemory", () => {
     await suggestPlacesForMemory(MEM);
     const args = findUnique.mock.calls[0]![0] as { where: { id: string }; select: { deletedAt: true; media: { where: Record<string, unknown>; orderBy: unknown } } };
     expect(args.where).toEqual({ id: MEM });
-    expect(args.select.media.where).toEqual({ deletedAt: null, status: "READY", mimeType: { in: ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "image/gif", "video/mp4", "video/quicktime"] }, latitude: { not: null }, longitude: { not: null } });
+    expect(args.select.media.where).toEqual({ deletedAt: null, status: "READY", mimeType: { in: ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "image/gif", "audio/mp4", "audio/x-m4a", "video/mp4", "video/quicktime"] }, latitude: { not: null }, longitude: { not: null } });
     expect(args.select.media.orderBy).toBeDefined();
   });
 
-  it.each(["video/quicktime", "video/mp4"])("offers labels for a %s point while excluding audio and WebM", async (mimeType) => {
+  // M4A voice notes share the MP4 container and its location reader (plan 2026-11-08 D16); browser recordings have none.
+  it.each(["video/quicktime", "video/mp4", "audio/mp4"])("offers labels for a %s point while excluding browser audio and WebM", async (mimeType) => {
     memory = { deletedAt: null, media: [
       { ...photo("med_video", LIBERTY, "clip.mov"), mimeType },
-      { ...photo("med_audio", LIBERTY), mimeType: "audio/mp4" },
+      { ...photo("med_audio", LIBERTY), mimeType: "audio/webm" },
       { ...photo("med_webm", LIBERTY), mimeType: "video/webm" },
     ] };
     expect(await suggestPlacesForMemory(MEM)).toEqual({

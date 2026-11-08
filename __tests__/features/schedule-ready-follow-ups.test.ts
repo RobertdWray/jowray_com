@@ -169,7 +169,8 @@ describe("scheduleReadyFollowUps without a caller deadline", () => {
     expect(gpsMock).toHaveBeenCalledExactlyOnceWith({ mediaId: "med_video" });
   });
 
-  it.each(["audio/mp4", "video/webm"])("does not schedule a location read for %s", (mimeType) => {
+  // audio/mp4 is an MP4 container with a location reader now (plan 2026-11-08 D16); browser WebM recordings are not.
+  it.each(["audio/webm", "video/webm"])("does not schedule a location read for %s", (mimeType) => {
     scheduleReadyFollowUps({ mediaId: "med_other", mimeType, sizeBytes: 1024 });
     expect(tasks.map((task) => task.name)).toEqual(["finalize.checksum_and_derive"]);
     expect(gpsMock).not.toHaveBeenCalled();

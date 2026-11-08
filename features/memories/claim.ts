@@ -159,7 +159,24 @@ export async function getMemoryForClaim(claimToken: string): Promise<ClaimView |
   };
 }
 
-export type ClaimUpdateResult = { ok: true; shared: boolean } | { ok: false; code: "invalid" | "not_found" | "last_words" };
+/**
+ * `reopened`: this save sent an APPROVED memory back to PENDING (plan 2026-11-08 D17), so the page can say the
+ * family will look again before it is back on See memories.
+ */
+export type ClaimUpdateResult = { ok: true; shared: boolean; reopened: boolean } | { ok: false; code: "invalid" | "not_found" | "last_words" };
+
+/** The memory's own words and facts: changing any of them through the claim link on an APPROVED memory needs a new review (D17). */
+const CONTENT_KEYS = ["name", "relationship", "approxDateText", "place", "contributorNote"] as const;
+
+/**
+ * D17: a content change from the contributor's side (their words or facts, or a file added, removed, replaced or
+ * re-captioned) on an APPROVED memory sends it back to PENDING inside the same locked write, so nothing reaches See
+ * memories without the family reading it. Visibility and the two preferences are the contributor's to change and
+ * keep the status. Judged on the status read under the lock.
+ */
+export function reopensForReview(status: MemoryStatus, contentChanged: boolean): boolean {
+  return status === "APPROVED" && contentChanged;
+}
 
 /**
  * Apply an edit from the claim page and append a MemoryRevision with the
@@ -173,6 +190,10 @@ export type ClaimUpdateResult = { ok: true; shared: boolean } | { ok: false; cod
  * status `share` is ignored, so a repeated press never restamps consent. No
  * email is sent here (site-email.ts). `shared` in the result says whether
  * this call made the transition.
+ *
+ * On an APPROVED memory, a change to the words, name, relationship, date or
+ * place also sets PENDING in the same write and names `status` in the
+ * revision (D17, `reopened` in the result).
  */
 export async function updateMemoryFromClaim({ claimToken, changes }: { claimToken: string; changes: unknown }): Promise<ClaimUpdateResult> {
   const parsed = claimChangesSchema.safeParse(changes);
@@ -245,6 +266,11 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
     if (snapshotsEqual(before, after)) {
       return "ok" as const;
     }
+    const reopen = !sharing && reopensForReview(fresh.status, CONTENT_KEYS.some((key) => before[key] !== after[key]));
+    if (reopen) {
+      Object.assign(before, { status: fresh.status });
+      Object.assign(after, { status: "PENDING" });
+    }
     if (hasWords(before.contributorNote) && !hasWords(after.contributorNote)) {
       const readyFiles = await tx.media.count({ where: { memoryId: memory.id, deletedAt: null, status: "READY" } });
       if (readyFiles === 0) {
@@ -260,6 +286,7 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
         visibility: after.visibility,
         notifyWhenPosted: after.notifyWhenPosted,
         ...(consent && { status: "PENDING", ...consent }),
+        ...(reopen && { status: "PENDING" }),
       },
     });
     if (fresh.contributor && (after.name !== before.name || after.relationship !== before.relationship || after.contactOptIn !== before.contactOptIn)) {
@@ -269,21 +296,22 @@ export async function updateMemoryFromClaim({ claimToken, changes }: { claimToke
       await recomputeMemoryType(tx, memory.id, after.contributorNote);
     }
     await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: consent?.consentVersion ?? fresh.consentVersion });
-    return sharing ? ("shared" as const) : ("ok" as const);
+    return sharing ? ("shared" as const) : reopen ? ("reopened" as const) : ("ok" as const);
   }, TX_OPTIONS);
 
-  if (result !== "ok" && result !== "shared") {
+  if (result !== "ok" && result !== "shared" && result !== "reopened") {
     return { ok: false, code: result };
   }
   if (result === "shared") {
     log.info({ action: "draft_shared" }, "drafted memory shared by its contributor");
   } else {
-    log.info({ action: "claim_edit" }, "memory edited through its claim link");
+    log.info({ action: "claim_edit", reopened: result === "reopened" }, "memory edited through its claim link");
   }
-  return { ok: true, shared: result === "shared" };
+  return { ok: true, shared: result === "shared", reopened: result === "reopened" };
 }
 
-export type ClaimMediaResult = { ok: true } | { ok: false; code: "invalid" | "not_found" | "last_file" };
+/** `reopened`: as for `ClaimUpdateResult` (D17). */
+export type ClaimMediaResult = { ok: true; reopened: boolean } | { ok: false; code: "invalid" | "not_found" | "last_file" };
 
 /**
  * Soft-delete one of the memory's files from its claim page. READY files are
@@ -307,7 +335,7 @@ async function retireMedia(raw: unknown, statuses: MediaStatus[], action: "remov
     }
     await lockMemory(tx, memory.id);
     // Re-read under the lock: a note cleared by a concurrent editor must count here.
-    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { deletedAt: true, claimTokenHash: true, contributorNote: true, type: true, consentVersion: true } });
+    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { deletedAt: true, claimTokenHash: true, contributorNote: true, type: true, consentVersion: true, status: true } });
     if (fresh.deletedAt !== null || fresh.claimTokenHash !== claimTokenHash) {
       return "not_found" as const;
     }
@@ -322,26 +350,32 @@ async function retireMedia(raw: unknown, statuses: MediaStatus[], action: "remov
         return "last_file" as const;
       }
     }
-    const before = { mediaIds: await visibleMediaIds(tx, memory.id), type: fresh.type };
+    // Removing a received file changes what visitors would see; cancelling a reservation that never arrived does not (D17).
+    const reopen = reopensForReview(fresh.status, target.status === "READY");
+    const before = { mediaIds: await visibleMediaIds(tx, memory.id), type: fresh.type, ...(reopen && { status: fresh.status }) };
     const now = new Date();
     await tx.media.update({ where: { id: target.id }, data: { deletedAt: now } });
     await tx.media.updateMany({ where: { memoryId: memory.id, replacesMediaId: target.id, deletedAt: null, status: "PENDING" }, data: { deletedAt: now } });
     const type = (await recomputeMemoryType(tx, memory.id, fresh.contributorNote)) ?? fresh.type;
+    if (reopen) {
+      await tx.memory.update({ where: { id: memory.id }, data: { status: "PENDING" } });
+    }
     const after = {
       mediaIds: await visibleMediaIds(tx, memory.id),
       type,
       // A cancelled replacement is invisible in mediaIds on both sides; name it so the revision is not a no-op.
       ...(target.replacesMediaId !== null && { cancelledReplacementOf: target.replacesMediaId }),
+      ...(reopen && { status: "PENDING" }),
     };
     await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: fresh.consentVersion });
-    return { memoryId: memory.id };
+    return { memoryId: memory.id, reopen };
   }, TX_OPTIONS);
 
   if (typeof result === "string") {
     return { ok: false, code: result };
   }
-  log.info({ action: `media_${action}`, memoryId: result.memoryId, mediaId }, "file retired through the claim link");
-  return { ok: true };
+  log.info({ action: `media_${action}`, memoryId: result.memoryId, mediaId, reopened: result.reopen }, "file retired through the claim link");
+  return { ok: true, reopened: result.reopen };
 }
 
 /** Remove a received file (soft delete; blobs are purged by the reconcile cron). */
@@ -372,7 +406,7 @@ export async function updateMediaFromClaim(raw: unknown): Promise<ClaimMediaResu
     }
     await lockMemory(tx, memory.id);
     // Re-read under the lock: a link rotated while this request waited (an admin reissue) must not act.
-    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { deletedAt: true, claimTokenHash: true, consentVersion: true } });
+    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { deletedAt: true, claimTokenHash: true, consentVersion: true, status: true } });
     if (fresh.deletedAt !== null || fresh.claimTokenHash !== claimTokenHash) {
       return "not_found" as const;
     }
@@ -396,12 +430,23 @@ export async function updateMediaFromClaim(raw: unknown): Promise<ClaimMediaResu
     await tx.media.update({ where: { id: target.id }, data: words });
     // A replacement still on its way copied the target's words when it was ticketed; keep it current so the swap cannot restore stale words.
     await tx.media.updateMany({ where: { memoryId: memory.id, replacesMediaId: target.id, status: "PENDING", deletedAt: null }, data: words });
-    await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: fresh.consentVersion });
-    return "ok" as const;
+    // A file's caption is shown with it on See memories: a changed one needs a new review (D17).
+    const statusBefore = fresh.status;
+    const reopen = reopensForReview(statusBefore, true);
+    if (reopen) {
+      await tx.memory.update({ where: { id: memory.id }, data: { status: "PENDING" } });
+    }
+    await appendClaimRevision(tx, {
+      memoryId: memory.id,
+      before: { ...before, ...(reopen && { status: statusBefore }) },
+      after: { ...after, ...(reopen && { status: "PENDING" }) },
+      consentVersion: fresh.consentVersion,
+    });
+    return reopen ? ("reopened" as const) : ("ok" as const);
   }, TX_OPTIONS);
-  if (result !== "ok") {
+  if (result !== "ok" && result !== "reopened") {
     return { ok: false, code: result };
   }
-  log.info({ action: "media_edit", mediaId }, "file words edited through the claim link");
-  return { ok: true };
+  log.info({ action: "media_edit", mediaId, reopened: result === "reopened" }, "file words edited through the claim link");
+  return { ok: true, reopened: result === "reopened" };
 }
