@@ -18,19 +18,25 @@ inside git. The console prints counts, tokens and dollars only.
       cleanup/offsets.sqlite: where each message sits in the mail files, so a
       reviewer can read a short snippet of it (quit Thunderbird first).
   uv run scripts/notify/cleanup_correspondents.py prepare
-      cleanup/clusters.jsonl: rows that might be one person, grouped for review.
+      cleanup/clusters.jsonl: rows that might be one person, grouped for review, and
+      cleanup/prepare.json: what they were built from (review and apply refuse once
+      correspondents.csv, mail.sqlite or the guidance changes; rerun prepare).
   uv run scripts/notify/cleanup_correspondents.py review --dry-run
       What a review would buy (cached, stale, worst-case reservation); no API call.
   uv run scripts/notify/cleanup_correspondents.py review [--sample pilot --match FILE]
       Claude Haiku 5.5 reviews each cluster with read-only tools, a joint review
       settles duplicate claims, and Claude Opus 5.5 judges escalations. Decisions
       and spend are appended to cleanup/decisions.jsonl and cleanup/spend.jsonl;
-      a rerun resumes and never buys a cached decision again. Hard spend caps.
+      a rerun resumes and never buys a cached decision again. Hard spend caps:
+      each run reserves its worst case first, durably, and spend that may have
+      been billed without a usage record counts as uncertain.
   uv run scripts/notify/cleanup_correspondents.py apply [--no-overrides]
       identities.csv, correspondents_removed.csv and cleanup/changes.csv. Only
       high-confidence decisions apply; cleanup-overrides.csv always wins.
   uv run scripts/notify/cleanup_correspondents.py spend
-      Spend so far by phase and model.
+      Actual spend so far by phase and model, then uncertain spend.
+
+index, prepare, review and apply hold cleanup/.lock: one runs at a time.
 
 Then: rank_correspondents.py rescore (see its help) writes correspondents_cleaned.csv.
 
