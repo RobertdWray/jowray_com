@@ -2,7 +2,7 @@
 
 `npm audit` is not clean, on purpose. This page records why, so nobody runs `npm audit fix --force`: every "fix" it offers for the findings below is a **downgrade** (`@sendgrid/mail@6.5.2`, `@vercel/blob@2.4.0`, `eslint-config-next@15.5.29`).
 
-Last checked 2026-11-06 (`npm audit`: 4 low, all the deepmerge chain below; 0 moderate, 0 high, 0 critical).
+Last checked 2026-11-08, after `ffmpeg-static` and its 15 transitive packages were added (`npm audit`: 4 low, all the deepmerge chain below; 0 moderate, 0 high, 0 critical).
 
 ## Overrides in `package.json`
 
@@ -15,13 +15,14 @@ npm cannot carry comments in `package.json`, so each override is explained here.
 
 ## `ffmpeg-static` (video posters)
 
-The upload, MCP and cron routes run ffmpeg to take a poster frame from each uploaded video (plan `thumbnails-of-videos-don-t-glimmering-pearl`, R-P1). `ffmpeg-static` provides the binary.
+The upload, MCP and cron routes run ffmpeg to take a poster frame from each uploaded video (plan [`docs/plans/2026-11-08-video-posters.md`](plans/2026-11-08-video-posters.md), R-P1; feature doc [Video posters](features/video-posters.md)). `ffmpeg-static` provides the binary.
 
 - **Pinned exactly at `5.3.0`.** The package has no ffmpeg of its own. Its install script downloads one from the `b6.1.1` GitHub release, and its README warns: "To prevent an `ffmpeg-static` upgrade downloading backwards-incompatible ffmpeg versions, use a strict version range for it or use a lockfile." A version bump can therefore change the binary. Treat one as a new binary to review: recheck the facts below and the `allowScripts` entry.
 - **The binary.**
   - On Linux (CI and Vercel) it is a John Van Sickle static build of ffmpeg 7.0.2, about 80 MB, with libzimg 3.0.3. libzimg provides the `zscale` filter that HDR tone-mapping needs.
   - On a macOS arm64 laptop the same package installs a different build: ffmpeg 6.0, 45.6 MB, also with `zscale`. Local runs therefore do not prove Linux behaviour.
   - `node -p "require('ffmpeg-static')"` prints the binary's path, and `"$(node -p "require('ffmpeg-static')")" -hide_banner -version` prints its version.
+  - **`FFMPEG_BIN` must never be set on Vercel.** `ffmpeg-static` honours that environment variable: when it is set at module load, the package returns its value instead of the downloaded binary's path (`index.js`; the name comes from `binary-path-env-var` in the package's `package.json`). The app sets no such variable. On Vercel a stray one would point the poster code at a file that `outputFileTracingIncludes` never traced and `check-traces` never checked: `available()` would then fail and every poster would be deferred, with a Sentry report each time, or a different ffmpeg build would run. Locally it can point a run at another ffmpeg build on purpose.
 - **No DNS in the Linux build.** Its readme says: "A limitation of statically linking glibc is the loss of DNS resolution. Installing nscd through your package manager will fix this." Vercel functions run no nscd, so ffmpeg could not resolve a Blob URL. It therefore reads each video only from a one-shot HTTP server on `127.0.0.1` inside the same function (plan D2). A numeric loopback address needs no DNS, and signed URLs never reach ffmpeg's arguments or stderr.
 - **Only three functions carry it.**
   - `outputFileTracingIncludes` in `next.config.ts` adds the binary, `ffmpeg.LICENSE` and `ffmpeg.README` to `/api/upload`, `/api/mcp` and `/api/cron/reconcile-uploads` only (plan D1). `ffmpeg-static` is in `serverExternalPackages`, because it builds the binary's path from its own `__dirname`.
