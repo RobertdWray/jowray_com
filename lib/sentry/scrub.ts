@@ -11,7 +11,7 @@ export interface StreamedSpan {
 }
 
 /**
- * Claim tokens travel in the URL (`/m/<token>`, `?t=<token>`), and the admin
+ * Claim and invite tokens travel in URLs (`/m/<token>`, `/s/<token>`, `?t=<token>`), and the admin
  * entry key in a fragment (`/admin/enter#key=<secret>`). Sentry events,
  * transactions, spans and breadcrumbs all carry URLs, so every one of them is
  * passed through here on the server and in the browser before it leaves the
@@ -27,6 +27,8 @@ export interface StreamedSpan {
 // A claim path is `/m/` followed by a base64url token (16+ chars); the token
 // may be followed by anything (slash, query, whitespace in a log message).
 const CLAIM_PATH = /\/m\/[A-Za-z0-9_-]{16,}/g;
+// Invite tokens are 12 base64url characters; also scrub longer values and upper-case paths.
+const INVITE_PATH = /\/s\/[A-Za-z0-9_-]{12,}/gi;
 // Every `t=` (claim token), `key=` (admin entry key), or Blob presign credential
 // (`vercel-blob-signature`, `vercel-blob-delegation`) parameter in a full URL
 // (`?t=…`, `&t=…`, `#key=…`) or a bare query string (`t=…`), stopping at `&`,
@@ -36,7 +38,7 @@ const CLAIM_PATH = /\/m\/[A-Za-z0-9_-]{16,}/g;
 const TOKEN_QUERY = /(^|[?&#])(t|key|vercel-blob-signature|vercel-blob-delegation)=[^&#\s]*(?=[&#\s]|$)/g;
 
 export function scrubUrl(url: string): string {
-  const withoutPath = url.replace(CLAIM_PATH, "/m/[claimToken]");
+  const withoutPath = url.replace(CLAIM_PATH, "/m/[claimToken]").replace(INVITE_PATH, "/s/[inviteToken]");
   const withoutToken = withoutPath.replace(TOKEN_QUERY, "$1");
   if (withoutToken === withoutPath) {
     return withoutToken; // nothing removed: leave punctuation in ordinary text alone
@@ -201,6 +203,216 @@ function scrubMembers(text: string): string {
   return out + text.slice(last);
 }
 
+const ROUTE_TOKEN_KEYS = ["inviteToken", "claimToken"];
+const WHITESPACE = /\s*/y;
+
+function skipTupleWhitespace(text: string, at: number): number {
+  while (at < text.length) {
+    WHITESPACE.lastIndex = at;
+    at += WHITESPACE.exec(text)?.[0].length ?? 0;
+    // An outer JSON string encodes the tuple's newline/tab/carriage return.
+    if (text[at] === "\\" && (text[at + 1] === "n" || text[at + 1] === "r" || text[at + 1] === "t")) {
+      at += 2;
+    } else {
+      break;
+    }
+  }
+  return at;
+}
+
+/**
+ * D21: Flight/router state also carries bare ["inviteToken", "value", "d"]
+ * tuples, including escaped quotes inside serialized JSON strings. Scan from
+ * each `[` forward, retaining the original quoting/whitespace around the value.
+ * Failed candidates resume where they failed; matched string values are consumed
+ * once (including truncation to EOF). No suffix is repeatedly scanned, so this
+ * pass stays linear even on repeated tuple starts or unterminated values.
+ */
+function scrubTuples(text: string): string {
+  let out = "";
+  let last = 0;
+  let start = text.indexOf("[");
+  while (start !== -1) {
+    let at = skipTupleWhitespace(text, start + 1);
+    const quote = text.startsWith('\\"', at) ? '\\"' : text[at] === '"' ? '"' : undefined;
+    if (quote === undefined) {
+      start = text.indexOf("[", at);
+      continue;
+    }
+    at += quote.length;
+    const key = ROUTE_TOKEN_KEYS.find((name) => text.startsWith(name + quote, at));
+    if (key === undefined) {
+      start = text.indexOf("[", at);
+      continue;
+    }
+    at = skipTupleWhitespace(text, at + key.length + quote.length);
+    if (text[at] !== ",") {
+      start = text.indexOf("[", at);
+      continue;
+    }
+    at = skipTupleWhitespace(text, at + 1);
+    if (!text.startsWith(quote, at)) {
+      start = text.indexOf("[", at);
+      continue;
+    }
+    const end = stringEnd(text, at + quote.length, quote.length === 2);
+    out += `${text.slice(last, at)}${quote}${FILTERED}${quote}`;
+    last = end;
+    start = text.indexOf("[", end);
+  }
+  return out + text.slice(last);
+}
+
+/** Skip only the adjacent whitespace before an anchor, including escaped JSON whitespace. */
+function skipWhitespaceBack(text: string, at: number): number {
+  while (at > 0) {
+    if (/\s/.test(text[at - 1])) {
+      at -= 1;
+    } else if (at > 1 && text[at - 2] === "\\" && (text[at - 1] === "n" || text[at - 1] === "r" || text[at - 1] === "t")) {
+      at -= 2;
+    } else {
+      break;
+    }
+  }
+  return at;
+}
+
+/**
+ * Find parameter names without relying on quote pairing in earlier Flight text.
+ * Each literal has its own cached indexOf cursor; searching for an absent name
+ * never repeatedly scans the suffix when the other name occurs many times.
+ * Backward checks touch only adjacent whitespace and the fixed `"n":` prefix.
+ * Whitespace runs cannot overlap between anchors, so their total cost is linear.
+ */
+function* transportSegmentAnchors(text: string, quote: string): Generator<{ start: number; end: number }> {
+  const candidates = ROUTE_TOKEN_KEYS.map((name) => {
+    const literal = `${quote}${name}${quote}`;
+    return { literal, at: text.indexOf(literal) };
+  });
+  const member = `${quote}n${quote}`;
+  while (true) {
+    let candidate: (typeof candidates)[number] | undefined;
+    for (const current of candidates) {
+      if (current.at !== -1 && (!candidate || current.at < candidate.at)) {
+        candidate = current;
+      }
+    }
+    if (!candidate) {
+      return;
+    }
+    const nameStart = candidate.at;
+    const end = nameStart + candidate.literal.length;
+    candidate.at = text.indexOf(candidate.literal, end);
+    const colon = skipWhitespaceBack(text, nameStart) - 1;
+    if (text[colon] !== ":") {
+      continue;
+    }
+    const start = skipWhitespaceBack(text, colon) - member.length;
+    if (start >= 0 && text.startsWith(member, start)) {
+      yield { start, end };
+    }
+  }
+}
+
+/**
+ * Next's RSC response segments use {n: paramName, t: type, k: value, s: siblings}.
+ * Start at each verified `n` anchor, so an unmatched quote in a raw Flight T row
+ * or log prefix cannot hide a later segment. From there, track object/array
+ * nesting and consume strings to reach the same object's `k` (or its closing
+ * brace). Strings cannot consume a later anchor unless replaced as a secret.
+ *
+ * Overlapping/nested anchors share one forward walk and a stack of pending
+ * objects rather than walking the same suffix again for each `n`. The cached
+ * anchor cursors also move only forward. Each character is visited a bounded
+ * number of times, even for repeated `n` members without a `k` or closing brace.
+ * Plain and escaped quoting each get one pass; surrounding text is preserved.
+ */
+function scrubTransportSegments(text: string, escaped = false): string {
+  const quote = escaped ? '\\"' : '"';
+  const anchors = transportSegmentAnchors(text, quote);
+  const nextAnchor = () => {
+    const next = anchors.next();
+    return next.done ? undefined : next.value;
+  };
+  let anchor = nextAnchor();
+  const containers: Array<{ object: boolean; tokenParam: boolean }> = [];
+  let out = "";
+  let last = 0;
+  let at = 0;
+  while (at < text.length) {
+    if (containers.length === 0) {
+      if (!anchor) {
+        break;
+      }
+      at = anchor.start;
+      containers.push({ object: true, tokenParam: false });
+    }
+    if (anchor && at === anchor.start) {
+      const container = containers.at(-1);
+      if (container?.object) {
+        container.tokenParam = true;
+      } else {
+        // Resync even when malformed text before this anchor hid its opening brace.
+        containers.push({ object: true, tokenParam: true });
+      }
+      at = anchor.end;
+      anchor = nextAnchor();
+      continue;
+    }
+    const c = text[at];
+    if (c === "{" || c === "[") {
+      containers.push({ object: c === "{", tokenParam: false });
+      at += 1;
+      continue;
+    }
+    if (c === "}" || c === "]") {
+      containers.pop();
+      at += 1;
+      continue;
+    }
+    if (!escaped && text.startsWith('\\"', at)) {
+      at += 2; // leave escaped strings for the second pass
+      continue;
+    }
+    if (!text.startsWith(quote, at)) {
+      at += 1;
+      continue;
+    }
+    const end = stringEnd(text, at + quote.length, escaped);
+    if (anchor && end > anchor.start) {
+      at = anchor.start; // discard poisoned quote pairing and resync at this name
+      continue;
+    }
+    const key = text.slice(at + quote.length, end - quote.length);
+    const colon = skipTupleWhitespace(text, end);
+    at = colon;
+    if (text[colon] !== ":") {
+      continue;
+    }
+    at = skipTupleWhitespace(text, colon + 1);
+    const container = containers.at(-1);
+    if (!container?.object) {
+      continue;
+    }
+    if (key === "n") {
+      container.tokenParam = false; // a non-token name; matching names are handled as anchors above
+    } else if (key === "k" && container.tokenParam) {
+      container.tokenParam = false;
+      if (text.startsWith(quote, at)) {
+        const valueEnd = stringEnd(text, at + quote.length, escaped);
+        out += `${text.slice(last, at)}${quote}${FILTERED}${quote}`;
+        last = valueEnd;
+        at = valueEnd;
+        while (anchor && anchor.start < at) {
+          anchor = nextAnchor(); // already removed as part of this secret value
+        }
+      }
+    }
+  }
+  const scrubbed = out + text.slice(last);
+  return escaped ? scrubbed : scrubTransportSegments(scrubbed, true);
+}
+
 function scrubText(text: string, depth: number): string {
   if (text.length > MAX_SCRUB_TEXT_LENGTH) {
     return OVERSIZED; // bounded before any parse or scan; nothing uninspected leaves
@@ -216,7 +428,7 @@ function scrubText(text: string, depth: number): string {
       return JSON.stringify(scrubValue(parsed, depth + 1));
     }
   }
-  return scrubUrl(scrubMembers(text));
+  return scrubUrl(scrubMembers(scrubTransportSegments(scrubTuples(text))));
 }
 
 function scrubValue(value: unknown, depth: number): unknown {
@@ -230,25 +442,29 @@ function scrubValue(value: unknown, depth: number): unknown {
     return FILTERED; // never let an uninspected subtree through (cycles end here too)
   }
   if (Array.isArray(value)) {
-    return value.map((entry) => scrubValue(entry, depth + 1));
+    const isTokenTuple = ROUTE_TOKEN_KEYS.includes(value[0]) && typeof value[1] === "string";
+    return value.map((entry, index) => isTokenTuple && index === 1 ? FILTERED : scrubValue(entry, depth + 1));
   }
   const out: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    out[key] = isSecretKey(key) ? FILTERED : scrubValue(entry, depth + 1);
+  const record = value as Record<string, unknown>;
+  const isTokenSegment = typeof record.n === "string" && ROUTE_TOKEN_KEYS.includes(record.n) && typeof record.k === "string";
+  for (const [key, entry] of Object.entries(record)) {
+    out[key] = isSecretKey(key) || (isTokenSegment && key === "k") ? FILTERED : scrubValue(entry, depth + 1);
   }
   return out;
 }
 
 /**
  * Recursive over objects and arrays: a secret key's value becomes
- * `"[Filtered]"` whatever its type; every string loses claim URLs and any
- * serialized JSON member with a secret key.
+ * `"[Filtered]"` whatever its type; every string loses claim/invite URLs and
+ * serialized secret members. Router tuples lose their second element's value;
+ * RSC response segments lose their `k` value when `n` names a bearer parameter.
  */
 export function scrubSecrets(value: unknown): unknown {
   return scrubValue(value, 0);
 }
 
-/** One string (a message, a description, a header value): claim URLs and serialized secret members removed. */
+/** One string (a message, a description, a header value): bearer URLs, secret members and router tuple values removed. */
 export function scrubString(text: string): string {
   return scrubText(text, 0);
 }
