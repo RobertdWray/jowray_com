@@ -6,15 +6,17 @@ import { playedBars } from "@/lib/memories/client-logic";
 import { clockText, durationText } from "@/lib/memories/format";
 import { reportClientError } from "@/lib/sentry/report";
 
-/** Play a recording on request, keeping the large control and waveform in sync with native audio controls. */
+/**
+ * Play a recording on request, keeping the large control and waveform in sync with native audio controls.
+ * `preload="none"` (plan D6 as amended): nothing is requested, or counted against the public allowance, until the
+ * visitor presses Listen or the native play button; until then the clock shows the database's `durationSeconds`.
+ */
 export function AudioPlayer({
   src,
-  mimeType,
   durationSeconds,
   bars,
 }: {
   src: string;
-  mimeType: string;
   durationSeconds: number | null;
   bars: number[];
 }) {
@@ -84,7 +86,7 @@ export function AudioPlayer({
         key={src}
         ref={audioRef}
         controls
-        preload="metadata"
+        preload="none"
         className="w-full"
         onLoadStart={() => {
           setCurrent(0);
@@ -98,7 +100,8 @@ export function AudioPlayer({
         onPause={() => setPlaying(false)}
         onEnded={() => setPlaying(false)}
       >
-        <source src={src} type={mimeType} />
+        {/* No `type`: with one source the hint can only make a browser skip a file it could play by sniffing (plan C50). */}
+        <source src={src} />
       </audio>
       <p className="text-center text-small text-walnut-soft">Nothing plays until you press it.</p>
     </section>

@@ -238,7 +238,8 @@ export default function HowItWasBuiltPage() {
             </li>
             <li>
               Files sit in private storage. Photos are shown from a copy with the location data removed. Videos and
-              voice recordings play as they were recorded, so a phone video can still carry where it was filmed.
+              voice recordings are shared as they were recorded, so anyone who saves one can see what the phone
+              stored with it, which can include where and when it was recorded and which phone made it.
             </li>
             <li>The family reads every memory before it appears on See memories.</li>
             {/* Alpha telemetry (AGENTS.md § Sentry). When the alpha settings end, UPDATE this line in the same

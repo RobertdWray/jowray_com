@@ -287,7 +287,7 @@ describe("serveMedia with caller public (defence in depth)", () => {
   });
 
   it("refuses a located video in a memory that is not APPROVED + PUBLIC even when the caller's authorize says yes", async () => {
-    media[1]!.memory = { ...PUBLIC_MEMORY, visibility: "FAMILY" };
+    media.find((m) => m.id === "med_mov_located")!.memory = { ...PUBLIC_MEMORY, visibility: "FAMILY" };
     const res = await serveMedia({ id: "med_mov_located", variant: "web", download: false, caller: "public", viewerKey: "x", allowDeletedMemory: false, authorize: () => true });
     expect(res.status).toBe(404);
     expect(presignMock).not.toHaveBeenCalled();
