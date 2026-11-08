@@ -30,7 +30,8 @@ function Words({ item }: { item: AdminMediaView }) {
 
 /**
  * View-only media (D4): thumbnails open the web copy, recordings and videos
- * play inline, and every state that is not "ready" is labelled. Files are
+ * play inline (a video over its poster once one is READY), and every state
+ * that is not "ready" is labelled. Files are
  * served by /admin/media/[id] (cookie-gated) and never optimised: private
  * bytes must not pass through the image optimiser's cache.
  */
@@ -62,7 +63,9 @@ export function MediaGallery({ media }: { media: AdminMediaView[] }) {
         } else if (kind === "recording") {
           body = <audio controls preload="none" src={src} className="w-full" />;
         } else if (kind === "video") {
-          body = <video controls preload="none" src={src} className="max-w-full rounded" />;
+          // `preload="none"` loads no frame before play, so a READY POSTER stands in through `poster` ([C26]); `?v=thumb`
+          // answers a video with its POSTER image or a 404, never the video (D7).
+          body = <video controls preload="none" poster={item.posterReady ? `${src}?v=thumb` : undefined} src={src} className="max-w-full rounded" />;
         } else {
           body = (
             <a href={`${src}?download=1`} className={linkClass}>

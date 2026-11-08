@@ -23,6 +23,8 @@ export interface AdminMediaView {
   sortOrder: number;
   webReady: boolean;
   thumbReady: boolean;
+  /** A video's server-made POSTER is READY: what `?v=thumb` serves for a video (D7), shown by the gallery's player. */
+  posterReady: boolean;
   /** `purgedAt` is set: the bytes are gone or being removed (cron step (f)); the row never serves again. */
   purged: boolean;
   /**
@@ -226,6 +228,7 @@ export async function getMemoryForAdmin(id: string, options: AdminViewOptions = 
       sortOrder: m.sortOrder,
       webReady: m.derivatives.some((d) => d.kind === "WEB_IMAGE"),
       thumbReady: m.derivatives.some((d) => d.kind === "THUMBNAIL"),
+      posterReady: m.derivatives.some((d) => d.kind === "POSTER"),
       purged: m.purgedAt !== null,
       ...(options.includeCoordinates && { coordinates: coordinatesOf(m) }),
     })),

@@ -287,6 +287,20 @@ describe("getMemoryForAdmin", () => {
     });
   });
 
+  it("says whether a video's server-made POSTER is READY (posterReady, video posters T12), on the page's view and the MCP one", async () => {
+    media = [
+      mediaRow({}),
+      mediaRow({ id: "med_v1", mimeType: "video/mp4", originalFilename: "a.mp4", sortOrder: 1, derivatives: [{ kind: "POSTER", status: "READY" }] }),
+      mediaRow({ id: "med_v2", mimeType: "video/quicktime", originalFilename: "b.mov", sortOrder: 2, derivatives: [] }),
+    ];
+    const expected = [["med_1", false, true], ["med_v1", true, false], ["med_v2", false, false]];
+    expect((await getMemoryForAdmin(MEM))!.media.map((m) => [m.id, m.posterReady, m.thumbReady])).toEqual(expected);
+    expect((await getMemoryForAdmin(MEM, { includeCoordinates: true }))!.media.map((m) => [m.id, m.posterReady, m.thumbReady])).toEqual(expected);
+    // Only READY copies count: the query asks for them (the stub does not apply the filter itself).
+    const args = tx.memory.findUnique.mock.calls.at(-1)![0] as unknown as { include: { media: { select: { derivatives: unknown } } } };
+    expect(args.include.media.select.derivatives).toEqual({ where: { status: "READY" }, select: { kind: true } });
+  });
+
   it("returns a deleted memory with its deletedAt, and null for an unknown id", async () => {
     memories[0]!.deletedAt = T1;
     expect((await getMemoryForAdmin(MEM))?.deletedAt).toEqual(T1);
