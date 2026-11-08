@@ -126,6 +126,7 @@ Each feature has a one-to-two page document: what we built, why, the decisions R
 | | Feature | In one sentence |
 |---|---|---|
 | 📝 | [Share form](docs/features/share-form.md) | One page, no account: name and email, one memory card on phones or several on a computer, place names offered from the photos' GPS, visibility asked once, a private link on the thank-you screen. |
+| 🔗 | [Invite links](docs/features/invite-links.md) | Personal links prefill a greeting, name and email on the shared form, with read-only lookup, revocation and a private import ledger. |
 | 🎙️ | [Audio recording](docs/features/audio-recording.md) | Record in the browser with a live level meter, a "we're not hearing anything" warning with help for your device, and a silent-clip check before you send. |
 | 🖼️ | [Media uploads](docs/features/media-uploads.md) | Files go straight to private storage on a signed ticket and are checked by their first bytes before they count as received; every photo (HEIC included) gets a web copy and a thumbnail with location data stripped, while the original's GPS is saved privately on the photo for Rob's tools; serving is metered per viewer and day; the claim page lets you add, replace or remove files. |
 | 👨‍👩‍👧 | [Admin panel](docs/features/admin-panel.md) | The family's view of every memory: search, edit the words, approve or hide, delete with a 30-day undo, draft on someone's behalf. Entered once through a link; the secret never leaves the browser. |
@@ -133,21 +134,22 @@ Each feature has a one-to-two page document: what we built, why, the decisions R
 | 🔌 | [MCP connector](docs/features/mcp.md) | Rob's Claude reads, drafts and edits memories, shares a draft on the sender's behalf, attaches original files from disk, and gets place names for a memory's photos, through twelve tools at `/api/mcp`, behind one bearer secret. Drafting works from any Claude surface; attaching files needs Cowork with the folder mounted or Claude Code on the Mac. A memory can also carry map coordinates for a named place, never a home. |
 | 📬 | [Email and cron](docs/features/email-and-cron.md) | One fixed-content receipt per send with every private link and a card per file (never the visitor's words or pictures); a family alert with no links; per-inbox, hourly and daily caps; an idempotent delivery log; the ten-minute reconcile cron and the three-phase purge. |
 | ↩️ | [Email replies and forwarding](docs/features/email-forwarding.md) | Reply to a site email and Cloudflare forwards it to the family inbox; the footer and receipts show the same family contact address. |
-| 🔭 | [Sentry telemetry](docs/features/sentry-telemetry.md) | 100 % traces and unmasked replays for the alpha, with claim tokens and upload tickets scrubbed from every event by a linear-time scanner, proven by a test that runs the real SDK. |
-| 📊 | [Vercel Web Analytics](docs/features/analytics.md) | Page-view analytics for Rob in Vercel, with claim URLs scrubbed and unsafe routes dropped; live intake still needs checking. |
+| 🔭 | [Sentry telemetry](docs/features/sentry-telemetry.md) | 100 % traces and unmasked replays for the alpha, with claim/invite tokens and upload tickets scrubbed from covered event fields by a linear-time scanner, proven by a test that runs the real SDK. |
+| 📊 | [Vercel Web Analytics](docs/features/analytics.md) | Page-view analytics for Rob in Vercel, with claim/invite URLs scrubbed and unsafe routes dropped; live intake still needs checking. |
 | 🔒 | [Privacy note](docs/features/privacy.md) | The footer's Privacy button opens Rob's note about what the family alpha records and links to how the site was built. |
 
 ---
 
 ## 🗃️ Data model
 
-Seventeen migrations, additive only. The raw claim token is never stored, only its SHA-256. No memory is hard-deleted; every edit that changes something is a `MemoryRevision`, and each memory keeps its first revision (which records consent) and the latest 199.
+Twenty-one migrations, additive only. Raw claim and invite tokens are never stored in the database, only their SHA-256 hashes. No memory is hard-deleted; every edit that changes something is a `MemoryRevision`, and each memory keeps its first revision (which records consent) and the latest 199.
 
 ```mermaid
 erDiagram
     Memorial ||--o{ Contributor : has
     Memorial ||--o{ Memory : holds
     Memorial ||--o{ Person : "people in this life"
+    Memorial ||--o{ Invite : "personal links"
     Contributor ||--o{ Memory : leaves
     Memory ||--o{ Media : has
     Memory ||--o{ MemoryRevision : "edit history"
@@ -156,6 +158,16 @@ erDiagram
     Media }o--o| Media : replaces
     User |o--o| Contributor : "Phase 3 login"
 
+    Invite {
+        string id PK
+        string memorialId FK
+        string tokenHash UK "sha256, never the token"
+        string firstName
+        string lastName "optional"
+        string email "normalized, unique per memorial"
+        datetime createdAt
+        datetime revokedAt "optional, stops prefill"
+    }
     Memory {
         enum status "DRAFT · PENDING · APPROVED · HIDDEN"
         enum type "VOICE · VIDEO · PHOTO · TEXT"
@@ -203,8 +215,8 @@ Full schema: [`prisma/schema.prisma`](prisma/schema.prisma). `WebhookEvent` (Blo
 | Untrusted files | A file becomes `READY` only once its first bytes match an allowed type: a mislabel of the same kind is relabelled, anything unrecognised stays `FAILED` (`unrecognized_bytes`), is never served, and is kept rather than deleted on a 128-byte verdict. HEIC is decoded by libheif compiled to WebAssembly, in a worker thread with a heap cap, a deadline and a 30-megapixel ceiling; one decode runs at a time behind a short waiting line, and a long animated GIF becomes a still. |
 | The family's admin page | Entered through a link whose secret sits in the URL fragment, which browsers never send to a server. The 30-day cookie carries an HMAC, never the secret. `Referrer-Policy: no-referrer`, `noindex`, Server Function argument logging off. |
 | Email | Receipts are **fixed content**: the private links, a count of what was sent and a card per file by kind and length, never the visitor's words, filenames or pictures, so a receipt carries nothing a visitor wrote or uploaded. The family alert carries **no links at all**, so being told about a memory never hands anyone the power to edit it. Caps, decided under one advisory lock: 15 receipts a day per inbox (`+tag` and Gmail dots count as one), 60 an hour and 300 a day across all contributor email (held for the cron, not dropped), 20 alerts an hour, then one "arriving quickly" notice. |
-| Logs | Pino redacts `email`, `name`, `phone`, cookies and authorization headers. Logs carry ids, never rows or people. |
-| Telemetry | **An honest caveat.** For the alpha, Rob authorized 100 % traces, unmasked session replays and contributor email as user context: *"The family has approved these aggressive tracking measures since it is an alpha, vibe-coded website and only family will be using it."* Claim tokens, upload tickets and protected headers are still scrubbed from every event, span, log, breadcrumb and replay (open gaps: exception and event message text (`event.exception.values[].value`, `event.message`, `logentry`; [MCP plan follow-up 8.8](docs/plans/2026-11-06-mcp-endpoint.md)) and upper-case or short `/M/<token>` claim paths ([analytics follow-up F1](docs/features/analytics.md#known-gaps-and-follow-ups))), and [`__tests__/lib/sentry-envelope.test.ts`](__tests__/lib/sentry-envelope.test.ts) proves it against the real SDK. The scrubber is a linear-time scanner, held byte-for-byte equal to its regex predecessor by a seeded differential test, and replaces any string over 256 KiB whole. Rob, 2026-11-05: sampling and replay stay at 100 % for the alpha. One commit ends the alpha settings ([plan §13](docs/plans/2026-11-04-sentry-full-telemetry.md)). Page views also go to [Vercel Web Analytics](docs/features/analytics.md) with claim tokens and admin keys scrubbed from the URL and token-bearing unmatched paths dropped; visitors are told about the alpha's recording and logging in the footer [Privacy note](docs/features/privacy.md). |
+| Logs | Pino redacts structured bearer values (including claim/invite tokens, share links and upload credentials) and protected headers. Contributor fields are allowed under R13 (2026-11-07); never put bearer values in free-text log messages. Logs carry ids, never Prisma rows or people. |
+| Telemetry | **An honest caveat.** For the alpha, Rob authorized 100 % traces, unmasked session replays and contributor email as user context: *"The family has approved these aggressive tracking measures since it is an alpha, vibe-coded website and only family will be using it."* Claim tokens, invite tokens and share URLs, upload tickets and protected headers are still scrubbed from every event, span, log, breadcrumb and replay (open gaps: exception and event message text (`event.exception.values[].value`, `event.message`, `logentry`; [MCP plan follow-up 8.8](docs/plans/2026-11-06-mcp-endpoint.md)) and upper-case or short `/M/<token>` claim paths ([analytics follow-up F1](docs/features/analytics.md#known-gaps-and-follow-ups))), and [`__tests__/lib/sentry-envelope.test.ts`](__tests__/lib/sentry-envelope.test.ts) proves the covered paths against the real SDK. Accepted residuals include claim/invite page URLs inside replay DOM recordings and Vercel request logs, plus user-taken feedback screenshots ([Sentry telemetry](docs/features/sentry-telemetry.md)). Replay also records placeholders and `title`/`aria-label`; password inputs stay masked. The project's server-side Data Scrubber and Default Scrubbers stay on until PR-2 is live, token checks pass and Rob re-confirms S1; SDK scrubbing stays enabled. The scrubber is a linear-time scanner, held byte-for-byte equal to its regex predecessor by a seeded differential test, and replaces any string over 256 KiB whole. Rob, 2026-11-05: sampling and replay stay at 100 % for the alpha. One commit ends the alpha settings ([plan §13](docs/plans/2026-11-04-sentry-full-telemetry.md)). Page views also go to [Vercel Web Analytics](docs/features/analytics.md) with claim/invite tokens and admin keys scrubbed from the URL and token-bearing unmatched paths dropped; visitors are told about the alpha's recording and logging in the footer [Privacy note](docs/features/privacy.md). |
 | Abuse | Daily budgets on memories and ticketed bytes (allocated under one advisory lock, so concurrent sends cannot overshoot), a 4 GiB per-send declared-bytes cap, a 50 GiB total storage ceiling, and reservations that stop counting once their upload window closes. The cron retires an abandoned reservation only after its last token has expired and the store has no object for it. A save that changes nothing writes nothing, and a memory keeps at most 200 revisions. Add the email caps and egress allowance above and a Vercel WAF rate-limit rule on the public paths; the remaining dashboard limits are Rob's ([issue #43](https://github.com/RobertdWray/jowray_com/issues/43)). |
 | Secrets | Never in git. Names and purposes are in [`docs/environment.md`](docs/environment.md); values live in `.env` (mode 600) and Vercel. Existing keys and their scopes are kept as they are (Rob, 2026-11-05). |
 

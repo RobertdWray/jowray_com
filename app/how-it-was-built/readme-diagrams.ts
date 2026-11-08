@@ -23,8 +23,8 @@ export const README_DIAGRAMS = {
     githubAnchor: "\ufe0f-data-model",
     src: "/diagrams/data-model.svg",
     width: 1804,
-    height: 1542,
-    sourceSha256: "3bc4bcd189f3d514e294c5d6398cf8d947191680e583b7cdce30578d98459253",
+    height: 1846,
+    sourceSha256: "4aba6e46e1002abe6d410c53989c5f3be14004eaf36f58531efa9f16372e68d9",
   },
 } as const;
 
