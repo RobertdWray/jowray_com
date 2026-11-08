@@ -6,20 +6,11 @@ import type { PublicKind, PublicMemory } from "@/lib/memories/types";
 import { cardClass, cardTagClass, cardTagOnClass } from "./chips";
 import { memoryHref, publicMediaHref } from "./hrefs";
 import { FallbackImage } from "./image-fallback-client";
+import { PhotoIcon } from "./photo-icon";
 
 export type CardVariant = "explore" | "map" | "timeline" | "tags";
 
 const PLACEHOLDER_FILLS = ["bg-muslin", "bg-wood-light", "bg-[#efe4d2]"] as const;
-
-function PhotoIcon({ size }: { size: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="text-jo-red-deep">
-      <rect x="3" y="5" width="18" height="14" rx="2" />
-      <circle cx="9" cy="10" r="2" />
-      <path d="M21 16l-5-5-8 8" />
-    </svg>
-  );
-}
 
 /** The red stitched play badge (design/reference/badge-play.svg). */
 export function PlayBadge({ size }: { size: number }) {
