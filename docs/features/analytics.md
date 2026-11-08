@@ -4,7 +4,7 @@ Page-view analytics and Core Web Vitals for Rob in the Vercel project dashboard.
 
 **Status:** [PR #62](https://github.com/RobertdWray/jowray_com/pull/62) delivered analytics (merged 2026-11-06 as `73ac034`); [PR #64](https://github.com/RobertdWray/jowray_com/pull/64) added protection for token-bearing unmatched routes (merged into #62 on 2026-11-06 as `bb4a2e2`). There is no feature plan; the PR descriptions are the record. Deployment evidence is limited: `/_vercel/insights/script.js` answered 200 at 2026-11-07 01:07 UTC (404 in PR #62); at 2026-11-07 02:29 UTC both it and the per-project path the pages loaded, `/57754c27654861f8/script.js`, answered 200 with identical bytes; intake payload not checked. Page views arriving and use with real data are not verified.
 
-[PR #96](https://github.com/RobertdWray/jowray_com/pull/96) adds Speed Insights (`@vercel/speed-insights` 2.1.0) through the same guard, which now also checks the route Speed Insights hands to `beforeSend`. It is open, and its PR description is the record. `/_vercel/speed-insights/script.js` answered 200 on 2026-11-08 before this PR (script `0.1.3`), which suggests Speed Insights is already enabled on the project. No vitals intake has been checked.
+[PR #96](https://github.com/RobertdWray/jowray_com/pull/96) adds Speed Insights (`@vercel/speed-insights` 2.1.0) through the same guard, which now also checks the route Speed Insights hands to `beforeSend` and, for both scripts, drops claim and invite links whose token segment is percent-encoded. Its PR description is the record. `/_vercel/speed-insights/script.js` answered 200 on 2026-11-08 before this PR (script `0.1.3`), which suggests Speed Insights is already enabled on the project. No vitals intake has been checked.
 
 The npm audit cleanup in #62 and #64's replacement of the ineffective zod override with a real bundled-code fix are recorded in [Dependencies](../dependencies.md).
 
@@ -26,6 +26,7 @@ To add page-view measurement without sending claim or invite credentials to anal
 | Agent's implementation choices, accepted at merge: reuse `scrubUrl`; after review, reject unsafe raw paths instead of testing only the scrubbed URL, which misses upper-case and short segments. | [PR #64](https://github.com/RobertdWray/jowray_com/pull/64) and [PR #62's review comment](https://github.com/RobertdWray/jowray_com/pull/62), 2026-11-06 |
 | Rob asked for Speed Insights following [Vercel's docs](https://vercel.com/docs/speed-insights), installing `@vercel/speed-insights` and naming `SpeedInsights` from `@vercel/speed-insights/next`. He approved the plan, including the agent's calls in the next row. | Rob, 2026-11-08 (session plan; [PR #96](https://github.com/RobertdWray/jowray_com/pull/96)) |
 | Agent's calls, approved in that plan: one guard for both scripts (`scrubPageView` renamed `scrubVercelEvent`) instead of a second copy; drop a vital whose route fails the path rule, because the script ignores a rewritten route; no `sampleRate`, so every event is sent as under the 100 % alpha policy. A later agent's call, which Rob has not yet accepted: document Speed Insights here, not in its own file. The plan had proposed a new file, but template rule 1 quotes Rob: "I don't want documents just to create documents." | [PR #96](https://github.com/RobertdWray/jowray_com/pull/96), 2026-11-08 |
+| TCR round 1 (George, Oscar, research), 2026-11-08: drop encoded claim/invite segments and accept only exact route placeholders; reverses #64's keep-encoded rule and tightens the previous row's route rule. Agent's call, approved by the orchestrator. | [PR #96](https://github.com/RobertdWray/jowray_com/pull/96), 2026-11-08 |
 
 ## How it works
 
@@ -34,10 +35,10 @@ To add page-view measurement without sending claim or invite credentials to anal
 | Field or input | Behaviour |
 |---|---|
 | URL (`url` in the hook, `o` on the wire) | `scrubUrl` replaces lower-case `/m/` followed by a run of at least 16 token characters with `/m/[claimToken]`. It also replaces case-insensitive `/s/` followed by at least 12 token characters with `/s/[inviteToken]`, including full invite URLs. Both patterns accept base64url characters and `%` to cover percent-encoded token characters. It removes lower-case `t=` and `key=` parameters from query strings or fragments, including `?t=` and `#key=`, and tidies their separators. Other parameters remain. |
-| Route (`dp`) | The Next wrapper constructs it outside the hook: `/m/[claimToken]` or `/s/[inviteToken]` for the matched claim or invite route, but the raw pathname for a root not-found page. The hook cannot rewrite it. |
+| Route (`dp`) | The Next wrapper constructs it outside the hook by replacing `useParams()` values in `usePathname()`: `/m/[claimToken]` or `/s/[inviteToken]` for the matched claim or invite route, but the raw pathname, token included, for a root not-found page and for a claim or invite link with any percent-encoded token character. The pathname keeps the encoding while the params are decoded, so nothing matches (reproduced 2026-11-08; see Tests and evidence). The hook cannot rewrite it, so the unsafe-path rows below drop both cases. |
 | Referrer (`r`) | Read from `document.referrer` outside `beforeSend`; like `dp`, it never passes through `scrubVercelEvent`. The claim and invite pages' `no-referrer` policy keeps their URLs out of it. |
-| Unsafe claim path | Check raw and decoded pathnames for `/m/` (case-insensitive, at any depth); keep only an exact raw lower-case `/m/` plus one non-empty segment with no trailing slash. Encoded token characters are kept and scrubbed. Encoded `m` segments, extra segments, trailing slashes, upper-case `M`, `/m/` alone, nested claim paths and doubled leading slashes are dropped. Unparsable URLs and malformed percent-encoding also drop the whole event. Paths such as `/m`, `/mx/…` and `/media/…` remain. |
-| Unsafe invite path | Check raw and decoded pathnames for an `s` segment (case-insensitive, at any depth); keep only an exact raw lower-case `/s/` plus one non-empty segment without a trailing slash. Encoded token characters are kept and scrubbed; encoded `s` segments and malformed percent-encoding are dropped. Other dropped paths remain `/S/<token>`, `/s/<token>/x`, `/s/<token>/`, `/s/`, nested paths and doubled leading slashes. `/share`, `/s` and paths merely starting with `s` remain. The kept event's `url` is scrubbed to `/s/[inviteToken]` for valid invite tokens. |
+| Unsafe claim path | Check raw and decoded pathnames for `/m/` (case-insensitive, at any depth); keep only an exact raw lower-case `/m/` plus one non-empty segment with no `%` and no trailing slash. Any percent-encoding in that segment drops the event, because the wrapper's `dp` for it is the raw path; claim tokens are base64url (`lib/claim-token.ts`), so real links contain no `%`. Until TCR round 1 of PR #96, encoded token characters were kept and scrubbed. Encoded `m` segments, extra segments, trailing slashes, upper-case `M`, `/m/` alone, nested claim paths and doubled leading slashes are dropped. Unparsable URLs and malformed percent-encoding also drop the whole event. Paths such as `/m`, `/mx/…` and `/media/…` remain. |
+| Unsafe invite path | Check raw and decoded pathnames for an `s` segment (case-insensitive, at any depth); keep only an exact raw lower-case `/s/` plus one non-empty segment with no `%` and no trailing slash. Encoded token characters (invite tokens are base64url too, `lib/invite-token.ts`), encoded `s` segments and malformed percent-encoding are dropped, for the same reason as claim paths. Other dropped paths remain `/S/<token>`, `/s/<token>/x`, `/s/<token>/`, `/s/`, nested paths and doubled leading slashes. `/share`, `/s` and paths merely starting with `s` remain. The kept event's `url` is scrubbed to `/s/[inviteToken]` for valid invite tokens. |
 | Other event fields | The spread preserves runtime `payload` and `__cdp` fields. This hook scrubs only the URL; it does not sanitize arbitrary custom-event data. The current integration adds no custom events or user identity. |
 
 The same rules apply to page views and custom events. PR #64 records that Next redirects trailing slashes with 308 before a real claim-page view. Short claim segments remain in `o`; see F1. Invite segments shorter than 12 characters also remain in `o`, but cannot be issued or resolved as invite tokens.
@@ -55,7 +56,7 @@ Speed Insights stores the route and URL with every data point ([Vercel: data col
 | Field or input | Behaviour |
 |---|---|
 | URL (`url` in the hook, `metrics[].href` on the wire) | `location.href`, query and fragment included. It goes through `scrubUrl` exactly as above. |
-| Route (`route` in the hook and on the wire) | The Next wrapper builds it from `useParams()`, falling back to search params when that is empty, via `computeRoute`. The result is `/m/[claimToken]` or `/s/[inviteToken]` on the claim or invite page, but the raw pathname on the root not-found page. It can also lag a client navigation, because the wrapper updates the script's `data-route` in an effect. The script ignores a returned `route`, so `scrubVercelEvent` drops the vital when the route fails the unsafe-path rules above (malformed encoding included). |
+| Route (`route` in the hook and on the wire) | The Next wrapper builds it from `useParams()`, falling back to search params when that is empty, via `computeRoute`. The result is `/m/[claimToken]` or `/s/[inviteToken]` on the claim or invite page, but the raw pathname on the root not-found page and on a claim or invite link with a percent-encoded token character. It can also lag a client navigation, because the wrapper updates the script's `data-route` in an effect. The script ignores a returned `route`, so `scrubVercelEvent` drops the vital unless a route with an `m` or `s` segment (raw or decoded, any case, any depth) is exactly `/m/[claimToken]` or `/s/[inviteToken]`; malformed encoding drops it too. A lagging route is therefore either a placeholder, kept because it carries no token, or a raw token path, dropped. |
 | Attribution (`metrics[].attribution`) | The CSS selector of the element behind LCP, CLS or INP, built outside `beforeSend`. No element `id` in `app/` is built from a token (`git grep`, 2026-11-08). A token-derived `id` or class added later would leak here. |
 | Other fields | Network type (`speed`), metric name and value, SDK name and version. Vercel adds browser, device, OS and country. There is no referrer field. |
 | Intake | A same-origin `fetch` POST (`keepalive`, `mode: "no-cors"`) to the per-project `…/vitals` path, sent on `visibilitychange`, `pagehide`, `popstate` and `history.pushState`, or after six metrics. When every metric is dropped, nothing is sent. The claim and invite pages' `no-referrer` header keeps their URLs out of the request's `Referer`. Sentry Replay records same-origin request bodies, so it sees the already scrubbed body, which `scrubRecordingEvent` scrubs again. |
@@ -102,14 +103,30 @@ After a deploy, check script loading and perform F2 against the deployed site in
   - ordinary vitals with or without a route are unchanged;
   - a route with malformed encoding is dropped.
 
-  Deleting the route check fails six of them. The renamed Web Analytics cases are otherwise unchanged. Results are recorded in the PR description.
+  Team Code Review round 1 added:
+  - an encoded-token URL paired with the raw route the wrapper builds for it, for `/m/` and `/s/` (T8), and a safe URL with a single-segment token route (T9), both dropped;
+  - a lagging placeholder route under another page's URL, kept (T10);
+  - near-miss placeholders (`/M/[claimToken]`, `/m/[claimtoken]`, a trailing slash, `/S/[inviteToken]`, `/s/[InviteToken]`), dropped (T11);
+  - the placeholders checked against the `app/m/[claimToken]` and `app/s/[inviteToken]` folders (T12);
+  - on the Web Analytics side, the four encoded-token paths for each event type now drop instead of being kept, and percent-encoding outside a token segment (a path, or a claim page's query) is still kept.
+
+  Mutation checks on the final code (77 tests in the file): removing the route check fails 14; removing the `%` exclusion from the claim and invite page paths fails 8; checking the route with the URL rule (the behaviour before round 1) fails 4; removing both fails 24. Results are recorded in the PR description.
 - Local debug-script check, 2026-11-08, PR #96 branch: `next dev` with no `.env*`, a separate headless Chrome driven over CDP, synthetic `SENTRYTEST_` values, and `pagehide` dispatched to flush.
   - `/how-it-was-built?t=…&from=email#key=…` logged FCP, TTFB and LCP with `href` `/how-it-was-built?from=email` and route `/how-it-was-built`; the LCP attribution was `#page-heading`.
   - On the root not-found pages `/m/<token>/extra` and `/M/<token>`, the script's `data-route` held the raw token path and no payload was logged.
   - A control run on `/m/<token>/extra` with a pass-through `beforeSend` logged three metrics carrying the token in both `href` and `route`. So the drop comes from `scrubVercelEvent`, not from missing metrics.
-  - The claim and invite pages themselves need a database and were not loaded.
+  - The claim and invite pages themselves need a database and were not loaded in this run.
+- TCR round 1 repro, 2026-11-08, same setup, on head `e153f92` (before the fix), hard loads with synthetic values:
 
-**NOT RUN:** F2 and F4 live intake and real-data verification; CI results are not supplied. Current local documentation checks are recorded in [Invite links](./invite-links.md#tests-and-evidence); no offline build or live intake check was run for this sync.
+  | URL loaded | Speed Insights | Web Analytics |
+  |---|---|---|
+  | `/m/SENTRYTEST_abcdefghijklmnop0123` | `href` and `route` `/m/[claimToken]` | `o` and `dp` `/m/[claimToken]` |
+  | `/m/%53ENTRYTEST_abcdefghijklmnop0123` | `href` `/m/[claimToken]`, but `route` `/m/%53ENTRYTEST_abcdefghijklmnop0123` (token leaked) | `o` `/m/[claimToken]`, but `dp` `/m/%53ENTRYTEST_abcdefghijklmnop0123` (token leaked, on `main` since #64) |
+  | `/s/%53ENTRYTEST_invite01` | `route` `/s/%53ENTRYTEST_invite01` (token leaked) | the same rule applies |
+
+  After the fix, same setup: `/m/SENTRYTEST_abcdefghijklmnop0123` still logged FCP, TTFB and LCP and a page view, with `href`, `o`, `route` and `dp` all `/m/[claimToken]`. For `/m/%53ENTRYTEST_abcdefghijklmnop0123` and `/s/%53ENTRYTEST_invite01`, Speed Insights logged no payload and Web Analytics logged "Page view would be ignored by `beforeSend` because null was returned". The script's `data-route` attribute in the page still held the raw path; it is never sent.
+
+**NOT RUN:** F2 and F4 live intake and real-data verification. TCR round 1's local `npm run validate`, `npm run test:run` and `npm run build:offline` results are in the PR description. Current local documentation checks are recorded in [Invite links](./invite-links.md#tests-and-evidence).
 
 ## Known gaps and follow-ups
 
@@ -120,9 +137,11 @@ After a deploy, check script loading and perform F2 against the deployed site in
   - On `/m/<token>`, every `metrics[].href` and `route` shows `/m/[claimToken]`.
   - On `/s/<token>`, they show `/s/[inviteToken]`.
   - `/m/<token>/x` and `/s/<token>/x` send no POST.
+  - Hard-load `/m/<token>` and `/s/<token>` with one token character percent-encoded (for example `%53` for `S`): no `…/vitals` and no `…/view` POST.
   - A URL with `?t=` arrives without it.
   - The dashboard shows data after visits.
 - **F5, Low, open:** the attribution selector is sent outside `beforeSend` (see [Speed Insights](#speed-insights)). Keep claim and invite tokens out of element `id`s and class names.
+- **F6, Low, open: report upstream.** `computeRoute` in `@vercel/analytics` 2.0.1 and `@vercel/speed-insights` 2.1.0 matches decoded `useParams()` values against the encoded `usePathname()`, so a percent-encoded dynamic segment is never parameterized and the raw path is reported as the route. Repro: a hard load of `/m/%53ENTRYTEST_x` gives `dp` and `route` `/m/%53ENTRYTEST_x`. Proposed fix: decode the pathname before matching, or encode the params. File issues on `vercel/analytics` and `vercel/speed-insights`; our `%` drop can stay after an upstream fix.
 
 ## Related
 
