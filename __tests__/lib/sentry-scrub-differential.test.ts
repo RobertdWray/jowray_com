@@ -168,3 +168,22 @@ describe("linear scanner versus the regex scanner on main (differential, seeded)
     }
   });
 });
+
+
+describe("invite and tuple surfaces added after the legacy scanner (R10, D21)", () => {
+  it("filters new bearer surfaces in objects, JSON, Flight and escaped Flight without losing identity", () => {
+    const token = "SENTRYTEST_x";
+    for (const key of ["inviteToken", "claimToken"]) {
+      const input = { email: "alice@example.com", name: "Alice Example", url: `/s/${token}`, shareUrl: `/s/${token}`, state: [key, token, "d"] };
+      const expected = { ...input, url: "/s/[inviteToken]", shareUrl: "[Filtered]", state: [key, "[Filtered]", "d"] };
+      expect(scrubSecrets(input)).toEqual(expected);
+      for (const encode of [JSON.stringify, (value: unknown) => `1:${JSON.stringify(value)}`, (value: unknown) => `1:${JSON.stringify(JSON.stringify(value))}`]) {
+        const before = encode(input);
+        const after = scrubSecrets(before);
+        expect(before).toContain(token);
+        expect(after).toBe(encode(expected));
+        expect(scrubSecrets(after)).toBe(after);
+      }
+    }
+  });
+});

@@ -87,6 +87,7 @@ model Memorial {
   contributors      Contributor[]
   memories          Memory[]
   people            Person[]
+  invites           Invite[]
 }
 
 model User {                              // Phase 3 fills this in (magic-link login) [C1]
@@ -274,6 +275,19 @@ model Person {
   createdAt              DateTime @default(now())
   memorial               Memorial @relation(fields: [memorialId], references: [id])
   @@unique([memorialId, name])
+}
+
+model Invite {                              // personal /s/<token> link that prefills the share form (issue #59)
+  id         String    @id @default(uuid())
+  memorialId String
+  tokenHash  String    @unique              // sha256 hex of the 12-char token; the raw token is never stored
+  firstName  String
+  lastName   String?
+  email      String                         // trimmed, lower-cased
+  createdAt  DateTime  @default(now())
+  revokedAt  DateTime?                      // stops the link prefilling
+  memorial   Memorial  @relation(fields: [memorialId], references: [id])
+  @@unique([memorialId, email])
 }
 
 model MemoryRevision {

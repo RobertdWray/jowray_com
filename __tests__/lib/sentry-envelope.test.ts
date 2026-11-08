@@ -1,10 +1,12 @@
 import { InMemoryTransport, McpServer } from "@modelcontextprotocol/server";
 import * as Sentry from "@sentry/nextjs";
+import { segmentToTransportSegment } from "next/dist/shared/lib/rsc-transport";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { registerTools } from "@/app/api/mcp/tools";
+import { buildLogger } from "@/lib/logger";
 import { DATA_COLLECTION } from "@/lib/sentry/data-collection";
-import { scrubBreadcrumb, scrubEvent, scrubLog, scrubSpan } from "@/lib/sentry/scrub";
+import { scrubBreadcrumb, scrubEvent, scrubLog, scrubRecordingEvent, scrubSpan } from "@/lib/sentry/scrub";
 import { instrumentedAction } from "@/lib/sentry/server-action";
 
 // `headers()` only works inside a request; the wrapper reads it for trace propagation.
@@ -78,6 +80,7 @@ beforeAll(() => {
     // Streamed spans go through beforeSendSpan on the real StreamedSpanJSON shape only with tracing on.
     tracesSampleRate: 1.0,
     dataCollection: DATA_COLLECTION,
+    integrations: [Sentry.pinoIntegration({ error: { levels: ["fatal"] } })],
     transport: (options: TransportOptions) =>
       Sentry.createTransport(options, async (request) => {
         sent.push(decode(request.body));
@@ -276,5 +279,131 @@ describe("MCP presigned upload result (A19)", () => {
       expect(envelope).not.toContain(PUT_SIGNATURE); expect(envelope).not.toContain(PUT_DELEGATION);
       expect(envelope).not.toContain(PUT_URL); expect(envelope).not.toContain("SENTRYTEST_");
     }
+  });
+});
+
+
+// W2: no inherited user/context can satisfy the email positive control. The email
+// must arrive in the same input, result, request body or Pino line as the token.
+async function withCleanScopes(run: () => Promise<void>): Promise<void> {
+  const scope = new Sentry.Scope();
+  scope.setClient(Sentry.getClient());
+  await Sentry.withIsolationScope(new Sentry.Scope(), async () => {
+    await Sentry.withScope(scope, run);
+  });
+}
+
+function capturedEvent(envelopes: string[], message: string): Sentry.Event {
+  const envelope = envelopes.find((item) => item.includes('"type":"event"') && item.includes(`"message":"${message}"`));
+  expect(envelope, `captured event: ${message}`).toBeDefined();
+  return JSON.parse(envelope!.split("\n")[2]!) as Sentry.Event;
+}
+
+describe("invite privacy with transport positive controls (R10, D21)", () => {
+  const token = "SENTRYTEST_x"; // 12 base64url characters, including the synthetic marker
+  const url = `https://www.example.com/s/${token}`;
+
+  it("carries action input AND the SDK-recorded server_action_result without invite secrets", async () => {
+    await withCleanScopes(async () => {
+      expect(token).toHaveLength(12);
+      const before = sent.length;
+      let resultScope: Sentry.Scope | undefined;
+      const input = { email: EMAIL, firstName: "Alice Example", url, shareUrl: url };
+      const result = await instrumentedAction("invitePrivacyFixture", input, async () => {
+        resultScope = Sentry.getIsolationScope();
+        Sentry.captureMessage("invite action input");
+        return { email: EMAIL, firstName: "Bob Sample", url, shareUrl: url };
+      });
+      expect(result.shareUrl).toBe(url);
+      // The real SDK writes this extra after the callback returns. Capture from
+      // that retained scope so the result, not a fabricated extra, is transported.
+      expect(resultScope?.getScopeData().extra.server_action_result).toEqual(result);
+      expect(resultScope).toBeDefined();
+      Sentry.withIsolationScope(resultScope!, () => Sentry.captureMessage("invite action result"));
+      await Sentry.flush(5000);
+      const envelopes = sent.slice(before);
+      expect(capturedEvent(envelopes, "invite action input").contexts?.server_action_input).toEqual({
+        ...input, url: "https://www.example.com/s/[inviteToken]", shareUrl: "[Filtered]",
+      });
+      expect(capturedEvent(envelopes, "invite action result").extra?.server_action_result).toEqual({
+        ...result, url: "https://www.example.com/s/[inviteToken]", shareUrl: "[Filtered]",
+      });
+      expect(envelopes.join("\n")).toContain(EMAIL);
+      expect(envelopes.join("\n")).not.toContain("SENTRYTEST_");
+    });
+  });
+
+  it("carries invitee names and emails in incoming request bodies while filtering shareUrl", async () => {
+    await withCleanScopes(async () => {
+      const before = sent.length;
+      const body = { invites: [{ firstName: "Alice Example", email: EMAIL }], shareUrl: url };
+      Sentry.getCurrentScope().setSDKProcessingMetadata({ normalizedRequest: {
+        url: "https://www.example.com/api/admin/invites", method: "POST",
+        headers: { "content-type": "application/json" }, data: JSON.stringify(body),
+      } });
+      Sentry.captureMessage("invite request body");
+      await Sentry.flush(5000);
+      const envelopes = sent.slice(before);
+      const request = capturedEvent(envelopes, "invite request body").request;
+      expect(request?.data).toBe(JSON.stringify({ ...body, shareUrl: "[Filtered]" }));
+      expect(envelopes.join("\n")).toContain(EMAIL);
+      expect(envelopes.join("\n")).not.toContain(token);
+    });
+  });
+
+  it.each(["inviteToken", "claimToken"])("carries a plain-text %s tuple body and drops the router header", async (key) => {
+    await withCleanScopes(async () => {
+      const before = sent.length;
+      const tuple = JSON.stringify([key, token, "d"]);
+      const body = `1:${tuple}\n2:${JSON.stringify({ email: EMAIL, firstName: "Alice Example" })}`;
+      Sentry.getCurrentScope().setSDKProcessingMetadata({ normalizedRequest: {
+        url: "https://www.example.com/share", method: "POST",
+        headers: { "content-type": "text/plain", "next-router-state-tree": encodeURIComponent(tuple) }, data: body,
+      } });
+      Sentry.captureMessage(`router tuple ${key}`);
+      await Sentry.flush(5000);
+      const envelopes = sent.slice(before);
+      const request = capturedEvent(envelopes, `router tuple ${key}`).request;
+      expect(request?.data).toBe(body.replace(token, "[Filtered]"));
+      expect(request?.headers?.["content-type"]).toBe("text/plain");
+      expect(request?.headers?.["next-router-state-tree"]).toBeUndefined();
+      expect(envelopes.join("\n")).toContain(EMAIL);
+      expect(envelopes.join("\n")).not.toContain(token);
+    });
+  });
+
+  it.each(["inviteToken", "claimToken"])("keeps email in Replay responseBody while filtering a %s response segment and invite URL", (key) => {
+    const segment = segmentToTransportSegment([key, token, "d", null]);
+    expect(segment).toHaveProperty("k", token);
+    const responseBody = `0:${JSON.stringify({ b: "build", f: [["", "children", { s: segment, d: { r: { email: EMAIL, firstName: "Alice Example", url, shareUrl: url } } }]], S: false })}`;
+    const event = scrubRecordingEvent({ type: 5, timestamp: 1, data: { tag: "performanceSpan", payload: { data: { responseBody } } } });
+    const recorded = JSON.stringify(event);
+    expect(recorded).toContain(EMAIL);
+    expect(recorded).toContain("Alice Example");
+    expect(recorded).toContain("/s/[inviteToken]");
+    expect(recorded).toContain("[Filtered]");
+    expect(recorded).not.toContain(token);
+  });
+
+  it("routes a real Pino line to Sentry Logs with contributor fields intact and bearer fields redacted", async () => {
+    await withCleanScopes(async () => {
+      const before = sent.length;
+      const lines: string[] = [];
+      const log = buildLogger({ level: "info", destination: { write: (line) => { lines.push(line); } } });
+      log.info({ email: EMAIL, name: "Alice Example", shareUrl: url, token, inviteToken: token }, "invite pino fixture");
+      await Sentry.flush(5000);
+      expect(lines.join("\n")).toContain(EMAIL);
+      expect(lines.join("\n")).not.toContain(token);
+      expect(lines.join("\n")).toContain("[Redacted]");
+      const envelopes = sent.slice(before);
+      const logs = envelopes.filter((item) => item.includes('"type":"log"'));
+      expect(logs.join("\n")).toContain("invite pino fixture");
+      expect(logs.join("\n")).toContain("auto.log.pino");
+      expect(logs.join("\n")).toContain(EMAIL);
+      expect(logs.join("\n")).toContain("Alice Example");
+      // beforeSendLog applies the Sentry marker to already-redacted Pino bearer fields.
+      expect(logs.join("\n")).toContain("[Filtered]");
+      expect(envelopes.join("\n")).not.toContain(token);
+    });
   });
 });

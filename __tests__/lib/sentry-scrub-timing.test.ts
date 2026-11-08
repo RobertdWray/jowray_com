@@ -89,6 +89,29 @@ describe("the member scanner is linear on adversarial text (issue #43, T3)", () 
   });
 });
 
+
+describe("router tuple scanning stays linear (D21)", () => {
+  it.each(["inviteToken", "claimToken"])("bounds repeated %s tuple starts and a 200k-character unterminated value", (key) => {
+    for (const quote of ['"', '\\"']) {
+      const prefix = `[${quote}${key}${quote},${quote}`;
+      // Each candidate consumes the next opening bracket as its value, then resumes forward.
+      const repeated = prefix.repeat(8_000);
+      const expected = (prefix + `[Filtered]${quote}${key}${quote},${quote}`).repeat(4_000);
+      const shapes = [
+        { text: repeated, expected },
+        { text: `1:${prefix}${"x".repeat(ADVERSARIAL_LENGTH)}`, expected: `1:${prefix}[Filtered]${quote}` },
+        { text: `1:[${" ".repeat(ADVERSARIAL_LENGTH)}${quote}${key}${quote},${quote}${TEST_TOKEN}${quote}]`, expected: `1:[${" ".repeat(ADVERSARIAL_LENGTH)}${quote}${key}${quote},${quote}[Filtered]${quote}]` },
+      ];
+      for (const { text, expected } of shapes) {
+        expect(text.length).toBeLessThan(MAX_SCRUB_TEXT_LENGTH);
+        const { ms, value } = fastest(() => scrubString(text));
+        expect(value).toBe(expected);
+        expect(ms).toBeLessThan(BUDGET_MS);
+      }
+    }
+  });
+});
+
 describe("oversized text is bounded before scanning", () => {
   it("replaces a string longer than the cap with the oversized marker, quickly, wherever it sits", () => {
     const huge = `"${repeatTo("token", MAX_SCRUB_TEXT_LENGTH * 4)}`;
@@ -110,5 +133,54 @@ describe("oversized text is bounded before scanning", () => {
     const body = JSON.stringify({ memories: Array.from({ length: 10 }, () => ({ note, files: [] })) });
     expect(body.length).toBeLessThan(MAX_SCRUB_TEXT_LENGTH);
     expect(scrubSecrets(body)).toBe(body);
+  });
+});
+
+
+describe("RSC response object scanning stays linear (B1)", () => {
+  it.each(["inviteToken", "claimToken"])("bounds repeated %s starts without k and unterminated k values", (name) => {
+    for (const quote of ['"', '\\"']) {
+      const start = `{${quote}n${quote}:${quote}${name}${quote},`;
+      const repeated = start.repeat(8_000);
+      const prefix = `${start}${quote}k${quote}:${quote}`;
+      const shapes = [
+        { text: `0:${repeated}`, expected: `0:${repeated}` },
+        { text: `0:${repeated}${quote}k${quote}:${quote}${TEST_TOKEN}${quote}}`, expected: `0:${repeated}${quote}k${quote}:${quote}[Filtered]${quote}}` },
+        { text: `0:${prefix}${"x".repeat(ADVERSARIAL_LENGTH)}`, expected: `0:${prefix}[Filtered]${quote}` },
+      ];
+      for (const { text, expected } of shapes) {
+        expect(text.length).toBeLessThan(MAX_SCRUB_TEXT_LENGTH);
+        const { ms, value } = fastest(() => scrubString(text));
+        expect(value).toBe(expected);
+        expect(ms).toBeLessThan(BUDGET_MS);
+      }
+    }
+  });
+});
+
+
+describe("RSC parameter-name anchor search stays linear (S1)", () => {
+  it.each(["inviteToken", "claimToken"])("bounds repeated and bare %s names plus an unmatched-quote prefix", (name) => {
+    for (const quote of ['"', '\\"']) {
+      const member = `${quote}n${quote}:${quote}${name}${quote}`;
+      const segment = `{${member},${quote}k${quote}:${quote}${TEST_TOKEN}${quote}}`;
+      const safeSegment = segment.replace(TEST_TOKEN, FILTERED);
+      const noKey = `0:{${`${member},`.repeat(7_000)}}`;
+      const bareNames = `${quote}${name}${quote} `.repeat(10_000);
+      // An odd number of quotes (about 200k characters) must not poison later matching.
+      const quoteCount = Math.floor(ADVERSARIAL_LENGTH / quote.length) | 1;
+      const unmatched = quote.repeat(quoteCount);
+      const shapes = [
+        { text: noKey, expected: noKey },
+        { text: `${bareNames}0:${segment}`, expected: `${bareNames}0:${safeSegment}` },
+        { text: `${unmatched}\n0:${segment}`, expected: `${unmatched}\n0:${safeSegment}` },
+      ];
+      for (const { text, expected } of shapes) {
+        expect(text.length).toBeLessThan(MAX_SCRUB_TEXT_LENGTH);
+        const { ms, value } = fastest(() => scrubString(text));
+        expect(value).toBe(expected);
+        expect(ms).toBeLessThan(BUDGET_MS);
+      }
+    }
   });
 });

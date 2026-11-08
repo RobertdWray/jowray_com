@@ -1,8 +1,37 @@
+import { segmentToTransportSegment } from "next/dist/shared/lib/rsc-transport";
 import { describe, expect, it } from "vitest";
 
 import { scrubBreadcrumb, scrubEvent, scrubLog, scrubSpan, scrubUrl } from "@/lib/sentry/scrub";
 
 const TOKEN = "AbCdEf0123456789_-AbCdEf0123456789_-AbCdEf0";
+
+describe("percent-encoded token characters", () => {
+  it.each([
+    ["s", "inviteToken", "kENTRYTEST_xk", "%6BENTRYTEST_xk"],
+    ["s", "inviteToken", "kENTRYTEST_xk", "%6bENTRYTEST_xk"],
+    ["s", "inviteToken", "kENTRYTEST_xk", "kENTRYTEST_x%6B"],
+    ["s", "inviteToken", "kENTRYTEST_xk", "kENTRYTEST_x%6b"],
+    ["m", "claimToken", "kENTRYTEST_claimk", "%6BENTRYTEST_claimk"],
+    ["m", "claimToken", "kENTRYTEST_claimk", "%6bENTRYTEST_claimk"],
+    ["m", "claimToken", "kENTRYTEST_claimk", "kENTRYTEST_claim%6B"],
+    ["m", "claimToken", "kENTRYTEST_claimk", "kENTRYTEST_claim%6b"],
+  ])("scrubs /%s/%s URLs with encoded token %s -> %s", (segment, parameter, token, encoded) => {
+    const url = `https://www.jowray.com/${segment}/${encoded}`;
+    const safeUrl = `https://www.jowray.com/${segment}/[${parameter}]`;
+    const outputs = [scrubUrl(url), scrubString(`GET ${url} completed in 12ms`)];
+    expect(outputs).toEqual([safeUrl, `GET ${safeUrl} completed in 12ms`]);
+    for (const output of outputs) {
+      expect(output).not.toContain(token);
+      expect(output).not.toContain(encoded);
+    }
+  });
+
+  it("keeps ordinary percent signs and encoded characters outside token paths", () => {
+    const text = "Upload 50% complete; https://www.example.com/media/hello%20world";
+    expect(scrubUrl(text)).toBe(text);
+    expect(scrubString(text)).toBe(text);
+  });
+});
 
 describe("scrubUrl", () => {
   it("replaces a claim token path segment", () => {
@@ -124,7 +153,7 @@ describe("scrubUrl leaves ordinary text alone", () => {
 // ---------------------------------------------------------------------------
 // Scrubber v2 (plan 2026-11-04 §7.3): bearer secrets by key, not only by URL.
 // ---------------------------------------------------------------------------
-import { scrubHeaders, scrubRecordingEvent, scrubReplayEvent, scrubSecrets } from "@/lib/sentry/scrub";
+import { scrubHeaders, scrubRecordingEvent, scrubReplayEvent, scrubSecrets, scrubString } from "@/lib/sentry/scrub";
 import { SECRET_FIELD_KEYS, SECRET_HEADER_KEYS, SECRET_KEY_FRAGMENTS } from "@/lib/sentry/secrets";
 
 const TEST_TOKEN = "SENTRYTEST_" + "a".repeat(32);
@@ -133,7 +162,7 @@ const FILTERED = "[Filtered]";
 
 describe("secrets constants", () => {
   it("name the bearer fields, key fragments and headers", () => {
-    expect(SECRET_FIELD_KEYS).toEqual(["claimToken", "claimTokens", "claimLink", "ticket", "clientPayload", "sig", "key", "presignedUrl"]);
+    expect(SECRET_FIELD_KEYS).toEqual(["claimToken", "claimTokens", "claimLink", "ticket", "clientPayload", "sig", "key", "presignedUrl", "shareUrl", "inviteToken"]);
     expect(SECRET_KEY_FRAGMENTS).toEqual(["token", "ticket"]);
     expect(SECRET_HEADER_KEYS).toEqual(["cookie", "authorization", "x-vercel-protection-bypass", "x-vercel-signature", "next-router-state-tree"]);
   });
@@ -290,6 +319,31 @@ describe("scrubHeaders", () => {
 });
 
 describe("scrubEvent with the alpha data policy", () => {
+  it("scrubs nested invite locals and plain URL locals while retaining invitee identity", () => {
+    const token = "SENTRYTEST_x";
+    const shareUrl = `https://www.jowray.com/s/${token}`;
+    const event = scrubEvent({
+      exception: { values: [{ type: "Error", value: "invariant failed", stacktrace: { frames: [{
+        filename: "create-invites.ts",
+        vars: {
+          prepared: [{ index: 0, token, tokenHash: "synthetic-hash", shareUrl, email: "alice@example.com", firstName: "Alice" }],
+          results: [{ status: "created", token, shareUrl }],
+          link: shareUrl,
+        },
+      }] } }] },
+    });
+    const text = JSON.stringify(event);
+    expect(text).not.toContain(token);
+    expect(text).not.toContain(shareUrl);
+    expect(text).toContain("alice@example.com");
+    expect(text).toContain("Alice");
+    expect(event.exception.values[0].stacktrace.frames[0].vars).toEqual({
+      prepared: [{ index: 0, token: FILTERED, tokenHash: FILTERED, shareUrl: FILTERED, email: "alice@example.com", firstName: "Alice" }],
+      results: [{ status: "created", token: FILTERED, shareUrl: FILTERED }],
+      link: "https://www.jowray.com/s/[inviteToken]",
+    });
+  });
+
   it("scrubs contexts, extra, request data, request headers and frame locals, and keeps the user", () => {
     const event = scrubEvent({
       user: { email: "sentry-test@jowray.com", username: "Sentry Test" },
@@ -531,5 +585,208 @@ describe("the escaped-context scanner is idempotent (regression check M2)", () =
     const once = scrubSecrets(flight) as string;
     expect(once).not.toContain(TEST_TOKEN);
     expect(once).toContain('\\"b\\":\\"keep\\"');
+  });
+});
+
+
+describe("invite bearer secrets (R10) and router tuples (D21)", () => {
+  const inviteToken = "SENTRYTEST_x";
+
+  it.each([inviteToken, `${inviteToken}longer_-`])("scrubs invite paths containing 12 or more base64url characters: %s", (token) => {
+    expect(scrubUrl(`/s/${token}`)).toBe("/s/[inviteToken]");
+    expect(scrubUrl(`/S/${token}/edit`)).toBe("/s/[inviteToken]/edit");
+    expect(scrubUrl(`https://www.example.com/s/${token}?x=1`)).toBe("https://www.example.com/s/[inviteToken]?x=1");
+    expect(scrubString(`Visit https://www.example.com/s/${token}?x=1 now?`)).toBe("Visit https://www.example.com/s/[inviteToken]?x=1 now?");
+    expect(scrubString(`Visit /s/${token}?`)).toBe("Visit /s/[inviteToken]?");
+  });
+
+  it.each(["/s/SENTRYTEST_", "/s/short", "/share", "/s/", "Is this ready?", "Alice & Bob"])("keeps ordinary text or short paths: %s", (text) => {
+    expect(scrubUrl(text)).toBe(text);
+  });
+
+  it("filters shareUrl and inviteToken keys while retaining invitee identity", () => {
+    const value = { firstName: "Alice Example", email: "alice@example.com", shareUrl: `https://www.example.com/s/${inviteToken}`, inviteToken };
+    const expected = { ...value, shareUrl: FILTERED, inviteToken: FILTERED };
+    expect(scrubSecrets(value)).toEqual(expected);
+    expect(scrubString(JSON.stringify(value))).toBe(JSON.stringify(expected));
+    expect(scrubString(`1:${JSON.stringify(value)}`)).toBe(`1:${JSON.stringify(expected)}`);
+    expect(scrubString(`1:${JSON.stringify(JSON.stringify(value))}`)).toBe(`1:${JSON.stringify(JSON.stringify(expected))}`);
+  });
+
+  describe.each(["inviteToken", "claimToken"])("%s tuples", (key) => {
+    const tuple = [key, inviteToken, "d"];
+    const filtered = [key, FILTERED, "d"];
+
+    it("filters only the string value in arrays, including nested router state", () => {
+      expect(scrubSecrets(tuple)).toEqual(filtered);
+      expect(scrubString(JSON.stringify(tuple))).toBe(JSON.stringify(filtered));
+      const state = ["", { children: ["s", { children: [tuple, {}] }] }];
+      const expected = ["", { children: ["s", { children: [filtered, {}] }] }];
+      expect(scrubSecrets(state)).toEqual(expected);
+      expect(scrubString(JSON.stringify(state))).toBe(JSON.stringify(expected));
+      expect(tuple[1]).toBe(inviteToken); // callers keep their bearer value
+    });
+
+    it("filters Flight lines and escaped JSON inside strings", () => {
+      for (const prefix of ["1:", "log "]) {
+        expect(scrubString(`${prefix}${JSON.stringify(tuple)}`)).toBe(`${prefix}${JSON.stringify(filtered)}`);
+        expect(scrubString(`${prefix}${JSON.stringify(JSON.stringify(tuple))}`)).toBe(`${prefix}${JSON.stringify(JSON.stringify(filtered))}`);
+      }
+      expect(scrubString(JSON.stringify(JSON.stringify(tuple)))).toBe(JSON.stringify(JSON.stringify(filtered)));
+      expect(scrubSecrets({ body: JSON.stringify({ state: JSON.stringify(tuple) }) })).toEqual({ body: JSON.stringify({ state: JSON.stringify(filtered) }) });
+    });
+
+    it("preserves arbitrary whitespace around tuple tokens in Flight text", () => {
+      for (const quote of ['"', '\\"']) {
+        const text = `1:[ \n\t${quote}${key}${quote}\r , \t${quote}${inviteToken}${quote} , ${quote}d${quote} ]`;
+        expect(scrubString(text)).toBe(text.replace(inviteToken, FILTERED));
+      }
+    });
+
+    it("handles whitespace escaped by an enclosing JSON string", () => {
+      const spaced = `[ \n\t"${key}"\r , \t"${inviteToken}" , "d" ]`;
+      const encoded = JSON.stringify(spaced);
+      expect(scrubString(encoded)).toBe(encoded.replace(inviteToken, FILTERED));
+      expect(scrubString(`1:${encoded}`)).toBe(`1:${encoded.replace(inviteToken, FILTERED)}`);
+    });
+
+    it("filters unterminated values to the end, including escaped values", () => {
+      for (const quote of ['"', '\\"']) {
+        expect(scrubString(`1:[${quote}${key}${quote},${quote}${inviteToken}`)).toBe(`1:[${quote}${key}${quote},${quote}${FILTERED}${quote}`);
+      }
+    });
+
+    it("does not confuse a non-string value or a later array element with a router tuple", () => {
+      for (const value of [[key, 7, "d"], ["name", key, "Alice Example"], ["name", "Alice Example"]]) {
+        expect(scrubSecrets(value)).toEqual(value);
+        expect(scrubString(`1:${JSON.stringify(value)}`)).toBe(`1:${JSON.stringify(value)}`);
+      }
+    });
+  });
+});
+
+
+describe("Next RSC response transport segments (B1)", () => {
+  describe.each([
+    { name: "inviteToken", token: "SENTRYTEST_ab" },
+    { name: "claimToken", token: "SENTRYTEST_abcdefghij" },
+  ])("$name", ({ name, token }) => {
+    function fixture() {
+      // Installed Next requires the fourth tuple entry (static siblings; null = unknown).
+      const segment = segmentToTransportSegment([name, token, "d", null]);
+      // Pin the installed Next wire shape: an upgrade must not make this proof vacuous.
+      expect(segment).toHaveProperty("k", token);
+      expect(segment).toHaveProperty("n", name);
+      const wrap = (s: unknown) => ({ b: "build", f: [["", "children", { s, d: { r: { email: "alice@example.com", firstName: "Alice Example" } } }]], S: false });
+      return { segment, payload: wrap(segment), expected: wrap(segmentToTransportSegment([name, FILTERED, "d", null])) };
+    }
+
+    it("resyncs after an unclosed segment and a Flight T row with an unmatched quote", () => {
+      const value = "SENTRYTEST_abcdefghij";
+      const note = `She was 5' 2" tall`;
+      const segment = segmentToTransportSegment([name, value, "d", null]);
+      const text = `1:{"n":"${name}","t":"d"\n3:T20,${note}\n4:${JSON.stringify(segment)}`;
+      expect(text).toContain(value);
+
+      const result = scrubString(text);
+      expect(result).not.toContain(value);
+      expect(result).toContain(note);
+      expect(result).toBe(text.replace(value, FILTERED));
+    });
+
+    it("keeps k when a token parameter name is the value of x instead of n", () => {
+      const value = { x: name, k: "keep-this-value" };
+      const text = `1:${JSON.stringify(value)}`;
+      expect(scrubString(text)).toBe(text);
+      expect(scrubString(JSON.stringify(value))).toBe(JSON.stringify(value));
+      expect(scrubSecrets(value)).toEqual(value);
+    });
+
+    describe.each(["plain", "escaped"])("resync after raw text (%s, S1)", (quoting) => {
+      it.each([
+        ["a Flight T row", "1:Ta,5' 2\" tall\n"],
+        ["an unmatched quote in a log message", 'client said "hi '],
+        ["an unmatched escaped quote", 'client said \\"hi '],
+        ["three escaped quotes", '\\"one \\"two \\"three '],
+      ])("filters the segment after %s, retaining the preceding text", (_label, prefix) => {
+        const { payload, expected } = fixture();
+        const encode = (value: unknown) => quoting === "plain" ? JSON.stringify(value) : JSON.stringify(JSON.stringify(value));
+        const text = `${prefix}0:${encode(payload)}`;
+        const result = scrubString(text);
+        expect(result).toBe(`${prefix}0:${encode(expected)}`);
+        expect(result).not.toContain(token);
+        expect(result).toContain("alice@example.com");
+        expect(scrubString(result)).toBe(result);
+      });
+
+      it("resyncs again after another unmatched quote between segments", () => {
+        const { payload, expected } = fixture();
+        const encode = (value: unknown) => quoting === "plain" ? JSON.stringify(value) : JSON.stringify(JSON.stringify(value));
+        const rawNote = quoting === "plain" ? 'client said "hi ' : 'client said \\"hi ';
+        const result = scrubString(`${rawNote}0:${encode(payload)}\n${rawNote}1:${encode(payload)}`);
+        expect(result).toBe(`${rawNote}0:${encode(expected)}\n${rawNote}1:${encode(expected)}`);
+      });
+    });
+
+    it("filters k in parsed values, retaining and recursively scrubbing the other members", () => {
+      const { segment, payload, expected } = fixture();
+      expect(scrubSecrets(payload)).toEqual(expected);
+      expect(scrubString(JSON.stringify(payload))).toBe(JSON.stringify(expected));
+      expect(segment).toHaveProperty("k", token);
+      expect(scrubSecrets({ n: name, k: token, other: { claimToken: token }, email: "alice@example.com" })).toEqual({ n: name, k: FILTERED, other: { claimToken: FILTERED }, email: "alice@example.com" });
+    });
+
+    it("filters real Flight lines and escaped JSON inside strings", () => {
+      const { payload, expected } = fixture();
+      for (const encode of [
+        (value: unknown) => `0:${JSON.stringify(value)}`,
+        (value: unknown) => JSON.stringify(JSON.stringify(value)),
+        (value: unknown) => `0:${JSON.stringify(JSON.stringify(value))}`,
+        (value: unknown) => `0:${JSON.stringify({ body: JSON.stringify(value) })}`,
+      ]) {
+        const result = scrubString(encode(payload));
+        expect(result).toBe(encode(expected));
+        expect(result).toContain("alice@example.com");
+        expect(result).not.toContain(token);
+        expect(scrubString(result)).toBe(result);
+      }
+    });
+
+    it("accepts whitespace around members and encoded whitespace inside a JSON string", () => {
+      const text = `{ \n "n" \t: "${name}" ,\r "t" : "d" , "k" \n: \t"${token}" , "s" : null }`;
+      for (const value of [text, JSON.stringify(text)]) {
+        expect(scrubString(`0:${value}`)).toBe(`0:${value.replace(token, FILTERED)}`);
+      }
+    });
+
+    it("stays in the matching object, crossing nested values without filtering their k members", () => {
+      const value = { n: name, child: { k: "keep-child", text: "braces } and { in a string" }, list: [{ k: "keep-list" }], k: token, after: { k: "keep-after" } };
+      for (const encode of [JSON.stringify, (v: unknown) => JSON.stringify(JSON.stringify(v))]) {
+        expect(scrubString(`1:${encode(value)}`)).toBe(`1:${encode({ ...value, k: FILTERED })}`);
+        const siblings = [{ n: name, child: { k: "keep-child" } }, { k: "keep-sibling" }];
+        expect(scrubString(`1:${encode(siblings)}`)).toBe(`1:${encode(siblings)}`);
+      }
+    });
+
+    it("filters nested matching objects and an outer k independently", () => {
+      const value = { n: name, child: { n: name, k: token }, k: token };
+      const expected = { n: name, child: { n: name, k: FILTERED }, k: FILTERED };
+      expect(scrubString(`1:${JSON.stringify(value)}`)).toBe(`1:${JSON.stringify(expected)}`);
+      expect(scrubString(`1:${JSON.stringify(JSON.stringify(value))}`)).toBe(`1:${JSON.stringify(JSON.stringify(expected))}`);
+    });
+
+    it("filters a truncated k string through EOF, in both quotings", () => {
+      for (const quote of ['"', '\\"']) {
+        const prefix = `1:{${quote}n${quote}:${quote}${name}${quote},${quote}t${quote}:${quote}d${quote},${quote}k${quote}:${quote}`;
+        expect(scrubString(`${prefix}${token}`)).toBe(`${prefix}${FILTERED}${quote}`);
+      }
+    });
+  });
+
+  it("keeps ordinary segment names and non-string k values", () => {
+    for (const value of [{ n: "slug", t: "d", k: "keep" }, { n: "inviteToken", k: null }, { n: "claimToken", k: 7 }]) {
+      expect(scrubSecrets(value)).toEqual(value);
+      expect(scrubString(`1:${JSON.stringify(value)}`)).toBe(`1:${JSON.stringify(value)}`);
+    }
   });
 });

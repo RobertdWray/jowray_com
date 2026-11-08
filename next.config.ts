@@ -40,6 +40,14 @@ const nextConfig: NextConfig = {
         headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
       },
       {
+        // Invite links carry the token in the path; prevent referrer leaks and indexing.
+        source: "/s/:path*",
+        headers: [
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
+        ],
+      },
+      {
         // The family admin pages: never indexed, and admin URLs never reach another
         // host's logs through Referer. `:path*` is zero or more segments, so `/admin` matches.
         source: "/admin/:path*",

@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/nextjs";
 
 import { DATA_COLLECTION } from "@/lib/sentry/data-collection";
+import { REPLAY_OPTIONS } from "@/lib/sentry/replay-options";
 import { scrubBreadcrumb, scrubEvent, scrubLog, scrubRecordingEvent, scrubReplayEvent, scrubSpan } from "@/lib/sentry/scrub";
 
 /**
@@ -20,10 +21,11 @@ import { scrubBreadcrumb, scrubEvent, scrubLog, scrubRecordingEvent, scrubReplay
  * Bearer secrets still never leave the browser: `scrub*` runs on every event,
  * span, log and breadcrumb, on the replay's URL list and on every replay
  * custom event (network bodies, console). Two residuals Rob accepted on
- * 2026-11-04: the `/m/<token>` page URL inside replay DOM recordings (rrweb's
- * meta event, which no hook scrubs) and user-taken feedback screenshots.
- * Nothing is masked or blocked on purpose (plan §9.2). The values for after
- * the alpha are in plan §13.
+ * 2026-11-04 (extended by R5, 2026-11-07): `/m/<token>` and `/s/<token>`
+ * page URLs inside replay DOM recordings (rrweb's meta event, which no hook
+ * scrubs) and user-taken feedback screenshots. Text, inputs and media are
+ * unmasked, including placeholders and title/aria-label attributes (R12, D20).
+ * The SDK still masks password inputs. The values for after the alpha are in plan §13.
  *
  * Everything here is synchronous top-level code, as the Next.js convention
  * requires; the 16 ms dev-init warning is expected with these integrations.
@@ -41,12 +43,9 @@ Sentry.init({
   dataCollection: DATA_COLLECTION,
   integrations: [
     Sentry.replayIntegration({
-      maskAllText: false,
-      maskAllInputs: false,
-      blockAllMedia: false,
+      ...REPLAY_OPTIONS,
       // Same-origin only: Server Function and media requests, never the Blob uploads.
       networkDetailAllowUrls: [window.location.origin],
-      networkCaptureBodies: true,
       beforeAddRecordingEvent: scrubRecordingEvent,
     }),
     Sentry.feedbackIntegration({
@@ -72,7 +71,7 @@ Sentry.init({
   beforeBreadcrumb: (breadcrumb) => scrubBreadcrumb(breadcrumb),
   beforeSendLog: (log) => scrubLog(log),
 });
-// `beforeSend` never sees replay events; this keeps `/m/<token>` out of the replay's URL list.
+// `beforeSend` never sees replay events; this keeps claim and invite tokens out of the replay's URL list.
 Sentry.addEventProcessor(scrubReplayEvent);
 
 export const onRouterTransitionStart = Sentry.captureRouterTransitionStart;
