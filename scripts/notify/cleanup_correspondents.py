@@ -78,6 +78,7 @@ import rank_correspondents as rc
 
 # ---- review settings (all of them go into the manifest) ---------------------------
 PROMPT_VERSION = "2026-11-08.2"
+SDK_PIN = "1.17.0"   # the anthropic version in the dependency header above
 HAIKU_MODEL = "claude-haiku-5-5"
 JUDGE_MODEL = "claude-opus-5-5"
 EFFORT = "medium"

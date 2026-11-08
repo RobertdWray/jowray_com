@@ -5,7 +5,6 @@ from __future__ import annotations
 import collections
 import contextlib
 import csv
-import importlib.util
 import json
 import stat
 import subprocess
@@ -20,6 +19,15 @@ import cleanup_correspondents as cc
 import rank_correspondents as rc
 
 REAL_SDK = cc.real_sdk  # CleanupCase replaces cc.real_sdk; the offline SDK test calls the real one
+
+
+def pinned_sdk_installed() -> bool:
+    """True only for the SDK version the script pins: the offline test drives its internals."""
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return version("anthropic") == cc.SDK_PIN
+    except PackageNotFoundError:
+        return False
 from test_rank_correspondents import ALICE, BOB, OWNER, TempTestCase, headers
 
 ENVELOPE = b"From owner@example.com Tue Jan  2 12:00:00 2024\n"
@@ -1689,6 +1697,10 @@ class SpendCommandTests(CleanupCase):
 
 
 class NoSdkTests(unittest.TestCase):
+    def test_the_pin_matches_the_dependency_header(self):
+        header = Path(cc.__file__).read_text(encoding="utf-8").split("# ///", 2)[1]
+        self.assertIn(f'"anthropic=={cc.SDK_PIN}"', header)
+
     def test_module_imports_without_the_sdk(self):
         # A fresh interpreter: the offline SDK test imports anthropic into this one when present.
         code = ("import sys; sys.path.insert(0, sys.argv[1]); import cleanup_correspondents; "
@@ -1698,7 +1710,7 @@ class NoSdkTests(unittest.TestCase):
         self.assertEqual(done.stdout.strip(), "False")
 
 
-@unittest.skipUnless(importlib.util.find_spec("anthropic"), "the anthropic SDK is not installed (CI is stdlib only)")
+@unittest.skipUnless(pinned_sdk_installed(), "anthropic " + cc.SDK_PIN + " is not installed (CI is stdlib only)")
 class RealSdkOfflineTests(CleanupCase):
     """The real anthropic tool runner on an in-process transport: no network, no spend.
 
