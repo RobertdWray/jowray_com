@@ -5,15 +5,16 @@ import { publicMediaHref } from "./hrefs";
 import { PlayBadge } from "./memory-card";
 
 /**
- * A playable public video on the memory page, in a native player (plan D6 as amended, C34): `preload="none"`, so
- * nothing is requested, or counted against the public allowance, until the visitor presses play. The caption's
- * duration comes from the database, not the element.
+ * A playable public video on the memory page, in a native player (plan D6 as amended, C34). `preload="none"`: none
+ * of the video is requested, or counted against the public allowance, until the visitor presses play. The `poster`
+ * ([C26]) is the one request before that: the video's small server-made JPEG from `?v=thumb` (D7: an image or a 404,
+ * never the video), shown only when that copy is READY. The caption's duration comes from the database, not the element.
  */
 export function VideoPlayer({ item }: { item: PublicMediaItem }) {
   return (
     <figure className="flex flex-col gap-3">
       <div className="overflow-hidden rounded-[16px] border-[3px] border-dashed border-wood bg-wood-light p-2">
-        <video controls preload="none" playsInline className="aspect-video w-full rounded-[10px] bg-walnut">
+        <video controls preload="none" poster={item.hasThumb ? publicMediaHref(item.id, "thumb") : undefined} playsInline className="aspect-video w-full rounded-[10px] bg-walnut">
           {/* No `type`: with one source the hint can only make a browser skip a file it could play by sniffing (Chrome skips `video/quicktime`, plan C50). */}
           <source src={publicMediaHref(item.id, "web")} />
         </video>

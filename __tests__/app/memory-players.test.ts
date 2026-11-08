@@ -21,8 +21,9 @@ function sourceTag(html: string): string {
 
 /**
  * The public players (PR #94, Team Code Review round 1, B1-1 and B1-2):
- * - `preload="none"`: opening a memory page requests nothing from `/api/public-media`, so a page view charges no
- *   viewer the whole original against the public allowance until they press play (plan D6 as amended).
+ * - `preload="none"`: opening a memory page requests none of a recording or video from `/api/public-media`, so a page
+ *   view charges no viewer the whole original against the public allowance until they press play (plan D6 as
+ *   amended). A video's poster (video posters T11) is the only request: its small server-made JPEG, never the video.
  * - no `type` on the single `<source>`: a browser that answers `canPlayType` with "" for the stored mime type
  *   (Chrome for `video/quicktime`) skips a typed source without fetching it (HTML resource selection algorithm,
  *   plan [C50]); without the hint it sniffs the file, which it can often play.
@@ -54,12 +55,33 @@ describe("public memory players (PR #94 TCR round 1, B1-1 and B1-2)", () => {
     expect(video).toContain('preload="none"');
     expect(video).toMatch(/\bcontrols(=""|\s|>)/);
     expect(video).toMatch(/\bplaysinline(=""|\s|>)/i);
+    // No poster copy yet: no `poster` attribute, so the player looks as it did before posters.
+    expect(video).not.toMatch(/\bposter=/);
     expect(html).not.toContain('preload="metadata"');
     const source = sourceTag(html);
     expect(source).toContain(`src="/api/public-media/${VIDEO_ID}?v=web"`);
     expect(source).not.toMatch(/\btype=/);
     expect(html).not.toContain("video/quicktime");
     expect(html).toContain("At the lake · 2 min");
+  });
+
+  it("shows a video's server-made poster from the thumb route and still preloads nothing of the video (video posters T11)", () => {
+    const item: PublicMediaItem = {
+      id: VIDEO_ID,
+      kind: "VIDEO",
+      mimeType: "video/quicktime",
+      caption: "At the lake",
+      durationSeconds: 125,
+      width: 1920,
+      height: 1080,
+      hasThumb: true,
+      playable: "yes",
+    };
+    const html = renderToStaticMarkup(createElement(VideoPlayer, { item }));
+    const video = /<video\b[^>]*>/.exec(html)?.[0] ?? "";
+    expect(video).toContain(`poster="/api/public-media/${VIDEO_ID}?v=thumb"`);
+    expect(video).toContain('preload="none"');
+    expect(sourceTag(html)).toContain(`src="/api/public-media/${VIDEO_ID}?v=web"`);
   });
 
   it("says nothing plays until pressed when a video has neither a caption nor a duration", () => {

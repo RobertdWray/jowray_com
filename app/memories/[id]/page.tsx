@@ -145,7 +145,8 @@ function Player({ item, memory }: { item: PublicMediaItem; memory: PublicMemoryD
   if (item.playable !== "yes") {
     return <Waiting kind={item.kind} />;
   }
-  // Both players use `preload="none"` (plan D6 as amended, C34): nothing loads until the visitor presses play.
+  // Both players use `preload="none"` (plan D6 as amended, C34): none of the file loads until the visitor presses play.
+  // A video's poster, its small server-made JPEG, is the only request before that (video posters T11).
   if (item.kind === "VOICE") {
     return <AudioPlayer src={publicMediaHref(item.id, "web")} durationSeconds={item.durationSeconds} bars={fakeBars(`${memory.id}:${item.id}`, 40, 56, 10)} />;
   }
