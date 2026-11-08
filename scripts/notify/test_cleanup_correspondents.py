@@ -420,6 +420,21 @@ class ToolTests(CleanupCase):
         self.assertIn("at most 4", self.call(specs, "read_message", message_id=mid)["error"])
         self.assertEqual(tools.reads, 4)
 
+    def test_a_message_that_reached_the_cluster_only_by_bcc_can_be_read(self):
+        messages = default_messages() + [(headers(message_id="bcc1", sender=OWNER, to="Bob Sample <bob@example.com>",
+                                                  extra=[("Bcc", "Carol Fiction <carol@example.com>")]),
+                                          b"Dear Carol,\nA quiet note.")]
+        self.build(messages)
+        _, specs = self.tools(["carol@example.com"])
+        listed = self.call(specs, "list_messages", address="carol@example.com", direction="household_to_them",
+                           limit=20)
+        with contextlib.closing(rc.open_readonly_db(self.paths.mail)) as conn:
+            (bcc_mid,) = conn.execute("SELECT m.id FROM messages m JOIN participants p ON p.message_id = m.id "
+                                      "WHERE p.addr = 'carol@example.com' AND p.role = 'bcc'").fetchone()
+        self.assertIn(bcc_mid, [m["message_id"] for m in listed["items"]])
+        read = self.call(specs, "read_message", message_id=bcc_mid)
+        self.assertEqual((read["greeting"], read["direction"]), ("Dear Carol,", "household_to_them"))
+
     def test_read_message_refuses_a_moved_message(self):
         self.build()
         _, specs = self.tools([ALICE])

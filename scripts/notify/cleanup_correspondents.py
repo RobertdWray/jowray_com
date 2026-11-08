@@ -1138,8 +1138,10 @@ class AgentTools:
                                   (mid,)).fetchone()
         if found is None:
             return {"error": "no such message"}
+        # The same roles list_messages offers, Bcc included (a household message can reach
+        # someone only as a Bcc recipient).
         roles = {a for (a,) in self.mail.execute(
-            "SELECT addr FROM participants WHERE message_id = ? AND role IN ('from', 'to', 'cc')", (mid,))}
+            "SELECT addr FROM participants WHERE message_id = ? AND role IN ('from', 'to', 'cc', 'bcc')", (mid,))}
         if not roles & self.addresses:
             return {"error": "that message is not to or from this cluster"}
         msg_key, date, is_self, sender = found
