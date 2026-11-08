@@ -35,7 +35,8 @@ function messageOf(reason: unknown): string {
  * One call starts one frame server for the original, runs ffmpeg at `-ss 1` and, when that exits cleanly with no
  * frame, once more at `-ss 0`; both runs share the server, so the source cap and `sourceBytesRead` cover both. The
  * server is closed, its sockets destroyed and its reads aborted on every path out. Failures map to codes:
- * - the source cap → `source_limit`; a failed `read` → `decode_failed` with the error;
+ * - the source cap → `source_limit`; a failed `read`, or an exception answering a request → `decode_failed` with the
+ *   error; the loopback server's own error after listening (an `accept` failure) → `deferred` with the error;
  * - the deadline or the caller's signal → `timeout` (the child is SIGKILLed);
  * - no binary, or a spawn or listen failure → `deferred`;
  * - ffmpeg's pixel refusal → `too_many_pixels:<maxPixels>`; no video stream → `no_video_stream`;
@@ -134,6 +135,10 @@ export class FfmpegVideoFrameService implements VideoFrameService {
           const stderrTail = "stderrTail" in outcome && outcome.stderrTail ? outcome.stderrTail : undefined;
           if (reason instanceof FrameSourceError && reason.kind === "source_limit") {
             return fail("source_limit", reason.message, { sourceBytesRead, stderrTail });
+          }
+          if (reason instanceof FrameSourceError && reason.kind === "server_error") {
+            // The loopback server itself failed (EMFILE on accept, …): this instance's trouble, not the video's.
+            return fail("deferred", reason.message, { sourceBytesRead, stderrTail, error: reason });
           }
           const error = reason instanceof Error ? reason : new Error(String(reason));
           return fail("decode_failed", `the frame source failed: ${error.message}`, { sourceBytesRead, stderrTail, error });

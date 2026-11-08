@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { Server } from "node:http";
 import { randomBytes } from "node:crypto";
 import { access, chmod, constants, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,10 +7,10 @@ import { join, resolve } from "node:path";
 
 import ffmpegPath from "ffmpeg-static";
 import sharp from "sharp";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MAX_VIDEO_PIXELS, WINDOW_BYTES } from "@/lib/video-frames";
-import type { FrameRequestInfo } from "@/integrations/video-frames/frame-server";
+import { FrameSourceError, type FrameRequestInfo } from "@/integrations/video-frames/frame-server";
 import { createVideoFrameService, FfmpegVideoFrameService, type ExtractPosterInput, type ExtractPosterResult } from "@/services/video-frames";
 
 /**
@@ -135,13 +136,39 @@ function openHandles(): Record<string, number> {
   return counts;
 }
 
-/** ffmpeg processes still reading a frame URL (pgrep exits 1 when there are none). */
+/**
+ * This worker's ffmpeg children still reading a frame URL (`-P` keeps another run of this suite on the same machine
+ * out of it). pgrep exits 1 when there are none; any other failure is an error, never "none".
+ */
 function runningFrameReaders(): Promise<string[]> {
-  return new Promise((resolvePids) => {
-    execFile("pgrep", ["-f", "__frames/"], (error, stdout) => {
-      resolvePids(error ? [] : stdout.trim().split("\n").filter(Boolean));
+  return new Promise((resolvePids, reject) => {
+    execFile("pgrep", ["-P", String(process.pid), "-f", "__frames/"], (error, stdout) => {
+      if (!error) {
+        resolvePids(stdout.trim().split("\n").filter(Boolean));
+      } else if (error.code === 1) {
+        resolvePids([]);
+      } else {
+        reject(error);
+      }
     });
   });
+}
+
+/**
+ * The one-window design, checked from the request log: every answer is a 206 carrying at most one window, and every
+ * byte asked of `read` was carried by an answer ffmpeg asked for (no read-ahead, whatever the socket buffers hold).
+ */
+function expectOneWindowPerAnswer(requests: FrameRequestInfo[], sourceBytesRead: number, windowBytes = WINDOW_BYTES): number[] {
+  const lengths = requests.map((request) => {
+    expect(request).toMatchObject({ method: "GET", status: 206 });
+    expect(request.body).toBeDefined();
+    return request.body ? request.body.end - request.body.start + 1 : 0;
+  });
+  for (const length of lengths) {
+    expect(length).toBeLessThanOrEqual(windowBytes);
+  }
+  expect(sourceBytesRead).toBe(lengths.reduce((sum, length) => sum + length, 0));
+  return lengths;
 }
 
 const defaults = (source: Source, over: Partial<ExtractPosterInput> = {}): ExtractPosterInput => ({
@@ -204,7 +231,7 @@ describe("VideoFrameService.extractPoster (real ffmpeg-static binary)", { timeou
     // 160×90 stays 160×90: the scale never enlarges.
     expect([frame.width, frame.height]).toEqual([160, 90]);
     expect(requests.length).toBeLessThanOrEqual(5);
-    expect(requests.every((request) => request.method === "GET" && request.status === 206)).toBe(true);
+    expectOneWindowPerAnswer(requests, result.sourceBytesRead);
     expect(result.sourceBytesRead).toBeLessThanOrEqual(moov.size + 2 * WINDOW_BYTES);
   });
 
@@ -219,6 +246,12 @@ describe("VideoFrameService.extractPoster (real ffmpeg-static binary)", { timeou
     const frame = await frameOf(result.png);
     expect([frame.width, frame.height]).toEqual([width, height]);
     expect(requests.length).toBeLessThanOrEqual(5);
+    // From the design, not the kernel: ffmpeg asks for the header at 0, then the moov at its offset (one answer, cut at
+    // the end of the file), then the keyframe; each answer is one window, so the bound is moov + 2 windows.
+    const lengths = expectOneWindowPerAnswer(requests, result.sourceBytesRead);
+    const moovOffset = source.size - source.moovSize;
+    expect(requests.map((request) => request.body?.start)).toEqual([0, moovOffset, expect.any(Number)]);
+    expect(lengths).toEqual([WINDOW_BYTES, source.moovSize, WINDOW_BYTES]);
     expect(result.sourceBytesRead).toBeLessThanOrEqual(source.moovSize + 2 * WINDOW_BYTES);
     expect(result.sourceBytesRead).toBe(source.calls.reduce((sum, call) => sum + call.length, 0));
     // Never past the end, and never the padding's bulk.
@@ -233,7 +266,24 @@ describe("VideoFrameService.extractPoster (real ffmpeg-static binary)", { timeou
     expectOk(result);
     expect((await frameOf(result.png)).width).toBe(16);
     expect(requests.length).toBeLessThanOrEqual(5);
+    expectOneWindowPerAnswer(requests, result.sourceBytesRead);
     expect(result.sourceBytesRead).toBeLessThanOrEqual((moov?.size ?? 0) + 2 * WINDOW_BYTES);
+  });
+
+  it.each([
+    ["poster-hevc-moov-last.mov", "mov"],
+    ["poster-h264-faststart.mp4", "mov"],
+    ["poster-vp9-nocues.webm", "matroska"],
+  ] as const)("continues %s across 1 KiB windows: ffmpeg asks again exactly where each answer ended", async (name, container) => {
+    const bytes = await fixture(name);
+    const { service, requests } = observedService({ windowBytes: 1024 });
+    const result = await service.extractPoster(defaults(memorySource(bytes), { container }));
+    expectOk(result);
+    expect((await frameOf(result.png)).width).toBe(160);
+    expectOneWindowPerAnswer(requests, result.sourceBytesRead, 1024);
+    // Continuations: a request that starts at the byte after the previous answer's last one.
+    const continuations = requests.filter((request, i) => i > 0 && request.body?.start === (requests[i - 1].body?.end ?? -2) + 1);
+    expect(continuations.length).toBeGreaterThan(3);
   });
 
   it("decodes a faststart H.264 .mp4", async () => {
@@ -423,6 +473,30 @@ describe("VideoFrameService.extractPoster (real ffmpeg-static binary)", { timeou
     if (!result.ok) {
       expect(result.error?.cause).toBe(boom);
       expect(result.detail).toMatch(/read/);
+    }
+  });
+
+  it("defers with the cause when the loopback server errors after listening (an accept failure)", async () => {
+    // The http.Server is internal, so take it from the listen call and emit the error the kernel would cause.
+    const listen = vi.spyOn(Server.prototype, "listen");
+    try {
+      const accept = Object.assign(new Error("accept EMFILE"), { code: "EMFILE", syscall: "accept" });
+      const bytes = await fixture("location-mdta.mov");
+      const result = await createVideoFrameService().extractPoster({
+        ...defaults(memorySource(bytes)),
+        read: async (offset, length) => {
+          (listen.mock.contexts.at(-1) as Server).emit("error", accept);
+          return bytes.slice(offset, offset + length);
+        },
+      });
+      expect(result).toMatchObject({ ok: false, code: "deferred" });
+      if (!result.ok) {
+        expect(result.detail).toContain("accept EMFILE");
+        expect(result.error).toBeInstanceOf(FrameSourceError);
+        expect(result.error?.cause).toBe(accept);
+      }
+    } finally {
+      listen.mockRestore();
     }
   });
 

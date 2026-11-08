@@ -6,45 +6,54 @@ import type { AddressInfo, Socket } from "node:net";
 import { pipeline } from "node:stream/promises";
 
 import { FRAME_SERVER_PREFIX, MAX_SOURCE_BYTES, WINDOW_BYTES } from "@/lib/video-frames";
+import type { FrameSourceRead } from "@/services/video-frames/types";
 
 /**
  * A one-shot HTTP server on 127.0.0.1 that hands one private original to ffmpeg (video-posters plan D2).
  *
  * The static Linux ffmpeg cannot resolve DNS, so it never sees a Blob URL. It reads
  * `http://127.0.0.1:<port>/__frames/<nonce>` instead, and every Range request it makes is answered from the
- * injected `read(offset, length, signal)` in lazy windows: the next window is read only when the response asks
- * for more, and a client that hangs up aborts the read in flight. Across all requests the server never asks
- * `read` for more than `maxSourceBytes`; past that it stops serving and `failure` fires with `source_limit`.
+ * injected `read(offset, length, signal)`. Across all requests the server never asks `read` for more than
+ * `maxSourceBytes`; past that it stops serving and `failure` fires with `source_limit`.
+ *
+ * **One window per response.** A range answer carries at most `windowBytes`: `bytes=a-` (ffmpeg's only form) gets
+ * `206` with `Content-Range: bytes a-(a+windowBytes-1)/size`, which RFC 9110 §15.3.7 allows ("describing what range of
+ * the selected representation is enclosed"). ffmpeg run with `-reconnect 1` asks for `bytes=(a+windowBytes)-` on a new
+ * connection when it needs more (`integrations/video-frames/ffmpeg.ts`). So each response costs exactly one `read`,
+ * started only when ffmpeg asked for that offset, and a connection can hold at most one window ffmpeg did not use,
+ * whatever the kernel's socket buffers absorb. (Streaming a whole remainder relied on backpressure, and Linux's
+ * loopback send buffer, about 2.6 MB at the handshake, takes a 1 MiB write at once, so the next windows were read
+ * before ffmpeg hung up to seek.) A client that hangs up aborts the read in flight.
  *
  * Request handling:
  * - Only `GET` and `HEAD` on the exact nonce path; any other path is 404, any other method 405.
- * - `Range: bytes=a-`, `bytes=a-b` (b clamped to the end) and `bytes=-n` get a single-part 206 with
- *   `Content-Range`. An unsatisfiable or invalid byte range (start at or past the size, b < a, several ranges,
- *   malformed numbers) gets 416 with `Content-Range: bytes *\/size`; RFC 9110 §14.2 lets a server reject an
- *   invalid ranges-specifier.
- * - No Range, or a unit other than `bytes` (which RFC 9110 says to ignore): 200 with the whole body and
- *   `Accept-Ranges: bytes`. ffmpeg itself sends `Range: bytes=<offset>-` on every request (observed: Lavf 60
- *   with `-seekable 1`), so this path exists for correctness, not for it.
- * - Every response says `Connection: close`: ffmpeg opens a new connection for each seek anyway.
+ * - `Range: bytes=a-`, `bytes=a-b` (b clamped to the end and to one window) and `bytes=-n` get a single-part 206
+ *   with `Content-Range`. A range starting at or past the size, b < a, an empty suffix or malformed numbers get
+ *   416 with `Content-Range: bytes *\/size`. Several ranges also get 416, deliberately: they are satisfiable, but
+ *   ffmpeg never sends them and a multipart answer has no place in a one-window server.
+ * - No Range, or a unit other than `bytes` (which RFC 9110 says to ignore): 200 with the whole body, streamed
+ *   window by window, and `Accept-Ranges: bytes`. RFC 9110 forbids a 206 without a Range, so this one path can read
+ *   ahead; ffmpeg never takes it (it sends `Range: bytes=<offset>-` on every request with `-seekable 1`).
+ * - Every response says `Connection: close`: ffmpeg opens a new connection for each window and each seek anyway.
  *
- * The server never throws from a client's behaviour: the server, every socket, request and response carry
- * `error` handlers, and malformed HTTP destroys only that socket.
+ * The server never throws from a client's behaviour: every socket, request and response carries an `error` handler,
+ * and malformed HTTP destroys only that socket. A server-level error (an `accept` failure such as EMFILE) fires
+ * `failure` with `server_error`, and an exception while answering with `handler_error`, each keeping the cause.
  */
 
-/** Reads exactly `length` bytes at `offset`; `signal` fires when the response that asked no longer wants them. */
-export type FrameRead = (offset: number, length: number, signal: AbortSignal) => Promise<Uint8Array>;
-
-/** What the server answered, for diagnostics and tests. */
+/** What the server answered, for diagnostics and tests. `body` is the inclusive byte span a 200 or 206 carries. */
 export interface FrameRequestInfo {
   method: string;
   range: string | undefined;
   status: number;
+  body?: { start: number; end: number };
 }
 
 export interface FrameServerOptions {
   /** The original's exact size in bytes. */
   size: number;
-  read: FrameRead;
+  /** Reads exactly `length` bytes at `offset`; `signal` fires when the response that asked no longer wants them. */
+  read: FrameSourceRead;
   /** Aborting it aborts every read in flight; `close()` is still the caller's job. */
   signal?: AbortSignal;
   /** Defaults to `MAX_SOURCE_BYTES`. */
@@ -54,8 +63,15 @@ export interface FrameServerOptions {
   onRequest?: (info: FrameRequestInfo) => void;
 }
 
-/** `server_error`: an unexpected exception while answering, kept in `cause` (never a client's behaviour). */
-export type FrameSourceFailure = "source_limit" | "read_failed" | "server_error";
+/**
+ * - `source_limit`: the next window would pass `maxSourceBytes`.
+ * - `read_failed`: `read` threw, or returned another length than asked.
+ * - `server_error`: the server itself emitted an error after listening (an `accept` failure such as EMFILE): the
+ *   environment's doing, not the original's.
+ * - `handler_error`: answering a request threw: a defect here, never a client's behaviour.
+ * `cause` keeps what was thrown or emitted.
+ */
+export type FrameSourceFailure = "source_limit" | "read_failed" | "server_error" | "handler_error";
 
 /** Why the server stopped serving: the reason of `FrameServer.failure`. `cause` holds what was thrown. */
 export class FrameSourceError extends Error {
@@ -83,6 +99,10 @@ export interface FrameServer {
 }
 
 type ByteRange = { start: number; end: number };
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 type RangeAnswer = { kind: "whole" } | { kind: "partial"; range: ByteRange } | { kind: "unsatisfiable" };
 
 const SINGLE_BYTE_RANGE = /^bytes=(\d*)-(\d*)$/;
@@ -164,7 +184,7 @@ export async function startFrameServer(options: FrameServerOptions): Promise<Fra
         chunk = await read(offset, length, signal);
       } catch (error) {
         if (!signal.aborted) {
-          fail(new FrameSourceError("read_failed", `reading ${length} bytes at ${offset} failed`, { cause: error }));
+          fail(new FrameSourceError("read_failed", `reading ${length} bytes at ${offset} failed: ${messageOf(error)}`, { cause: error }));
         }
         throw error;
       }
@@ -178,8 +198,8 @@ export async function startFrameServer(options: FrameServerOptions): Promise<Fra
     }
   }
 
-  function answer(res: ServerResponse, status: number, headers: Record<string, string | number>, method: string, range: string | undefined): void {
-    options.onRequest?.({ method, range, status });
+  function answer(res: ServerResponse, status: number, headers: Record<string, string | number>, method: string, range: string | undefined, body?: ByteRange): void {
+    options.onRequest?.(body ? { method, range, status, body } : { method, range, status });
     res.writeHead(status, { Connection: "close", ...headers });
   }
 
@@ -207,7 +227,11 @@ export async function startFrameServer(options: FrameServerOptions): Promise<Fra
       res.end();
       return;
     }
-    const range = parsed.kind === "partial" ? parsed.range : { start: 0, end: size - 1 };
+    // A range answer carries one window at most; the whole-body answer (no Range) cannot be cut short.
+    const range =
+      parsed.kind === "partial"
+        ? { start: parsed.range.start, end: Math.min(parsed.range.end, parsed.range.start + windowBytes - 1) }
+        : { start: 0, end: size - 1 };
     const headers: Record<string, string | number> = {
       "Accept-Ranges": "bytes",
       "Content-Length": range.end - range.start + 1,
@@ -216,7 +240,7 @@ export async function startFrameServer(options: FrameServerOptions): Promise<Fra
     if (parsed.kind === "partial") {
       headers["Content-Range"] = `bytes ${range.start}-${range.end}/${size}`;
     }
-    answer(res, parsed.kind === "partial" ? 206 : 200, headers, method, rangeHeader);
+    answer(res, parsed.kind === "partial" ? 206 : 200, headers, method, rangeHeader, range);
     if (method === "HEAD") {
       res.end();
       return;
@@ -246,7 +270,7 @@ export async function startFrameServer(options: FrameServerOptions): Promise<Fra
     res.on("error", () => res.destroy());
     handle(req, res).catch((error: unknown) => {
       // Not a client's doing: surface it through `failure` (the caller reports it) rather than crash the process.
-      fail(new FrameSourceError("server_error", "the frame server failed to answer a request", { cause: error }));
+      fail(new FrameSourceError("handler_error", `the frame server failed to answer a request: ${messageOf(error)}`, { cause: error }));
       res.destroy();
     });
   });
@@ -265,8 +289,11 @@ export async function startFrameServer(options: FrameServerOptions): Promise<Fra
       resolve();
     });
   });
-  // After listen, a server error cannot reach ffmpeg's requests; record nothing, but never let it throw.
-  server.on("error", () => undefined);
+  // After listen, a server error (an accept failure such as EMFILE) means ffmpeg's next connection may never be
+  // answered: fail the run with the cause instead of letting ffmpeg's error stand in for it.
+  server.on("error", (error: Error) => {
+    fail(new FrameSourceError("server_error", `the frame server failed: ${error.message}`, { cause: error }));
+  });
   const { port } = server.address() as AddressInfo;
   if (options.signal?.aborted) {
     stopReads();

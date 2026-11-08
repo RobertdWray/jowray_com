@@ -16,9 +16,6 @@ export const POSTER_MAX_EDGE = 1000;
 /** The most PNG bytes ffmpeg may write; a 1000 × 1000 RGB48 frame is under 6 MiB even uncompressed. */
 export const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 
-/** ffmpeg's socket receive buffer on the loopback connection (see `buildFrameArgs`). */
-export const RECV_BUFFER_BYTES = 65_536;
-
 /** How much of stderr comes back for the log. */
 export const STDERR_TAIL_CHARS = 2000;
 
@@ -47,8 +44,8 @@ export const POSTER_SCALE_FILTER =
  *   is BT.2408's HLG-to-SDR intent with no hard clip. `hable` (npl 100) put reference white at 178 and grey at 97,
  *   `clip` flattens everything above about 80 %. The mid-grey HLG fixtures come out at 141 (BT.2408 predicts 143),
  *   the untouched decode at 128.
- * - `zscale=t=bt709:m=bt709:r=tv,format=yuv420p` back to 8-bit limited-range BT.709 for the PNG encoder. Both the
- *   6.0 and 7.0.2 binaries accept `bt709` and `709`; `bt709` is the docs' spelling.
+ * - `zscale=t=bt709:m=bt709:r=tv,format=yuv420p` back to 8-bit limited-range BT.709 for the PNG encoder. The 6.0
+ *   binary accepts both `bt709` and `709` (7.0.2 was not run here); `bt709` is the docs' spelling.
  * It runs after the scale filter, so the float frames are at most 1000 px on the long edge: on a 4K HLG clip that
  * halves ffmpeg's peak memory (about 280 MB against 596 MB) and cuts its CPU time to about a third, for a
  * near-identical frame.
@@ -76,12 +73,15 @@ export interface FrameArgsInput {
  * The argument vector, input options before `-i` and output options after it:
  * - `-threads 2 -max_pixels N` are decoder options; `-max_pixels` makes the decoder refuse a frame larger than the
  *   track declared (Lavf 60/61 print "exceeds specified max pixel count").
+ * - `-reconnect 1 -reconnect_delay_max 0` (http options) let ffmpeg read past one window. The frame server answers
+ *   `bytes=a-` with one window (`Content-Range: bytes a-b/size`, b < size - 1). When that response ends, ffmpeg's
+ *   http_buf_read sees the stream end before the Content-Range total ("Stream ends prematurely", logged at error
+ *   level), and http_read_stream reconnects at the current offset because `reconnect` is set and off < filesize:
+ *   a new `bytes=(b+1)-` request. Without `-reconnect` that end is an I/O error ("moov atom not found" on the
+ *   iPhone shape). `reconnect_delay_max 0` allows the first, immediate reconnect of each read and stops the
+ *   1, 3, 7 … second sleeps a broken source would otherwise cause. That code is the same in FFmpeg 6.0 (darwin) and
+ *   7.0.2 (linux-x64) `libavformat/http.c`; the 6.0 and Homebrew 9.0 binaries were observed to continue this way.
  * - `-protocol_whitelist http,tcp` and `-seekable 1` are protocol options of the http input.
- * - `-recv_buffer_size 65536` (a tcp option, passed down through http) caps how much the kernel buffers on ffmpeg's
- *   side of the loopback socket. Without it macOS autotunes that buffer towards 4 MiB, a whole 1 MiB window drains
- *   into it, and the frame server reads one or two windows ahead before ffmpeg hangs up to seek (measured: 2 to 4
- *   extra windows per extraction of the padded iPhone-shape file). With it, 80 of 80 runs read exactly
- *   moov + 2 windows. It also lowers ffmpeg's read-through threshold for short forward seeks to about 96 KiB.
  * - `-f <mov|matroska>` forces the demuxer chosen from our own sniff, so an upload is never probed as a playlist.
  * - `-ss <s> -noaccurate_seek` seeks to the keyframe at or before `s` and keeps it (D3).
  * - Output: the first video stream only, one frame, scaled (and tone-mapped), as PNG on stdout. Autorotation stays on.
@@ -97,8 +97,10 @@ export function buildFrameArgs(input: FrameArgsInput): string[] {
     "2",
     "-max_pixels",
     String(input.maxPixels),
-    "-recv_buffer_size",
-    String(RECV_BUFFER_BYTES),
+    "-reconnect",
+    "1",
+    "-reconnect_delay_max",
+    "0",
     "-protocol_whitelist",
     "http,tcp",
     "-f",

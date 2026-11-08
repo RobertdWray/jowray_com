@@ -1,6 +1,6 @@
-import { request, type IncomingHttpHeaders } from "node:http";
+import { request, Server, type IncomingHttpHeaders } from "node:http";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FrameSourceError, startFrameServer, type FrameServer, type FrameServerOptions } from "@/integrations/video-frames/frame-server";
 import { FRAME_SERVER_PREFIX, MAX_SOURCE_BYTES, WINDOW_BYTES } from "@/lib/video-frames";
@@ -103,26 +103,39 @@ describe("startFrameServer", () => {
     expect(server.windowBytes).toBe(WINDOW_BYTES);
   });
 
-  it("answers an open range with 206 and the remainder, pulled in windows that never pass the end", async () => {
+  it("answers an open range with 206 and exactly one window, whose Content-Range says so", async () => {
     const bytes = makeSource(300_123);
     const { calls, read } = memoryRead(bytes);
     const server = await start({ size: bytes.length, read, windowBytes: 65_536 });
     const reply = await send(server.url, { headers: { Range: "bytes=100-" } });
     expect(reply.status).toBe(206);
     expect(reply.headers["accept-ranges"]).toBe("bytes");
-    expect(reply.headers["content-range"]).toBe(`bytes 100-300122/300123`);
-    expect(reply.headers["content-length"]).toBe(String(300_023));
+    expect(reply.headers["content-range"]).toBe("bytes 100-65635/300123");
+    expect(reply.headers["content-length"]).toBe("65536");
     expect(reply.headers["connection"]).toBe("close");
     expect(reply.headers["content-type"]).toBe("application/octet-stream");
-    expect(Buffer.compare(reply.body, Buffer.from(bytes.subarray(100)))).toBe(0);
-    expect(calls.map(({ offset, length }) => [offset, length])).toEqual([
-      [100, 65_536],
-      [65_636, 65_536],
-      [131_172, 65_536],
-      [196_708, 65_536],
-      [262_244, 37_879],
-    ]);
-    expect(server.bytesRead).toBe(300_023);
+    expect(Buffer.compare(reply.body, Buffer.from(bytes.subarray(100, 65_636)))).toBe(0);
+    // One read per response, started by the request.
+    expect(calls.map(({ offset, length }) => [offset, length])).toEqual([[100, 65_536]]);
+    expect(server.bytesRead).toBe(65_536);
+  });
+
+  it("serves a whole file as consecutive one-window ranges, never reading past the end", async () => {
+    const bytes = makeSource(300_123);
+    const { calls, read } = memoryRead(bytes);
+    const server = await start({ size: bytes.length, read, windowBytes: 65_536 });
+    const parts: Buffer[] = [];
+    for (let offset = 0; offset < bytes.length; ) {
+      const reply = await send(server.url, { headers: { Range: `bytes=${offset}-` } });
+      expect(reply.status).toBe(206);
+      const end = Math.min(offset + 65_536, bytes.length) - 1;
+      expect(reply.headers["content-range"]).toBe(`bytes ${offset}-${end}/300123`);
+      parts.push(reply.body);
+      offset = end + 1;
+    }
+    expect(Buffer.compare(Buffer.concat(parts), Buffer.from(bytes))).toBe(0);
+    expect(calls.map(({ length }) => length)).toEqual([65_536, 65_536, 65_536, 65_536, 37_979]);
+    expect(server.bytesRead).toBe(300_123);
   });
 
   it("answers a closed range with exactly those bytes, and clamps an end past the size", async () => {
@@ -146,6 +159,18 @@ describe("startFrameServer", () => {
     expect(server.bytesRead).toBe(20);
   });
 
+  it("cuts a closed range longer than a window down to one window", async () => {
+    const bytes = makeSource(20_000);
+    const { calls, read } = memoryRead(bytes);
+    const server = await start({ size: bytes.length, read, windowBytes: 4096 });
+    const reply = await send(server.url, { headers: { Range: "bytes=1000-9999" } });
+    expect(reply.status).toBe(206);
+    expect(reply.headers["content-range"]).toBe("bytes 1000-5095/20000");
+    expect(reply.headers["content-length"]).toBe("4096");
+    expect([...reply.body]).toEqual([...bytes.subarray(1000, 5096)]);
+    expect(calls.map(({ offset, length }) => [offset, length])).toEqual([[1000, 4096]]);
+  });
+
   it("answers a suffix range with the last bytes", async () => {
     const bytes = makeSource(5000);
     const server = await start({ size: bytes.length, read: memoryRead(bytes).read });
@@ -155,15 +180,21 @@ describe("startFrameServer", () => {
     expect([...reply.body]).toEqual([...bytes.subarray(4993)]);
   });
 
-  it("answers a request without Range with 200, the whole body and Accept-Ranges", async () => {
-    const bytes = makeSource(2048);
-    const server = await start({ size: bytes.length, read: memoryRead(bytes).read });
+  it("answers a request without Range with 200, the whole body (window by window) and Accept-Ranges", async () => {
+    const bytes = makeSource(10_000);
+    const { calls, read } = memoryRead(bytes);
+    const server = await start({ size: bytes.length, read, windowBytes: 4096 });
     const reply = await send(server.url);
     expect(reply.status).toBe(200);
     expect(reply.headers["accept-ranges"]).toBe("bytes");
-    expect(reply.headers["content-length"]).toBe("2048");
+    expect(reply.headers["content-length"]).toBe("10000");
     expect(reply.headers["content-range"]).toBeUndefined();
     expect(Buffer.compare(reply.body, Buffer.from(bytes))).toBe(0);
+    expect(calls.map(({ offset, length }) => [offset, length])).toEqual([
+      [0, 4096],
+      [4096, 4096],
+      [8192, 1808],
+    ]);
   });
 
   it("ignores a Range in a unit it does not understand, as RFC 9110 requires", async () => {
@@ -177,11 +208,12 @@ describe("startFrameServer", () => {
   it("answers HEAD with the range headers and no body, without reading", async () => {
     const bytes = makeSource(5000);
     const { calls, read } = memoryRead(bytes);
-    const server = await start({ size: bytes.length, read });
+    const server = await start({ size: bytes.length, read, windowBytes: 4096 });
     const ranged = await send(server.url, { method: "HEAD", headers: { Range: "bytes=0-" } });
     expect(ranged.status).toBe(206);
-    expect(ranged.headers["content-range"]).toBe("bytes 0-4999/5000");
-    expect(ranged.headers["content-length"]).toBe("5000");
+    // The same one-window span a GET would carry.
+    expect(ranged.headers["content-range"]).toBe("bytes 0-4095/5000");
+    expect(ranged.headers["content-length"]).toBe("4096");
     expect(ranged.body.length).toBe(0);
     const whole = await send(server.url, { method: "HEAD" });
     expect(whole.status).toBe(200);
@@ -195,6 +227,7 @@ describe("startFrameServer", () => {
     ["a start at the size", "bytes=5000-"],
     ["a start past the size", "bytes=9000-9001"],
     ["an end before the start", "bytes=20-10"],
+    // Satisfiable, but refused on purpose: ffmpeg never sends it and a one-window server has no multipart answer.
     ["several ranges", "bytes=0-1,4-5"],
     ["an empty suffix", "bytes=-0"],
     ["no positions", "bytes=-"],
@@ -246,14 +279,35 @@ describe("startFrameServer", () => {
     await send(server.url, { headers: { Range: "bytes=500-" } });
     await send(server.url, { path: "/nope" });
     expect(seen).toEqual([
-      { method: "GET", range: "bytes=10-", status: 206 },
-      { method: "HEAD", range: undefined, status: 200 },
+      { method: "GET", range: "bytes=10-", status: 206, body: { start: 10, end: 99 } },
+      { method: "HEAD", range: undefined, status: 200, body: { start: 0, end: 99 } },
       { method: "GET", range: "bytes=500-", status: 416 },
       { method: "GET", range: undefined, status: 404 },
     ]);
   });
 
-  it("stops reading when the client goes away: the in-flight read is aborted and no further window is asked for", async () => {
+  it("aborts a range answer's read when the client hangs up before it arrives", async () => {
+    let readSignal: AbortSignal | undefined;
+    const server = await start({
+      size: 100_000,
+      read: (_offset, _length, signal) => {
+        readSignal = signal;
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+    });
+    const target = new URL(server.url);
+    const req = request({ host: target.hostname, port: target.port, path: target.pathname, headers: { Range: "bytes=0-" }, agent: false });
+    req.on("error", () => undefined);
+    req.end();
+    await expect.poll(() => readSignal).toBeDefined();
+    req.destroy();
+    await expect.poll(() => readSignal?.aborted, { timeout: 2000 }).toBe(true);
+    expect(server.failure.aborted).toBe(false);
+  });
+
+  it("stops a whole-body answer when the client goes away: the in-flight read is aborted and no further window is asked for", async () => {
     const window = 16_384;
     const bytes = makeSource(window * 20);
     const calls: ReadCall[] = [];
@@ -270,7 +324,8 @@ describe("startFrameServer", () => {
     const server = await start({ size: bytes.length, read, windowBytes: window });
     const target = new URL(server.url);
     await new Promise<void>((resolve) => {
-      const req = request({ host: target.hostname, port: target.port, path: target.pathname, headers: { Range: "bytes=0-" }, agent: false }, (res) => {
+      // No Range: the one answer that streams several windows.
+      const req = request({ host: target.hostname, port: target.port, path: target.pathname, agent: false }, (res) => {
         res.once("data", () => {
           req.destroy();
           resolve();
@@ -324,13 +379,15 @@ describe("startFrameServer", () => {
     const bytes = makeSource(window * 10);
     const { calls, read } = memoryRead(bytes);
     const server = await start({ size: bytes.length, read, windowBytes: window, maxSourceBytes: window * 3 });
-    const first = await send(server.url, { headers: { Range: `bytes=0-${window * 2 - 1}` } });
-    expect(first.status).toBe(206);
-    expect(first.body.length).toBe(window * 2);
-    // The cut may land before the headers leave, so only the truncation is certain.
-    const cut = await sendExpectingCut(server.url, { Range: "bytes=0-" });
+    for (const offset of [0, window, window * 2]) {
+      const reply = await send(server.url, { headers: { Range: `bytes=${offset}-` } });
+      expect(reply.status).toBe(206);
+      expect(reply.body.length).toBe(window);
+    }
+    // The fourth window would pass the cap. The cut may land before the headers leave, so only the truncation is certain.
+    const cut = await sendExpectingCut(server.url, { Range: `bytes=${window * 3}-` });
     expect(cut.complete).toBe(false);
-    expect(cut.received).toBeLessThanOrEqual(window);
+    expect(cut.received).toBe(0);
     expect(server.failure.aborted).toBe(true);
     const reason = server.failure.reason as unknown;
     expect(reason).toBeInstanceOf(FrameSourceError);
@@ -370,7 +427,31 @@ describe("startFrameServer", () => {
     expect(reason.message).toMatch(/9999 bytes.*10000/);
   });
 
-  it("turns an exception while answering into a server_error failure instead of crashing", async () => {
+  it("fails with server_error, keeping the cause, when the server emits an error after listening", async () => {
+    // The http.Server is internal, so take it from the listen call (an accept failure such as EMFILE arrives this way).
+    const listen = vi.spyOn(Server.prototype, "listen");
+    try {
+      const bytes = makeSource(100);
+      const { calls, read } = memoryRead(bytes);
+      const server = await start({ size: bytes.length, read });
+      const httpServer = listen.mock.contexts.at(-1) as Server;
+      const accept = Object.assign(new Error("accept EMFILE"), { code: "EMFILE", syscall: "accept" });
+      httpServer.emit("error", accept);
+      expect(server.failure.aborted).toBe(true);
+      const reason = server.failure.reason as FrameSourceError;
+      expect(reason).toBeInstanceOf(FrameSourceError);
+      expect(reason.kind).toBe("server_error");
+      expect(reason.message).toContain("accept EMFILE");
+      expect(reason.cause).toBe(accept);
+      // It stops serving.
+      expect((await sendExpectingCut(server.url, { Range: "bytes=0-" })).complete).toBe(false);
+      expect(calls).toEqual([]);
+    } finally {
+      listen.mockRestore();
+    }
+  });
+
+  it("turns an exception while answering into a handler_error failure instead of crashing", async () => {
     const bytes = makeSource(100);
     const thrown = new Error("observer broke");
     const server = await start({
@@ -384,7 +465,7 @@ describe("startFrameServer", () => {
     expect(cut.complete).toBe(false);
     const reason = server.failure.reason as FrameSourceError;
     expect(reason).toBeInstanceOf(FrameSourceError);
-    expect(reason.kind).toBe("server_error");
+    expect(reason.kind).toBe("handler_error");
     expect(reason.cause).toBe(thrown);
   });
 

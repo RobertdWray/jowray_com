@@ -37,14 +37,17 @@ export type ExtractPosterResult =
     }
   | {
       ok: false;
-      /** `deferred`: ffmpeg could not be run here (no binary, spawn or listen failure); no attempt should be spent. */
+      /**
+       * `deferred`: ffmpeg could not be run here (no binary, a spawn or listen failure, the loopback server's own
+       * error such as EMFILE on accept); no attempt should be spent.
+       */
       code: VideoFrameErrorCode | "deferred";
       /** One line for the log; it never holds a bearer value (the only URL is the loopback nonce). */
       detail: string;
       sourceBytesRead: number;
       /** The end of ffmpeg's stderr, when it wrote any. */
       stderrTail?: string;
-      /** What was thrown, when something threw: a failed `read`, a listen error. Log it with its stack. */
+      /** What was thrown or emitted: a failed `read`, a listen or server error. Log it with its stack. */
       error?: Error;
     };
 
