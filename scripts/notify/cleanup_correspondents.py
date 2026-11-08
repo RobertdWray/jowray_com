@@ -3,6 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = [
 #     "anthropic==1.17.0",
+#     "pydantic>=2.14,<3",
 # ]
 # ///
 """
