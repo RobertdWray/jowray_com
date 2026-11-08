@@ -1,11 +1,21 @@
 // Checks the build's file traces after `next build` (video posters plan, D1):
 //   (a) each of the three poster routes carries the ffmpeg binary;
 //   (b) no other function carries any ffmpeg-static file;
-//   (c) no function's traced files, together with the server runtime every function carries, exceed 220 MB.
+//   (c) no function's traced files, with the server runtime when the build traced it, exceed 220 MB.
 // It reads `.next/server/app/**/{page,route}.js.nft.json` (one per function; each `files` entry is relative to its
-// trace) and `.next/next-minimal-server.js.nft.json`, which Vercel's builder adds to every function
-// (vercel/vercel#15677). Missing build output, a missing or unreadable trace, or a traced file that is not on disk
-// fails the check: it never passes without having read the traces.
+// trace). Missing build output, a missing or unreadable function trace, or a traced file that is not on disk fails the
+// check: it never passes without having read the traces.
+//
+// The server runtime trace, `.next/next-minimal-server.js.nft.json`, is an optional size addend:
+// - Without a build adapter (local and CI builds), Next writes it, and Vercel's pre-adapter builder adds those files
+//   to every function (vercel/vercel#15677). check-traces adds them to each size, and fails if the file is unreadable.
+// - With a build adapter, Next 16.3+ under Turbopack writes neither `next-server.js.nft.json` nor this file
+//   (vercel/next.js#93684: "When using an adapter, we don't need to generate any server NFTs as build-complete doesn't
+//   use them at all"). Vercel builds through its adapter: `@vercel/next` sets `NEXT_ADAPTER_PATH` (vercel/next.js#96657),
+//   and the PR #99 preview build log shows "Running onBuildComplete from Vercel" before check-traces failed on the
+//   missing file (2026-11-08). Locally, `NEXT_ADAPTER_PATH=<stub adapter> npm run build` leaves neither file, and the
+//   stub's `onBuildComplete` outputs list no `next/dist/compiled/next-server/server.runtime.prod.js` among any
+//   function's assets. So when the file is absent, sizes exclude it and the CLI says so.
 // Usage: npx tsx scripts/check-traces.ts (`npm run build` runs it after `next build`). Reads files only.
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
@@ -27,7 +37,7 @@ export interface TracedFunction {
   kind: "page" | "route";
   /** The trace file, relative to the project root. */
   trace: string;
-  /** On-disk bytes of every traced file plus the server runtime, each physical file counted once. */
+  /** On-disk bytes of every traced file, plus the server runtime when included, each physical file counted once. */
   bytes: number;
   /** Whether the trace includes the ffmpeg binary. */
   hasFfmpeg: boolean;
@@ -36,6 +46,8 @@ export interface TracedFunction {
 export interface TraceReport {
   functions: TracedFunction[];
   failures: string[];
+  /** Whether sizes include the server runtime trace; undefined when it was unreadable or never reached. */
+  serverRuntime?: "included" | "absent";
 }
 
 class TraceError extends Error {}
@@ -125,14 +137,20 @@ export function checkTraces(projectRoot: string): TraceReport {
 
   const failures: string[] = [];
   let serverFiles: string[] = [];
-  try {
-    const server = readTrace(root, SERVER_TRACE);
-    serverFiles = server.files;
-    if (server.missing.length > 0) {
-      failures.push(`${SERVER_TRACE} lists files that are not on disk: ${listSome(server.missing)}`);
+  let serverRuntime: TraceReport["serverRuntime"];
+  if (statSync(join(root, SERVER_TRACE), { throwIfNoEntry: false }) === undefined) {
+    serverRuntime = "absent"; // an adapter build (see the header): nothing to add
+  } else {
+    try {
+      const server = readTrace(root, SERVER_TRACE);
+      serverFiles = server.files;
+      serverRuntime = "included";
+      if (server.missing.length > 0) {
+        failures.push(`${SERVER_TRACE} lists files that are not on disk: ${listSome(server.missing)}`);
+      }
+    } catch (error) {
+      failures.push(error instanceof TraceError ? error.message : String(error));
     }
-  } catch (error) {
-    failures.push(error instanceof TraceError ? error.message : String(error));
   }
 
   const binary = realpathOr(join(root, FFMPEG_BINARY));
@@ -200,7 +218,7 @@ export function checkTraces(projectRoot: string): TraceReport {
       failures.push(`${route} has no route trace under ${APP_DIR}, so the ffmpeg binary cannot be in its function.`);
     }
   }
-  return { functions, failures };
+  return { functions, failures, serverRuntime };
 }
 
 export function main({
@@ -212,9 +230,16 @@ export function main({
   log?: (line: string) => void;
   error?: (line: string) => void;
 } = {}): number {
-  const { functions, failures } = checkTraces(root);
+  const { functions, failures, serverRuntime } = checkTraces(root);
+  if (serverRuntime === "included") {
+    log(`check-traces: Sizes include the server runtime (${SERVER_TRACE}).`);
+  } else if (serverRuntime === "absent") {
+    log(
+      `check-traces: ${SERVER_TRACE} is absent (Next writes no server traces when a build adapter is set, as on Vercel), so sizes exclude the server runtime.`,
+    );
+  }
   if (functions.length > 0) {
-    log("check-traces: traced size per function, with the server runtime (largest first)");
+    log("check-traces: traced size per function (largest first)");
     const bySize = [...functions].sort((a, b) => b.bytes - a.bytes || a.route.localeCompare(b.route));
     for (const { bytes, kind, route, hasFfmpeg } of bySize) {
       log(`  ${megabytes(bytes).padStart(6)} MB  ${kind.padEnd(5)}  ${route}${hasFfmpeg ? "  (ffmpeg)" : ""}`);

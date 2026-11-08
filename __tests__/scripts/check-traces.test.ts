@@ -188,9 +188,49 @@ describe("checkTraces", () => {
     expect(failures[0]).toContain("no page or route traces");
   });
 
-  it("fails when the server runtime trace is missing", () => {
+  it("still checks every rule without the server runtime trace (adapter builds, as on Vercel), and sizes exclude it", () => {
     healthyBuild();
     rmSync(join(root, SERVER_TRACE));
+
+    const report = checkTraces(root);
+
+    expect(report.failures).toEqual([]);
+    expect(report.serverRuntime).toBe("absent");
+    expect(report.functions.find((f) => f.route === "/share")?.bytes).toBe("entry".length + "shared".length);
+    expect(report.functions.find((f) => f.route === "/api/upload")).toMatchObject({ hasFfmpeg: true });
+  });
+
+  it("still fails a broken rule when the server runtime trace is absent", () => {
+    healthyBuild();
+    rmSync(join(root, SERVER_TRACE));
+    fn("/share", "page", [FFMPEG_BINARY]);
+
+    const failures = failuresOf();
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain("/share");
+  });
+
+  it("includes the server runtime in sizes when its trace is present", () => {
+    healthyBuild();
+
+    expect(checkTraces(root).serverRuntime).toBe("included");
+  });
+
+  it("fails when the server runtime trace is present but not valid nft JSON", () => {
+    healthyBuild();
+    writeFileSync(join(root, SERVER_TRACE), "{ not json");
+
+    const report = checkTraces(root);
+
+    expect(report.failures).toHaveLength(1);
+    expect(report.failures[0]).toContain("next-minimal-server.js.nft.json");
+    expect(report.serverRuntime).toBeUndefined();
+  });
+
+  it("fails when the server runtime trace is present but has no files list", () => {
+    healthyBuild();
+    writeFileSync(join(root, SERVER_TRACE), JSON.stringify({ version: 1 }));
 
     const failures = failuresOf();
 
@@ -232,6 +272,22 @@ describe("main", () => {
     for (const route of [...POSTER_ROUTES, "/share"]) {
       expect(output).toContain(route);
     }
+    expect(output).toMatch(/check-traces: OK/);
+    expect(output).toContain("Sizes include the server runtime (.next/next-minimal-server.js.nft.json)");
+  });
+
+  it("says so explicitly when the server runtime trace is absent, and still returns 0", () => {
+    healthyBuild();
+    rmSync(join(root, SERVER_TRACE));
+    const lines: string[] = [];
+
+    const code = main({ root, log: (line) => lines.push(line), error: (line) => lines.push(line) });
+
+    expect(code).toBe(0);
+    const output = lines.join("\n");
+    expect(output).toContain(".next/next-minimal-server.js.nft.json is absent");
+    expect(output).toContain("sizes exclude the server runtime");
+    expect(output).not.toContain("Sizes include the server runtime");
     expect(output).toMatch(/check-traces: OK/);
   });
 

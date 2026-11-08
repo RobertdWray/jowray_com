@@ -28,7 +28,9 @@ The upload, MCP and cron routes run ffmpeg to take a poster frame from each uplo
   - `scripts/check-traces.ts` runs after `next build` in `npm run build`. It fails the build in any of these cases:
     - one of the three routes lacks the binary;
     - any other function carries an `ffmpeg-static` file;
-    - a function's traced files exceed 220 MB. The total includes `next-minimal-server.js.nft.json`, which Vercel adds to every function; Vercel's limit is 250 MB.
+    - a function's traced files exceed 220 MB (Vercel's limit is 250 MB). The total includes the server runtime trace `.next/next-minimal-server.js.nft.json` when the build writes it (local and CI builds).
+      Vercel builds through its Next.js adapter, and with an adapter Next writes no server traces (vercel/next.js#93684). There, check-traces prints that the trace is absent and sizes exclude it.
+      A present but unreadable trace still fails the build.
 - **License (GPLv3; plan D10).**
   - The readme says: "This static build is licensed under the GNU General Public License version 3."
   - The binary is never committed and never sent to visitors. npm downloads it at install time, and it runs only inside our own server functions.
