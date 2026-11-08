@@ -13,8 +13,9 @@
  * database while vitest runs the files at once.
  */
 import { PrismaPg } from "@prisma/adapter-pg";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 
+import { getPublicMemory, listPublicMemories } from "@/features/memories/public";
 import { PrismaClient } from "@/generated/prisma/client";
 
 const url = process.env.TEST_DATABASE_URL;
@@ -22,6 +23,14 @@ if (process.env.CI && !url) {
   throw new Error("TEST_DATABASE_URL is not set in CI; the public-memories suite must run there");
 }
 const client = url ? new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) }) : null;
+
+/** The feature reads through `getDb()`; point it at the rolled-back transaction of the test that is running. */
+let current: unknown = null;
+vi.mock("@/server/db/client", () => ({ getDb: () => current }));
+
+afterAll(async () => {
+  await client?.$disconnect();
+});
 
 type Tx = Parameters<Parameters<PrismaClient["$transaction"]>[0]>[0];
 
@@ -51,10 +60,6 @@ function draft(memorialId: string, extra: Record<string, unknown> = {}) {
 }
 
 describe.skipIf(!client)("Memory.tags column (real Postgres)", () => {
-  afterAll(async () => {
-    await client!.$disconnect();
-  });
-
   it("is a NOT NULL text array defaulting to an empty array", async () => {
     const rows = await client!.$queryRaw<Array<{ data_type: string; udt_name: string; is_nullable: string; column_default: string | null }>>`
       SELECT data_type, udt_name, is_nullable, column_default
@@ -85,5 +90,29 @@ describe.skipIf(!client)("Memory.tags column (real Postgres)", () => {
     }).catch((caught: unknown) => caught);
     expect(error).not.toBeNull();
     expect(String((error as { message?: unknown }).message ?? error)).toMatch(/null value|23502|not-null/i);
+  });
+});
+
+describe.skipIf(!client)("listPublicMemories and getPublicMemory (real Postgres, plan L8)", () => {
+  it("returns only APPROVED + PUBLIC + live memories, with their tags and a rounded point", async () => {
+    const ids = await inRolledBackTx(async (tx, memorialId) => {
+      current = tx;
+      const consented = { status: "APPROVED", consentedAt: new Date(), consentVersion: "test" } as const;
+      const shown = await tx.memory.create({ data: { ...draft(memorialId), ...consented, visibility: "PUBLIC", tags: ["quilting", "Café"], place: "Towson, MD", latitude: 39.48153, longitude: -76.64471, approxDateText: "Summer 1985", contributorNote: "Jo and the calico" } });
+      const family = await tx.memory.create({ data: { ...draft(memorialId), ...consented, visibility: "FAMILY" } });
+      const pending = await tx.memory.create({ data: { ...draft(memorialId), status: "PENDING", consentedAt: new Date(), consentVersion: "test", visibility: "PUBLIC" } });
+      const deleted = await tx.memory.create({ data: { ...draft(memorialId), ...consented, visibility: "PUBLIC", deletedAt: new Date() } });
+      const listed = (await listPublicMemories()).map((memory) => memory.id);
+      const one = await getPublicMemory(shown.id);
+      const hidden = await Promise.all([family.id, pending.id, deleted.id].map((id) => getPublicMemory(id)));
+      current = null;
+      return { shown: shown.id, others: [family.id, pending.id, deleted.id], listed, one, hidden };
+    });
+    expect(ids.listed).toContain(ids.shown);
+    for (const other of ids.others) {
+      expect(ids.listed).not.toContain(other);
+    }
+    expect(ids.one).toMatchObject({ id: ids.shown, tags: [{ name: "quilting", slug: "quilting" }, { name: "Café", slug: "cafe" }], point: { lat: 39.5, lon: -76.65 }, year: 1985, place: { label: "Towson, MD", slug: "towson-md" }, note: "Jo and the calico", media: [] });
+    expect(ids.hidden).toEqual([null, null, null]);
   });
 });
