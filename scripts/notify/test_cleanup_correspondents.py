@@ -625,6 +625,41 @@ class ValidatorTests(unittest.TestCase):
         self.assertEqual([t["name"] for t in cc.tool_params()], sorted(cc.TOOL_SCHEMAS))
 
 
+class LookalikeTests(unittest.TestCase):
+    def cluster(self, cid, rank, address, lookalike=False):
+        hints = [{"rank": rank, "address": address, "hint": cc.LOOKALIKE}] if lookalike else []
+        return {"cluster_id": cid, "ranks": [rank], "rows": [row(rank, "Ann", "Fiction", [address])],
+                "hints": hints, "household_typed_names": {}, "edges": [], "notes": []}
+
+    def test_a_kept_lookalike_goes_to_the_judge_and_a_removed_one_does_not(self):
+        cluster = self.cluster("c1", 1, "ｉｎｆｏ@example.com", lookalike=True)
+        keep = cc.validate_answer(answer(person(["ｉｎｆｏ@example.com"], first="Info")), cluster)[0]
+        self.assertIn("keeps a look-alike address", cc.escalation_reasons(cluster, "ok", keep))
+        drop = cc.validate_answer(answer(person(["ｉｎｆｏ@example.com"], keep=False,
+                                                relationship="spam_or_scam")), cluster)[0]
+        self.assertEqual(cc.escalation_reasons(cluster, "ok", drop), [])
+
+    def test_claims_from_or_to_a_lookalike_cluster_are_never_joined(self):
+        real, fake, other = (self.cluster("a", 1, "ann@example.com"),
+                             self.cluster("b", 2, "ｉｎｆｏ@example.com", lookalike=True),
+                             self.cluster("c", 3, "ann.f@example.net"))
+
+        def ok(cid, ranks):
+            cluster = next(c for c in (real, fake, other) if c["cluster_id"] == cid)
+            decision = cc.validate_answer(answer(person(cc.cluster_addresses(cluster), first="Ann",
+                                                        claims=ranks)), cluster)[0]
+            return {"status": "ok", "decision": decision}
+
+        joints, _ = cc.joint_clusters([real, fake, other], {"a": ok("a", [2]), "b": ok("b", [1]), "c": ok("c", [])})
+        self.assertEqual(joints, [])
+        joints, _ = cc.joint_clusters([real, fake, other], {"a": ok("a", [3]), "b": ok("b", []), "c": ok("c", [])})
+        self.assertEqual([j["members"] for j in joints], [["a", "c"]])  # an ordinary claim still joins
+        self.assertEqual(cc.claim_reason([1], [2], "high", {1, 2, 3}, {2}),
+                         "possible duplicate involving a look-alike address")
+        self.assertEqual(cc.claim_reason([1], [3], "high", {1}, {2}), "possible duplicate of a cluster not reviewed yet")
+        self.assertEqual(cc.claim_reason([1], [3], "high", {1, 3}, {2}), "possible duplicate (high confidence)")
+
+
 class EscalationTests(unittest.TestCase):
     def reasons(self, decision, status="ok", disagree=False):
         return cc.escalation_reasons(CLUSTER, status, decision and cc.validate_answer(decision, CLUSTER)[0],

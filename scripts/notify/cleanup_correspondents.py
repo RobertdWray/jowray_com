@@ -122,6 +122,7 @@ RELATIONSHIPS = ("family", "friend", "neighbor_or_community", "church_or_club",
                  "spam_or_scam", "automated", "unknown")
 NOTIFY_HINTS = ("likely", "maybe", "unlikely")
 CONFIDENCE = ("high", "medium", "low")
+LOOKALIKE = "look-alike address"   # the prepare hint for compatibility-character addresses
 
 
 # ---- prices (USD per million tokens) [plan C1] -------------------------------------
@@ -702,7 +703,7 @@ def cluster_hints(rows, guidance_domains) -> list:
         for address in row["addresses"]:
             domain = address.rpartition("@")[2]
             if rc.has_lookalike(address):
-                hints.append({"rank": row["rank"], "address": address, "hint": "look-alike address"})
+                hints.append({"rank": row["rank"], "address": address, "hint": LOOKALIKE})
             if rc.looks_automated(address):
                 hints.append({"rank": row["rank"], "address": address, "hint": "role or automated address"})
             if any(domain == d or domain.endswith("." + d) for d in guidance_domains):
@@ -1324,9 +1325,25 @@ def escalation_reasons(cluster: dict, status: str, decision, members_disagree: b
             if sum(as_int(r.get("she_wrote_direct")) for r in touched) >= REMOVE_DIRECT_MAX:
                 reasons.append("removes someone the household wrote to directly")
                 break
+    lookalikes = lookalike_addresses(cluster)
+    if any(p["keep"] and lookalikes & set(p["addresses"]) for p in decision["people"]):
+        reasons.append("keeps a look-alike address")
     if members_disagree:
         reasons.append("the clusters reviewed together had disagreeing first answers")
     return reasons
+
+
+def lookalike_addresses(cluster: dict) -> set:
+    return {h["address"] for h in cluster.get("hints", ()) if h.get("hint") == LOOKALIKE and h.get("address")}
+
+
+def claim_reason(ranks, claims, confidence: str, reviewed: set, lookalike_ranks: set) -> str:
+    """The needs_rob reason for a person's possible_duplicate_ranks claim."""
+    if lookalike_ranks & (set(ranks) | set(claims)):
+        return "possible duplicate involving a look-alike address"
+    if any(r not in reviewed for r in claims):
+        return "possible duplicate of a cluster not reviewed yet"
+    return f"possible duplicate ({confidence} confidence)"
 
 
 def all_high(decision) -> bool:
@@ -1386,8 +1403,11 @@ def joint_clusters(clusters: list, haiku: dict, selected_ids=None):
     """
     by_id = {c["cluster_id"]: c for c in clusters}
     rank_to_cluster = {r: c["cluster_id"] for c in clusters for r in c["ranks"]}
+    # A claim made by or about a look-alike cluster (a spam lure, often posing as someone
+    # known) is never joined: it stays a needs_rob note for the family.
     eligible = {cid for cid, entry in haiku.items()
-                if entry.get("status") == "ok" and (selected_ids is None or cid in selected_ids)}
+                if entry.get("status") == "ok" and (selected_ids is None or cid in selected_ids)
+                and cid in by_id and not lookalike_addresses(by_id[cid])}
     uf = UnionFind(by_id)
     for cid in sorted(eligible):
         for person in haiku[cid]["decision"]["people"]:
@@ -2280,6 +2300,7 @@ def apply_decisions(rows, clusters, entries, manifest_hash, overrides, excl, hou
     rank_of = {a: r["rank"] for r in rows for a in r["addresses"]}
     deciding, changes, haiku = deciding_units(clusters, entries, manifest_hash or "none")
     reviewed = {r for c in clusters if (haiku.get(c["cluster_id"]) or {}).get("status") == "ok" for r in c["ranks"]}
+    lookalike_ranks = {h["rank"] for c in clusters for h in c["hints"] if h.get("hint") == LOOKALIKE}
     people, removals, counts = [], [], collections.Counter()
     for unit in deciding:
         decision, phase, source, reason = unit_outcome(unit)
@@ -2309,10 +2330,9 @@ def apply_decisions(rows, clusters, entries, manifest_hash, overrides, excl, hou
                                   status="needs_rob", question=questions[0] if questions else ""))
         for p in (decision or {}).get("people", []):
             if p["possible_duplicate_ranks"]:
-                waiting = any(r not in reviewed for r in p["possible_duplicate_ranks"])
                 changes.append(change("needs_rob", unit.cluster["ranks"] + p["possible_duplicate_ranks"],
-                                      reason="possible duplicate of a cluster not reviewed yet" if waiting
-                                      else f"possible duplicate ({p['confidence']} confidence)",
+                                      reason=claim_reason(unit.cluster["ranks"], p["possible_duplicate_ranks"],
+                                                          p["confidence"], reviewed, lookalike_ranks),
                                       phase=phase, status="needs_rob",
                                       question="Is this the same person as the other ranks?"))
     if overrides:
