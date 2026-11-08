@@ -52,12 +52,14 @@ vi.mock("@/features/memories/admin-previews", async (importOriginal) => ({
   loadAdminPreviews: (media: unknown, signal: AbortSignal) => loadMock(media, signal),
 }));
 
-// Every logger keeps its real behaviour; `info` lines are also recorded.
+// Every logger keeps its real behaviour; `info` lines and reported errors are also recorded.
 const logInfo = vi.fn();
+const logErrorMock = vi.fn();
 vi.mock("@/lib/logger", async (importOriginal) => {
   const actual = await importOriginal<typeof LoggerModule>();
   return {
     ...actual,
+    logError: (...args: unknown[]) => { logErrorMock(...args); },
     createLogger: (context: Record<string, unknown>) => {
       const real = actual.createLogger(context);
       return Object.assign(Object.create(real) as typeof real, { info: (...args: unknown[]) => { logInfo(...args); } });
@@ -355,6 +357,17 @@ describe("admin alert previews (video posters T14)", () => {
     await notifyAdminsOfMemory({ memoryId: "mem_1", previewsUntil: Date.now() + 15_000 });
     expect(waitMock).toHaveBeenCalledTimes(1);
     expect(loadMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("R19: a failed advisory EmailLog read is reported and treated as open: the alert still waits, loads and sends (the send decides under its lock)", async () => {
+    logErrorMock.mockClear();
+    dbStub.emailLog.findUnique.mockRejectedValueOnce(new Error("Connection terminated unexpectedly"));
+    loadMock.mockResolvedValueOnce(new Map([["med_1", PREVIEW]]));
+    expect(await notifyAdminsOfMemory({ memoryId: "mem_1", previewsUntil: Date.now() + 15_000 })).toEqual({ sent: true, messageId: "m1" });
+    expect(logErrorMock).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ message: "Connection terminated unexpectedly" }), expect.objectContaining({ category: "email", memoryId: "mem_1" }));
+    expect(waitMock).toHaveBeenCalledTimes(1);
+    expect(loadMock).toHaveBeenCalledTimes(1);
+    expect(sentMedia()[0]!.preview).toEqual(PREVIEW);
   });
 
   it("runs the readiness checks before anything else: a memory that gets no alert reads no EmailLog, waits for and loads nothing", async () => {

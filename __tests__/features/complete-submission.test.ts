@@ -28,7 +28,8 @@ function withIncludes(row: MemoryRow, include: Record<string, unknown> | undefin
 let receiptRow: { status: string } | null = null;
 const dbStub = {
   $transaction: vi.fn(async (ops: unknown) => { transactions.push(ops); return Array.isArray(ops) ? Promise.all(ops) : (ops as (t: unknown) => Promise<unknown>)(dbStub); }),
-  emailLog: { findUnique: vi.fn(async () => receiptRow) },
+  // Keyed by email type: the receipt's row hangs off the anchor; the admin alerts have no row here (R19).
+  emailLog: { findUnique: vi.fn(async ({ where }: { where: { memoryId_emailType: { memoryId: string; emailType: string } } }) => (where.memoryId_emailType.emailType === "SUBMISSION_CONFIRMATION" ? receiptRow : null)) },
   memory: {
     findUnique: vi.fn(async ({ where, include }: { where: { id?: string; claimTokenHash?: string }; include?: Record<string, unknown> }) => {
       const row = memories.find((m) => (where.id ? m.id === where.id : m.claimTokenHash === where.claimTokenHash));
@@ -267,6 +268,8 @@ describe("completeSubmission (request path)", () => {
       const T0 = new Date("2026-11-08T12:00:00Z").getTime();
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       vi.setSystemTime(T0);
+      // The receipt already went out: its SENT row must not be read as an admin alert's (R19), or no preview work would run.
+      receiptRow = { status: "SENT" };
       const readyThumb = (id: string): Derivative => ({ kind: "THUMBNAIL", status: "READY", storageKey: `dev/derived/${id}-thumb.jpg`, width: 520, height: 390, mimeType: "image/jpeg", sizeBytes: 1_000 });
       media = [
         // Memory 1: a video whose poster never comes (the wait runs to its end) and a photo whose read stalls.

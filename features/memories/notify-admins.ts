@@ -4,7 +4,7 @@ import { loadAdminPreviews, PREVIEW_COPIES, PREVIEW_READ_TIMEOUT_MS, waitForAdmi
 import { submissionInFlight, summarizeReadyMedia } from "@/features/memories/media-summary";
 import { siteAlertsAdmins } from "@/features/memories/site-email";
 import type { Prisma } from "@/generated/prisma/client";
-import { createLogger } from "@/lib/logger";
+import { createLogger, logError } from "@/lib/logger";
 import { getDb } from "@/server/db/client";
 import { deliveryClosed, type MediaPreview, sendAdminNewMemory, type SendResult } from "@/services/email";
 
@@ -85,13 +85,22 @@ async function loadPreviewsBy(memoryId: string, media: AlertMemory["media"], rea
   }
 }
 
-/** Advisory, outside the outbound lock: the alert already went, is going, or never will, so no picture would be used. */
+/**
+ * Advisory, outside the outbound lock: the alert already went, is going, or never will, so no picture would be used.
+ * Only a time saver, so it fails open (R19): a failed read is reported and the alert is treated as open; the email
+ * service still decides under its lock.
+ */
 async function alertClosed(memoryId: string): Promise<boolean> {
-  const row = await getDb().emailLog.findUnique({
-    where: { memoryId_emailType: { memoryId, emailType: "ADMIN_NEW_MEMORY" } },
-    select: { status: true, updatedAt: true, errorMessage: true },
-  });
-  return row !== null && deliveryClosed(row);
+  try {
+    const row = await getDb().emailLog.findUnique({
+      where: { memoryId_emailType: { memoryId, emailType: "ADMIN_NEW_MEMORY" } },
+      select: { status: true, updatedAt: true, errorMessage: true },
+    });
+    return row !== null && deliveryClosed(row);
+  } catch (error) {
+    logError("admin alert: the advisory EmailLog read failed; treating the alert as open", error, { category: "email", memoryId });
+    return false;
+  }
 }
 
 /**

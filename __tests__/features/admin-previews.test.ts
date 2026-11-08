@@ -107,7 +107,7 @@ describe("loadAdminPreviews", () => {
     expect(getMock).toHaveBeenCalledTimes(MAX_PREVIEWS);
   });
 
-  it("skips a copy over PREVIEW_MAX_BYTES or of unknown size without reading it, and the next file takes the slot", async () => {
+  it("skips a copy over PREVIEW_MAX_BYTES or of unknown size without reading it; the file keeps its slot (R19)", async () => {
     const media = stored([
       photo("big", { sizeBytes: PREVIEW_MAX_BYTES + 1 }),
       photo("unknown", { sizeBytes: null }),
@@ -115,7 +115,7 @@ describe("loadAdminPreviews", () => {
       photo("p3"), photo("p4"), photo("p5"), photo("p6"),
     ]);
     const previews = await loadAdminPreviews(media, signal());
-    expect([...previews.keys()]).toEqual(["edge", "p3", "p4", "p5"]);
+    expect([...previews.keys()]).toEqual(["edge", "p3"]);
     expect(Buffer.from(previews.get("edge")!.contentBase64, "base64").byteLength).toBe(PREVIEW_MAX_BYTES);
     expect(getMock.mock.calls.map((c) => c[0])).not.toContain(copy("THUMBNAIL", "big").storageKey);
     expect(getMock.mock.calls.map((c) => c[0])).not.toContain(copy("THUMBNAIL", "unknown").storageKey);
@@ -294,6 +294,37 @@ describe("waitForAdminPreviews", () => {
     await expect(promise).resolves.toBeUndefined();
     expect(done).toHaveBeenCalledTimes(1);
     expect(logErrorMock).toHaveBeenCalledWith(expect.any(String), expect.any(Error), expect.objectContaining({ memoryId: "mem_1" }));
+  });
+});
+
+describe("one slot rule for the wait and the loader (R19)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("loads only files the wait waited for: an unusable READY copy (over the cap, staged, not JPEG) settles the wait and keeps its slot, so a fifth file is never read", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(T0);
+    files = stored([
+      photo("big", { sizeBytes: PREVIEW_MAX_BYTES + 1 }),
+      video("staged", { storageKey: "dev/derived/mem_1/staged.upload.jpg" }),
+      photo("png", { mimeType: "image/png" }),
+      photo("ok"),
+      photo("fifth"),
+    ]);
+    files[4]!.derivatives = [];
+    // The wait judges the first four READY photos and videos: all READY, so one read and done (the fifth, with no copy, is not waited for).
+    const done = vi.fn();
+    void waitForAdminPreviews({ memoryId: "mem_1", until: T0 + 15_000 }).then(done);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(done).toHaveBeenCalledTimes(1);
+    expect(findManyMock).toHaveBeenCalledTimes(1);
+    // The fifth file's copy lands afterwards; the loader still reads only from those four slots.
+    files[4]!.derivatives = [copy("THUMBNAIL", "fifth")];
+    blobs.set(copy("THUMBNAIL", "fifth").storageKey, Buffer.alloc(64, 5));
+    const previews = await loadAdminPreviews(files, signal());
+    expect([...previews.keys()]).toEqual(["ok"]);
+    expect(getMock.mock.calls.map((c) => c[0])).toEqual([copy("THUMBNAIL", "ok").storageKey]);
   });
 });
 

@@ -131,8 +131,8 @@ const extractGpsMock = vi.fn(async ({ mediaId }: { mediaId: string; deadlineMs?:
 vi.mock("@/features/media/extract-photo-gps", async (importOriginal) => { const actual = await importOriginal<Record<string, unknown>>(); return { ...actual, extractPhotoGps: (a: { mediaId: string; deadlineMs?: number }) => extractGpsMock(a) }; });
 // The activation cutoff is a day in the past here so the fixtures (created 2 h ago) fall after it; the real constant is the merge day.
 const ADMIN_ALERT_SINCE = vi.hoisted(() => new Date(Date.now() - 24 * 60 * 60 * 1000));
-const notifyMock = vi.fn(async ({ memoryId }: { memoryId: string }) => recordSent(memoryId, "ADMIN_NEW_MEMORY"));
-vi.mock("@/features/memories/notify-admins", () => ({ ADMIN_ALERT_SINCE, notifyAdminsOfMemory: (a: { memoryId: string }) => notifyMock(a) }));
+const notifyMock = vi.fn(async ({ memoryId }: { memoryId: string; previewsUntil?: number; previewsReadUntil?: number }) => recordSent(memoryId, "ADMIN_NEW_MEMORY"));
+vi.mock("@/features/memories/notify-admins", () => ({ ADMIN_ALERT_SINCE, notifyAdminsOfMemory: (a: { memoryId: string; previewsReadUntil?: number }) => notifyMock(a) }));
 const delMock = vi.fn(async (_key: string) => { if (inTransaction) { throw new Error("storage.del inside the purge transaction"); } });
 /** The store answers head() for exactly one fixture: a blob that exists although recordMedia could not read its first bytes (#48's prefix check answered null). */
 const headMock = vi.fn(async (key: string) => (key === "dev/originals/mem_2/present" ? { size: 5, contentType: "video/mp4", url: "u", uploadedAt: new Date() } : null));
@@ -324,8 +324,8 @@ describe("GET /api/cron/reconcile-uploads", () => {
     // (Task 15) plus the sibling of a send whose lease ran out; nothing from the send still under its lease, and no sibling-less text anchors (they have no admin row yet but are alerted: mem_subfail0 and mem_subnoemail0 are ready text memories);
     // plus the two shared admin drafts (one of them younger than 30 minutes: a Share has no request-path alert to wait for)
     expect(notifyMock.mock.calls.map((c) => c[0].memoryId).sort()).toEqual(["mem_4", "mem_5", "mem_draft_shared", "mem_draft_shared_young", "mem_noemail", "mem_skipped", "mem_sub1", "mem_subfail0", "mem_subnoemail0"]);
-    // (d) and (e2) load whatever previews exist and never wait for more: no deadline is passed (T14).
-    expect(notifyMock.mock.calls.every(([arg]) => Object.keys(arg).join() === "memoryId")).toBe(true);
+    // (d) and (e2) load whatever previews exist and never wait for more: no wait deadline, only a read deadline (T14, R19).
+    expect(notifyMock.mock.calls.every(([arg]) => Object.keys(arg).sort().join() === "memoryId,previewsReadUntil")).toBe(true);
     // admin-drafted memories: never confirmed by the site (DRAFT or shared), never alerted while DRAFT (see the fixture comments)
     expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_draft");
     expect(confirmMock.mock.calls.map((c) => c[0].memoryId)).not.toContain("mem_draft_shared");
@@ -395,8 +395,8 @@ describe("GET /api/cron/reconcile-uploads", () => {
 
   it("(e2) waits for a send's lease before alerting any of its memories, and (e3) emails the anchor once the lease is gone", async () => {
     await run(`Bearer ${SECRET}`);
-    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_live0" });
-    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_live1" });
+    expect(notifyMock).not.toHaveBeenCalledWith(expect.objectContaining({ memoryId: "mem_live0" }));
+    expect(notifyMock).not.toHaveBeenCalledWith(expect.objectContaining({ memoryId: "mem_live1" }));
     expect(emails.find((e) => e.id === "log_sub_leased")?.status).toBe("FAILED");
     memories.find((m) => m.id === "mem_live0")!.uploadLeaseUntil = new Date(Date.now() - 1_000);
     notifyMock.mockClear(); confirmSubmissionMock.mockClear();
@@ -420,6 +420,32 @@ describe("GET /api/cron/reconcile-uploads", () => {
     expect(receipts).not.toContain("mem_live0_by_e3");
   });
 
+  it("R19: bounds each alert's preview reads by its own 5 s and by the run deadline less the margin, so a storage stall cannot starve later steps", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const restore = notifyMock.getMockImplementation()!;
+    try {
+      const startedAt = Date.now();
+      const calls: Array<{ memoryId: string; at: number; previewsReadUntil?: number; previewsUntil?: number }> = [];
+      // Each alert takes 10 s (a stalled read would take its whole budget).
+      notifyMock.mockImplementation(async (arg) => {
+        calls.push({ ...arg, at: Date.now() });
+        vi.setSystemTime(Date.now() + 10_000);
+        return recordSent(arg.memoryId, "ADMIN_NEW_MEMORY");
+      });
+      expect((await run(`Bearer ${SECRET}`)).status).toBe(200);
+      expect(calls.length).toBeGreaterThanOrEqual(5);
+      for (const call of calls) {
+        expect(call.previewsUntil).toBeUndefined();
+        expect(call.previewsReadUntil).toBe(Math.min(call.at + 5_000, startedAt + 50_000 - 5_000));
+      }
+      // Late in the run the run deadline, not the 5 s, is the bound (and once it has passed, the alert reads nothing).
+      expect(calls.some((call) => call.at + 5_000 > startedAt + 45_000)).toBe(true);
+    } finally {
+      notifyMock.mockImplementation(restore);
+      vi.useRealTimers();
+    }
+  });
+
   it("alerts a failed upload only when words were saved, and never resends", async () => {
     const old = new Date(Date.now() - 2 * HOUR);
     memories.push(
@@ -427,11 +453,11 @@ describe("GET /api/cron/reconcile-uploads", () => {
       { id: "mem_failed_nowords", type: "VIDEO", deletedAt: null, createdAt: old, contributorNote: null, contributor: { email: null }, media: [{ status: "FAILED", deletedAt: null, createdAt: old }], emails: [] }
     );
     await run(`Bearer ${SECRET}`);
-    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_failed_words" });
-    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_failed_nowords" });
+    expect(notifyMock).toHaveBeenCalledWith(expect.objectContaining({ memoryId: "mem_failed_words" }));
+    expect(notifyMock).not.toHaveBeenCalledWith(expect.objectContaining({ memoryId: "mem_failed_nowords" }));
     notifyMock.mockClear();
     const res = await run(`Bearer ${SECRET}`);
-    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_failed_words" });
+    expect(notifyMock).not.toHaveBeenCalledWith(expect.objectContaining({ memoryId: "mem_failed_words" }));
     expect(((await res.json()) as { data: Record<string, number> }).data.adminAlertsSent).toBe(0);
   });
 
@@ -486,18 +512,18 @@ describe("GET /api/cron/reconcile-uploads", () => {
 
   it("alerts the admins once a pending upload lands, never while it is in flight", async () => {
     await run(`Bearer ${SECRET}`);
-    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_pending_upload" });
+    expect(notifyMock).not.toHaveBeenCalledWith(expect.objectContaining({ memoryId: "mem_pending_upload" }));
     const pending = memories.find((m) => m.id === "mem_pending_upload")!;
     pending.media[0]!.status = "READY";
     notifyMock.mockClear();
     const res = await run(`Bearer ${SECRET}`);
-    expect(notifyMock).toHaveBeenCalledWith({ memoryId: "mem_pending_upload" });
+    expect(notifyMock).toHaveBeenCalledWith(expect.objectContaining({ memoryId: "mem_pending_upload" }));
     expect(((await res.json()) as { data: Record<string, number> }).data.adminAlertsSent).toBe(1);
   });
 
   it("never announces a memory created before the alert feature was activated", async () => {
     await run(`Bearer ${SECRET}`);
-    expect(notifyMock).not.toHaveBeenCalledWith({ memoryId: "mem_before_cutoff" });
+    expect(notifyMock).not.toHaveBeenCalledWith(expect.objectContaining({ memoryId: "mem_before_cutoff" }));
     expect(memories.find((m) => m.id === "mem_before_cutoff")?.emails).toHaveLength(0);
   });
 

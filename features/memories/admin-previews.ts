@@ -69,6 +69,16 @@ function wantedCopy(file: { status: MediaStatus; mimeType: string }): "THUMBNAIL
 }
 
 /**
+ * The files the alert can picture: the first `MAX_PREVIEWS` READY photos and videos, in the order given (upload
+ * order). The one slot rule for the wait and the loader (R19), so the files waited for are exactly the files loaded:
+ * a file keeps its slot whatever becomes of its copy, and one whose copy cannot be used (over the cap, staged, not
+ * JPEG, failed) shows as a badge card without passing its slot to a later file nobody waited for.
+ */
+function previewSlots<T extends { status: MediaStatus; mimeType: string }>(media: readonly T[]): T[] {
+  return media.filter((file) => wantedCopy(file) !== null).slice(0, MAX_PREVIEWS);
+}
+
+/**
  * Nothing more will come for this file within a request: its copy is READY, or FAILED with no retry left for a
  * producer to make (the one eligibility rule, `isEligible`, under that copy's pixel ceiling). No row, a live or
  * stale claim, and a retryable failure all keep the wait going.
@@ -83,11 +93,10 @@ function copySettled(file: { status: MediaStatus; mimeType: string; derivatives:
 }
 
 /**
- * Wait, after the response, until the copies that will show in the alert are settled: each of the first
- * `MAX_PREVIEWS` READY photos and videos (upload order; recordings have none) has its copy READY, or FAILED with no
- * retry left for a producer to make (`isEligible` says `not_eligible`). Re-reads every `pollMs` and gives up at
- * `until`, whichever comes first; returns at once when `until` has passed. A database error ends the wait early: it
- * is logged and the alert goes with what is there.
+ * Wait, after the response, until the copies that will show in the alert are settled: each file in a preview slot
+ * (`previewSlots`) has its copy READY, or FAILED with no retry left for a producer to make (`isEligible` says
+ * `not_eligible`). Re-reads every `pollMs` and gives up at `until`, whichever comes first; returns at once when
+ * `until` has passed. A database error ends the wait early: it is logged and the alert goes with what is there.
  */
 export async function waitForAdminPreviews({ memoryId, until, pollMs = PREVIEW_POLL_MS }: { memoryId: string; until: number; pollMs?: number }): Promise<void> {
   try {
@@ -105,9 +114,8 @@ export async function waitForAdminPreviews({ memoryId, until, pollMs = PREVIEW_P
         },
       });
       const now = new Date();
-      const shown = files.filter((file) => wantedCopy(file) !== null).slice(0, MAX_PREVIEWS);
       const left = until - Date.now();
-      if (shown.every((file) => copySettled(file, now)) || left <= 0) {
+      if (previewSlots(files).every((file) => copySettled(file, now)) || left <= 0) {
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, left)));
@@ -117,14 +125,15 @@ export async function waitForAdminPreviews({ memoryId, until, pollMs = PREVIEW_P
   }
 }
 
-interface Pick {
+/** A copy chosen for the alert, with the content id it will travel under. */
+interface PreviewPick {
   mediaId: string;
   contentId: string;
   copy: PreviewCopy & { width: number; height: number };
 }
 
 /** The copy to attach for this file, or null when it has none the email may carry. */
-function pickCopy(file: PreviewSourceMedia): Pick | null {
+function pickCopy(file: PreviewSourceMedia): PreviewPick | null {
   const kind = wantedCopy(file);
   const copy = kind === null ? undefined : file.derivatives.find((d) => d.kind === kind && d.status === "READY");
   // D2: a browser-staged key holds untrusted bytes and is never attached. The template sends previews as image/jpeg.
@@ -148,7 +157,7 @@ function pickCopy(file: PreviewSourceMedia): Pick | null {
   return { mediaId: file.id, contentId, copy: { ...copy, width, height } };
 }
 
-async function readPreview(pick: Pick, signal: AbortSignal): Promise<MediaPreview | null> {
+async function readPreview(pick: PreviewPick, signal: AbortSignal): Promise<MediaPreview | null> {
   try {
     const blob = await createStorageService().get(pick.copy.storageKey, { signal });
     if (!blob) {
@@ -173,19 +182,14 @@ async function readPreview(pick: Pick, signal: AbortSignal): Promise<MediaPrevie
 }
 
 /**
- * The inline previews for the alert, keyed by media id: for the first `MAX_PREVIEWS` files in the order given that
- * have one, the READY, non-staging THUMBNAIL (photo) or POSTER (video) JPEG of at most `PREVIEW_MAX_BYTES`, as base64
- * with the width and height of its derived row. Every read shares `signal` (the caller's one read budget). A file
- * whose copy cannot be read gets no preview (logged), and the rest still load.
+ * The inline previews for the alert, keyed by media id: for each file in a preview slot (`previewSlots`, the files
+ * the wait waited for), its READY, non-staging THUMBNAIL (photo) or POSTER (video) JPEG of at most
+ * `PREVIEW_MAX_BYTES`, as base64 with the width and height of its derived row. Every read shares `signal` (the
+ * caller's one read budget). A file whose copy cannot be used or read gets no preview (a read failure is logged),
+ * and the rest still load.
  */
 export async function loadAdminPreviews(media: readonly PreviewSourceMedia[], signal: AbortSignal): Promise<Map<string, MediaPreview>> {
-  const picks: Pick[] = [];
-  for (const file of media) {
-    const pick = picks.length < MAX_PREVIEWS ? pickCopy(file) : null;
-    if (pick) {
-      picks.push(pick);
-    }
-  }
+  const picks = previewSlots(media).flatMap((file) => pickCopy(file) ?? []);
   const read = await Promise.all(picks.map(async (pick) => [pick.mediaId, await readPreview(pick, signal)] as const));
   const previews = new Map<string, MediaPreview>();
   for (const [mediaId, preview] of read) {

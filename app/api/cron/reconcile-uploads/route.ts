@@ -2,6 +2,7 @@ import * as Sentry from "@sentry/nextjs";
 import { type NextRequest, NextResponse } from "next/server";
 
 import { extractPhotoGps, GPS_DB_MARGIN_MS, GPS_READ_DEADLINE_MS, GPS_STALE_CLAIM_MS, MAX_GPS_ATTEMPTS, type PhotoGpsOutcome } from "@/features/media/extract-photo-gps";
+import { PREVIEW_READ_TIMEOUT_MS } from "@/features/memories/admin-previews";
 import { confirmSubmission } from "@/features/memories/complete-submission";
 import { confirmMemory } from "@/features/memories/confirm";
 import { DERIVED_KINDS, deriveMedia, MAX_DECODE_ATTEMPTS, MAX_PIXELS, STALE_CLAIM_MS } from "@/features/memories/derive-media";
@@ -63,6 +64,12 @@ const CHECKSUM_DEADLINE_MS = 40_000;
  */
 const ADMIN_HASH_TIMEOUT_MS = 15_000;
 const ADMIN_HASH_MARGIN_MS = 5_000;
+/**
+ * Steps (d) and (e2): an admin alert loads the previews that exist and never waits for more (T14). Its reads stop
+ * after PREVIEW_READ_TIMEOUT_MS or this long before the run deadline, whichever is sooner, so a storage stall cannot
+ * spend the run's budget on pictures and starve the later steps (R19). The same margin as step (a)'s hashing.
+ */
+const ALERT_PREVIEW_MARGIN_MS = ADMIN_HASH_MARGIN_MS;
 /** Steps (a) and (c) defer items below this budget so time pressure alone cannot burn event retries. */
 const MIN_RECORD_BUDGET_MS = 1_000;
 /** Steps (e), (e2) and (e3) leave very new memories to the request path (finalize or completion may still be running). */
@@ -200,6 +207,9 @@ export async function GET(request: NextRequest): Promise<Response> {
       const budgetMs = Math.min(ADMIN_HASH_TIMEOUT_MS, RUN_DEADLINE_MS - (Date.now() - now) - ADMIN_HASH_MARGIN_MS);
       return budgetMs < MIN_RECORD_BUDGET_MS ? null : AbortSignal.timeout(budgetMs);
     };
+    // Each alert's preview reads stop after their own 5 s, or at the run deadline less the margin if sooner; an
+    // alert started after that reads none and goes without pictures.
+    const alertPreviewsReadUntil = (): number => Math.min(Date.now() + PREVIEW_READ_TIMEOUT_MS, now + RUN_DEADLINE_MS - ALERT_PREVIEW_MARGIN_MS);
 
     // (a0) Rows this environment retired in earlier runs ((a), (f2), or (f) with nothing
     // left to point at): delete their pathname again. A Blob request that started before
@@ -335,7 +345,7 @@ export async function GET(request: NextRequest): Promise<Response> {
           // receipt answers `leased` while its anchor's upload lease is live and is retried later.
           const result =
             row.emailType === "ADMIN_NEW_MEMORY"
-              ? await notifyAdminsOfMemory({ memoryId: row.memoryId })
+              ? await notifyAdminsOfMemory({ memoryId: row.memoryId, previewsReadUntil: alertPreviewsReadUntil() })
               : row.emailType === "SUBMISSION_CONFIRMATION"
                 ? await confirmSubmission({ anchorId: row.memoryId })
                 : await confirmMemory({ memoryId: row.memoryId });
@@ -435,7 +445,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       // Each item in its own isolation scope: an identity set by a shared feature cannot leak into the next item.
       await Sentry.withIsolationScope(async () => {
         try {
-          const result = await notifyAdminsOfMemory({ memoryId: memory.id });
+          const result = await notifyAdminsOfMemory({ memoryId: memory.id, previewsReadUntil: alertPreviewsReadUntil() });
           if (result.sent) {
             counts.adminAlertsSent += 1;
           }
