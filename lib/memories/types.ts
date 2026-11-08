@@ -52,6 +52,17 @@ export interface PublicPhoto {
   alt: string;
 }
 
+/**
+ * A video's server-made poster (a READY POSTER copy, never on a browser-staged key): the card's picture, served
+ * only through `/api/public-media/<mediaId>?v=thumb`. Its size is the POSTER copy's, not the video's.
+ */
+export interface PublicPoster {
+  /** The video's `Media.id`. */
+  mediaId: string;
+  width: number | null;
+  height: number | null;
+}
+
 /** One memory as the index, map, timeline and tag pages need it. */
 export interface PublicMemory {
   id: string;
@@ -73,6 +84,8 @@ export interface PublicMemory {
   /** The first recording's or video's length, for card labels. */
   durationSeconds: number | null;
   photos: PublicPhoto[];
+  /** The first video with a poster, in the contributor's order; null when no video has one (yet). */
+  poster: PublicPoster | null;
   /** The memory's first recording or video (D16 as amended); "yes" for memories without one. */
   playable: Playable;
   /** ISO 8601; the tie-breaker after year and month. */
@@ -88,7 +101,10 @@ export interface PublicMediaItem {
   durationSeconds: number | null;
   width: number | null;
   height: number | null;
-  /** A READY THUMBNAIL copy exists (photos only). */
+  /**
+   * `?v=thumb` has a picture to serve: a photo's READY THUMBNAIL copy, or a video's READY POSTER copy (D7); staged
+   * keys never count. Always false for a recording.
+   */
   hasThumb: boolean;
   playable: Playable;
 }
