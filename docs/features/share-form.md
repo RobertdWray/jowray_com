@@ -1,12 +1,14 @@
 # Share form
 
-The `/share` page of jowray.com, where a visitor writes or records a memory of Jo: who they are once, then one memory card on a phone or several on a computer, sent together with one receipt email.
+The `/share` page and personal `/s/[inviteToken]` entry point of jowray.com, where a visitor writes or records a memory of Jo: who they are once, then one memory card on a phone or several on a computer, sent together with one receipt email.
 
 **Status:** merged 2026-11-03 in [PR #7](https://github.com/RobertdWray/jowray_com/pull/7) (single-memory form), [PR #11](https://github.com/RobertdWray/jowray_com/pull/11) (no consent checkbox), [PR #16](https://github.com/RobertdWray/jowray_com/pull/16) (defaults, remembered contributor, preferences, consent v2) and [PR #21](https://github.com/RobertdWray/jowray_com/pull/21) (draft autosave); merged 2026-11-04 in [PR #28](https://github.com/RobertdWray/jowray_com/pull/28) and [PR #29](https://github.com/RobertdWray/jowray_com/pull/29) (memory cards), [PR #35](https://github.com/RobertdWray/jowray_com/pull/35) (required name and email, placeholders, two visibility options) and [PR #36](https://github.com/RobertdWray/jowray_com/pull/36) (desktop layout); changed 2026-11-05 by [PR #49](https://github.com/RobertdWray/jowray_com/pull/49) (fixed-content receipt, email caps; issue #46) and [PR #50](https://github.com/RobertdWray/jowray_com/pull/50) (per-send cap, serialised budgets; issue #44); changed 2026-11-06 by the "what a memory needs" copy ([PR #63](https://github.com/RobertdWray/jowray_com/pull/63), merged as `4e1aab5`; refs [issue #58](https://github.com/RobertdWray/jowray_com/issues/58)). Place suggestions from photo GPS come from [PR #66](https://github.com/RobertdWray/jowray_com/pull/66) (plan [2026-11-06-photo-gps-places](../plans/2026-11-06-photo-gps-places.md), Refs #58; merged 2026-11-06 as `fa68582` and deployed to Production; lookups answer `disabled` until Rob sets `PLACES_PROVIDER`). Every merge to `main` deploys to production. The ledger still marks sharing the `/share` link publicly as blocked until the Task 10 gates are on: the WAF rule exists since 2026-11-04, Spend Management is not set.
 
+Personal-link prefill and the undated thank-you copy are implemented on this branch for [notify plan §8.6](../plans/2026-11-07-notify-correspondents.md); merge, deployment and browser proof are not recorded here.
+
 ## What we built
 
-1. The page opens on "Write it down here." and an **About you** box: "Your name" and "Email" (both required), "How you knew Jo (optional)". A device that sent a memory before prefills all three from `localStorage`.
+1. The page opens on "Write it down here." and an **About you** box: "Your name" and "Email" (both required), "How you knew Jo (optional)". Without an invite, a device that sent a memory before prefills all three from `localStorage`, subject to draft restoration. A personal link adds `Hi <firstName>,` and uses the [prefill decision table](#personal-links-and-prefill) below. Both entry points share `app/share/intro.tsx` (`Intro`).
 2. **Memory cards.** A phone shows one card, "Your memory". A computer (at least 48rem wide and 30rem tall) shows "Memory 1" in full, compact placeholders for Memory 2 and 3, and "+ Add another memory" up to ten.
 3. Each card opens with one helper line under its heading: "Add at least one: a photo, a video, a voice recording or a few words. Everything else is optional." It then asks "When is this memory from? (optional, roughly is fine)", "Where? (optional)", a media area labelled "Add a photo, video or voice recording" and "Your memory of Jo (optional with a photo, video or voice recording)". The media area holds "Record your voice" (see [Audio recording](./audio-recording.md)); phones add "Record a video" through their own camera and "Add photos or videos"; computers get "Upload photos, videos or recordings". Picked files are checked on arrival for type, size, duplicates and the ten-file cap.
    - **Place suggestions.** When a picked photo carries GPS, buttons appear under "Where?": "From your photos:", up to six place names ("Statue of Liberty, New York, New York", "New York, New York") and the credit "Place names © OpenStreetMap contributors". Tapping one fills Where; nothing fills itself, and the words stay editable ([below](#place-suggestions-from-photos)).
@@ -14,7 +16,7 @@ The `/share` page of jowray.com, where a visitor writes or records a memory of J
 5. Under Send: the Richard, Rob and Tracy line, three preference checkboxes (family may contact me, on; tell me when it is posted, on; weekly mailing list, off) and one consent sentence. There is no consent checkbox.
 6. **Send** checks the form in the browser. A `role="alert"` summary lists each problem as a link and the first invalid field is focused and scrolled to the centre. A card with a date or place but no file and no words (or an empty first card when nothing else was given) gets "Memory N needs at least one: a photo, a video, a voice recording or a few words." (N is the card's position) on its words box, the same red state and reveal as a missing email; the server refuses such a card with "Add at least one: a photo, a video, a voice recording or a few words". The helper line, this message and the server's refusal are all built from `NEEDS_CONTENT_ITEMS` in `lib/validations/memory.ts`, and the helper line is also the words box's `aria-describedby` (with the error after it once one shows). A clip that sounds silent asks "Send anyway" first.
 7. While sending, the button reads "Sending file 2 of 5 · 40% done" and a polite line says "Please keep this page open". The server can refuse a send before anything is written: one that declares more than 4 GiB of files gets "That is more than we can take in one go. Please send the biggest files in a separate send."; a full daily budget, the 50 GiB storage ceiling or a budget lock that stays busy for 5 s gets "We are receiving a lot of memories right now. Please try again later." Both name no field, so they show above the button, and the words stay.
-8. **Thank-you screen:** "Jo would have loved this.", one private link per memory labelled like "Memory 2 · Summer 1985 · Lake George", files that did not arrive named, and "We couldn't email you just now, so this page is the only copy" when no receipt went out: the mail failed, or a cap or a busy outbound lock held it, in which case the cron sends it later with fresh links that supersede the ones on screen. Phones also see a tip that a computer can send several at once.
+8. **Thank-you screen:** "Jo would have loved this.", one private link per memory labelled like "Memory 2 · Summer 1985 · Lake George", files that did not arrive named, and "We couldn't email you just now, so this page is the only copy" when no receipt went out: the mail failed, or a cap or a busy outbound lock held it, in which case the cron sends it later with fresh links that supersede the ones on screen. Phones also see a tip that a computer can send several at once. R6 replaces the dated promise with: “Once we have some stories, photos and videos collected, we'll share them with everyone and email an update to all who have contributed.”
 9. The typed words are a **draft** on the device (`jowray.share.draft.v2`, 30 days), saved as the person types, when the tab is hidden and before a picker opens. Email is never stored. Reopening restores it with "We kept the words you typed last time."
 10. The **receipt** is fixed content since issue #46: the private links, a "what you sent" line from counts and a card per file by kind and length. Nothing the visitor typed or uploaded is in it: no name, note, date, place, filename or picture (see [Email and cron](./email-and-cron.md)).
 
@@ -67,6 +69,25 @@ flowchart TD
 
 `share-form.tsx` orchestrates; the logic lives in pure modules under `lib/`, tested in Node. `cardsReducer` owns the cards (deterministic ids so server and client render the same markup), the draft is read once and applied during render, and `runSubmission` creates the submission once, uploads photos first one file at a time, and completes exactly once in a `finally` (details in [Media uploads](./media-uploads.md)). A server refusal that names a field or card lands on it through `issuesFromSendFailure`; one that names nothing (the per-send cap, the budget) shows above the button.
 
+### Personal links and prefill
+
+`/share` keeps its static shell. `/s/[inviteToken]` has a static shell and a `Suspense` loading paragraph (never a temporary `ShareForm`); its inner component calls `connection()` before reading params or looking up the invite. Both pages set `maxDuration = 120` and render the same `ShareForm` and `Intro`. Unknown, malformed or revoked invites open the ordinary form with no greeting. [Invite links](./invite-links.md) owns issuance, revocation and token privacy.
+
+`initialContributor` in `lib/share-prefill.ts` chooses the initial name, email and relationship. “Matching” compares trimmed names or emails without case; displayed values are preserved. A draft has no email. Empty fallback fields below become `""`.
+
+| Invite prefill | Remembered contributor | Name, email and source | Relationship / draft use |
+|---|---|---|---|
+| None | None | Draft name or blank; blank email; source `draft` if it has a name, otherwise `none` | Draft relationship or blank. |
+| None | Present | Draft name or remembered name; remembered email; source `remembered` | Draft relationship or remembered relationship. This preserves `/share` behaviour. |
+| Present | None, or a different email | Invite name and email; source `invite` | Draft relationship only when the draft name matches the invite name; otherwise blank. Draft name never replaces the invite name. |
+| Present | Same email | Remembered name unless blank, then invite name; invite email; source `remembered` | Nonblank draft relationship only when the draft name matches the chosen name; otherwise remembered relationship. Draft name never replaces the chosen name. |
+
+Shared-device example: Alice Example is remembered as `alice@example.com`, with an unfinished draft under her name. Bob Sample opens his invite for `bob@example.com`: he gets Bob's name and email and a blank relationship. Alice's unsent memory cards are still restored; separating those cards is follow-up F7, outside this change.
+
+D4: `getInvitePrefill` never calls `identifyContributor`. On mount the form identifies a remembered contributor only when the helper's source is not `invite`; a differing remembered email therefore does not identify that person on the invite form. Merely opening an invite does not identify its recipient. The existing Send path identifies the submitted contributor. This does not clear an identity already held by the SDK; see [Sentry M-F-04](./sentry-telemetry.md#known-gaps-and-follow-ups).
+
+Before the first successful send, an invite-prefilled form says: “This form was filled in from your personal link. Not you? Change the name and email above.” These are editable fields, not an identity check or a clear button. Success sets `sentOnce`; `resetForm` then uses the remembered submitted identity without reapplying the invite prefill, and the line disappears (`prefill && !sentOnce`). `sentOnce` lasts only for that mounted form, not across reloads.
+
 ### Place suggestions from photos
 
 1. **In the browser, only to suggest.** For each photo picked from a file, `app/share/use-place-suggestions.ts` reads its GPS with ExifReader (`lib/photo-gps.ts`, loaded on the first photo only). Zero coordinates, a missing N/S/E/W reference or no GPS count as none. The point is kept in memory for the card and never stored: it is not in the draft, and the server reads the GPS from the stored original for itself ([Media uploads](./media-uploads.md#photo-gps)).
@@ -81,7 +102,7 @@ flowchart TD
 | Path | Role |
 |---|---|
 | **app** | |
-| `app/share/page.tsx` | Static shell, `maxDuration = 120`, intro |
+| `app/share/page.tsx`, `app/s/[inviteToken]/page.tsx`, `app/share/intro.tsx` | Ordinary and personal-link entry points, `maxDuration = 120`, shared intro and optional greeting |
 | `app/share/share-form.tsx` | Orchestrator: contributor fields, visibility, checkboxes, summary and reveal, silent-clip confirm, `beforeunload`, send |
 | `app/share/memory-card-client.tsx`, `app/share/card-media-client.tsx` | One card and its placeholder; media rows, pickers, refusals |
 | `app/share/use-memory-cards.ts`, `app/share/use-share-draft.ts`, `app/share/thank-you-client.tsx` | Cards hook; draft restore and save; done screen |
@@ -96,7 +117,7 @@ flowchart TD
 | `lib/submission-pipeline.ts` | `runSubmission` |
 | `lib/photo-gps.ts`, `lib/places/suggest-client.ts`, `lib/places/suggest-queue.ts`, `lib/places/label.ts` | GPS reading; the browser's request and its scheduling; label rules |
 | `features/places/lookup-place.ts`, `services/places`, `integrations/nominatim`, `integrations/places-stub` | The cached, throttled lookup; the geocoder interface; Nominatim and the no-network stub |
-| `lib/share-draft.ts`, `lib/remembered-contributor.ts` | Draft v2 with v1 migration; remembered fields |
+| `lib/share-draft.ts`, `lib/remembered-contributor.ts`, `lib/share-prefill.ts` | Draft v2 with v1 migration; remembered fields; invite/draft/remembered decision table |
 | `lib/visibility.ts`, `lib/consent.ts`, `lib/reveal-scroll.ts` | Two contributor options; the four sentences; scroll arithmetic |
 | `lib/validations/memory.ts` | Shared name and email schemas, `submissionIssueLocation` |
 | **tests** | |
@@ -106,20 +127,22 @@ flowchart TD
 
 ## Tests and evidence
 
+`__tests__/lib/share-prefill.test.ts` pins all four prefill rows, the shared-device case, trimmed/case-insensitive matching, blank-name and blank-relationship fallbacks, and unchanged no-invite behaviour. These are helper tests, not browser proof of mount identification or “Share another.”
+
 Unit tests cover the reducer, file acceptance, labels, both validators, the refusal mapping, the pipeline's ordering and retry rules, draft TTL and migration, remembered fields, the two visibility options and the reveal arithmetic. `create-submission.test.ts` pins the required-field messages, the stored trimmed name and lower-cased email, the per-send cap at its boundary (nothing written, no lock taken) and the budget lock; `complete-submission.test.ts` pins that no name, note, filename or preview reaches the receipt and that nothing waits. Last recorded suite counts: 1000/1000 (PR #35), 1004/1004 after the review fixes.
 
 Place suggestions: `__tests__/lib/photo-gps.test.ts`, `__tests__/lib/place-labels.test.ts`, `__tests__/lib/place-suggest-client.test.ts`, `__tests__/lib/place-suggest-queue.test.ts`, the `memory-cards` place tests, `__tests__/api/places-suggest.test.ts`, `__tests__/features/lookup-place.test.ts` and the real-Postgres throttle in `__tests__/integration/place-throttle.test.ts`. Evidence: [photo-GPS README](../plans/evidence/2026-11-photo-gps/README.md) (the buttons at 390 and 1280 with the stub, the live region, a failed lookup asked again on re-add, the parser loaded on demand).
 
 Evidence: [share redesign README](../plans/evidence/2026-11-share-redesign/README.md) (51 scripted Chromium checks at 390, 852×393 and 1280; a two-memory send; draft v2 and v1 migration; no hydration warnings) and [quick fixes README](../plans/evidence/2026-11-share-quick-fixes/README.md) (blank Send focuses Name centred, then Email; typing clears inline state only; offline Send keeps the words; contrast numbers; the layout table at six window sizes; `scrollHeight` 2190px at every `roomy` width, down from 2837px). The "what a memory needs" copy: [share-optional README](../plans/evidence/2026-11-share-optional/README.md) (the helper line and labels at 390×844 and 1280×800; an empty card and a date-only card refused with focus, red state and centring on the words box; a photo-only card sent).
 
-**Not run:** real devices (iPhone, Android) and the VoiceOver, TalkBack and reduced-motion pass; real receipt emails (outbound was disabled in every check). The share-redesign premortem and four-bucket sort (D17) are not recorded as run.
+**Not run:** personal-link browser checks (greeting, mount identification, edited identity and “Share another”); real devices (iPhone, Android) and the VoiceOver, TalkBack and reduced-motion pass; real receipt emails (outbound was disabled in every check). The share-redesign premortem and four-bucket sort (D17) are not recorded as run.
 
 ## Known gaps and follow-ups
 
 - Rob to confirm `CONSENT_VERSION=2026-11-v2` in Vercel; v1 not marked superseded (M-A-03, M-C-15; issue #38 §1.1).
-- The "November 10th" promise on the thank-you screen cannot be kept as written (M-J-03; §1.4).
+- Final thank-you wording remains Rob's (notify plan F5); the implemented R6 placeholder above has no date.
 - Device and assistive-technology pass (M-H-03, M-H-05; §1.2).
-- No "Not you? Clear these" control for remembered fields on a shared device (M-C-13; §3.2).
+- No clear-all control for remembered fields on a shared device (M-C-13; §3.2). The invite form now has the “Not you?” explanatory line above; it does not clear saved fields or draft cards (notify plan F7).
 - Desktop leftovers: `resize-y` inert at `roomy`, About-you two-up via `sm:` not `wide:`, lone placeholder (M-C-07).
 - D10 per-file fields and the right-hand rail after 2560 evidence await Rob (M-C-09, M-C-21; §3.6).
 - Drafts never hold media; iOS has no `beforeunload` (M-C-19, deliberately not doing). Webcam recording on computers is release 2, not built (M-C-11).

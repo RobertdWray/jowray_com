@@ -43,14 +43,21 @@ The note adds no storage, consent record or telemetry switch. Opening or closing
 
 | Data | What the site does | Covered by the note? / owning doc |
 |---|---|---|
-| Screen recordings | Sentry Session Replay is configured at 100%, with text, inputs and media unmasked. | Yes: "record the screen". [Sentry telemetry](./sentry-telemetry.md#what-we-built). |
-| Logs | Pino redacts contributor fields; Sentry receives logs and 100% traces under the alpha policy. | Yes: "the logs"; the rate and vendor are not named. [Sentry telemetry](./sentry-telemetry.md#how-it-works). |
+| Screen recordings | Sentry Session Replay is configured at 100%, with text, non-password inputs, media, placeholders, `title` and `aria-label` unmasked (`REPLAY_OPTIONS`, `maskAttributes: []`, D20). Password inputs stay masked. | Yes: "record the screen". [Sentry telemetry](./sentry-telemetry.md#what-we-built). |
+| Logs | Pino no longer redacts contributor fields (R13, 2026-11-07); bearer values and protected headers remain redacted. Sentry receives logs and 100% traces under the alpha policy. | Yes: "the logs"; the rate and vendor are not named. [Sentry telemetry](./sentry-telemetry.md#how-it-works). |
 | Clicks and typing | Replay captures interactions and unmasked input; same-origin request bodies are captured with scrubbing. | Yes: "what you click and type". [Sentry telemetry](./sentry-telemetry.md#how-it-works). |
 | Page views to Vercel Analytics | The root layout mounts analytics with URL scrubbing and unsafe-route dropping; live intake is unverified. | Not explicit; Vercel page views are not named. [Analytics](./analytics.md). |
 | Contributor email as Sentry identity | Email identifies the contributor on later events, replays and logs; name is user context too. | Typing is covered; using email as identity is not explicit. The linked page's "One honest note" mentions name and email. [Sentry telemetry](./sentry-telemetry.md#what-we-built). |
+| Invitees | `Invite` stores first name, optional last name, normalized email, SHA-256 token hash, created time and optional revoked time, linked to the memorial. Authorized database operators can read these rows; anyone holding a valid personal link sees its greeting, name and email. The importer keeps raw share URLs in a private local ledger. Invitee names/emails may reach Sentry under R10; token/share-URL collection is forbidden apart from the accepted replay DOM URL and Vercel request-log residuals. Neon previews copy Invite rows (D17/F8). | Not explicit. [Invite links](./invite-links.md), [Sentry telemetry](./sentry-telemetry.md). |
 | Photo GPS saved privately | The server reads the original and saves coordinates per photo, available through Rob's MCP tools, not site pages. Web copies strip GPS. | Not mentioned. [Media uploads §Photo GPS](./media-uploads.md#photo-gps). |
 | Photo points sent to OpenStreetMap | With Nominatim enabled, uncached lookups send coordinates at 6 decimal places for a place name. On `/share`, this can happen when a photo is picked, before Send. Production enablement is unverified here. | Not mentioned. [Share form §Place suggestions](./share-form.md#place-suggestions-from-photos). |
 | Emails | SendGrid sends receipts with private links but no contributor text or pictures, and family alerts with contributor details and words but no links. Open/click tracking is off. Replies are forwarded through Cloudflare. | Not mentioned. [Email and cron](./email-and-cron.md#what-we-built), [Email replies and forwarding](./email-forwarding.md). |
+
+### Replay masking and the pending server scrubber switch
+
+D20 fixes SDK attribute masking: the SDK defaults star `placeholder`, `title` and `aria-label` even with `maskAllText: false`. `lib/sentry/replay-options.ts` sets `maskAttributes: []`; this is separate from server-side event filtering.
+
+Under [notify plan R12 amended / §8.10](../plans/2026-11-07-notify-correspondents.md), the project's **Data Scrubber and Default Scrubbers stay on until PR-2 is live and its token checks pass**. S1 is pending: after Rob re-confirms the event-data policy change, those two settings turn off so ordinary story text is not replaced with `[Filtered]`. The SDK scrubber stays the token control. This document does not attest to live dashboard settings or a completed S1. The accepted residuals include `/s/<token>` in replay DOM URLs (R5) and Vercel request logs (R11), alongside the existing claim-page and feedback-screenshot residuals.
 
 ## Operations and rollback
 
@@ -78,7 +85,7 @@ A note-only rollback removes its footer mount and component; it does not turn te
 - Screenshots in that evidence folder: **04/08** desktop/390px footer wrapping; **05/09** open notes; **11** Close visible at 375×553; **13/14** focused link clear of Close at 375×480 and 844×390. All seven were visually inspected for this document.
 - [Plan Verification](../plans/2026-11-06-privacy-note-and-diagram-viewer.md#verification) requires `npm run validate`, `npm run test:run` and `npm run build:offline`, plus CI and a phone-width preview check. Merge commits `518ec85` and `8cb5ced` say checks were rerun, but give no command results or test count. The supplied plan/evidence contain no detailed npm or CI result; none is inferred from the merge.
 
-**NOT RUN:** real iPhone/iPad Safari (focus return and scrolling text), Windows Firefox with classic scrollbars, and a recorded Vercel preview/production note check. This documentation task did not rerun the smoke script or npm checks; dependencies are absent and the combined branch owns validation, tests and offline build.
+**NOT RUN:** real iPhone/iPad Safari (focus return and scrolling text), Windows Firefox with classic scrollbars, and a recorded Vercel preview/production note check. The original note documentation recorded no npm rerun. The invite documentation checks are recorded in [Invite links](./invite-links.md#tests-and-evidence); they do not establish browser or production behaviour.
 
 ## Known gaps and follow-ups
 

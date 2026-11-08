@@ -30,6 +30,7 @@ import type { ShareDraft } from "@/lib/share-draft";
 import { revealScrollDelta, unionRect } from "@/lib/reveal-scroll";
 import { reportClientError } from "@/lib/sentry/report";
 import { identifyContributor } from "@/lib/sentry/user";
+import { initialContributor, type SharePrefill } from "@/lib/share-prefill";
 import { type PipelineProgress, runSubmission } from "@/lib/submission-pipeline";
 import { uploadWithTicket } from "@/lib/upload-client";
 import { contributorVisibilityOptions, isContributorVisibility } from "@/lib/visibility";
@@ -92,9 +93,11 @@ function readContributor(form: HTMLFormElement | null) {
  * recorder for the whole form (C12), a draft on this device, and a sequential
  * send with progress. Everything the person typed survives a failed send.
  */
-export function ShareForm({ intro }: { intro: ReactNode }) {
+export function ShareForm({ intro, prefill }: { intro: ReactNode; prefill?: SharePrefill }) {
   const formRef = useRef<HTMLFormElement>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  // After a successful send, "Tell another one" uses the contributor they typed and remembered.
+  const [sentOnce, setSentOnce] = useState(false);
   // Set on Send (by the browser's check or the server's refusal) and never changed by typing, so the alert is read once (G9.1).
   const [issues, setIssues] = useState<SendIssue[]>([]);
   // The issues whose field has been typed in since: their inline state goes, the summary stays as it was.
@@ -147,12 +150,14 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
 
   // Name, email and relationship from an earlier memory on this device; null on the server and until hydration.
   const remembered = useSyncExternalStore(subscribeRemembered, getRememberedSnapshot, getRememberedServerSnapshot);
+  const initial = initialContributor({ draft: draft?.contributor ?? null, prefill: sentOnce ? null : prefill ?? null, remembered });
   // Sentry knows who this is as soon as the device does (plan 2026-11-04 §8.3; Rob's authorization in lib/sentry/data-collection.ts).
+  // An invite for a different email is not proof of who is using this device (D4).
   useEffect(() => {
-    if (remembered) {
+    if (remembered && initial.source !== "invite") {
       identifyContributor(remembered);
     }
-  }, [remembered]);
+  }, [remembered, initial.source]);
   // Server snapshot is false, client snapshot asks the browser: same markup on both sides at hydration (C9).
   const canRecord = useSyncExternalStore(subscribeNever, () => pickRecordingType() !== null, () => false);
 
@@ -360,6 +365,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
         return;
       }
       rememberContributor(contributor);
+      setSentOnce(true);
       clearDraft();
       const openCards = state.cards.filter((card) => card.open);
       const memories: SentMemory[] = result.memories.map((memory) => {
@@ -424,7 +430,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
                   className={inputClass}
                   autoComplete="name"
                   placeholder="Jane Doe"
-                  defaultValue={draft?.contributor.name || remembered?.name}
+                  defaultValue={initial.name}
                   disabled={sending}
                   aria-invalid={nameIssue ? "true" : undefined}
                   aria-describedby={nameIssue ? "contributor-name-error" : undefined}
@@ -447,7 +453,7 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
                   className={inputClass}
                   autoComplete="email"
                   placeholder="your@email.com"
-                  defaultValue={remembered?.email}
+                  defaultValue={initial.email}
                   disabled={sending}
                   aria-invalid={emailIssue ? "true" : undefined}
                   aria-describedby={emailIssue ? "contributor-email-error" : undefined}
@@ -470,11 +476,16 @@ export function ShareForm({ intro }: { intro: ReactNode }) {
                   maxLength={120}
                   className={inputClass}
                   placeholder="former student"
-                  defaultValue={draft?.contributor.relationship || remembered?.relationship}
+                  defaultValue={initial.relationship}
                   disabled={sending}
                 />
               </div>
             </div>
+            {prefill && !sentOnce && (
+              <p className="text-small text-walnut-soft">
+                This form was filled in from your personal link. Not you? Change the name and email above.
+              </p>
+            )}
             <p className="narrow:hidden text-small text-walnut-soft">One memory is plenty. Add more if they come to you.</p>
           </section>
 

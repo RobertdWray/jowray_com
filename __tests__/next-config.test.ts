@@ -6,6 +6,13 @@ type HeaderRule = { source: string; headers: Array<{ key: string; value: string 
 
 /** The response headers PR 3 of plan 2026-11-04 relies on (§9.3): browser profiling needs `Document-Policy: js-profiling` on every page. */
 describe("next.config headers", () => {
+  it("keeps invite links out of referrers and search indexes", async () => {
+    const rules = (await nextConfig.headers!()) as HeaderRule[];
+    const invite = rules.find((rule) => rule.source === "/s/:path*");
+    expect(invite?.headers).toContainEqual({ key: "Referrer-Policy", value: "no-referrer" });
+    expect(invite?.headers).toContainEqual({ key: "X-Robots-Tag", value: "noindex, nofollow" });
+  });
+
   it("sends Document-Policy: js-profiling on every path and keeps the claim pages' Referrer-Policy", async () => {
     const rules = (await nextConfig.headers!()) as HeaderRule[];
     const all = rules.find((rule) => rule.source === "/:path*");

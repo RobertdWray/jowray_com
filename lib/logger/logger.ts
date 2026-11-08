@@ -1,49 +1,34 @@
 import * as Sentry from "@sentry/nextjs";
 import pino, { type DestinationStream, type Logger, type LoggerOptions } from "pino";
 
-import { SECRET_HEADER_KEYS } from "@/lib/sentry/secrets";
+import { SECRET_FIELD_KEYS, SECRET_HEADER_KEYS } from "@/lib/sentry/secrets";
 
 /**
- * Keys that must never reach a log line. Contributors' identities live in
- * the database, not in Vercel logs or Sentry breadcrumbs.
+ * R13, 2026-11-07: contributor fields are allowed in logs; bearer values never.
+ * Keep these credentials redacted in Pino and in Sentry extra via redactPii.
  */
-const PII_KEYS = [
-  "email",
-  "recipientEmail",
-  "name",
-  "phone",
-  // Contributor content and the bearer link (2026-11-03): never in a log line either.
-  "note",
-  "contributorNote",
-  "relationship",
-  "place",
-  "approxDateText",
-  "originalFilename",
-  "claimLink",
-  // Presigned PUT/GET URLs are bearer credentials (MCP attach A19).
-  "presignedUrl",
-  // Where a photo was taken (plan 2026-11-06-photo-gps-places, 2026-11-06): contributor content too. Log outcomes, not points.
-  "latitude",
-  "longitude",
-];
+// NIT4 audit: server/config/env.ts logs a non-secret setting name as `key` via
+// logError. Keep that field visible; all other named bearer fields share Sentry's inventory.
+const BEARER_KEYS = [...SECRET_FIELD_KEYS.filter((key) => key !== "key"), "token"];
 // Pino wildcards match one level each; these paths cover the top level and
 // three levels down (enough for a Prisma `include` shape). Log ids, never rows.
 export const REDACT_PATHS = [
-  ...PII_KEYS,
-  ...PII_KEYS.map((key) => `*.${key}`),
-  ...PII_KEYS.map((key) => `*.*.${key}`),
-  ...PII_KEYS.map((key) => `*.*.*.${key}`),
+  ...BEARER_KEYS,
+  ...BEARER_KEYS.map((key) => `*.${key}`),
+  ...BEARER_KEYS.map((key) => `*.*.${key}`),
+  ...BEARER_KEYS.map((key) => `*.*.*.${key}`),
   ...SECRET_HEADER_KEYS.map((key) => `req.headers["${key}"]`),
   ...SECRET_HEADER_KEYS.map((key) => `headers["${key}"]`),
   ...SECRET_HEADER_KEYS.map((key) => `*.headers["${key}"]`),
 ];
 
 const REDACTED = "[Redacted]";
-const SENSITIVE = new Set([...PII_KEYS, ...SECRET_HEADER_KEYS]);
+const SENSITIVE = new Set([...BEARER_KEYS, ...SECRET_HEADER_KEYS]);
 
 /**
- * Recursive redaction for data that leaves the process by a path Pino does
- * not serialize (Sentry `extra`). Same keys as REDACT_PATHS, any depth.
+ * Bearer/header redaction for data Pino does not serialize (Sentry `extra`).
+ * The exported name is retained for callers; contributor fields pass through
+ * under R13. Same credential keys as REDACT_PATHS, any depth.
  */
 export function redactPii(value: unknown, depth = 0): unknown {
   if (depth > 20 || value === null || typeof value !== "object") {

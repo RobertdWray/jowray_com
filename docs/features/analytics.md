@@ -1,6 +1,6 @@
 # Vercel Web Analytics
 
-Page-view analytics for Rob in the Vercel project dashboard. `SiteAnalytics` in `app/layout.tsx` covers every page the root layout renders (not the root error page, `app/global-error.tsx`, which has its own `<html>`), with URL scrubbing and event dropping to protect private claim links.
+Page-view analytics for Rob in the Vercel project dashboard. `SiteAnalytics` in `app/layout.tsx` covers every page the root layout renders (not the root error page, `app/global-error.tsx`, which has its own `<html>`), with URL scrubbing and event dropping to protect private claim and invite links.
 
 **Status:** [PR #62](https://github.com/RobertdWray/jowray_com/pull/62) delivered analytics (merged 2026-11-06 as `73ac034`); [PR #64](https://github.com/RobertdWray/jowray_com/pull/64) added protection for token-bearing unmatched routes (merged into #62 on 2026-11-06 as `bb4a2e2`). There is no feature plan; the PR descriptions are the record. Deployment evidence is limited: `/_vercel/insights/script.js` answered 200 at 2026-11-07 01:07 UTC (404 in PR #62); at 2026-11-07 02:29 UTC both it and the per-project path the pages loaded, `/57754c27654861f8/script.js`, answered 200 with identical bytes; intake payload not checked. Page views arriving and use with real data are not verified.
 
@@ -14,7 +14,7 @@ The npm audit cleanup in #62 and #64's replacement of the ineffective zod overri
 
 ## Why we built it
 
-To add page-view measurement without sending claim credentials to analytics. [PR #62](https://github.com/RobertdWray/jowray_com/pull/62) explains that an unfiltered claim-page view would send its bearer token to Vercel, contrary to the [site's secret policy](../code-layout.md#sentry-alpha-data-policy-2026-11-04).
+To add page-view measurement without sending claim or invite credentials to analytics. [PR #62](https://github.com/RobertdWray/jowray_com/pull/62) explains that an unfiltered claim-page view would send its bearer token to Vercel, contrary to the [site's secret policy](../code-layout.md#sentry-alpha-data-policy-2026-11-04).
 
 ## Key decisions (Rob)
 
@@ -29,17 +29,20 @@ To add page-view measurement without sending claim credentials to analytics. [PR
 
 | Field or input | Behaviour |
 |---|---|
-| URL (`url` in the hook, `o` on the wire) | `scrubUrl` replaces lower-case `/m/` followed by a run of at least 16 base64url characters with `/m/[claimToken]`. It removes lower-case `t=` and `key=` parameters from query strings or fragments, including `?t=` and `#key=`, and tidies their separators. Other parameters remain. |
-| Route (`dp`) | The Next wrapper constructs it outside the hook: `/m/[claimToken]` for the matched claim route, but the raw pathname for a root not-found page. The hook cannot rewrite it. |
-| Referrer (`r`) | Read from `document.referrer` outside `beforeSend`; like `dp`, it never passes through `scrubPageView`. The claim pages' `no-referrer` policy keeps their URLs out of it. |
-| Unsafe path | Parse the URL, then drop any path containing `/m/` (case-insensitive, at any depth) unless it is exactly lower-case `/m/` plus one non-empty segment with no trailing slash. This drops an extra segment, a trailing slash, upper-case `M`, `/m/` alone, a nested claim path and a doubled leading slash. An unparsable URL also drops the whole event. Paths such as `/m`, `/mx/…` and `/media/…` remain. |
+| URL (`url` in the hook, `o` on the wire) | `scrubUrl` replaces lower-case `/m/` followed by a run of at least 16 token characters with `/m/[claimToken]`. It also replaces case-insensitive `/s/` followed by at least 12 token characters with `/s/[inviteToken]`, including full invite URLs. Both patterns accept base64url characters and `%` to cover percent-encoded token characters. It removes lower-case `t=` and `key=` parameters from query strings or fragments, including `?t=` and `#key=`, and tidies their separators. Other parameters remain. |
+| Route (`dp`) | The Next wrapper constructs it outside the hook: `/m/[claimToken]` or `/s/[inviteToken]` for the matched claim or invite route, but the raw pathname for a root not-found page. The hook cannot rewrite it. |
+| Referrer (`r`) | Read from `document.referrer` outside `beforeSend`; like `dp`, it never passes through `scrubPageView`. The claim and invite pages' `no-referrer` policy keeps their URLs out of it. |
+| Unsafe claim path | Check raw and decoded pathnames for `/m/` (case-insensitive, at any depth); keep only an exact raw lower-case `/m/` plus one non-empty segment with no trailing slash. Encoded token characters are kept and scrubbed. Encoded `m` segments, extra segments, trailing slashes, upper-case `M`, `/m/` alone, nested claim paths and doubled leading slashes are dropped. Unparsable URLs and malformed percent-encoding also drop the whole event. Paths such as `/m`, `/mx/…` and `/media/…` remain. |
+| Unsafe invite path | Check raw and decoded pathnames for an `s` segment (case-insensitive, at any depth); keep only an exact raw lower-case `/s/` plus one non-empty segment without a trailing slash. Encoded token characters are kept and scrubbed; encoded `s` segments and malformed percent-encoding are dropped. Other dropped paths remain `/S/<token>`, `/s/<token>/x`, `/s/<token>/`, `/s/`, nested paths and doubled leading slashes. `/share`, `/s` and paths merely starting with `s` remain. The kept event's `url` is scrubbed to `/s/[inviteToken]` for valid invite tokens. |
 | Other event fields | The spread preserves runtime `payload` and `__cdp` fields. This hook scrubs only the URL; it does not sanitize arbitrary custom-event data. The current integration adds no custom events or user identity. |
 
-The same rules apply to page views and custom events. PR #64 records that Next redirects trailing slashes with 308 before a real claim-page view. Short claim segments remain in `o`; see F1.
+The same rules apply to page views and custom events. PR #64 records that Next redirects trailing slashes with 308 before a real claim-page view. Short claim segments remain in `o`; see F1. Invite segments shorter than 12 characters also remain in `o`, but cannot be issued or resolved as invite tokens.
 
 Script `0.1.3` reads `document.referrer` outside `beforeSend` and sends it when `!referrer.includes(location.host)` on the first page view of a document load and on every custom event. This is a substring test, not a host comparison; `r`, like `dp`, never passes through `scrubPageView`. Separately, `next.config.ts` sets `Referrer-Policy: no-referrer` for claim pages, and `app/m/[claimToken]/page.tsx` repeats it in a meta tag. The header applies on every host; together with the meta it leaves `document.referrer` empty on a page opened from a claim page, keeping the claim URL out of `r`. The apex `jowray.com` redirects with 308 to `www` and serves no page. F2 must confirm intake accepts a POST without `Referer`; `Origin` is expected because intake uses `fetch` in `cors` mode.
 
-This integration adds no application logging or Sentry calls. The shared URL helper is only one part of [Sentry's scrubber](./sentry-telemetry.md#how-it-works); its broader secret-field and header filtering is not applied to analytics payloads. Claim tokens, admin keys, upload tickets and protected header values must not be added to those payloads.
+`next.config.ts` and `app/s/[inviteToken]/page.tsx` apply the same no-referrer header/meta pairing to personal links; `/s/:path*` also gets `X-Robots-Tag: noindex, nofollow`. The analytics `/s/` rule is implemented in this branch ([notify plan D7 / §8.7](../plans/2026-11-07-notify-correspondents.md)); live intake proof remains pending.
+
+This integration adds no application logging or Sentry calls. The shared URL helper is only one part of [Sentry's scrubber](./sentry-telemetry.md#how-it-works); its broader secret-field and header filtering is not applied to analytics payloads. Claim tokens, invite tokens, share URLs, admin keys, upload tickets and protected header values must not be added to those payloads.
 
 ## Operations and rollback
 
@@ -56,7 +59,7 @@ After a deploy, check script loading and perform F2 against the deployed site in
 | **app** | |
 | `app/layout.tsx` | Site-wide mount |
 | `app/_components/analytics-client.tsx` | URL hook and route guard |
-| `next.config.ts`, `app/m/[claimToken]/page.tsx` | Claim-page referrer policy |
+| `next.config.ts`, `app/m/[claimToken]/page.tsx`, `app/s/[inviteToken]/page.tsx` | Claim/invite-page referrer policy |
 | **lib + server** | |
 | `lib/sentry/scrub.ts`, `lib/sentry/secrets.ts` | Shared URL helper and broader secret policy |
 | **tests** | |
@@ -66,16 +69,17 @@ After a deploy, check script loading and perform F2 against the deployed site in
 
 ## Tests and evidence
 
-- The analytics test has 15 cases: claim page and custom-event URL scrubbing; `?t=` removal while retaining another parameter; `#key=` removal; ordinary URLs and paths merely starting with `m` unchanged; the six dropped path shapes above; a mismatched custom event; an unparsable URL; and preservation of `payload` and `__cdp`. These exercise the hook, not the SDK's transmitted payload.
+- The original analytics tests cover: claim page and custom-event URL scrubbing; `?t=` removal while retaining another parameter; `#key=` removal; ordinary URLs and paths merely starting with `m` unchanged; the six dropped path shapes above; a mismatched custom event; an unparsable URL; and preservation of `payload` and `__cdp`. These exercise the hook, not the SDK's transmitted payload.
+- Invite cases in `__tests__/app/analytics-client.test.ts` pin the `/s/` keep/drop rule and explicitly assert the returned `url` contains `/s/[inviteToken]`, not the token. They also cover ordinary `/share` and other `s`-prefix paths. These exercise the hook, not live intake.
 - PR #62 records local `npm run validate` and `npm run build:offline` passing, and 70 files / 1268 tests passing, 7 skipped. PR #64's Team Code Review round 1 fixes record both commands passing and `npm run test:run`: 70 files passed, 1 skipped; 1278 tests passed, 7 skipped. Both records say `DATABASE_URL` unset and no `.env*`.
 - The orchestrator checked `/_vercel/insights/script.js`: 200 at 2026-11-07 01:07 UTC (404 in PR #62). At 2026-11-07 02:29 UTC both it and the per-project path the pages loaded, `/57754c27654861f8/script.js`, answered 200 with identical bytes (4,522 bytes, script `0.1.3`); intake payload not checked. On that date, the per-project intake path was `/57754c27654861f8/view`; Vercel sets the base path at build time. The server HTML search returned no script reference; browser injection means that does not establish whether page views arrive. The PR exports record Ready previews, not CI test results or production intake.
 
-**NOT RUN:** F2 live intake and real-data verification; CI results are not supplied. This documentation worker did not rerun npm validation, tests or the offline build; those checks belong to the combined branch.
+**NOT RUN:** F2 live intake and real-data verification; CI results are not supplied. Current local documentation checks are recorded in [Invite links](./invite-links.md#tests-and-evidence); no offline build or live intake check was run for this sync.
 
 ## Known gaps and follow-ups
 
 - **F1, Low, open at HEAD:** `CLAIM_PATH` in `lib/sentry/scrub.ts` still lacks the case-insensitive flag, so upper-case claim paths can reach Sentry unchanged. Analytics drops those paths. The same follow-up proposes scrubbing claim segments of any length: the hook permits `/m/abc`, but `scrubUrl` leaves that short value in `o`.
-- **F2, Medium, open; Rob's live check:** use a normal, non-automated desktop browser against a deployed site. Playwright, Chrome DevTools MCP and headless/WebDriver sessions send nothing; `next dev` loads a debug script that sends nothing. First see an ordinary page view's POST reach intake in the network panel; then verify a claim page sends `o` and `dp` both as `/m/[claimToken]`; then verify `/m/<token>/x` sends nothing. Confirm the claim page's intake POST is accepted with `Referer` absent (`Origin` is expected). Script availability does not close this item.
+- **F2, Medium, open; Rob's live check:** use a normal, non-automated desktop browser against a deployed site. Playwright, Chrome DevTools MCP and headless/WebDriver sessions send nothing; `next dev` loads a debug script that sends nothing. First see an ordinary page view's POST reach intake in the network panel; then verify a claim page sends `o` and `dp` both as `/m/[claimToken]`; then verify `/m/<token>/x` sends nothing. Repeat for `/s/<token>` (`o` and `dp` both `/s/[inviteToken]`) and `/s/<token>/x` (no event). Confirm the claim page's intake POST is accepted with `Referer` absent (`Origin` is expected). Script availability does not close this item.
 - **F3, Low, open:** both overrides remain. The lockfile still has Blob requiring oidc `^3.6.1` and typescript-estree requiring minimatch `^10.2.2`, so the [documented removal conditions](../dependencies.md#overrides-in-packagejson) are unmet; the cli-config condition also requires checking its bundled zod without the override. Do not remove either on audit output alone.
 
 ## Related
