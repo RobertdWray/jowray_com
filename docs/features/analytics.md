@@ -4,7 +4,7 @@ Page-view analytics and Core Web Vitals for Rob in the Vercel project dashboard.
 
 **Status:** [PR #62](https://github.com/RobertdWray/jowray_com/pull/62) delivered analytics (merged 2026-11-06 as `73ac034`); [PR #64](https://github.com/RobertdWray/jowray_com/pull/64) added protection for token-bearing unmatched routes (merged into #62 on 2026-11-06 as `bb4a2e2`). There is no feature plan; the PR descriptions are the record. Deployment evidence is limited: `/_vercel/insights/script.js` answered 200 at 2026-11-07 01:07 UTC (404 in PR #62); at 2026-11-07 02:29 UTC both it and the per-project path the pages loaded, `/57754c27654861f8/script.js`, answered 200 with identical bytes; intake payload not checked. Page views arriving and use with real data are not verified.
 
-[PR #NNN](https://github.com/RobertdWray/jowray_com/pull/NNN) adds Speed Insights (`@vercel/speed-insights` 2.1.0) through the same guard, which now also checks the route Speed Insights hands to `beforeSend`. It is open, and its PR description is the record. `/_vercel/speed-insights/script.js` answered 200 on 2026-11-08 before this PR (script `0.1.3`), which suggests Speed Insights is already enabled on the project. No vitals intake has been checked.
+[PR #96](https://github.com/RobertdWray/jowray_com/pull/96) adds Speed Insights (`@vercel/speed-insights` 2.1.0) through the same guard, which now also checks the route Speed Insights hands to `beforeSend`. It is open, and its PR description is the record. `/_vercel/speed-insights/script.js` answered 200 on 2026-11-08 before this PR (script `0.1.3`), which suggests Speed Insights is already enabled on the project. No vitals intake has been checked.
 
 The npm audit cleanup in #62 and #64's replacement of the ineffective zod override with a real bundled-code fix are recorded in [Dependencies](../dependencies.md).
 
@@ -24,8 +24,8 @@ To add page-view measurement without sending claim or invite credentials to anal
 |---|---|
 | Adding analytics was delivered in PR #62 and accepted at merge. The supplied PR record contains no direct ruling from Rob authorizing the addition. | [PR #62](https://github.com/RobertdWray/jowray_com/pull/62), 2026-11-06 |
 | Agent's implementation choices, accepted at merge: reuse `scrubUrl`; after review, reject unsafe raw paths instead of testing only the scrubbed URL, which misses upper-case and short segments. | [PR #64](https://github.com/RobertdWray/jowray_com/pull/64) and [PR #62's review comment](https://github.com/RobertdWray/jowray_com/pull/62), 2026-11-06 |
-| Rob asked for Speed Insights following [Vercel's docs](https://vercel.com/docs/speed-insights), installing `@vercel/speed-insights` and naming `SpeedInsights` from `@vercel/speed-insights/next`. He approved the plan, including the agent's calls in the next row. | Rob, 2026-11-08 (session plan; [PR #NNN](https://github.com/RobertdWray/jowray_com/pull/NNN)) |
-| Agent's calls, approved in that plan: one guard for both scripts (`scrubPageView` renamed `scrubVercelEvent`) instead of a second copy; drop a vital whose route fails the path rule, because the script ignores a rewritten route; no `sampleRate`, so every event is sent as under the 100 % alpha policy. A later agent's call, which Rob has not yet accepted: document Speed Insights here, not in its own file. The plan had proposed a new file, but template rule 1 quotes Rob: "I don't want documents just to create documents." | [PR #NNN](https://github.com/RobertdWray/jowray_com/pull/NNN), 2026-11-08 |
+| Rob asked for Speed Insights following [Vercel's docs](https://vercel.com/docs/speed-insights), installing `@vercel/speed-insights` and naming `SpeedInsights` from `@vercel/speed-insights/next`. He approved the plan, including the agent's calls in the next row. | Rob, 2026-11-08 (session plan; [PR #96](https://github.com/RobertdWray/jowray_com/pull/96)) |
+| Agent's calls, approved in that plan: one guard for both scripts (`scrubPageView` renamed `scrubVercelEvent`) instead of a second copy; drop a vital whose route fails the path rule, because the script ignores a rewritten route; no `sampleRate`, so every event is sent as under the 100 % alpha policy. A later agent's call, which Rob has not yet accepted: document Speed Insights here, not in its own file. The plan had proposed a new file, but template rule 1 quotes Rob: "I don't want documents just to create documents." | [PR #96](https://github.com/RobertdWray/jowray_com/pull/96), 2026-11-08 |
 
 ## How it works
 
@@ -94,7 +94,7 @@ After a deploy, check script loading and perform F2 against the deployed site in
 - PR #62 records local `npm run validate` and `npm run build:offline` passing, and 70 files / 1268 tests passing, 7 skipped. PR #64's Team Code Review round 1 fixes record both commands passing and `npm run test:run`: 70 files passed, 1 skipped; 1278 tests passed, 7 skipped. Both records say `DATABASE_URL` unset and no `.env*`.
 - The orchestrator checked `/_vercel/insights/script.js`: 200 at 2026-11-07 01:07 UTC (404 in PR #62). At 2026-11-07 02:29 UTC both it and the per-project path the pages loaded, `/57754c27654861f8/script.js`, answered 200 with identical bytes (4,522 bytes, script `0.1.3`); intake payload not checked. On that date, the per-project intake path was `/57754c27654861f8/view`; Vercel sets the base path at build time. The server HTML search returned no script reference; browser injection means that does not establish whether page views arrive. The PR exports record Ready previews, not CI test results or production intake.
 
-- [PR #NNN](https://github.com/RobertdWray/jowray_com/pull/NNN) adds the Speed Insights cases to the same file. They use `{ type: "vital", url, route }`, typed from the SDK's `beforeSend`:
+- [PR #96](https://github.com/RobertdWray/jowray_com/pull/96) adds the Speed Insights cases to the same file. They use `{ type: "vital", url, route }`, typed from the SDK's `beforeSend`:
   - a claim-page vital keeps the route `/m/[claimToken]` and loses the token, `?t=` and `#key=` from its URL;
   - an invite vital is scrubbed to `/s/[inviteToken]`;
   - a safe URL with an unsafe stale route (upper-case `M`, extra segment, trailing slash, nested `/s/`, encoded `m`) is dropped;
@@ -103,7 +103,7 @@ After a deploy, check script loading and perform F2 against the deployed site in
   - a route with malformed encoding is dropped.
 
   Deleting the route check fails six of them. The renamed Web Analytics cases are otherwise unchanged. Results are recorded in the PR description.
-- Local debug-script check, 2026-11-08, PR #NNN branch: `next dev` with no `.env*`, a separate headless Chrome driven over CDP, synthetic `SENTRYTEST_` values, and `pagehide` dispatched to flush.
+- Local debug-script check, 2026-11-08, PR #96 branch: `next dev` with no `.env*`, a separate headless Chrome driven over CDP, synthetic `SENTRYTEST_` values, and `pagehide` dispatched to flush.
   - `/how-it-was-built?t=…&from=email#key=…` logged FCP, TTFB and LCP with `href` `/how-it-was-built?from=email` and route `/how-it-was-built`; the LCP attribution was `#page-heading`.
   - On the root not-found pages `/m/<token>/extra` and `/M/<token>`, the script's `data-route` held the raw token path and no payload was logged.
   - A control run on `/m/<token>/extra` with a pass-through `beforeSend` logged three metrics carrying the token in both `href` and `route`. So the drop comes from `scrubVercelEvent`, not from missing metrics.
