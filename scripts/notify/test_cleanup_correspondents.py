@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections
 import contextlib
 import csv
+import importlib.util
 import json
 import stat
 import subprocess
@@ -17,6 +18,8 @@ from unittest import mock
 
 import cleanup_correspondents as cc
 import rank_correspondents as rc
+
+REAL_SDK = cc.real_sdk  # CleanupCase replaces cc.real_sdk; the offline SDK test calls the real one
 from test_rank_correspondents import ALICE, BOB, OWNER, TempTestCase, headers
 
 ENVELOPE = b"From owner@example.com Tue Jan  2 12:00:00 2024\n"
@@ -1687,7 +1690,73 @@ class SpendCommandTests(CleanupCase):
 
 class NoSdkTests(unittest.TestCase):
     def test_module_imports_without_the_sdk(self):
-        self.assertNotIn("anthropic", sys.modules)
+        # A fresh interpreter: the offline SDK test imports anthropic into this one when present.
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import cleanup_correspondents; "
+                "print('anthropic' in sys.modules)")
+        done = subprocess.run([sys.executable, "-c", code, str(Path(cc.__file__).parent)],
+                              capture_output=True, text=True, check=True)
+        self.assertEqual(done.stdout.strip(), "False")
+
+
+@unittest.skipUnless(importlib.util.find_spec("anthropic"), "the anthropic SDK is not installed (CI is stdlib only)")
+class RealSdkOfflineTests(CleanupCase):
+    """The real anthropic tool runner on an in-process transport: no network, no spend.
+
+    Run it with: uv run --no-project --with anthropic==1.17.0 --with "pydantic>=2.14,<3" \\
+        python -m unittest discover -s scripts/notify -p "test_*.py"
+    """
+
+    def message(self, number, content, stop):
+        return {"id": f"msg_{number}", "type": "message", "role": "assistant", "model": cc.HAIKU_MODEL,
+                "content": content, "stop_reason": stop, "stop_sequence": None,
+                "usage": {"input_tokens": 1200, "output_tokens": 40, "cache_creation_input_tokens": 0,
+                          "cache_read_input_tokens": 0}}
+
+    def test_a_raising_tool_reaches_the_model_sanitized_and_the_console_stays_clean(self):
+        import anthropic
+        import httpx2 as httpx  # the HTTP client package anthropic 1.17.0 is built on
+
+        logger = cc.logging.getLogger("anthropic")
+        saved = (list(logger.handlers), logger.propagate)
+        self.addCleanup(lambda: (setattr(logger, "handlers", saved[0]), setattr(logger, "propagate", saved[1])))
+        self.build()
+        requests, turns = [], [
+            ([{"type": "tool_use", "id": "toolu_1", "name": "names_used", "input": {"address": ALICE}}], "tool_use"),
+            ([{"type": "text", "text": json.dumps(answer(person([ALICE], first="Alice", last="Example")))}],
+             "end_turn")]
+
+        def handler(request):
+            body = json.loads(request.content)
+            if request.url.path.endswith("/count_tokens"):
+                return httpx.Response(200, json={"input_tokens": 2000})
+            requests.append(body)
+            content, stop = turns[len(requests) - 1]
+            return httpx.Response(200, json=self.message(len(requests), content, stop))
+
+        client = anthropic.Anthropic(api_key="offline-test", base_url="http://offline.invalid", max_retries=0,
+                                     http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+        alice = [c for c in cc.load_clusters(self.paths) if cc.cluster_addresses(c) == [ALICE]]
+        broken = AttributeError("Alice Example <alice@example.com> secret body")
+        with mock.patch.object(cc.AgentTools, "names_used", side_effect=broken), \
+                mock.patch.object(cc, "select_clusters", return_value=alice):
+            code = cc.run_review(self.paths, cc.ReviewOptions(phase="haiku", sample="pilot"),
+                                 sdk=REAL_SDK(client=client))
+        self.assertEqual((code, len(requests)), (0, 2))
+        (result,) = [b for m in requests[1]["messages"] if m["role"] == "user" and isinstance(m["content"], list)
+                     for b in m["content"] if b.get("type") == "tool_result"]
+        text = result["content"] if isinstance(result["content"], str) else "".join(
+            b.get("text", "") for b in result["content"])
+        self.assertEqual(text, cc.canonical_json({"error": "internal tool error (AttributeError)"}))
+        self.assertNotIn("secret body", json.dumps(requests))
+        self.assertEqual(self.stderr.getvalue(), "")
+        self.assert_private_console()
+        first = requests[0]
+        self.assertEqual([t["name"] for t in first["tools"]], sorted(cc.TOOL_SCHEMAS))
+        self.assertTrue(all(t["strict"] for t in first["tools"]))
+        self.assertEqual(first["output_config"]["format"]["schema"], cc.OUTPUT_SCHEMA)
+        self.assertTrue(first["messages"][0]["content"].startswith(cc.USER_INSTRUCTION))
+        entry = next(e for e in cc.read_jsonl(self.paths.decisions, repair=False)[0] if e["phase"] == "haiku")
+        self.assertEqual((entry["status"], entry["tool_errors"], entry["turns"]), ("ok", 1, 2))
 
 
 if __name__ == "__main__":

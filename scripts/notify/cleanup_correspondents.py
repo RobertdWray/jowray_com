@@ -1623,7 +1623,9 @@ def quiet_sdk_logging() -> None:
     logger.propagate = False
 
 
-def real_sdk() -> Sdk:
+def real_sdk(client=None) -> Sdk:
+    """The anthropic SDK. Tests pass a client on an offline transport; otherwise the
+    client reads ANTHROPIC_API_KEY."""
     import anthropic  # only the API path needs the SDK
 
     quiet_sdk_logging()
@@ -1632,10 +1634,11 @@ def real_sdk() -> Sdk:
         return anthropic.beta_tool(spec.fn, name=spec.name, description=spec.description,
                                    input_schema=spec.input_schema, strict=True)
 
-    try:
-        client = anthropic.Anthropic(max_retries=CLIENT_MAX_RETRIES, timeout=CLIENT_TIMEOUT)
-    except anthropic.AnthropicError as exc:
-        rc.die(f"could not create the API client ({type(exc).__name__}); check ANTHROPIC_API_KEY")
+    if client is None:
+        try:
+            client = anthropic.Anthropic(max_retries=CLIENT_MAX_RETRIES, timeout=CLIENT_TIMEOUT)
+        except anthropic.AnthropicError as exc:
+            rc.die(f"could not create the API client ({type(exc).__name__}); check ANTHROPIC_API_KEY")
     return Sdk(client, wrap, (anthropic.APIError,), anthropic.__version__)
 
 
