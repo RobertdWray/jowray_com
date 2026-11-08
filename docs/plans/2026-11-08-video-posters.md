@@ -1,6 +1,6 @@
 # Video posters: one server-made frame for every video (cards, memory page, admin gallery, admin alert)
 
-**Status:** executed on 2026-11-08 on branch `feat/video-posters` as one PR, [#99](https://github.com/RobertdWray/jowray_com/pull/99) (open as a draft; not merged). Tasks 1–14 are committed, with Task 9 (docs) run last by ruling R15. Written 2026-11-08 from `origin/main` at `c837789` (PR #94 merge); the branch is based on `6113021` (PR #96 merge). This file is the session plan copied into the repo unchanged, apart from this line, the [Ledger](#ledger), FU-7 to FU-9 under [Non-goals and follow-ups](#non-goals-and-follow-ups), and two sections added before the Citations: [Execution rulings](#execution-rulings) (verbatim from the execution ledger) and [Execution ledger](#execution-ledger) (commits and outcome per task). The feature doc is [`docs/features/video-posters.md`](../features/video-posters.md).
+**Status:** executed on 2026-11-08 on branch `feat/video-posters` as one PR, [#99](https://github.com/RobertdWray/jowray_com/pull/99) (open as a draft; not merged). Tasks 1–14 are committed, with Task 9 (docs) run last by ruling R15. `ci` and the Vercel preview passed on `03c42e8`: 144 of 144 test files, check-traces OK on Linux. Team Code Review round 1 ran on `03c42e8`; its Bucket 1 and 2 fixes followed in the same PR ([Execution ledger](#execution-ledger), "Team Code Review round 1"). Written 2026-11-08 from `origin/main` at `c837789` (PR #94 merge); the branch is based on `6113021` (PR #96 merge). This file is the session plan copied into the repo unchanged, apart from this line, the [Ledger](#ledger), FU-7 to FU-9 under [Non-goals and follow-ups](#non-goals-and-follow-ups), and two sections added before the Citations: [Execution rulings](#execution-rulings) (verbatim from the execution ledger) and [Execution ledger](#execution-ledger) (commits and outcome per task). The feature doc is [`docs/features/video-posters.md`](../features/video-posters.md).
 
 This plan is safe to hand off: paths are absolute or repo-relative, every step has a done-check, and the [Ledger](#ledger) is the progress record. Update the ledger after every step, and record deviations as "Ruling: what — why — cost if wrong".
 
@@ -377,8 +377,12 @@ admin alert: poll ≤15 s for READY THUMBNAIL/POSTER → inline cid previews (ad
 
 Added during execution (2026-11-08):
 - **FU-7:** approve or deny the five pre-existing unapproved install scripts (`prisma`, `@prisma/engines`, `esbuild`, `exifreader`, `fsevents`) before npm 12 blocks them by default (Task 1 note). Rob's.
-- **FU-8:** head-of-line blocking in cron (g2) (a Task 7 review minor): a video whose header reads stall in every run (`inspect_time`) holds the oldest-first batch of 2, so the backfill stops behind it, with a Sentry warning each run; new uploads are unaffected. Cheapest fix: alternate the order by run slot (amends R11). Open unless the final review fixes it.
+- **FU-8:** head-of-line blocking in cron (g2) (a Task 7 review minor): a video whose header reads stall in every run (`inspect_time`) holds the oldest-first batch of 2, so the backfill stops behind it, with a Sentry warning each run; new uploads are unaffected. Cheapest fix: alternate the order by run slot (amends R11). **Fixed in Team Code Review round 1 (B2-6, `17a2ee8`).**
 - **FU-9:** the admin alert's preview alt text still says "Your video" / "Your photo" (the template's contributor wording; Tasks 13–14 note).
+
+Added after Team Code Review round 1 (2026-11-08; details in the [feature doc](../features/video-posters.md#known-gaps-and-follow-ups) and the PR #99 description):
+- **FU-10 (High, owner Rob):** move to a maintained FFmpeg build. The Linux `ffmpeg-static` binary is stuck at FFmpeg 7.0.2 ([dependencies](../dependencies.md#ffmpeg-static-video-posters)). Do it before uploads open beyond family use, or on a code-execution CVE in the mov or matroska demuxers or the h264, hevc, vp8 or vp9 decoders.
+- **(Low)** PQ output is untested: the PQ case runs on the HLG fixture. Add a real PQ fixture when FU-10 re-runs the real-binary suite.
 
 ---
 
@@ -396,7 +400,8 @@ Added during execution (2026-11-08):
 | T6 derivePoster | done | `85c0c2f`, `84cbd20` | R6, R8, R9, R10; two T6 minors folded into T7 as `5a43897` |
 | T7 scheduling | done | `8d2b0f2`, `5a43897`, `d20831e` | R2, R11, R12, R13 |
 | T8 serving | done | `a69dacb` | D7 |
-| T9 docs + PR-1 review | docs done (run last, R15); review pending | `8ba6d5c`, `f2ea77f`, `fa6dc3f` and the commit that adds this file | The PR review is Rob's 7-step flow (Execution ledger, PR #99). |
+| T9 docs + PR-1 review | docs done (run last, R15); TCR round 1 done; regression check, approval and merge pending | `8ba6d5c`, `f2ea77f`, `fa6dc3f`, `03c42e8` | The PR review is Rob's 7-step flow (Execution ledger, PR #99). `ci` and the preview passed on `03c42e8`. |
+| TCR round 1 + bucket work | done | `a84e1e3`, `a7f8535`, `2da847f`, `61747d5`, `17a2ee8`, `ff0dd3c`, `aa7a863` and the docs commit that updates this file | 12 findings (George 7, Oscar 5) plus 3 of the controller's; Buckets 1 and 2 done; Bucket 3 in a PR comment; Bucket 4 in the PR description (Execution ledger). |
 | V1–V4 preview | V1 partly done; V2–V4 not run | PR #99 preview at `456b5df` | V1: the function sizes come from check-traces on the Vercel build (`/api/mcp` 140.7 MB, cron 140.3, upload 140.3, `/share` 63.0; ffmpeg only in the three routes), not from `VERCEL_ANALYZE_BUILD_OUTPUT`. |
 | PR-1 merged, V5 | pending | PR #99 (one PR for all tasks) | |
 | T10–T12, PR-2 merged, V6 | code done; merge and V6 pending | `9bbb477`, `757b46e`, `d10de91` (R16) | In PR #99 |
@@ -499,7 +504,28 @@ What each task committed and how it ended, from the execution ledger and the tas
 **Task 9: docs and housekeeping** (R15: moved to the end, absorbing the docs bullets of Tasks 12 and 14). `8ba6d5c` (code layout), `f2ea77f` (schema comment, fixtures README, dependencies), `fa6dc3f` (feature docs) and the commit that adds this file.
 - Docs only, the `schema.prisma` comment and the fixtures README; no code. Checks on `fa6dc3f` plus this file, with no `.env*` file and no database variables (darwin, Node 26): `npm run validate` exit 0; `npm run test:run` 133 files passed and 11 skipped (144), 3,632 tests passed and 68 skipped (3,700; the skips are the real-Postgres suites without `TEST_DATABASE_URL`); `npm run build:offline` exit 0, with check-traces OK (30 functions; ffmpeg only in the three routes; `/api/mcp` 86.9 MB, the cron and `/api/upload` 86.5 MB, `/share` and `/s/[inviteToken]` 43.4 MB, `/m/[claimToken]` 43.0 MB). `npm audit` the same day: 4 low, the deepmerge chain, as before `ffmpeg-static`. No integration-test fake changed.
 
-**PR #99.** Opened as a draft at `01377cf` and pushed again at `456b5df`; `ci` and the Vercel preview passed on both pushes (`ci` on `01377cf` and `456b5df`, the preview on `456b5df`). The later commits are not pushed yet. Rob, 2026-11-08: "Finish the PR then apply these steps." After the push: one Team Code Review round, the friend-buckets sort, the bucket work by the same review subagent, a regression check, the orchestrator's approval, and a merge to `main` if there are no serious regressions.
+**Team Code Review round 1** (2026-11-08, on `03c42e8`). George (Gemini) and Oscar (Codex) found 12 issues: George 7 (G1–G7), Oscar 5 (O8–O12). The controller sorted them into buckets, verified the CVE claims against NVD, cve.org, Red Hat, SUSE and Ubuntu, and added three findings of its own from the deferred minors above. Rob authorized the work going into this PR. One review subagent ran the round and then the bucket work, each code change test first, in these commits:
+- `a84e1e3` check-traces:
+  - B1-1 (G1, O9): the binary must match `FFMPEG_BINARY_PINS` for the build platform, by size and then SHA-256. linux-x64 is `e7e7fb30…aa3eb99` (79,826,272 bytes) and darwin-arm64 `a90e3db6…18336584` (45,568,216 bytes), from the `b6.1.1` release asset digests; the gunzipped `ffmpeg-linux-x64.gz` was hashed to confirm. A platform with no pin fails.
+  - B1-3 (O12): an `ffmpeg-static` file in a shared source fails once, naming that source.
+  - B2-2 (G3, O12): sizes add the instrumentation trace and the required server files.
+  - B2-7: the CLI entry check compares real paths, and a `tsx` spawn test proves the gate runs. The over-limit message names the shared sources.
+  - These close Task 1's deferred entrypoint, wording and instrumentation-size minors.
+- `a7f8535` B1-1, the runtime half: `createVideoFrameService` throws while `FFMPEG_BIN` is set, in every environment, so only the pinned binary runs.
+- `2da847f` B2-1 (G2; Task 4's deferred minor): one `-filters` probe per binary, on its own `FILTER_CHECK_MS` clock; each caller races its own deadline and signal.
+- `61747d5` derivePoster:
+  - B2-4 (G7; Task 7's minor): exactly the start threshold defers before the binary and the slot.
+  - B2-5 (O11): `PUBLISH_RESERVE_MS` (2 s) comes out of ffmpeg's and sharp's deadlines and is added to the floors (8 s after the claim, 9 s before it). The write starts only with 2 s left and the publish only with 1 s; otherwise the claim is given back and reported as `publish_budget`.
+- `17a2ee8` B2-6 (FU-8; amends R11): (g2) takes oldest first in even ten-minute slots and newest first in odd ones.
+- `ff0dd3c` B2-3 (G5; Tasks 10–12's minor): `posterReady`, `thumbReady` and `webReady` ignore copies on browser-staged keys.
+- `aa7a863` B2-8 (Task 8's minor): a test pins the POSTER `sizeBytes`-null cost fallback.
+- The docs commit, B1-2 (G1, O8) and B2-9: the FFmpeg 7.0.2 risk record in `docs/dependencies.md` and the feature doc; the env variables that must never be set; R4a in the Key decisions; these Status lines and this entry.
+
+Not done, with the reasons in a PR #99 comment (Bucket 3): G4, Sentry request sessions for the loopback requests; G6, the `too_many_pixels` string comparison; O10, the unbounded preview query; and switching to a maintained FFmpeg build within this PR. The last is FU-10 instead. Follow-ups FU-1 to FU-7, FU-9 and FU-10 and the PQ fixture are in the PR description (Bucket 4).
+
+Checks before the push (darwin, Node 26, no `.env*`, no database variables): `npm run validate` exit 0; `npm run test:run` 134 files passed and 11 skipped (145), 3,669 tests passed and 68 skipped (the real-Postgres suites); `npm run build:offline` exit 0. Its check-traces passed: the darwin-arm64 hash was verified, there are 30 functions, ffmpeg is in the three routes only, and the sizes now include the shared files (`/api/mcp` 88.6 MB, the cron and `/api/upload` 88.2 MB, `/share` and `/s/[inviteToken]` 45.1 MB). No integration-test fake changed. `__tests__/integration/review-version.test.ts` and `share-draft.test.ts` call `getMemoryForAdmin`, whose derivatives select gained `storageKey`; the orchestrator runs those suites on its own Postgres.
+
+**PR #99.** Opened as a draft at `01377cf` and pushed again at `456b5df` and `03c42e8`; `ci` and the Vercel preview passed on each push (`ci` on `01377cf`, `456b5df` and `03c42e8`; the preview on `456b5df` and `03c42e8`). The Team Code Review round 1 commits were pushed after that. Rob, 2026-11-08: "Finish the PR then apply these steps." After the push: one Team Code Review round, the friend-buckets sort, the bucket work by the same review subagent, a regression check, the orchestrator's approval, and a merge to `main` if there are no serious regressions.
 
 ---
 

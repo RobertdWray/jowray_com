@@ -2,7 +2,12 @@
 
 Every READY video gets one server-made JPEG frame, stored as a `POSTER` derived copy, so a video memory shows a picture instead of an empty dashed box: on the See memories cards, in the memory page player, in the admin gallery and in the family alert email. ffmpeg takes the frame inside three server functions only (the upload callback, the MCP endpoint and the reconcile cron), and every media route serves it as a video's `?v=thumb`.
 
-**Status:** implemented and tested on branch `feat/video-posters`, [PR #99](https://github.com/RobertdWray/jowray_com/pull/99) (opened as a draft on 2026-11-08). Not merged, not deployed. Plan, rulings and ledger: [`docs/plans/2026-11-08-video-posters.md`](../plans/2026-11-08-video-posters.md). `ci` and the Vercel preview build last ran on `456b5df` (Tasks 1–5) and passed; Tasks 6–14 and these docs were committed after that push and have no CI run yet (2026-11-08). There is nothing to configure: no env key and no flag. After merge and deploy, cron step (g2) makes posters for the six live videos, two per run. Still Rob's: the PR review flow (one Team Code Review round, the regression check, approval and merge) and the preview and production checks V2–V8 listed under Tests and evidence.
+**Status:** implemented and tested on branch `feat/video-posters`, [PR #99](https://github.com/RobertdWray/jowray_com/pull/99) (opened as a draft on 2026-11-08). Not merged, not deployed. Plan, rulings and ledger: [`docs/plans/2026-11-08-video-posters.md`](../plans/2026-11-08-video-posters.md).
+- `ci` and the Vercel preview passed on `03c42e8` (Tasks 1–14 and the docs): 144 of 144 test files, and check-traces OK on Linux.
+- The fixes from Team Code Review round 1 (Buckets 1 and 2) followed in the same PR. They are listed in the plan's [Execution ledger](../plans/2026-11-08-video-posters.md#execution-ledger).
+- There is nothing to configure: no env key and no flag. Three ffmpeg-static variables must never be set ([Operations](#operations-and-rollback)).
+- After merge and deploy, cron step (g2) makes posters for the six live videos, two per run.
+- Still Rob's: the rest of the PR review flow (the regression check, approval and merge) and the preview and production checks V2–V8 listed under Tests and evidence.
 
 ## What we built
 
@@ -27,7 +32,8 @@ The [plan's Context](../plans/2026-11-08-video-posters.md#context): "On https://
 | R-P3: claim-page posters are out of scope (not offered, not chosen); follow-up FU-1. | [plan, Rulings](../plans/2026-11-08-video-posters.md#rulings) |
 | One PR: "Let's keep this in one pr please." (Rob, 2026-11-08). The plan's PR-1/PR-2/PR-3 stack became task groups of PR #99. | [plan, Execution setup](../plans/2026-11-08-video-posters.md#execution-setup) |
 | D1–D10, agent's calls proposed in the plan; Rob let execution go ahead without overruling any, and the PR review is the final acceptance. D1 the binary is traced into `/api/upload`, `/api/mcp` and `/api/cron/reconcile-uploads` only; D2 ffmpeg reads through a loopback server, never a Blob URL; D3 the keyframe at or before 1 s; D4 the THUMBNAIL spec with no baked play badge; D5 tone-map HLG and PQ only; D6 a poster never writes the `Media` row; D7 a video's `?v=thumb` is its poster or 404; D8 the alert carries photo thumbnails too; D9 `ffmpeg-static` pinned at `5.3.0` with a pinned `allowScripts` entry; D10 the GPLv3 position in [`docs/dependencies.md`](../dependencies.md#ffmpeg-static-video-posters). | [plan, Rulings](../plans/2026-11-08-video-posters.md#rulings) |
-| Execution rulings (agent's calls, 2026-11-08), the ones that shape behaviour: R2 the MCP poster task lives in `attach-media.ts`, because `scheduleReadyFollowUps` is page-reachable; R6/R10 a malformed box or a store error reading the original is a retryable `decode_failed` (at most 3 attempts); R7 ffmpeg gets `-max_pixels 33177600`; R8 a deferral after a reclaim resets the row's attempts; R9 the budget floor is checked before the slot and the loopback URL is redacted from stderr; R11 (g2) runs last, after (h), on at most 20 s of leftover run time; R12 the MCP task keeps 3 s back; R13 (g2) selects only allowed video types; R18 one preview read budget per send; R19 cron alerts read pictures within the run deadline, the advisory EmailLog read fails open, and the wait and the loader share one slot rule. | [plan, Execution rulings](../plans/2026-11-08-video-posters.md#execution-rulings) (verbatim) |
+| Execution rulings (agent's calls, 2026-11-08), the ones that shape behaviour: R2 the MCP poster task lives in `attach-media.ts`, because `scheduleReadyFollowUps` is page-reachable; R4a, the Task 4 deviations: scale before the HDR chain, mobius 0.7 at npl 203, `too_many_pixels:<limit>` from `-max_pixels`, and the Sentry Http options (its `-recv_buffer_size` was later removed by the Task 4 fix); R6/R10 a malformed box or a store error reading the original is a retryable `decode_failed` (at most 3 attempts); R7 ffmpeg gets `-max_pixels 33177600`; R8 a deferral after a reclaim resets the row's attempts; R9 the budget floor is checked before the slot and the loopback URL is redacted from stderr; R11 (g2) runs last, after (h), on at most 20 s of leftover run time (amended by the TCR round: its order alternates by run); R12 the MCP task keeps 3 s back; R13 (g2) selects only allowed video types; R18 one preview read budget per send; R19 cron alerts read pictures within the run deadline, the advisory EmailLog read fails open, and the wait and the loader share one slot rule. | [plan, Execution rulings](../plans/2026-11-08-video-posters.md#execution-rulings) (verbatim) |
+| Team Code Review round 1 (2026-11-08), the controller's buckets, which Rob authorized for this PR: B1-1 the ffmpeg binary is pinned by SHA-256 and `FFMPEG_BIN` is refused; B1-2 FFmpeg 7.0.2 is a recorded, accepted risk with follow-up FU-10; B1-3 and B2-2 check-traces also checks the files every function shares; B2-1 one `zscale` probe per binary, on its own clock; B2-3 `posterReady` excludes staging keys; B2-4 exactly 9 s defers before the slot; B2-5 a 2 s write-and-publish reserve; B2-6 (g2) alternates its order by run. Not done, with the reasons in a PR #99 comment: G4 (Sentry request sessions), G6, O10, and switching the FFmpeg build within this PR. | [plan, Execution ledger](../plans/2026-11-08-video-posters.md#execution-ledger) |
 
 ## How it works
 
@@ -50,18 +56,21 @@ flowchart LR
 ### `derivePoster`: steps and verdicts
 
 1. **Gate.** READY, an allowed `video/*` type, not removed, its memory not deleted, stored under this environment's prefix, and its POSTER row eligible under `isEligible(row, now, MAX_VIDEO_PIXELS)`. Anything else returns at once, reading nothing. A stale claim that used its 3 attempts is retired as `abandoned` without the binary, the slot or a byte.
-2. **Preflight, before any claim.** At least 7 s left (`POSTER_MIN_BUDGET_MS` 6 s for ffmpeg and sharp, plus `CLAIM_MARGIN_MS` 1 s), the binary available (`fs.access(path, X_OK)`), then the one image slot, waited for only while those 7 s would remain. The slot is held through ffmpeg and sharp, since a 4K frame costs ffmpeg about 280 MB.
-3. **Inspect.** `storage.head`, then the first 128 bytes: QuickTime/ISO BMFF → `mov`, EBML → `matroska`, anything else `unsupported_type`. For `mov`, `readVideoTrackInfo` (`lib/video-track.ts`, over the shared box walk in `lib/mp4-boxes.ts`) reads the first video track's size and its `colr` transfer (18 HLG, 16 PQ). A declared track over 33,177,600 pixels (8K UHD) is refused. The reads are cut off while 7 s remain, so they either finish in time to claim or the run defers, spending nothing.
-4. **Claim** a `POSTER` row with a fresh `.jpg` key through the shared protocol (`features/memories/derived-claims.ts`, which `deriveMedia` also uses). An inspection verdict is recorded on the claim.
-5. **Extract** inside a Sentry `media.poster` span, with the remaining budget less 1 s for sharp. **Re-encode** with `slot.thumbnail`, then release the slot.
-6. **Write and publish** under the memory lock with no `whileLocked` callback, so the `Media` row and its `updatedAt` (which feeds MCP's `reviewVersion`) never change (D6). A video removed meanwhile is not resurrected.
+2. **Preflight, before any claim.**
+   - More than 9 s must be left: `POSTER_MIN_BUDGET_MS` 6 s for ffmpeg and sharp, `PUBLISH_RESERVE_MS` 2 s for the write and the publish, and `CLAIM_MARGIN_MS` 1 s. At exactly 9 s the run defers here, before the binary or the slot.
+   - The binary must be available (`fs.access(path, X_OK)`).
+   - Then it takes the one image slot, waiting only while those 9 s would remain. The slot is held through ffmpeg and sharp, since a 4K frame costs ffmpeg about 280 MB.
+3. **Inspect.** `storage.head`, then the first 128 bytes: QuickTime/ISO BMFF → `mov`, EBML → `matroska`, anything else `unsupported_type`. For `mov`, `readVideoTrackInfo` (`lib/video-track.ts`, over the shared box walk in `lib/mp4-boxes.ts`) reads the first video track's size and its `colr` transfer (18 HLG, 16 PQ). A declared track over 33,177,600 pixels (8K UHD) is refused. The reads are cut off while 9 s remain, so they either finish in time to claim or the run defers, spending nothing.
+4. **Claim** a `POSTER` row with a fresh `.jpg` key through the shared protocol (`features/memories/derived-claims.ts`, which `deriveMedia` also uses). An inspection verdict is recorded on the claim. A claim that leaves less than 8 s (the floor and the reserve) is given back.
+5. **Extract** inside a Sentry `media.poster` span, with the remaining budget less 1 s for sharp and 2 s for the write and the publish. **Re-encode** with `slot.thumbnail`, within the budget less those 2 s, then release the slot.
+6. **Write and publish** under the memory lock with no `whileLocked` callback, so the `Media` row and its `updatedAt` (which feeds MCP's `reviewVersion`) never change (D6). A video removed meanwhile is not resurrected. The write starts only with 2 s left, and the publish only with 1 s. Otherwise the claim is given back (`publish_budget`, reported), so a run cut short never leaves a claim PENDING for 10 minutes. The publish transaction's own limits (5 s wait, 10 s timeout) are ceilings for a cold database, not a budget.
 
 | Verdict | When | What happens next |
 |---|---|---|
 | `derived` | The JPEG is published | Done |
 | `decode_failed`, `timeout` | ffmpeg failed or ran out of time; a malformed movie box; a store error reading the original | Retried by the next producer or (g2), at most 3 attempts in all |
 | `no_video_stream`, `no_frame`, `source_limit`, `unsupported_type`, `too_many_pixels:33177600`, `too_large` | A fact about the file | Final; never retried |
-| `deferred` | Under 7 s left, no binary, the slot busy, header reads cut off (`inspect_time`), ffmpeg could not spawn, the loopback server failed, the blob write or the publish failed | Nothing recorded and no attempt spent; a claim already taken is given back; the cron comes back |
+| `deferred` | 9 s or less left at the start, no binary or `FFMPEG_BIN` set, the slot busy, header reads cut off (`inspect_time`), ffmpeg could not spawn, the loopback server failed, too little time left to write or publish (`publish_budget`), the blob write or the publish failed | Nothing recorded and no attempt spent; a claim already taken is given back; the cron comes back |
 
 ### Why a loopback server, and what it reads (D2)
 
@@ -73,7 +82,7 @@ The Linux `ffmpeg-static` binary is statically linked and cannot resolve DNS ("A
 
 `integrations/video-frames/ffmpeg.ts` runs the binary with `execFile`: no shell, an empty environment, a SIGKILL timeout and a 16 MiB stdout cap. The arguments are `-threads 2 -max_pixels 33177600 -reconnect 1 -reconnect_delay_max 0 -protocol_whitelist http,tcp -f <mov|matroska> -seekable 1 -ss <1|0> -noaccurate_seek -i <loopback URL> -map 0:v:0 -an -sn -dn -frames:v 1 -vf <filters> -f image2pipe -c:v png pipe:1`. Forcing the demuxer from our own sniff means an upload is never probed as a playlist. Autorotation stays on, so portrait phone clips come out portrait. ffmpeg's stderr is kept for the log only after `redactFrameUrls` has replaced the loopback URL.
 
-**HDR (D5).** The scale filter runs first (long edge at most 1000 px, never enlarged, even sides). Only for HLG or PQ does `zscale=t=linear:npl=203,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=mobius:param=0.7:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p` follow. The choice was measured on the darwin 6.0 binary: mid-grey HLG comes out at luma 141, where BT.2408 predicts 143, and scaling before the chain cut a 4K HLG frame's peak memory from 596 MB to 280 MB. SDR is left untouched. A binary without `zscale` leaves the frame as decoded and logs `hdr_untonemapped`.
+**HDR (D5).** The scale filter runs first (long edge at most 1000 px, never enlarged, even sides). Only for HLG or PQ does `zscale=t=linear:npl=203,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=mobius:param=0.7:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p` follow. The choice was measured on the darwin 6.0 binary: mid-grey HLG comes out at luma 141, where BT.2408 predicts 143, and scaling before the chain cut a 4K HLG frame's peak memory from 596 MB to 280 MB. SDR is left untouched. A binary without `zscale` leaves the frame as decoded and logs `hdr_untonemapped`. The `-filters` probe that asks runs once per binary, on its own 5 s clock and with no caller's signal. Each run waits for it only within its own budget and signal, so one caller's tight deadline never decides the answer for another (TCR B2-1).
 
 ### Serving and showing (D7)
 
@@ -89,12 +98,24 @@ The Linux `ffmpeg-static` binary is statically linked and cannot resolve DNS ("A
 
 ### Telemetry
 
-Pino (category `upload`) logs `poster_derived`, `poster_failed`, `poster_deferred`, `poster_dropped` and `poster_abandoned` with `mediaId`, `memoryId`, container, transfer, codec, size, `inspectBytes`, `frameBytes`, `sourceBytesRead`, `toneMapped`, `seekSeconds` and `durationMs`, plus `code`, `detail` and `stderrTail` on failure; never a URL. Sentry gets the `media.poster` span, an error event every time the binary is missing (`PosterEnvironmentError`), and a warning when header reads stall through a whole inspection window of at least 10 s. The loopback requests create no spans (`lib/sentry/http-options.ts`). The cron reports `posters` in its counts. The alert logs `admin_alert_previews` or `admin_alert_previews_skipped`.
+Pino (category `upload`) logs `poster_derived`, `poster_failed`, `poster_deferred`, `poster_dropped` and `poster_abandoned` with `mediaId`, `memoryId`, container, transfer, codec, size, `inspectBytes`, `frameBytes`, `sourceBytesRead`, `toneMapped`, `seekSeconds` and `durationMs`, plus `code`, `detail` and `stderrTail` on failure; never a URL. Sentry gets the `media.poster` span and a warning when header reads stall through a whole inspection window of at least 10 s. It also gets an error event each time one of these happens:
+- the binary is missing (`PosterEnvironmentError`);
+- `FFMPEG_BIN` is set;
+- a claim is given back for want of time to write and publish (`publish_budget`). The loopback requests create no spans (`lib/sentry/http-options.ts`). The cron reports `posters` in its counts. The alert logs `admin_alert_previews` or `admin_alert_previews_skipped`.
 
 ## Operations and rollback
 
-- **Nothing to set.** No env key or switch. `FFMPEG_BIN` must never be set on Vercel ([dependencies](../dependencies.md#ffmpeg-static-video-posters)).
-- **The build gate.** `npm run build` ends with `scripts/check-traces.ts`. It fails when one of the three routes lacks the binary, another function carries an `ffmpeg-static` file, or a function's traced files pass 220 MB. On Vercel (adapter mode) the server-runtime trace is absent and the sizes exclude it. A bump of `ffmpeg-static` is a new binary: re-review it and its `allowScripts` entry ([dependencies](../dependencies.md#ffmpeg-static-video-posters)).
+- **Nothing to set.** There is no env key and no switch. `FFMPEG_BIN`, `FFMPEG_BINARIES_URL` and `FFMPEG_BINARY_RELEASE` must never be set anywhere ([dependencies](../dependencies.md#ffmpeg-static-video-posters)).
+  - `FFMPEG_BIN` stops posters: the frame service refuses to start while it is set.
+  - The other two fail the build's hash check.
+- **The build gate.** `npm run build` ends with `scripts/check-traces.ts`. It fails the build when:
+  - the binary's size or SHA-256 differs from its pin for the build platform, or that platform has no pin;
+  - one of the three routes lacks the binary;
+  - another function carries an `ffmpeg-static` file, directly or through the files every function shares;
+  - a function's traced files pass 220 MB. Sizes include the shared files: the instrumentation trace and the required server files always, and the server runtime trace where the build writes it. On Vercel (adapter mode) the server runtime trace is absent.
+
+  A bump of `ffmpeg-static` is a new binary: re-review it, its pin and its `allowScripts` entry ([dependencies](../dependencies.md#ffmpeg-static-video-posters)).
+- **Security.** The Linux binary is FFmpeg 7.0.2 (August 2024), and it will get no fixes. It is a recorded, accepted risk for family-only use; the owner is Rob. The CVE facts, the defences and the triggers for FU-10 are in [dependencies](../dependencies.md#ffmpeg-static-video-posters).
 - **After deploy.** Wait two or three cron runs, then check the six live videos with the plan's V5 `curl` (status and content type only), expecting `200 image/jpeg` ([plan, Verification](../plans/2026-11-08-video-posters.md#verification)).
 - **Rollback.** A revert PR. POSTER rows and blobs left behind are harmless, and purge (f) deletes every derived kind. After a revert, a video's `?v=thumb` would again redirect to the original, but the reverted cards and players no longer ask for it.
 
@@ -104,26 +125,26 @@ Pino (category `upload`) logs `poster_derived`, `poster_failed`, `poster_deferre
 |---|---|
 | **app** | |
 | `app/api/upload/route.ts` | The browser-upload producer: the `upload.callback.poster` task, 15 s |
-| `app/api/cron/reconcile-uploads/route.ts` | Step (g2), the backstop and backfill (2 per run, at most 20 s, last); the alert's bounded preview reads in (d) and (e2) |
+| `app/api/cron/reconcile-uploads/route.ts` | Step (g2), the backstop and backfill (2 per run, at most 20 s, last, its order alternating by run); the alert's bounded preview reads in (d) and (e2) |
 | `app/memories/_components/memory-card.tsx`, `app/memories/_components/video-player.tsx` | `VideoSlot` with the poster under the badge; the player's `poster` |
 | `app/admin/media-gallery.tsx` | The admin player's `poster` |
 | **features** | |
-| `features/memories/derive-poster.ts` | `derivePoster`; `POSTER_MIN_BUDGET_MS`, `CLAIM_MARGIN_MS`, `INSPECT_STALL_REPORT_MS` |
+| `features/memories/derive-poster.ts` | `derivePoster`; `POSTER_MIN_BUDGET_MS`, `PUBLISH_RESERVE_MS`, `CLAIM_MARGIN_MS`, `INSPECT_STALL_REPORT_MS` |
 | `features/memories/derived-claims.ts` | The claim and publish protocol shared with `deriveMedia` (`isEligible`, `claimKind`, `failClaims`, `publishClaims`) |
 | `features/admin/attach-media.ts` | The MCP producer: `mcp.finalize.poster` (ruling R2) |
 | `features/media/serve-media.ts`, `features/memories/public.ts`, `features/admin/get-memory.ts` | `v=thumb` for videos (D7); `poster` and `hasThumb`; `posterReady` |
 | `features/memories/admin-previews.ts`, `features/memories/notify-admins.ts`, `features/memories/media-summary.ts` | The alert's wait and loader; wiring; `preview` filled |
 | **services and integrations** | |
-| `services/video-frames/index.ts`, `types.ts`, `frame-service.ts` | `createVideoFrameService`, `available()`, `extractPoster` and its result codes |
+| `services/video-frames/index.ts`, `types.ts`, `frame-service.ts` | `createVideoFrameService` (refuses while `FFMPEG_BIN` is set), `available()`, `extractPoster` and its result codes |
 | `integrations/video-frames/frame-server.ts`, `integrations/video-frames/ffmpeg.ts` | The loopback Range server; the ffmpeg runner, its arguments and the HDR chain |
 | `services/images/types.ts`, `integrations/images/sharp-heic.ts` | `DeriveSlot.thumbnail`: the thumbnail-only encode |
 | **lib, config and scripts** | |
 | `lib/video-frames.ts`, `lib/video-track.ts`, `lib/mp4-boxes.ts` | Constants, codes and URL redaction; track size and HDR transfer; the box walk shared with `lib/video-gps.ts` |
 | `lib/sentry/http-options.ts`, `instrumentation.ts` | The server Http integration's options |
-| `next.config.ts`, `package.json`, `scripts/check-traces.ts` | `serverExternalPackages` and the three trace keys; the pin, `allowScripts` and `build`; the trace gate |
+| `next.config.ts`, `package.json`, `scripts/check-traces.ts` | `serverExternalPackages` and the three trace keys; the pin, `allowScripts` and `build`; the trace gate and the binary's SHA-256 pins |
 | **tests** | |
 | `__tests__/features/derive-poster.test.ts`, `derived-claims.test.ts` | Gate, budget floors, every verdict, races, give-backs, no `Media` write, no URL in logs |
-| `__tests__/integrations/video-frames.test.ts`, `frame-server.test.ts` | The real binary over the real loopback server; Ranges, windows, cap, aborts, errors |
+| `__tests__/integrations/video-frames.test.ts`, `frame-server.test.ts`, `__tests__/services/video-frames-binary.test.ts` | The real binary over the real loopback server; Ranges, windows, cap, aborts, errors; the shared `zscale` probe; the `FFMPEG_BIN` refusal |
 | `__tests__/lib/video-track.test.ts`, `__tests__/lib/video-frames.test.ts`, `__tests__/lib/sentry-http-options.test.ts`, `__tests__/scripts/check-traces.test.ts` | Box parsing and transfer table; redaction; the Http options on the real SDK; the trace gate |
 | `__tests__/api/upload.test.ts`, `reconcile.test.ts`, `media.test.ts`, `public-media.test.ts`, `admin-media.test.ts`, `__tests__/features/attach-media.test.ts` | Producers and (g2) selection; serving and charging |
 | `__tests__/features/public-memories.test.ts`, `__tests__/app/memory-card.test.ts`, `memory-players.test.ts`, `media-gallery.test.ts`, `__tests__/features/admin-memories.test.ts` | Read model and UI |
@@ -134,13 +155,14 @@ Pino (category `upload`) logs `poster_derived`, `poster_failed`, `poster_deferre
 ## Tests and evidence
 
 - **Per task.** Each task's tests failed first and then passed; the RED and GREEN runs and the mutation checks are summarised in the [plan's Execution ledger](../plans/2026-11-08-video-posters.md#execution-ledger).
-- **CI (Linux, ffmpeg 7.0.2).** `ci` passed on `01377cf`: video-frames 32/32, frame-server 34/34, video-track 74/74 and check-traces 14/14, and 138 of 138 files including the real-Postgres suites. It passed again on `456b5df`, the PR head as pushed.
-- **Vercel preview build** on `456b5df`: check-traces OK in adapter mode (server-runtime trace absent, noted). Sizes: `/api/mcp` 140.7 MB, `/api/cron/reconcile-uploads` 140.3 MB and `/api/upload` 140.3 MB (these three carry ffmpeg); `/share` 63.0 MB with no ffmpeg (from the `01377cf` build: `/s/[inviteToken]` 63.0 MB, `/m/[claimToken]` 62.6 MB).
+- **CI (Linux, ffmpeg 7.0.2).** `ci` passed on `01377cf`: video-frames 32/32, frame-server 34/34, video-track 74/74 and check-traces 14/14, and 138 of 138 files including the real-Postgres suites. It passed again on `456b5df`, and on `03c42e8` (Tasks 1–14 and the docs): 144 of 144 test files, with check-traces OK (`/api/mcp` 141.0 MB, the cron and `/api/upload` 140.6 MB; ffmpeg only in those three).
+- **Vercel preview build** on `456b5df`: check-traces OK in adapter mode (server-runtime trace absent, noted). Sizes: `/api/mcp` 140.7 MB, `/api/cron/reconcile-uploads` 140.3 MB and `/api/upload` 140.3 MB (these three carry ffmpeg); `/share` 63.0 MB with no ffmpeg (from the `01377cf` build: `/s/[inviteToken]` 63.0 MB, `/m/[claimToken]` 62.6 MB). The preview passed again on `03c42e8`.
+- **Team Code Review round 1** (George and Oscar, 12 findings): the Bucket 1 and 2 fixes, their tests and their checks are in the plan's [Execution ledger](../plans/2026-11-08-video-posters.md#execution-ledger).
 - **Real-Postgres suites** on a local Postgres 18, at `d20831e` and `7225d7e`: 16 files, 255 tests, all passing.
 - **Local, darwin (ffmpeg 6.0)**, at `567e5ac`: `npm run validate` clean; `npm run test:run` 133 files passed and 11 skipped, 3,632 tests passed and 68 skipped (the real-Postgres suites without `TEST_DATABASE_URL`); `npm run build:offline` exit 0 with check-traces OK (`/api/mcp` 86.9 MB, the cron and `/api/upload` 86.5 MB, `/share` 43.4 MB). The docs task re-ran all three; see the plan's ledger.
 - **Visual.** A static render of two VIDEO cards (with and without a poster) on the built CSS showed the frame clipped to the slot, with the badge and pill above it. The screenshot was not committed.
 
-**NOT RUN:** CI on the commits after `456b5df`; V1's `VERCEL_ANALYZE_BUILD_OUTPUT` reading; V2 preview uploads (an iPhone `.MOV`, an `.mp4` and a recorder WebM through the share form, a `.MOV` through the claim page; the `media.poster` span; no `/__frames` transactions); V3 a manual cron run; V4 `/share` cold TTFB; V5 the six live videos in production; V6 screenshots of the live cards, player and admin gallery; V7 a real admin alert with a photo and a video; V8 a real iPhone HDR clip; the hydrated `FallbackImage` error path in a browser.
+**NOT RUN:** V1's `VERCEL_ANALYZE_BUILD_OUTPUT` reading; V2 preview uploads (an iPhone `.MOV`, an `.mp4` and a recorder WebM through the share form, a `.MOV` through the claim page; the `media.poster` span; no `/__frames` transactions); V3 a manual cron run; V4 `/share` cold TTFB; V5 the six live videos in production; V6 screenshots of the live cards, player and admin gallery; V7 a real admin alert with a photo and a video; V8 a real iPhone HDR clip; the hydrated `FallbackImage` error path in a browser.
 
 ## Known gaps and follow-ups
 
@@ -153,8 +175,14 @@ Severities are the documenting agent's assessment, not Rob's rulings.
 - **FU-5, Rob:** an LGPL ffmpeg build, if licensing review asks (D10).
 - **FU-6, low:** remove the unused browser poster staging key (`posterStagingKeyFor`, still deleted by purge (f)) once nothing reserves it.
 - **FU-7, medium, Rob:** approve or deny the five pre-existing unapproved install scripts (`prisma`, `@prisma/engines`, `esbuild`, `exifreader`, `fsevents`) before npm 12, which blocks unapproved scripts by default.
-- **FU-8, low:** head-of-line blocking in cron (g2). It takes the two oldest eligible videos each run; one whose header reads stall in every run (`inspect_time`) would hold the backfill, with a Sentry warning each time. New uploads are unaffected. Cheapest fix: alternate the order by run.
+- **FU-8, fixed in Team Code Review round 1 (B2-6).** This was head-of-line blocking in cron (g2): a video whose header reads stall every run could hold the oldest-first batch. (g2) now alternates its order by ten-minute slot, so the other end gets through on every other run.
 - **FU-9, low:** the admin alert's preview alt text still says "Your video" / "Your photo", copy written for contributors.
+- **FU-10, high, owner Rob: move to a maintained FFmpeg build.** `ffmpeg-static`'s Linux binary is stuck at FFmpeg 7.0.2 (Team Code Review round 1, B1-2; facts in [dependencies](../dependencies.md#ffmpeg-static-video-posters)).
+  - Replace `ffmpeg-static` with a maintained static build, for example BtbN FFmpeg-Builds linux64 GPL 7.1.x or 8.x. Download it in a root postinstall script with a pinned SHA-256, and keep a darwin path for local development.
+  - Keep the loopback design, `check-traces` and its hash gate.
+  - Re-run the Linux real-binary tests (the HLG bands and the request pattern) and re-measure the function sizes.
+  - Do it before uploads open beyond family use, or on any code-execution CVE in the mov or matroska demuxers or the h264, hevc, vp8 or vp9 decoders.
+- **Low: PQ output is untested.** The PQ case runs on the HLG fixture. Add a real PQ fixture when FU-10 re-runs the real-binary suite.
 - Deferred review minors from each task are listed in the [plan's Execution ledger](../plans/2026-11-08-video-posters.md#execution-ledger).
 
 ## Related
