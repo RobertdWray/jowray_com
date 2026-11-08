@@ -131,7 +131,7 @@ describe.skipIf(!client)("share draft invariants (real Postgres, A1/A3)", () => 
         { status: "SENDING", errorMessage: null, claimable: false },
         { status: "SENDING", errorMessage: null, claimable: true, stale: true },
       ] as const;
-      // One Memory INSERT limits lock contention with the parallel budget suite's TRUNCATE.
+      // One Memory INSERT for every candidate (integration files now run one at a time; vitest.config.ts).
       const memories = await tx.memory.createManyAndReturn({ data: candidates.map(() => draft(memorialId)), select: { id: true } });
       for (const [index, candidate] of candidates.entries()) {
         // Separate memories preserve the (memoryId, emailType) unique key;
