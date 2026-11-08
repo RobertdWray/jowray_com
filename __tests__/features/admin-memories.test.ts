@@ -19,7 +19,7 @@ const T1 = new Date("2026-11-04T11:00:00.000Z");
 
 type ContributorRow = { id: string; name: string | null; email: string | null; relationship: string | null; phone: string | null; contactOptIn: boolean; mailingListOptIn: boolean; updatedAt: Date }
 type MemoryRow = { id: string; memorialId: string; contributorId: string | null; type: string; source: string; sourceRef: string | null; visibility: string; approxDateText: string | null; place: string | null; contributorNote: string | null; notifyWhenPosted: boolean; consentVersion: string; consentedAt: Date | null; status: string; claimTokenHash: string; submissionId: string | null; submissionIndex: number | null; createdAt: Date; updatedAt: Date; deletedAt: Date | null; latitude: number | null; longitude: number | null; tags: string[]; approxYear: number | null; approxMonth: number | null }
-type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; durationSeconds: number | null; width: number | null; height: number | null; caption: string | null; approxDateText: string | null; place: string | null; sortOrder: number; deletedAt: Date | null; purgedAt: Date | null; createdAt: Date; updatedAt: Date; blobUrl: string | null; storageKey: string; exif: unknown; replacesMediaId: string | null; derivatives: Array<{ kind: string; status: string }>; latitude: number | null; longitude: number | null }
+type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; durationSeconds: number | null; width: number | null; height: number | null; caption: string | null; approxDateText: string | null; place: string | null; sortOrder: number; deletedAt: Date | null; purgedAt: Date | null; createdAt: Date; updatedAt: Date; blobUrl: string | null; storageKey: string; exif: unknown; replacesMediaId: string | null; derivatives: Array<{ kind: string; status: string; storageKey: string }>; latitude: number | null; longitude: number | null }
 interface Rev { memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown>; createdAt?: Date; id?: string }
 interface EmailRow { memoryId: string; emailType: string; status: string; sentAt: Date | null; attempts: number; createdAt: Date; recipientEmail: string }
 
@@ -117,7 +117,7 @@ function memoryRow(over: Partial<MemoryRow>): MemoryRow {
   return { id: MEM, memorialId: "memorial_1", contributorId: CON, type: "PHOTO", source: "WEB_UPLOAD", sourceRef: null, visibility: "FAMILY", approxDateText: "Summer 1998", place: null, contributorNote: "old note", notifyWhenPosted: true, consentVersion: "2026-11-v2", consentedAt: T0, status: "PENDING", claimTokenHash: "h".repeat(64), submissionId: null, submissionIndex: null, createdAt: T0, updatedAt: T0, deletedAt: null, latitude: null, longitude: null, tags: [], approxYear: null, approxMonth: null, ...over };
 }
 function mediaRow(over: Partial<MediaRow>): MediaRow {
-  return { id: "med_1", memoryId: MEM, status: "READY", mimeType: "image/jpeg", originalFilename: "a.jpg", durationSeconds: null, width: 10, height: 10, caption: null, approxDateText: null, place: null, sortOrder: 0, deletedAt: null, purgedAt: null, createdAt: T0, updatedAt: T0, blobUrl: "https://blob/x", storageKey: "originals/x/a.jpg", exif: { gps: 1 }, replacesMediaId: null, derivatives: [{ kind: "WEB_IMAGE", status: "READY" }, { kind: "THUMBNAIL", status: "READY" }], latitude: null, longitude: null, ...over };
+  return { id: "med_1", memoryId: MEM, status: "READY", mimeType: "image/jpeg", originalFilename: "a.jpg", durationSeconds: null, width: 10, height: 10, caption: null, approxDateText: null, place: null, sortOrder: 0, deletedAt: null, purgedAt: null, createdAt: T0, updatedAt: T0, blobUrl: "https://blob/x", storageKey: "originals/x/a.jpg", exif: { gps: 1 }, replacesMediaId: null, derivatives: [{ kind: "WEB_IMAGE", status: "READY", storageKey: "derived/x/w.jpg" }, { kind: "THUMBNAIL", status: "READY", storageKey: "derived/x/t.jpg" }], latitude: null, longitude: null, ...over };
 }
 const versions = () => ({ memoryVersion: memories.find((m) => m.id === MEM)!.updatedAt.toISOString(), contributorVersion: contributors[0]!.updatedAt.toISOString() });
 
@@ -290,7 +290,7 @@ describe("getMemoryForAdmin", () => {
   it("says whether a video's server-made POSTER is READY (posterReady, video posters T12), on the page's view and the MCP one", async () => {
     media = [
       mediaRow({}),
-      mediaRow({ id: "med_v1", mimeType: "video/mp4", originalFilename: "a.mp4", sortOrder: 1, derivatives: [{ kind: "POSTER", status: "READY" }] }),
+      mediaRow({ id: "med_v1", mimeType: "video/mp4", originalFilename: "a.mp4", sortOrder: 1, derivatives: [{ kind: "POSTER", status: "READY", storageKey: "derived/x/p.jpg" }] }),
       mediaRow({ id: "med_v2", mimeType: "video/quicktime", originalFilename: "b.mov", sortOrder: 2, derivatives: [] }),
     ];
     const expected = [["med_1", false, true], ["med_v1", true, false], ["med_v2", false, false]];
@@ -298,7 +298,22 @@ describe("getMemoryForAdmin", () => {
     expect((await getMemoryForAdmin(MEM, { includeCoordinates: true }))!.media.map((m) => [m.id, m.posterReady, m.thumbReady])).toEqual(expected);
     // Only READY copies count: the query asks for them (the stub does not apply the filter itself).
     const args = tx.memory.findUnique.mock.calls.at(-1)![0] as unknown as { include: { media: { select: { derivatives: unknown } } } };
-    expect(args.include.media.select.derivatives).toEqual({ where: { status: "READY" }, select: { kind: true } });
+    expect(args.include.media.select.derivatives).toEqual({ where: { status: "READY" }, select: { kind: true, storageKey: true } });
+  });
+
+  it("does not report a READY copy on a browser-staged key as ready, as the media routes refuse to serve it (TCR B2-3)", async () => {
+    media = [
+      mediaRow({ derivatives: [{ kind: "WEB_IMAGE", status: "READY", storageKey: "derived/x/w.upload.jpg" }, { kind: "THUMBNAIL", status: "READY", storageKey: "derived/x/t.upload.jpg" }] }),
+      mediaRow({ id: "med_web_only", originalFilename: "b.jpg", sortOrder: 1, derivatives: [{ kind: "WEB_IMAGE", status: "READY", storageKey: "derived/x/w.jpg" }, { kind: "THUMBNAIL", status: "READY", storageKey: "derived/x/t.upload.jpg" }] }),
+      mediaRow({ id: "med_staged", mimeType: "video/mp4", originalFilename: "a.mp4", sortOrder: 2, derivatives: [{ kind: "POSTER", status: "READY", storageKey: "derived/x/p.upload.jpg" }] }),
+      mediaRow({ id: "med_served", mimeType: "video/mp4", originalFilename: "c.mp4", sortOrder: 3, derivatives: [{ kind: "POSTER", status: "READY", storageKey: "derived/x/p.jpg" }] }),
+    ];
+    const expected = [["med_1", false, false, false], ["med_web_only", true, false, false], ["med_staged", false, false, false], ["med_served", false, false, true]];
+    for (const view of [await getMemoryForAdmin(MEM), await getMemoryForAdmin(MEM, { includeCoordinates: true })]) {
+      expect(view!.media.map((m) => [m.id, m.webReady, m.thumbReady, m.posterReady])).toEqual(expected);
+      // The keys are read to decide, never sent.
+      expect(JSON.stringify(view)).not.toContain("derived/x/");
+    }
   });
 
   it("returns a deleted memory with its deletedAt, and null for an unknown id", async () => {
