@@ -1,9 +1,11 @@
+import { setUser } from "@sentry/nextjs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createInvites } from "@/features/invites/create-invites";
 import { getInvitePrefill } from "@/features/invites/resolve-invite";
 import type { Invite } from "@/generated/prisma/client";
 import { hashInviteToken, isInviteToken, newInviteToken } from "@/lib/invite-token";
+import { identifyContributor } from "@/lib/sentry/user";
 import { createInvitesInputSchema } from "@/lib/validations/invite";
 import { resetEnvCache } from "@/server/config/env";
 
@@ -19,13 +21,16 @@ type InsertRow = Pick<Invite, "memorialId" | "tokenHash" | "firstName" | "lastNa
 interface InsertArgs { data: InsertRow[]; skipDuplicates: boolean; select: { tokenHash: true } }
 const log = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
 vi.mock("@/lib/logger", () => ({ createLogger: () => log }));
+vi.mock("@sentry/nextjs", () => ({ setUser: vi.fn() }));
+vi.mock("@/lib/sentry/user", () => ({ identifyContributor: vi.fn(), clearContributor: vi.fn(), tagIds: vi.fn() }));
 let inTransaction = false;
 const invite = {
   createManyAndReturn: vi.fn<(args: InsertArgs) => Promise<{ tokenHash: string }[]>>(),
   findMany: vi.fn<(args: { where: { memorialId: string; email: { in: string[] } } }) => Promise<Invite[]>>(),
   findUnique: vi.fn<() => Promise<Invite | null>>(),
   update: vi.fn<(args: { where: { id: string }; data: { tokenHash: string } }) => Promise<Invite>>(),
-  create: vi.fn(), createMany: vi.fn(), updateMany: vi.fn(), updateManyAndReturn: vi.fn(),
+  updateMany: vi.fn<(args: { where: { id: string; revokedAt: null }; data: { tokenHash: string } }) => Promise<{ count: number }>>(),
+  create: vi.fn(), createMany: vi.fn(), updateManyAndReturn: vi.fn(),
   delete: vi.fn(), deleteMany: vi.fn(), upsert: vi.fn(),
 };
 const memorial = { findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), upsert: vi.fn() };
@@ -74,6 +79,10 @@ beforeEach(() => {
     expect(inTransaction).toBe(true);
     return existing(0, data);
   });
+  invite.updateMany.mockImplementation(async () => {
+    expect(inTransaction).toBe(true);
+    return { count: 1 };
+  });
   log.info.mockImplementation(() => { expect(inTransaction).toBe(false); });
 });
 afterEach(() => { vi.unstubAllEnvs(); resetEnvCache(); });
@@ -97,7 +106,22 @@ describe("createInvites", () => {
     expect(invite.createManyAndReturn).toHaveBeenCalledExactlyOnceWith({ data, skipDuplicates: true, select: { tokenHash: true } });
     expect(invite.findMany).not.toHaveBeenCalled();
     expect(invite.update).not.toHaveBeenCalled();
+    expect(invite.updateMany).not.toHaveBeenCalled();
     expect(log.info).toHaveBeenCalledExactlyOnceWith({ action: "invites_created", created: 2, exists: 0, rotated: 0, revoked: 0 }, expect.any(String));
+  });
+
+  it("uses the shared transaction wait and timeout limits", async () => {
+    await createInvites({ invites: [rows[0]] });
+    expect(db.$transaction).toHaveBeenCalledExactlyOnceWith(expect.any(Function), { maxWait: 5_000, timeout: 10_000 });
+  });
+
+  it.each([false, true])("rejects duplicate emails before accessing the database when rotate is %s", async (rotate) => {
+    await expect(createInvites({ invites: [rows[0], { ...rows[1], email: rows[0].email }], rotate }))
+      .rejects.toEqual(new Error("Duplicate email in invite batch"));
+    expect(getDb).not.toHaveBeenCalled();
+    expect(memorial.findUnique).not.toHaveBeenCalled();
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(log.info).not.toHaveBeenCalled();
   });
 
   it("returns exists without a token or URL for a previously imported email", async () => {
@@ -106,6 +130,7 @@ describe("createInvites", () => {
     expect(await createInvites({ invites: [rows[0]] })).toEqual([{ index: 0, status: "exists" }]);
     expect(invite.findMany).toHaveBeenCalledExactlyOnceWith({ where: { memorialId: MEMORIAL_ID, email: { in: [rows[0].email] } } });
     expect(invite.update).not.toHaveBeenCalled();
+    expect(invite.updateMany).not.toHaveBeenCalled();
     expect(log.info).toHaveBeenCalledExactlyOnceWith({ action: "invites_created", created: 0, exists: 1, rotated: 0, revoked: 0 }, expect.any(String));
   });
 
@@ -117,8 +142,25 @@ describe("createInvites", () => {
     expect(result).toEqual({ index: 0, status: "rotated", token: expect.any(String), shareUrl: `${SITE}/s/${result.token}` });
     expect(isInviteToken(result.token!)).toBe(true);
     expect(hashInviteToken(result.token!)).not.toBe(previous.tokenHash);
-    expect(invite.update).toHaveBeenCalledExactlyOnceWith({ where: { id: previous.id }, data: { tokenHash: hashInviteToken(result.token!) } });
+    expect(invite.updateMany).toHaveBeenCalledExactlyOnceWith({ where: { id: previous.id, revokedAt: null }, data: { tokenHash: hashInviteToken(result.token!) } });
+    expect(invite.update).not.toHaveBeenCalled();
     expect(log.info).toHaveBeenCalledExactlyOnceWith({ action: "invites_created", created: 0, exists: 0, rotated: 1, revoked: 0 }, expect.any(String));
+  });
+
+  it("reports revoked without credentials when revocation wins the rotation race", async () => {
+    const previous = existing();
+    invite.createManyAndReturn.mockResolvedValue([]);
+    invite.findMany.mockResolvedValue([previous]);
+    invite.updateMany.mockResolvedValueOnce({ count: 0 });
+    const [result] = await createInvites({ invites: [rows[0]], rotate: true });
+    expect(result.status).toBe("revoked");
+    expect(result).toEqual({ index: 0, status: "revoked" });
+    expect(invite.updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: { id: previous.id, revokedAt: null },
+      data: { tokenHash: invite.createManyAndReturn.mock.calls[0][0].data[0].tokenHash },
+    });
+    expect(invite.update).not.toHaveBeenCalled();
+    expect(log.info).toHaveBeenCalledExactlyOnceWith({ action: "invites_created", created: 0, exists: 0, rotated: 0, revoked: 1 }, expect.any(String));
   });
 
   it.each([false, true])("keeps a revoked row revoked when rotate is %s", async (rotate) => {
@@ -126,6 +168,7 @@ describe("createInvites", () => {
     invite.findMany.mockResolvedValue([existing(0, { revokedAt: new Date() })]);
     expect(await createInvites({ invites: [rows[0]], rotate })).toEqual([{ index: 0, status: "revoked" }]);
     expect(invite.update).not.toHaveBeenCalled();
+    expect(invite.updateMany).not.toHaveBeenCalled();
     expect(log.info).toHaveBeenCalledExactlyOnceWith({ action: "invites_created", created: 0, exists: 0, rotated: 0, revoked: 1 }, expect.any(String));
   });
 
@@ -161,7 +204,7 @@ describe("createInvites", () => {
   it("propagates a rotation failure without logging a successful batch", async () => {
     invite.createManyAndReturn.mockResolvedValue([]);
     invite.findMany.mockResolvedValue([existing()]);
-    invite.update.mockRejectedValue(new Error("database write failed"));
+    invite.updateMany.mockRejectedValueOnce(new Error("database write failed"));
     await expect(createInvites({ invites: [rows[0]], rotate: true })).rejects.toThrow("database write failed");
     expect(log.info).not.toHaveBeenCalled();
   });
@@ -172,7 +215,7 @@ describe("createInvites", () => {
     const results = await createInvites({ invites: rows, rotate: true });
     expect(results.map(({ status }) => status)).toEqual(["created", "rotated", "revoked"]);
     expect(log.info).toHaveBeenCalledExactlyOnceWith({ action: "invites_created", created: 1, exists: 0, rotated: 1, revoked: 1 }, expect.any(String));
-    const serializedResults = JSON.stringify(results);
+    const serializedResults = JSON.stringify(results, (key, value) => key === "token" || key === "shareUrl" ? undefined : value);
     const serializedLogs = JSON.stringify([log.info.mock.calls, log.warn.mock.calls, log.error.mock.calls]);
     for (const row of rows) {
       for (const value of Object.values(row)) {
@@ -193,6 +236,8 @@ describe("createInvites", () => {
 
 describe("getInvitePrefill", () => {
   afterEach(() => {
+    expect(setUser).not.toHaveBeenCalled();
+    expect(identifyContributor).not.toHaveBeenCalled();
     for (const write of [
       invite.create, invite.createMany, invite.createManyAndReturn, invite.update, invite.updateMany,
       invite.updateManyAndReturn, invite.delete, invite.deleteMany, invite.upsert,

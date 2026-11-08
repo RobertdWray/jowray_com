@@ -151,9 +151,9 @@ describe.skipIf(!client)("invite invariants (real Postgres)", () => {
     const error = await attempt(async (tx, memorialId) => {
       const token = newInviteToken();
       const before = await tx.invite.create({ data: { ...rows[0], lastName, memorialId, tokenHash: hashInviteToken(token) } });
-      const count = await tx.invite.count();
+      const count = await tx.invite.count({ where: { memorialId } });
       expect(await getInvitePrefill(token)).toEqual({ firstName: "Alice", name: lastName ? "Alice Example" : "Alice", email: rows[0].email });
-      expect(await tx.invite.count()).toBe(count);
+      expect(await tx.invite.count({ where: { memorialId } })).toBe(count);
       expect(await tx.invite.findUniqueOrThrow({ where: { id: before.id } })).toEqual(before);
     });
     expect(error).toBeNull();

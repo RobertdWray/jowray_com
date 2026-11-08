@@ -1,5 +1,6 @@
 import "server-only";
 
+import { TX_OPTIONS } from "@/features/memories/create-memory";
 import { hashInviteToken, newInviteToken } from "@/lib/invite-token";
 import { createLogger } from "@/lib/logger";
 import { getSiteUrl } from "@/lib/site-url";
@@ -20,6 +21,14 @@ export interface InviteResult {
 
 /** Callers validate and normalize the batch with createInvitesInputSchema. */
 export async function createInvites(input: CreateInvitesInput): Promise<InviteResult[]> {
+  const emails = new Set<string>();
+  for (const { email } of input.invites) {
+    if (emails.has(email)) {
+      throw new Error("Duplicate email in invite batch");
+    }
+    emails.add(email);
+  }
+
   const { MEMORIAL_SLUG } = getMemorialEnv();
   const db = getDb();
   const memorial = await db.memorial.findUnique({ where: { slug: MEMORIAL_SLUG } });
@@ -63,14 +72,18 @@ export async function createInvites(input: CreateInvitesInput): Promise<InviteRe
       if (invite.revokedAt) {
         batch.push({ index, status: "revoked" });
       } else if (input.rotate) {
-        await tx.invite.update({ where: { id: invite.id }, data: { tokenHash } });
-        batch.push({ index, status: "rotated", token, shareUrl: `${siteUrl}/s/${token}` });
+        const { count } = await tx.invite.updateMany({ where: { id: invite.id, revokedAt: null }, data: { tokenHash } });
+        if (count === 0) {
+          batch.push({ index, status: "revoked" });
+        } else {
+          batch.push({ index, status: "rotated", token, shareUrl: `${siteUrl}/s/${token}` });
+        }
       } else {
         batch.push({ index, status: "exists" });
       }
     }
     return batch;
-  });
+  }, TX_OPTIONS);
 
   const counts: Record<InviteResultStatus, number> = { created: 0, exists: 0, rotated: 0, revoked: 0 };
   for (const { status } of results) {
