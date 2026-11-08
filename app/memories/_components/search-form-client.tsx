@@ -38,7 +38,9 @@ export function SearchForm({
     if (input && document.activeElement !== input) {
       input.value = syncedQuery(false, input.value, filters.q);
     }
-  }, [filters.q]);
+    // Every navigation brings a new `filters` (even when `q` is unchanged, e.g. Back after a chip pressed mid-typing),
+    // so the unfocused field always shows the search the page is actually showing.
+  }, [filters]);
 
   return (
     <Form action="/memories" scroll={false} onSubmit={cancelPendingSearch} className="flex flex-col gap-2">
