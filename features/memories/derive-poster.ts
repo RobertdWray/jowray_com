@@ -20,10 +20,30 @@ const log = createLogger({ category: "upload" });
 /**
  * The budget ffmpeg and sharp are guaranteed when a poster is claimed. Nothing is claimed with less, so no attempt is
  * spent (premortem #5): one or two ffmpeg runs and the re-encode need a few seconds, and a run that times out costs
- * the row one of its three attempts. Waiting for the image slot and reading the headers both stop while this much is
- * still left.
+ * the row one of its three attempts. Waiting for the image slot and reading the headers both stop while this much,
+ * and the claim's margin, is still left.
  */
 export const POSTER_MIN_BUDGET_MS = 6_000;
+
+/**
+ * Kept on top of POSTER_MIN_BUDGET_MS by every step before the claim, for the claim's own latency (a reclaim deletes
+ * the previous candidate first). Reads that end just inside their window therefore still hold the whole floor once
+ * the row is claimed; without it they would pass the inspection check, then trip the post-claim floor and give the
+ * claim back (T6 re-review). The post-claim check stays at the floor, for a claim slower than this.
+ */
+export const CLAIM_MARGIN_MS = 1_000;
+
+/** What a run must still have at every step before the claim: the poster's own budget and the claim's margin. */
+const PRE_CLAIM_BUDGET_MS = POSTER_MIN_BUDGET_MS + CLAIM_MARGIN_MS;
+
+/**
+ * An inspection window at least this long that still runs out is a stalled object, not a busy run, and is reported
+ * to Sentry; a shorter one is only warned. The cron's qualifies (its 20 s step less the floor and the margin: up to
+ * 13 s), and MCP finalize's when the call left it at least 17 s; the upload callback's never does (15 s less them: at
+ * most 8 s). Without the report, a video whose reads stall in every window would be deferred on every run with no
+ * signal.
+ */
+export const INSPECT_STALL_REPORT_MS = 10_000;
 
 /**
  * Kept back from ffmpeg for sharp. Re-encoding a frame of at most 1000 px takes tens of milliseconds, but libvips's
@@ -173,17 +193,19 @@ async function inspect(storage: StorageService, storageKey: string, signal: Abor
  *    its POSTER row (if any) eligible under the video pixel ceiling. Anything else is `not_eligible` (or
  *    `claimed_elsewhere` for a live claim), with nothing read. A stale claim that has used up its attempts is retired
  *    as `abandoned` straight away: that needs no binary, slot or byte.
- * 2. Preflight, before any claim: at least POSTER_MIN_BUDGET_MS left, the binary available, then the image slot,
- *    waited for only while more than POSTER_MIN_BUDGET_MS would remain. A miss is `deferred`: nothing is claimed, so
- *    no attempt is spent, and the cron comes back. The slot is held from here through ffmpeg AND sharp: a 4K frame
- *    costs ffmpeg about 280 MB, so one heavy decode runs per process.
+ * 2. Preflight, before any claim: at least POSTER_MIN_BUDGET_MS and CLAIM_MARGIN_MS left, the binary available, then
+ *    the image slot, waited for only while both would remain. A miss is `deferred`: nothing is claimed, so no attempt
+ *    is spent, and the cron comes back. The slot is held from here through ffmpeg AND sharp: a 4K frame costs ffmpeg
+ *    about 280 MB, so one heavy decode runs per process.
  * 3. Inspect: `storage.head` for the size, the first 128 bytes for the container and, for `mov`, the first video
- *    track (pixel ceiling, HDR transfer). The reads are cut off when only POSTER_MIN_BUDGET_MS is left, so they either
- *    finish in time to claim with the whole poster budget or are `deferred`, still unclaimed.
+ *    track (pixel ceiling, HDR transfer). The reads are cut off when only the floor and the claim's margin are left, so
+ *    they either finish in time to claim with the whole poster budget or are `deferred`, still unclaimed. A window that
+ *    runs out is warned, and reported to Sentry when it was at least INSPECT_STALL_REPORT_MS long.
  * 4. Claim the POSTER row with a fresh `.jpg` key ([C35], the shared protocol). An inspection verdict is recorded on
- *    the claim. If the claim itself left less than POSTER_MIN_BUDGET_MS, the claim is released (no attempt spent) and
- *    the run is `deferred`. Otherwise ffmpeg extracts the frame inside a `media.poster` span [C24], within the budget
- *    less the encoder's reserve, reading the original only through bounded range reads (D2).
+ *    the claim. If the claim itself left less than POSTER_MIN_BUDGET_MS (it took longer than its margin), the claim is
+ *    released (no attempt spent) and the run is `deferred`. Otherwise ffmpeg extracts the frame inside a
+ *    `media.poster` span [C24], within the budget less the encoder's reserve, reading the original only through
+ *    bounded range reads (D2).
  * 5. sharp re-encodes the frame at the thumbnail spec [C21] (D4), and the slot is released.
  * 6. The JPEG is written to the claimed key, and the claim is published under the memory lock with no `whileLocked`:
  *    a poster never writes the Media row, whose `updatedAt` feeds `reviewVersion` (D6, [C36]). A video removed
@@ -293,7 +315,7 @@ export async function derivePoster({ mediaId, deadlineMs, now = new Date() }: { 
     }
 
     // 2. Preflight: nothing below is claimed until all of it holds.
-    if (remainingMs() < POSTER_MIN_BUDGET_MS) {
+    if (remainingMs() < PRE_CLAIM_BUDGET_MS) {
       return deferred("budget", "too little budget to start a poster; left to the cron");
     }
     const frames = createVideoFrameService();
@@ -303,30 +325,42 @@ export async function derivePoster({ mediaId, deadlineMs, now = new Date() }: { 
       return "deferred";
     }
     try {
-      // Wait only while the poster's own budget would still be whole afterwards.
-      slot = await createImageService().acquire(remainingMs() - POSTER_MIN_BUDGET_MS);
+      // Wait only while the poster's own budget and the claim's margin would still be whole afterwards.
+      slot = await createImageService().acquire(remainingMs() - PRE_CLAIM_BUDGET_MS);
     } catch (error) {
       if (isImageDeriveError(error) && (error.code === "busy" || error.code === "timeout")) {
         return deferred(error.code, "image slot not available in time; left to the cron");
       }
       throw error;
     }
-    if (remainingMs() < POSTER_MIN_BUDGET_MS) {
+    // 3. Inspect, cut off when only the poster budget and the claim's margin are left: it finishes in time to claim
+    //    with the whole floor, or it is deferred.
+    const inspectWindowMs = remainingMs() - PRE_CLAIM_BUDGET_MS;
+    if (inspectWindowMs <= 0) {
       return deferred("budget", "the image slot arrived with too little budget left; left to the cron");
     }
-
-    // 3. Inspect, cut off when only the poster budget is left: it finishes in time to claim, or it is deferred.
     const controller = new AbortController();
-    inspectTimer = setTimeout(() => controller.abort(), remainingMs() - POSTER_MIN_BUDGET_MS);
+    inspectTimer = setTimeout(() => controller.abort(), inspectWindowMs);
     const inspection = await inspect(storage, row.storageKey, controller.signal);
     clearTimeout(inspectTimer);
     Object.assign(run, { inspectBytes: inspection.bytesRead, sourceBytesRead: inspection.bytesRead });
     if (inspection.kind === "out_of_time") {
-      return deferred("inspect_time", "reading the headers did not finish while the poster budget was left; left to the cron");
+      // The reads are bounded, so a window that runs out is the store's doing, and nothing is spent. Never silent: an
+      // object that stalls in every window would otherwise be deferred on every run with no signal.
+      const fields = { action: "poster_deferred", ...run, code: "inspect_time", inspectWindowMs, durationMs: elapsedMs() };
+      log.warn(fields, "reading the headers did not finish while the poster budget was left; left to the cron");
+      if (inspectWindowMs >= INSPECT_STALL_REPORT_MS) {
+        Sentry.captureMessage("video poster: reading the original's headers stalled for a whole inspection window", {
+          level: "warning",
+          tags: { media_id: mediaId, memory_id: row.memoryId },
+          extra: fields,
+        });
+      }
+      return "deferred";
     }
     if (inspection.kind === "ok") {
       Object.assign(run, { container: inspection.container, transferKind: inspection.transferKind, ...inspection.track });
-      if (remainingMs() < POSTER_MIN_BUDGET_MS) {
+      if (remainingMs() < PRE_CLAIM_BUDGET_MS) {
         return deferred("budget", "reading the headers left too little budget; left to the cron");
       }
     }

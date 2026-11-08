@@ -119,6 +119,7 @@ vi.mock("@/lib/video-track", async (importOriginal) => {
 
 const sentry = vi.hoisted(() => ({
   spans: [] as { options: { name: string; op: string }; attributes: Record<string, unknown> }[],
+  messages: [] as unknown[][],
 }));
 vi.mock("@sentry/nextjs", () => ({
   startSpan: async (options: { name: string; op: string; attributes?: Record<string, unknown> }, callback: (span: unknown) => unknown) => {
@@ -127,6 +128,7 @@ vi.mock("@sentry/nextjs", () => ({
     return callback({ setAttribute: (k: string, v: unknown) => { record.attributes[k] = v; }, setAttributes: (a: Record<string, unknown>) => { Object.assign(record.attributes, a); } });
   },
   captureException: vi.fn(),
+  captureMessage: (...args: unknown[]) => { sentry.messages.push(args); },
   flush: vi.fn(async () => true),
 }));
 
@@ -138,7 +140,7 @@ vi.mock("@/lib/logger", async (importOriginal) => {
   return { ...actual, createLogger: () => ({ debug: at("debug"), info: at("info"), warn: at("warn"), error: at("error") }), logError: (...args: unknown[]) => logErrorMock(...args) };
 });
 
-import { derivePoster, POSTER_MIN_BUDGET_MS } from "@/features/memories/derive-poster";
+import { CLAIM_MARGIN_MS, derivePoster, INSPECT_STALL_REPORT_MS, POSTER_MIN_BUDGET_MS } from "@/features/memories/derive-poster";
 import { isEligible, MAX_DECODE_ATTEMPTS, MAX_PIXELS } from "@/features/memories/derived-claims";
 
 const NOW = new Date("2026-11-08T12:00:00Z");
@@ -180,7 +182,7 @@ beforeEach(() => {
   delete process.env.VERCEL_ENV; resetEnvCache();
   media = [video()]; derived = []; lockCalls.length = 0; nextId = 1;
   original = fixture("poster-hevc-moov-last.mov"); originalPresent = true;
-  slots.length = 0; sentry.spans.length = 0; logs.lines.length = 0; trackSpy.calls = 0;
+  slots.length = 0; sentry.spans.length = 0; sentry.messages.length = 0; logs.lines.length = 0; trackSpy.calls = 0;
   // Every fake is `vi.fn(impl)`: a reset restores `impl` and drops any unused `mockImplementationOnce`.
   vi.resetAllMocks();
 });
@@ -416,11 +418,28 @@ describe("derivePoster", () => {
       expect(headMock).not.toHaveBeenCalled();
     });
 
-    it("waits for the slot only while the poster's own budget would stay whole", async () => {
+    it(`defers with less than the floor plus the claim's ${CLAIM_MARGIN_MS} ms margin, before the binary, the slot or a byte`, async () => {
+      expect(CLAIM_MARGIN_MS).toBe(1_000);
+      expect(await run(POSTER_MIN_BUDGET_MS + CLAIM_MARGIN_MS - 1)).toBe("deferred");
+      expect(availableMock).not.toHaveBeenCalled();
+      expect(acquireMock).not.toHaveBeenCalled();
+      expect(headMock).not.toHaveBeenCalled();
+      expect(logs.lines.find((l) => l.fields.action === "poster_deferred")?.fields).toMatchObject({ code: "budget" });
+    });
+
+    it("waits for the slot only while the poster's own budget and the claim's margin would stay whole", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(NOW);
       expect(await run(15_000)).toBe("derived");
-      expect(acquireMock.mock.calls[0]![0]).toBe(15_000 - POSTER_MIN_BUDGET_MS);
+      expect(acquireMock.mock.calls[0]![0]).toBe(15_000 - POSTER_MIN_BUDGET_MS - CLAIM_MARGIN_MS);
+    });
+
+    it("defers without reading when the slot leaves no inspection window (exactly the floor plus the margin)", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(NOW);
+      expect(await run(POSTER_MIN_BUDGET_MS + CLAIM_MARGIN_MS)).toBe("deferred");
+      expect(headMock).not.toHaveBeenCalled();
+      expect(logs.lines.find((l) => l.fields.action === "poster_deferred")?.fields).toMatchObject({ code: "budget" });
     });
 
     it("defers without reading when the slot arrives with less than the floor left", async () => {
@@ -437,14 +456,16 @@ describe("derivePoster", () => {
       expect(derived).toHaveLength(0);
     });
 
-    it("defers without claiming when reading the headers leaves less than the floor", async () => {
+    it("defers without claiming when reading the headers leaves less than the floor plus the claim's margin", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(NOW);
       headMock.mockImplementationOnce(async (pathname: string) => {
-        vi.setSystemTime(Date.now() + 2_000);
+        // 6.5 s left: the whole floor, but not the claim's margin on top of it.
+        vi.setSystemTime(Date.now() + 2_500);
         return { pathname, url: "https://blob.test/x", size: original.byteLength, contentType: "video/quicktime", uploadedAt: new Date() };
       });
-      expect(await run(7_000)).toBe("deferred");
+      expect(await run(9_000)).toBe("deferred");
+      expect(logs.lines.find((l) => l.fields.action === "poster_deferred")?.fields).toMatchObject({ code: "budget" });
       expect(derived).toHaveLength(0);
       expect(extractMock).not.toHaveBeenCalled();
     });
@@ -702,51 +723,102 @@ describe("derivePoster", () => {
         const timer = setTimeout(() => resolve({ pathname, url: "https://blob.test/x", size: original.byteLength, contentType: "video/quicktime", uploadedAt: new Date() }), ms);
         options?.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("This operation was aborted")); }, { once: true });
       });
-      const at = async (headMs: number) => {
+      /** The window a run of `budgetMs` reads in: what is left over the floor and the claim's margin. */
+      const windowOf = (budgetMs: number) => budgetMs - POSTER_MIN_BUDGET_MS - CLAIM_MARGIN_MS;
+      const at = async (headMs: number, budgetMs = 10_000) => {
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
         vi.setSystemTime(NOW);
         headMock.mockImplementationOnce(slowHead(headMs));
-        const outcome = run(10_000);
+        const outcome = run(budgetMs);
         // Exactly to the head's answer: inside the window it lands first; outside, the window's end fires before it.
         await vi.advanceTimersByTimeAsync(headMs);
         return outcome;
       };
 
-      it("claims and extracts when the reads finish just inside the window (budget − floor)", async () => {
-        expect(await at(10_000 - POSTER_MIN_BUDGET_MS - 1)).toBe("derived");
+      it("claims and extracts when the reads finish just inside the window (budget − floor − claim margin)", async () => {
+        expect(await at(windowOf(10_000) - 1)).toBe("derived");
         expect(posterRow()).toMatchObject({ status: "READY", attempts: 1 });
-        // ffmpeg got the whole floor less the encoder's reserve, not the remains of a long read.
-        expect(extractMock.mock.calls[0]![0].deadlineMs).toBe(POSTER_MIN_BUDGET_MS + 1 - 1_000);
+        // ffmpeg got the whole floor and the unused claim margin less the encoder's reserve, not the remains of a long read.
+        expect(extractMock.mock.calls[0]![0].deadlineMs).toBe(POSTER_MIN_BUDGET_MS + CLAIM_MARGIN_MS + 1 - 1_000);
+      });
+
+      it("keeps the claim when the claim itself takes up to its margin right after reads that ended at the window's edge", async () => {
+        // The band the margin closes (T6 re-review): reads ending just inside the window, then a slow claim (a reclaim
+        // deletes the previous candidate first). The run still holds the floor afterwards, so it is not given back.
+        const create = db.derivedMedia.create.getMockImplementation()!;
+        db.derivedMedia.create.mockImplementationOnce(async (args) => { vi.setSystemTime(Date.now() + CLAIM_MARGIN_MS - 100); return create(args); });
+        expect(await at(windowOf(10_000) - 1)).toBe("derived");
+        expect(posterRow()).toMatchObject({ status: "READY", attempts: 1 });
+        expect(logs.lines.some((l) => l.fields.action === "poster_deferred")).toBe(false);
       });
 
       it("defers, claiming nothing, when the reads are still running at the window's end", async () => {
-        expect(await at(10_000 - POSTER_MIN_BUDGET_MS + 1)).toBe("deferred");
+        expect(await at(windowOf(10_000) + 1)).toBe("deferred");
         expect(derived).toHaveLength(0);
         expect(db.derivedMedia.create).not.toHaveBeenCalled();
         expect(extractMock).not.toHaveBeenCalled();
         expect(logErrorMock).not.toHaveBeenCalled();
+      });
+
+      it("defers reads that end inside the floor's window but within the claim's margin, before claiming", async () => {
+        expect(await at(10_000 - POSTER_MIN_BUDGET_MS - 1)).toBe("deferred");
+        expect(db.derivedMedia.create).not.toHaveBeenCalled();
         expect(logs.lines.find((l) => l.fields.action === "poster_deferred")?.fields).toMatchObject({ code: "inspect_time" });
+      });
+
+      it("warns when a short window runs out (the upload callback's), and reports nothing", async () => {
+        expect(windowOf(10_000)).toBeLessThan(INSPECT_STALL_REPORT_MS);
+        expect(await at(windowOf(10_000) + 1)).toBe("deferred");
+        const line = logs.lines.find((l) => l.fields.action === "poster_deferred");
+        expect(line).toMatchObject({ level: "warn", fields: { mediaId: "med_v", memoryId: "mem_1", code: "inspect_time", inspectWindowMs: windowOf(10_000) } });
+        expect(sentry.messages).toEqual([]);
+        expect(logErrorMock).not.toHaveBeenCalled();
+      });
+
+      it("reports a stall to Sentry when a window of at least 10 s (the cron's) runs out: a stuck object is visible", async () => {
+        expect(INSPECT_STALL_REPORT_MS).toBe(10_000);
+        const cron = 20_000;
+        expect(windowOf(cron)).toBeGreaterThanOrEqual(INSPECT_STALL_REPORT_MS);
+        expect(await at(windowOf(cron) + 1, cron)).toBe("deferred");
+        expect(derived).toHaveLength(0);
+        expect(logs.lines.find((l) => l.fields.action === "poster_deferred")).toMatchObject({ level: "warn", fields: { code: "inspect_time", inspectWindowMs: windowOf(cron) } });
+        expect(sentry.messages).toHaveLength(1);
+        expect(sentry.messages[0]).toEqual([
+          expect.stringContaining("stalled"),
+          expect.objectContaining({ level: "warning", tags: { media_id: "med_v", memory_id: "mem_1" }, extra: expect.objectContaining({ code: "inspect_time", inspectWindowMs: windowOf(cron) }) }),
+        ]);
+        expect(JSON.stringify(sentry.messages)).not.toContain("blob.test");
+      });
+
+      it("reports a window exactly at the threshold, not one just under it", async () => {
+        const budgetAt = (windowMs: number) => windowMs + POSTER_MIN_BUDGET_MS + CLAIM_MARGIN_MS;
+        expect(await at(INSPECT_STALL_REPORT_MS + 1, budgetAt(INSPECT_STALL_REPORT_MS))).toBe("deferred");
+        expect(sentry.messages).toHaveLength(1);
+        vi.useRealTimers();
+        sentry.messages.length = 0;
+        expect(await at(INSPECT_STALL_REPORT_MS, budgetAt(INSPECT_STALL_REPORT_MS - 1))).toBe("deferred");
+        expect(sentry.messages).toEqual([]);
       });
 
       it("never defers a deterministic verdict: a malformed movie box read in time still spends its attempt", async () => {
         original = withEmptyStsd(fixture("poster-hevc-moov-last.mov"));
-        expect(await at(10_000 - POSTER_MIN_BUDGET_MS - 1)).toBe("failed");
+        expect(await at(windowOf(10_000) - 1)).toBe("failed");
         expect(posterRow()).toMatchObject({ status: "FAILED", error: "decode_failed", attempts: 1 });
       });
     });
 
-    it("gives the claim back, spending no attempt, when the claim itself leaves less than the floor", async () => {
+    it("gives the claim back, spending no attempt, when the claim itself outlasts its margin and leaves less than the floor", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(NOW);
       derived = [poster({ claimedAt: STALE, storageKey: "dev/derived/mem_1/stale.jpg" })];
       db.derivedMedia.updateMany.mockImplementationOnce(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
-        // The reclaim is slow (it is followed by the previous candidate's delete).
-        vi.setSystemTime(Date.now() + 2_000);
+        // The reclaim is slow (it is followed by the previous candidate's delete): 2.5 s, well past its 1 s margin.
+        vi.setSystemTime(Date.now() + 2_500);
         const rows = derived.filter((d) => matches(d as unknown as Record<string, unknown>, where));
         for (const r of rows) { Object.assign(r, { ...data, attempts: r.attempts + 1 }); }
         return { count: rows.length };
       });
-      expect(await run(7_000)).toBe("deferred");
+      expect(await run(8_000)).toBe("deferred");
       expect(derived).toHaveLength(0);
       expect(extractMock).not.toHaveBeenCalled();
       expect(logErrorMock).not.toHaveBeenCalled();
