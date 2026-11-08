@@ -140,6 +140,31 @@ describe("derived-claims: the kind-generic claim and publish protocol", () => {
     expect(delMock).toHaveBeenCalledWith(again.storageKey);
   });
 
+  it("rejects with no blob deleted when whileLocked or the transaction fails, even a candidate it had queued for deletion", async () => {
+    // One claim was taken over (its conditional publish misses, so its candidate is queued for deletion); one is ours.
+    const setUp = () => {
+      const lost = row("WEB_IMAGE", { storageKey: "dev/derived/mem_1/lost.jpg" });
+      const ours = row("THUMBNAIL", { storageKey: "dev/derived/mem_1/ours.jpg" });
+      derived = [{ ...lost, claimedAt: new Date(NOW.getTime() + 1) }, ours];
+      return [claimOf(lost), claimOf(ours)] as const;
+    };
+
+    // Control: when the transaction commits, the queued candidate is deleted after it.
+    expect(await publishClaims({ mediaId: "med_v", memoryId: "mem_1", claims: setUp(), now: NOW, encodedFor: () => poster, whileLocked: async () => undefined })).toEqual({ WEB_IMAGE: "claimed_elsewhere", THUMBNAIL: "derived" });
+    expect(delMock.mock.calls).toEqual([["dev/derived/mem_1/lost.jpg"]]);
+
+    delMock.mockClear();
+    const whileLocked = vi.fn(async () => { throw new Error("lock lost"); });
+    await expect(publishClaims({ mediaId: "med_v", memoryId: "mem_1", claims: setUp(), now: NOW, encodedFor: () => poster, whileLocked })).rejects.toThrow("lock lost");
+    expect(whileLocked).toHaveBeenCalledTimes(1);
+    expect(delMock).not.toHaveBeenCalled();
+
+    db.$transaction.mockRejectedValueOnce(new Error("connection terminated"));
+    await expect(publishClaims({ mediaId: "med_v", memoryId: "mem_1", claims: setUp(), now: NOW, encodedFor: () => poster })).rejects.toThrow("connection terminated");
+    expect(delMock).not.toHaveBeenCalled();
+    expect(logErrorMock).not.toHaveBeenCalled();
+  });
+
   it("judges pixel refusals against the ceiling the caller passes (photos by default)", async () => {
     const refused = row("POSTER", { status: "FAILED", error: `too_many_pixels:${MAX_VIDEO_PIXELS}` });
     expect(isEligible(refused, NOW)).toBe("eligible");
