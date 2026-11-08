@@ -20,6 +20,32 @@ describe("invite validation", () => {
     expect(inviteRowSchema.parse({ firstName: "Alice", email: row.email }).lastName).toBeUndefined();
   });
 
+  it("accepts a trimmed joined name of exactly 120 characters", () => {
+    const firstName = "A".repeat(60);
+    const lastName = "B".repeat(59);
+    expect(createInvitesInputSchema.parse({ invites: [{ ...row, firstName: ` ${firstName} `, lastName: ` ${lastName} ` }] }).invites)
+      .toEqual([{ ...row, firstName, lastName }]);
+  });
+
+  it("rejects a 121-character joined name at the row's lastName without echoing names", () => {
+    const firstName = "A".repeat(60);
+    const lastName = "B".repeat(60);
+    const result = createInvitesInputSchema.safeParse({ invites: [row, { email: "bob@example.com", firstName, lastName }] });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toHaveLength(1);
+      expect(result.error.issues[0].path).toEqual(["invites", 1, "lastName"]);
+      expect(result.error.issues[0].message).not.toContain(firstName);
+      expect(result.error.issues[0].message).not.toContain(lastName);
+    }
+  });
+
+  it("accepts a first name alone at 120 characters", () => {
+    const firstName = "A".repeat(120);
+    expect(createInvitesInputSchema.parse({ invites: [{ firstName, email: row.email }] }).invites)
+      .toEqual([{ firstName, email: row.email }]);
+  });
+
   it.each(["", "   ", null, undefined])("rejects missing firstName %j with the shared message", (firstName) => {
     const result = inviteRowSchema.safeParse({ ...row, firstName });
     expect(result.success).toBe(false);

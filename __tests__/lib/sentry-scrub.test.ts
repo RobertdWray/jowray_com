@@ -5,6 +5,34 @@ import { scrubBreadcrumb, scrubEvent, scrubLog, scrubSpan, scrubUrl } from "@/li
 
 const TOKEN = "AbCdEf0123456789_-AbCdEf0123456789_-AbCdEf0";
 
+describe("percent-encoded token characters", () => {
+  it.each([
+    ["s", "inviteToken", "kENTRYTEST_xk", "%6BENTRYTEST_xk"],
+    ["s", "inviteToken", "kENTRYTEST_xk", "%6bENTRYTEST_xk"],
+    ["s", "inviteToken", "kENTRYTEST_xk", "kENTRYTEST_x%6B"],
+    ["s", "inviteToken", "kENTRYTEST_xk", "kENTRYTEST_x%6b"],
+    ["m", "claimToken", "kENTRYTEST_claimk", "%6BENTRYTEST_claimk"],
+    ["m", "claimToken", "kENTRYTEST_claimk", "%6bENTRYTEST_claimk"],
+    ["m", "claimToken", "kENTRYTEST_claimk", "kENTRYTEST_claim%6B"],
+    ["m", "claimToken", "kENTRYTEST_claimk", "kENTRYTEST_claim%6b"],
+  ])("scrubs /%s/%s URLs with encoded token %s -> %s", (segment, parameter, token, encoded) => {
+    const url = `https://www.jowray.com/${segment}/${encoded}`;
+    const safeUrl = `https://www.jowray.com/${segment}/[${parameter}]`;
+    const outputs = [scrubUrl(url), scrubString(`GET ${url} completed in 12ms`)];
+    expect(outputs).toEqual([safeUrl, `GET ${safeUrl} completed in 12ms`]);
+    for (const output of outputs) {
+      expect(output).not.toContain(token);
+      expect(output).not.toContain(encoded);
+    }
+  });
+
+  it("keeps ordinary percent signs and encoded characters outside token paths", () => {
+    const text = "Upload 50% complete; https://www.example.com/media/hello%20world";
+    expect(scrubUrl(text)).toBe(text);
+    expect(scrubString(text)).toBe(text);
+  });
+});
+
 describe("scrubUrl", () => {
   it("replaces a claim token path segment", () => {
     expect(scrubUrl(`https://www.jowray.com/m/${TOKEN}`)).toBe(
@@ -291,6 +319,31 @@ describe("scrubHeaders", () => {
 });
 
 describe("scrubEvent with the alpha data policy", () => {
+  it("scrubs nested invite locals and plain URL locals while retaining invitee identity", () => {
+    const token = "SENTRYTEST_x";
+    const shareUrl = `https://www.jowray.com/s/${token}`;
+    const event = scrubEvent({
+      exception: { values: [{ type: "Error", value: "invariant failed", stacktrace: { frames: [{
+        filename: "create-invites.ts",
+        vars: {
+          prepared: [{ index: 0, token, tokenHash: "synthetic-hash", shareUrl, email: "alice@example.com", firstName: "Alice" }],
+          results: [{ status: "created", token, shareUrl }],
+          link: shareUrl,
+        },
+      }] } }] },
+    });
+    const text = JSON.stringify(event);
+    expect(text).not.toContain(token);
+    expect(text).not.toContain(shareUrl);
+    expect(text).toContain("alice@example.com");
+    expect(text).toContain("Alice");
+    expect(event.exception.values[0].stacktrace.frames[0].vars).toEqual({
+      prepared: [{ index: 0, token: FILTERED, tokenHash: FILTERED, shareUrl: FILTERED, email: "alice@example.com", firstName: "Alice" }],
+      results: [{ status: "created", token: FILTERED, shareUrl: FILTERED }],
+      link: "https://www.jowray.com/s/[inviteToken]",
+    });
+  });
+
   it("scrubs contexts, extra, request data, request headers and frame locals, and keeps the user", () => {
     const event = scrubEvent({
       user: { email: "sentry-test@jowray.com", username: "Sentry Test" },

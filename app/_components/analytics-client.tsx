@@ -27,8 +27,10 @@ const INVITE_ROUTE = /^\/s\/[^/]+$/;
  * `/s/[inviteToken]`, but on any path
  * no page matched (the root not-found page) it is the raw pathname, token
  * included. `beforeSend` cannot rewrite `dp`; it can only drop the whole event
- * by returning `null`. So any path with an `m` or `s` segment that is not exactly
- * its claim/invite route is dropped, as is a URL that does not parse. A real page
+ * by returning `null`. Check both raw and decoded paths for `m` or `s` segments,
+ * but keep only an exact raw claim/invite route. Encoded token characters are
+ * kept and scrubbed; encoded route segments are dropped. An unparsable URL or
+ * malformed percent-encoding also drops the event. A real page
  * view never has a trailing slash (Next 308-redirects it away), so dropping
  * `/m/<token>/` or `/s/<token>/` loses nothing.
  *
@@ -37,12 +39,15 @@ const INVITE_ROUTE = /^\/s\/[^/]+$/;
  */
 export function scrubPageView(event: BeforeSendEvent): BeforeSendEvent | null {
   let pathname: string;
+  let decodedPathname: string;
   try {
     pathname = new URL(event.url).pathname;
+    decodedPathname = decodeURIComponent(pathname);
   } catch {
     return null;
   }
-  if ((CLAIM_SEGMENT.test(pathname) && !CLAIM_ROUTE.test(pathname)) || (INVITE_SEGMENT.test(pathname) && !INVITE_ROUTE.test(pathname))) {
+  if (((CLAIM_SEGMENT.test(pathname) || CLAIM_SEGMENT.test(decodedPathname)) && !CLAIM_ROUTE.test(pathname)) ||
+      ((INVITE_SEGMENT.test(pathname) || INVITE_SEGMENT.test(decodedPathname)) && !INVITE_ROUTE.test(pathname))) {
     return null;
   }
   // Spread: the runtime event carries fields beyond its declared type (`payload`, `__cdp`) that the script reads back.

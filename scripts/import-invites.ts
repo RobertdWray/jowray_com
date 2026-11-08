@@ -8,6 +8,8 @@
 // The ledger is logically append-only; each batch replaces it atomically with
 // its prior content plus newly issued links. --rotate-missing is recovery only
 // before any message has been sent. Console output never includes private data.
+// Ordinary imports post at most 200 rows per batch; rotation posts at most 25
+// because it updates rows sequentially inside a 10-second transaction.
 // Importing this module does not read env, files or the network.
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
@@ -23,6 +25,8 @@ class ImportRefusal extends Error {}
 
 const RECOVERY_MESSAGE = "The server may have issued invites for this batch. Re-run the same command without --rotate-missing first; use --rotate-missing only before any message has been sent.";
 const ORIGIN_MISMATCH = "Invalid admin response: server links use a different origin than the target";
+
+export const ROTATE_BATCH_SIZE = 25;
 
 export interface SendRow {
   rowNumber: number;
@@ -337,12 +341,13 @@ export function readLedger(path: string, binding: LedgerBinding, io: AtomicFileO
   return parseLedger(text, binding);
 }
 
-export function planBatches(rows: SendRow[], ledger: Ledger): SendRow[][] {
+export function planBatches(rows: SendRow[], ledger: Ledger, rotateMissing = false): SendRow[][] {
   const missing = rows.filter(({ email }) => !ledger.entries.has(normalizeEmail(email)))
     .map((row) => ({ ...row, email: normalizeEmail(row.email) }));
   const batches: SendRow[][] = [];
-  for (let i = 0; i < missing.length; i += MAX_INVITES_PER_BATCH) {
-    batches.push(missing.slice(i, i + MAX_INVITES_PER_BATCH));
+  const batchSize = rotateMissing ? ROTATE_BATCH_SIZE : MAX_INVITES_PER_BATCH;
+  for (let i = 0; i < missing.length; i += batchSize) {
+    batches.push(missing.slice(i, i + batchSize));
   }
   return batches;
 }
@@ -462,7 +467,7 @@ export function parseArgs(argv: string[]): { inputPath: string; ledgerPath: stri
     seen.add(flag);
     if (flag === "--in" || flag === "--ledger") {
       const value = argv[++i];
-      if (!value || value.startsWith("--")) {
+      if (!value?.trim() || value.startsWith("-")) {
         throw new ImportRefusal(usage);
       }
       if (flag === "--in") {
@@ -523,7 +528,7 @@ export async function main({
     }
     const rows = parseSendList(csv);
     let ledger = readLedger(args.ledgerPath, { origin: target.origin, memorial }, fileOps);
-    const batches = planBatches(rows, ledger);
+    const batches = planBatches(rows, ledger, args.rotateMissing);
     if (batches.length > 0) {
       await preflight(target, secret, ledger, fetchImpl);
     }

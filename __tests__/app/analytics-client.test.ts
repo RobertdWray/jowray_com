@@ -7,6 +7,25 @@ const TOKEN = "SENTRYTEST_abcdefghijklmnop0123";
 const SITE = "https://www.jowray.com";
 
 describe("scrubPageView (Vercel Web Analytics beforeSend)", () => {
+  describe.each(["pageview", "event"] as const)("encoded paths for %s", (type) => {
+    it.each([
+      ["/s/%53ENTRYTEST_x", "/s/[inviteToken]"],
+      ["/s/kENTRYTEST_x%6b", "/s/[inviteToken]"],
+      ["/m/%53ENTRYTEST_abcdefghijklmnop0123", "/m/[claimToken]"],
+      ["/m/kENTRYTEST_claim%6B", "/m/[claimToken]"],
+    ])("keeps canonical route %s with a scrubbed URL", (path, expected) => {
+      expect(scrubPageView({ type, url: `${SITE}${path}?from=email` })).toEqual({ type, url: `${SITE}${expected}?from=email` });
+    });
+
+    it.each([`/%73/${TOKEN}`, `/%6D/${TOKEN}`, `/%6d/${TOKEN}`, `/x/%73/${TOKEN}`, `/x/%6d/${TOKEN}`])("drops encoded route segment %s", (path) => {
+      expect(scrubPageView({ type, url: `${SITE}${path}` })).toBeNull();
+    });
+
+    it.each(["/s/%", "/m/%GG", "/share/%E0%A4", "/s/SENTRYTEST_x%", "/m/SENTRYTEST_claim%GG"])("drops malformed encoding %s", (path) => {
+      expect(scrubPageView({ type, url: `${SITE}${path}` })).toBeNull();
+    });
+  });
+
   it.each(["pageview", "event"] as const)("keeps an invite %s with its URL scrubbed", (type) => {
     const event = scrubPageView({ type, url: "https://www.example.com/s/SENTRYTEST_x?from=email" });
     expect(event?.url).toBe("https://www.example.com/s/[inviteToken]?from=email");

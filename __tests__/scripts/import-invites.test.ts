@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendLedger,
   main,
+  parseArgs,
   parseCsv,
   parseLedger,
   parseSendList,
@@ -74,6 +75,16 @@ function writeRows(count: number) {
 }
 
 describe("CSV and batch planning", () => {
+  it.each([
+    { count: 60, rotateMissing: true, sizes: [25, 25, 10] },
+    { count: 60, rotateMissing: false, sizes: [60] },
+    { count: 201, rotateMissing: false, sizes: [200, 1] },
+  ])("plans $count missing rows with rotateMissing=$rotateMissing", ({ count, rotateMissing, sizes }) => {
+    writeRows(count);
+    const rows = parseSendList(fs.readFileSync(inputPath, "utf8"));
+    expect(planBatches(rows, parseLedger(HEADER, BINDING), rotateMissing).map((batch) => batch.length)).toEqual(sizes);
+  });
+
   it("reads BOM, CRLF, commas, escaped quotes and embedded newlines, and omits a blank last name", () => {
     const csv = '\uFEFFemail,first_name,last_name,name,account\r\n" ALICE@Example.com ","Alice, ""Example""", ,"line 1\r\nline 2",primary\r\n';
     expect(parseCsv(csv)[1]).toEqual([" ALICE@Example.com ", 'Alice, "Example"', " ", "line 1\r\nline 2", "primary"]);
@@ -184,6 +195,82 @@ describe("private ledger", () => {
     expect(fs.readdirSync(dir).sort()).toEqual(["invites.csv", "send_list.csv"]);
   });
 
+  it("retains prior bytes without unlinking when opening the temporary file fails", () => {
+    fs.writeFileSync(ledgerPath, HEADER, { mode: 0o600 });
+    const failure = new Error("temporary open failed");
+    const unlinkSync = vi.fn(fs.unlinkSync);
+    const fileOps: AtomicFileOps = {
+      ...fs,
+      openSync: () => { throw failure; },
+      unlinkSync,
+    };
+    expect(() => writeLedgerAtomic(ledgerPath, "new content", fileOps))
+      .toThrow("Unable to write ledger atomically; prior ledger retained; import stopped");
+    expect(unlinkSync).not.toHaveBeenCalled();
+    expect(fs.readFileSync(ledgerPath, "utf8")).toBe(HEADER);
+    expect(fs.readdirSync(dir).sort()).toEqual(["invites.csv", "send_list.csv"]);
+  });
+
+  it("retains the replaced ledger when opening its directory for durability fails", () => {
+    fs.writeFileSync(ledgerPath, HEADER, { mode: 0o600 });
+    const next = HEADER + `alice@example.com,${ORIGIN}/s/${TOKEN}\n`;
+    const fileOps: AtomicFileOps = {
+      ...fs,
+      openSync: (path, flags, mode) => {
+        if (String(path) === dir) {
+          throw new Error("directory open failed");
+        }
+        return fs.openSync(path, flags, mode);
+      },
+    };
+    expect(() => writeLedgerAtomic(ledgerPath, next, fileOps))
+      .toThrow("Ledger replaced, but directory durability could not be confirmed; import stopped");
+    expect(fs.readFileSync(ledgerPath, "utf8")).toBe(next);
+    expect(fs.readdirSync(dir).sort()).toEqual(["invites.csv", "send_list.csv"]);
+  });
+
+  it.each(["write", "sync"])("preserves both causes when %s and temporary-file cleanup fail", (step) => {
+    fs.writeFileSync(ledgerPath, HEADER, { mode: 0o600 });
+    const failure = new Error(`${step} failed`);
+    const cleanupFailure = new Error("unlink failed");
+    const fileOps: AtomicFileOps = {
+      ...fs,
+      writeFileSync: (...args) => {
+        fs.writeFileSync(...args);
+        if (step === "write") {
+          throw failure;
+        }
+      },
+      fsyncSync: (fd) => {
+        if (step === "sync") {
+          throw failure;
+        }
+        fs.fsyncSync(fd);
+      },
+      unlinkSync: () => { throw cleanupFailure; },
+    };
+    let caught: unknown;
+    try {
+      writeLedgerAtomic(ledgerPath, "new content", fileOps);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    if (!(caught instanceof Error)) {
+      throw new Error("Expected the ledger write to fail");
+    }
+    expect(caught.message).toBe("Unable to write ledger; private temporary file cleanup also failed");
+    expect(caught.cause).toBeInstanceOf(AggregateError);
+    if (!(caught.cause instanceof AggregateError)) {
+      throw new Error("Expected both failure causes");
+    }
+    expect(caught.cause.errors).toEqual([failure, cleanupFailure]);
+    expect(fs.readFileSync(ledgerPath, "utf8")).toBe(HEADER);
+    const temporaryFiles = fs.readdirSync(dir).filter((file) => file.startsWith(".invite-ledger-"));
+    expect(temporaryFiles).toHaveLength(1);
+    expect(fs.statSync(join(dir, temporaryFiles[0])).mode & 0o777).toBe(0o600);
+  });
+
   it.each([
     ["empty token", `${ORIGIN}/s/`],
     ["short token", `${ORIGIN}/s/short`],
@@ -226,6 +313,55 @@ describe("private ledger", () => {
 });
 
 describe("import execution", () => {
+  it("refuses row 2's overlong joined name locally without posting or printing it", async () => {
+    const firstName = "A".repeat(60);
+    const lastName = "B".repeat(60);
+    const csv = `email,first_name,last_name\nalice@example.com,Alice,Example\nbob@example.com,${firstName},${lastName}\n`;
+    fs.writeFileSync(inputPath, csv);
+    const fetchImpl = vi.fn<typeof fetch>();
+    const exit = await main({ argv: ["--in", inputPath, "--ledger", ledgerPath], env: ENV, fetchImpl, log: (line) => logs.push(line) });
+    expect(exit).toBe(1);
+    expect(logs).toEqual(["row 2 has invalid invite fields"]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(logs.join("\n")).not.toContain(firstName);
+    expect(logs.join("\n")).not.toContain(lastName);
+    expect(() => parseSendList(csv)).toThrow("row 2 has invalid invite fields");
+  });
+
+  it.each([
+    { count: 60, rotateMissing: true, sizes: [25, 25, 10] },
+    { count: 60, rotateMissing: false, sizes: [60] },
+    { count: 201, rotateMissing: false, sizes: [200, 1] },
+  ])("posts $count missing rows with rotateMissing=$rotateMissing in bounded batches", async ({ count, rotateMissing, sizes }) => {
+    writeRows(count);
+    let offset = 0;
+    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
+      if (init?.method === "GET") {
+        return Response.json({ success: true, data: SERVER_BINDING });
+      }
+      const body = JSON.parse(String(init?.body)) as { invites: unknown[]; rotate?: boolean };
+      const results = body.invites.map((_, index) => issued(index, rotateMissing ? "rotated" : "created", offset));
+      offset += body.invites.length;
+      return response(results);
+    });
+    expect(await main({
+      argv: ["--in", inputPath, "--ledger", ledgerPath, ...(rotateMissing ? ["--rotate-missing"] : [])],
+      env: ENV, fetchImpl, log: (line) => logs.push(line),
+    })).toBe(0);
+    const posts = fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST");
+    expect(posts).toHaveLength(sizes.length);
+    const bodies = posts.map(([, init]) => JSON.parse(String(init?.body)) as { invites: unknown[]; rotate?: boolean });
+    expect(bodies.map((body) => body.invites.length)).toEqual(sizes);
+    for (const body of bodies) {
+      if (rotateMissing) {
+        expect(body.rotate).toBe(true);
+      } else {
+        expect(body).not.toHaveProperty("rotate");
+      }
+    }
+    expect(readLedger(ledgerPath, BINDING).entries.size).toBe(count);
+  });
+
   it("posts only missing rows, refuses redirects, omits blank surnames, and posts nothing on a second run", async () => {
     fs.writeFileSync(inputPath, CSV.replace("alice@example.com", " ALICE@Example.com ") + "bob@example.com,Bob, Sample ,,primary\n");
     fs.writeFileSync(ledgerPath, HEADER + `alice@example.com,${ORIGIN}/s/${TOKEN}\n`, { mode: 0o600 });
@@ -323,6 +459,14 @@ describe("import execution", () => {
   it.each([[], ["--in"], ["--wat", "Alice"], ["--prod", "--prod"], ["--ledger", "x", "--ledger", "y"]].map((argv) => ({ argv })))("rejects invalid arguments without echoing them: $argv", async ({ argv }) => {
     expect(await run(vi.fn<typeof fetch>(), { argv })).toBe(1);
     expect(logs.join("\n")).toMatch(/usage/);
+  });
+
+  it.each(["", "   ", "-v"])("rejects blank or dash-prefixed path value %j with usage", (value) => {
+    for (const flag of ["--in", "--ledger"]) {
+      const argv = ["--in", inputPath, "--ledger", ledgerPath];
+      argv[argv.indexOf(flag) + 1] = value;
+      expect(() => parseArgs(argv)).toThrow("usage: import-invites.ts [--prod] --in <send_list.csv> --ledger <invites.csv> [--rotate-missing]");
+    }
   });
 
   it.each(["input", "ledger", "symlink"])("refuses a %s path inside a git work tree, including linked worktrees", async (kind) => {
@@ -514,8 +658,11 @@ describe("response validation", () => {
   ])("refuses %s as an invalid response before any ledger append", async (_label, rotate, status) => {
     writeRows(450);
     fs.writeFileSync(ledgerPath, HEADER, { mode: 0o600 });
-    const results = Array.from({ length: 200 }, (_, index) => index === 1 ? issued(index, status) : issued(index));
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(response(results));
+    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
+      // Match the requested batch so this still reaches status validation when rotating 25 rows.
+      const body = JSON.parse(String(init?.body)) as { invites: unknown[] };
+      return response(body.invites.map((_, index) => index === 1 ? issued(index, status) : issued(index)));
+    });
     expect(await run(fetchImpl, { argv: ["--in", inputPath, "--ledger", ledgerPath, ...(rotate ? ["--rotate-missing"] : [])] })).toBe(1);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fs.readFileSync(ledgerPath, "utf8")).toBe(HEADER);

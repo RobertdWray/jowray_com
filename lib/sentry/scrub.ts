@@ -26,9 +26,11 @@ export interface StreamedSpan {
 
 // A claim path is `/m/` followed by a base64url token (16+ chars); the token
 // may be followed by anything (slash, query, whitespace in a log message).
-const CLAIM_PATH = /\/m\/[A-Za-z0-9_-]{16,}/g;
+// Include `%` so percent-encoded token characters cannot escape scrubbing.
+const CLAIM_PATH = /\/m\/[A-Za-z0-9_%-]{16,}/g;
 // Invite tokens are 12 base64url characters; also scrub longer values and upper-case paths.
-const INVITE_PATH = /\/s\/[A-Za-z0-9_-]{12,}/gi;
+// Include `%` for the same bearer when its token characters are percent-encoded.
+const INVITE_PATH = /\/s\/[A-Za-z0-9_%-]{12,}/gi;
 // Every `t=` (claim token), `key=` (admin entry key), or Blob presign credential
 // (`vercel-blob-signature`, `vercel-blob-delegation`) parameter in a full URL
 // (`?t=…`, `&t=…`, `#key=…`) or a bare query string (`t=…`), stopping at `&`,

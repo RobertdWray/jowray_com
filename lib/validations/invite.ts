@@ -11,7 +11,10 @@ export const inviteRowSchema = z.object({
     contributorNameSchema.optional(),
   ),
   email: contributorEmailSchema,
-});
+}).refine(
+  ({ firstName, lastName }) => contributorNameSchema.safeParse([firstName, lastName].filter(Boolean).join(" ")).success,
+  { path: ["lastName"], message: "The combined first and last name must be at most 120 characters" },
+);
 
 export const createInvitesInputSchema = z.object({
   invites: z.array(inviteRowSchema).min(1).max(MAX_INVITES_PER_BATCH),
