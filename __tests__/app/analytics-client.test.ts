@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+
 import type { BeforeSendEvent } from "@vercel/analytics/next";
 import type { SpeedInsightsProps } from "@vercel/speed-insights";
 import { describe, expect, it } from "vitest";
@@ -9,14 +12,14 @@ const SITE = "https://www.jowray.com";
 
 describe("scrubVercelEvent (Vercel Web Analytics beforeSend)", () => {
   describe.each(["pageview", "event"] as const)("encoded paths for %s", (type) => {
-    it.each([
-      ["/s/%53ENTRYTEST_x", "/s/[inviteToken]"],
-      ["/s/kENTRYTEST_x%6b", "/s/[inviteToken]"],
-      ["/m/%53ENTRYTEST_abcdefghijklmnop0123", "/m/[claimToken]"],
-      ["/m/kENTRYTEST_claim%6B", "/m/[claimToken]"],
-    ])("keeps canonical route %s with a scrubbed URL", (path, expected) => {
-      expect(scrubVercelEvent({ type, url: `${SITE}${path}?from=email` })).toEqual({ type, url: `${SITE}${expected}?from=email` });
-    });
+    // The wrapper compares the encoded pathname with decoded params, so the route
+    // (`dp`) it builds for these is the raw path, token included.
+    it.each(["/s/%53ENTRYTEST_x", "/s/kENTRYTEST_x%6b", "/m/%53ENTRYTEST_abcdefghijklmnop0123", "/m/kENTRYTEST_claim%6B"])(
+      "drops encoded token path %s, whose route would carry the token",
+      (path) => {
+        expect(scrubVercelEvent({ type, url: `${SITE}${path}?from=email` })).toBeNull();
+      },
+    );
 
     it.each([`/%73/${TOKEN}`, `/%6D/${TOKEN}`, `/%6d/${TOKEN}`, `/x/%73/${TOKEN}`, `/x/%6d/${TOKEN}`])("drops encoded route segment %s", (path) => {
       expect(scrubVercelEvent({ type, url: `${SITE}${path}` })).toBeNull();
@@ -71,6 +74,13 @@ describe("scrubVercelEvent (Vercel Web Analytics beforeSend)", () => {
     expect(scrubVercelEvent({ type: "pageview", url })?.url).toBe(url);
   });
 
+  it("keeps percent-encoding outside a claim or invite token segment", () => {
+    const ordinary = `${SITE}/memories/caf%C3%A9?tag=caf%C3%A9`;
+    expect(scrubVercelEvent({ type: "pageview", url: ordinary })?.url).toBe(ordinary);
+    const claim = scrubVercelEvent({ type: "pageview", url: `${SITE}/m/${TOKEN}?from=e%20mail` });
+    expect(claim?.url).toBe(`${SITE}/m/[claimToken]?from=e%20mail`);
+  });
+
   it("leaves paths that only start with the letter m unchanged", () => {
     for (const url of [`${SITE}/mx/${TOKEN}`, `${SITE}/media/abc`, `${SITE}/m`]) {
       expect(scrubVercelEvent({ type: "pageview", url })?.url).toBe(url);
@@ -110,8 +120,9 @@ describe("scrubVercelEvent (Vercel Web Analytics beforeSend)", () => {
 // Speed Insights script 0.1.3 calls beforeSend({ type: "vital", url, route }) and
 // copies back only the returned `url`. `url` is location.href (query and fragment
 // included); `route` comes from the Next wrapper (useParams + computeRoute), which is
-// the raw pathname on the root not-found page and can lag behind a client navigation.
-// A token-bearing route therefore has to drop the whole event.
+// the raw pathname on the root not-found page and on a claim or invite link with an
+// encoded token character, and can lag behind a client navigation. A claim or invite
+// route other than the exact placeholder therefore has to drop the whole event.
 type VitalEvent = Parameters<NonNullable<SpeedInsightsProps["beforeSend"]>>[0];
 
 describe("scrubVercelEvent (Vercel Speed Insights beforeSend)", () => {
@@ -155,5 +166,41 @@ describe("scrubVercelEvent (Vercel Speed Insights beforeSend)", () => {
 
   it("drops a vital whose route has malformed percent-encoding (T7)", () => {
     expect(scrubVercelEvent(vital("/share", "/%E0%A4"))).toBeNull();
+  });
+
+  // Reproduced live on 2026-11-08: a hard load of an encoded claim or invite link left the
+  // wrapper's route as the raw path, because computeRoute compares the encoded
+  // pathname with decoded params.
+  it.each([
+    "/m/%53ENTRYTEST_abcdefghijklmnop0123",
+    "/s/%53ENTRYTEST_invite01",
+  ])("drops an encoded-token vital whose route the wrapper left raw: %s (T8)", (link) => {
+    expect(scrubVercelEvent(vital(link, link))).toBeNull();
+  });
+
+  it.each([
+    `/m/${TOKEN}`,
+    "/s/SENTRYTEST_invite01",
+    "/m/%53ENTRYTEST_abcdefghijklmnop0123",
+  ])("drops a vital whose single-segment route %s carries a token even when the URL is safe (T9)", (route) => {
+    expect(scrubVercelEvent(vital("/", route))).toBeNull();
+  });
+
+  it.each(["/m/[claimToken]", "/s/[inviteToken]"])("keeps a lagging placeholder route %s under another page's URL (T10)", (route) => {
+    const event = vital("/how-it-was-built", route);
+    expect(scrubVercelEvent(event)).toEqual(event);
+  });
+
+  it.each(["/M/[claimToken]", "/m/[claimtoken]", "/m/[claimToken]/", "/S/[inviteToken]", "/s/[InviteToken]"])(
+    "accepts only the exact placeholder, so route %s drops (T11)",
+    (route) => {
+      expect(scrubVercelEvent(vital("/", route))).toBeNull();
+    },
+  );
+
+  it("names the placeholders after the dynamic route folders the wrapper reads (T12)", () => {
+    // useParams() keys come from these folders; renaming one would drop every vital on that page.
+    expect(existsSync(resolve(__dirname, "../../app/m/[claimToken]/page.tsx"))).toBe(true);
+    expect(existsSync(resolve(__dirname, "../../app/s/[inviteToken]/page.tsx"))).toBe(true);
   });
 });
