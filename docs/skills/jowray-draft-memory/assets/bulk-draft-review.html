@@ -1,0 +1,609 @@
+<title>Bulk Draft Review</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=IBM+Plex+Mono:wght@400&family=Spectral:ital,wght@0,500;0,600;1,500&display=swap">
+<style>
+/* Layout: one ordered column of record cards; each card is media on the left and the editable draft on the right, stacking on phones. A group strip at the top jumps through the list. */
+:root {
+  --paper: #f3f5f2;
+  --surface: #ffffff;
+  --sunk: #e8ece8;
+  --stage: #1d2627;
+  --ink: #1d2829;
+  --muted: #5b6968;
+  --line: #d8dfdb;
+  --accent: #2a6670;
+  --accent-ink: #ffffff;
+  --accent-soft: #dcebec;
+  --ok: #2c7a4d;
+  --ok-soft: #dcefe3;
+  --warn: #9a620e;
+  --warn-soft: #f6e9d3;
+  --skip: #74697a;
+  --skip-soft: #ebe6ee;
+  --err: #b3261e;
+  --err-soft: #f8e1df;
+  --focus: #2a6670;
+  --font-display: "Spectral", Georgia, "Times New Roman", serif;
+  --font-body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  --r: 10px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #111617; --surface: #192022; --sunk: #222b2d; --stage: #0b0f10; --ink: #e5ebe9; --muted: #9aa9a7; --line: #2b3537;
+  --accent: #74b6bf; --accent-ink: #0c1a1c; --accent-soft: #1f3538; --ok: #72c493; --ok-soft: #1c3326; --warn: #e2a852; --warn-soft: #3a2c15;
+  --skip: #b3a7b8; --skip-soft: #2c2630; --err: #f2948c; --err-soft: #3a1d1b; --focus: #74b6bf; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --paper: #111617; --surface: #192022; --sunk: #222b2d; --stage: #0b0f10; --ink: #e5ebe9; --muted: #9aa9a7; --line: #2b3537;
+  --accent: #74b6bf; --accent-ink: #0c1a1c; --accent-soft: #1f3538; --ok: #72c493; --ok-soft: #1c3326; --warn: #e2a852; --warn-soft: #3a2c15;
+  --skip: #b3a7b8; --skip-soft: #2c2630; --err: #f2948c; --err-soft: #3a1d1b; --focus: #74b6bf; color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--paper); color: var(--ink); font: 15px/1.5 var(--font-body); }
+.wrap { max-width: 1180px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1, h2 { font-family: var(--font-display); font-weight: 600; text-wrap: balance; margin: 0; }
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+code, pre { font-family: var(--font-mono); font-size: 12.5px; }
+
+header.top { padding-block: 36px 18px; display: grid; gap: 14px; }
+.eyebrow { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+h1 { font-size: clamp(30px, 4.4vw, 44px); line-height: 1.1; }
+.lede { max-width: 68ch; color: var(--muted); margin: 0; }
+
+.bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: color-mix(in srgb, var(--paper) 92%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--paper); }
+.bar .wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding-block: 10px; }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.chipbtn { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 5px 12px; cursor: pointer; font-size: 13.5px; display: inline-flex; gap: 6px; align-items: center; }
+.chipbtn[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.chipbtn .n { font-variant-numeric: tabular-nums; opacity: .75; }
+.progress { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--muted); }
+.meter { width: 140px; height: 6px; background: var(--sunk); border-radius: 99px; overflow: hidden; display: flex; }
+.meter i { display: block; height: 100%; }
+.meter .m-ok { background: var(--ok); } .meter .m-skip { background: var(--skip); }
+
+.groups { display: flex; flex-wrap: wrap; gap: 4px 2px; padding-block: 4px 18px; }
+.yr { border: 0; background: none; padding: 6px 8px; border-radius: 8px; cursor: pointer; display: grid; justify-items: center; gap: 4px; color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.yr:hover { background: var(--sunk); color: var(--ink); }
+.yr .dots { display: flex; gap: 3px; min-height: 7px; }
+.yr .dots b { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
+.yr .dots b.s-approved { background: var(--ok); } .yr .dots b.s-revisit { background: var(--warn); } .yr .dots b.s-skip { background: var(--skip); } .yr .dots b.s-draft { background: var(--accent); opacity: .45; }
+
+main.wrap { display: grid; gap: 22px; padding-block: 8px 40px; }
+.notice { border: 1px solid var(--line); background: var(--surface); border-radius: 14px; padding: 22px 24px; display: grid; gap: 10px; }
+.notice h2 { font-size: 22px; }
+.notice p { margin: 0; color: var(--muted); max-width: 70ch; }
+.notice ol { margin: 0; padding-left: 20px; display: grid; gap: 6px; max-width: 72ch; }
+.banner { background: var(--warn-soft); color: var(--ink); border-radius: var(--r); padding: 10px 14px; font-size: 14px; }
+
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; display: grid; grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr); overflow: hidden; scroll-margin-top: 80px; }
+.card[data-status="approved"] { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.card[data-status="skip"] .media { opacity: .55; }
+.card[hidden] { display: none; }
+.media { background: var(--stage); display: flex; flex-direction: column; min-width: 0; }
+.stage { position: relative; display: grid; place-items: center; min-height: 260px; max-height: 560px; }
+.stage img, .stage video { display: block; max-width: 100%; max-height: 560px; width: auto; height: auto; object-fit: contain; cursor: zoom-in; }
+.stage video { cursor: default; width: 100%; }
+.stage .tag { position: absolute; left: 10px; top: 10px; background: rgba(0,0,0,.6); color: #fff; font-size: 12px; padding: 3px 8px; border-radius: 99px; pointer-events: none; }
+.stage .nofile { color: #c9d3d1; font-size: 14px; padding: 24px; text-align: center; display: grid; gap: 6px; }
+.stage .nofile code { color: #fff; overflow-wrap: anywhere; }
+.thumbs { display: flex; gap: 6px; padding: 8px 10px; overflow-x: auto; }
+.thumb { flex: 0 0 auto; width: 74px; height: 56px; padding: 0; border: 2px solid transparent; border-radius: 6px; overflow: hidden; background: #000; cursor: pointer; position: relative; color: #fff; font-size: 10px; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb[aria-pressed="true"] { border-color: #fff; }
+.thumb.out img { opacity: .3; }
+.thumb .play { position: absolute; right: 4px; bottom: 3px; color: #fff; font-size: 11px; text-shadow: 0 0 3px #000; }
+.photo-panel { background: var(--sunk); padding: 12px 14px 14px; display: grid; gap: 8px; align-content: start; flex: 1 1 auto; }
+.photo-meta { font-size: 12.5px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.photo-meta code { font-size: 11.5px; overflow-wrap: anywhere; }
+.photo-row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; font-size: 13.5px; }
+.photo-row select { max-width: 100%; min-width: 0; flex: 1 1 200px; }
+
+.edit { padding: 18px 20px 18px; display: grid; gap: 12px; align-content: start; min-width: 0; }
+.edit-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.pill { font-size: 12px; font-weight: 600; letter-spacing: .02em; padding: 3px 9px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); }
+.pill.p-approved { background: var(--ok-soft); color: var(--ok); } .pill.p-revisit { background: var(--warn-soft); color: var(--warn); } .pill.p-skip { background: var(--skip-soft); color: var(--skip); }
+.sync { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
+.sync.y-sent { border-color: color-mix(in srgb, var(--ok) 50%, var(--line)); color: var(--ok); }
+.sync.y-error { background: var(--err-soft); border-color: var(--err); color: var(--err); }
+.count { font-size: 12.5px; color: var(--muted); }
+.saved { margin-left: auto; font-size: 12.5px; color: var(--muted); min-height: 1em; }
+.saved.err { color: var(--warn); }
+label.f { display: grid; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); min-width: 0; }
+.in { width: 100%; border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 8px 10px; font-size: 15px; letter-spacing: 0; text-transform: none; font-weight: 400; color: var(--ink); }
+.in:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+.in.title { font-family: var(--font-display); font-size: 21px; font-weight: 600; padding: 6px 10px; }
+textarea.in { resize: vertical; min-height: 120px; line-height: 1.55; }
+textarea.in.small { min-height: 64px; }
+.photo-panel textarea.in { min-height: 56px; font-size: 14px; background: var(--surface); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.qs { border-left: 3px solid var(--warn); background: var(--warn-soft); border-radius: 0 8px 8px 0; padding: 10px 12px 10px 14px; font-size: 14px; }
+.qs b { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--warn); display: block; margin-bottom: 4px; }
+.qs ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; }
+.why { font-size: 13px; color: var(--muted); }
+.syncmsg { font-size: 13px; color: var(--err); }
+.linkbtn { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; font-size: 13px; text-decoration: underline; text-underline-offset: 2px; justify-self: start; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-top: 4px; }
+.act { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 8px 14px; cursor: pointer; font-weight: 500; }
+.act:hover { border-color: var(--ink); }
+.act.approve { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.act.approve[aria-pressed="true"] { background: var(--ok); border-color: var(--ok); color: var(--accent-ink); }
+.act.revisit[aria-pressed="true"] { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
+.act.skip[aria-pressed="true"] { background: var(--skip-soft); border-color: var(--skip); color: var(--skip); }
+.byline { font-size: 12.5px; color: var(--muted); }
+.empty-card { padding: 18px 20px; color: var(--muted); grid-column: 1 / -1; }
+.ro .in, .ro select { pointer-events: none; opacity: .85; }
+.ro .actions, .ro .photo-row, .ro .linkbtn { display: none; }
+
+.guide { border-top: 1px solid var(--line); padding-block: 26px 70px; }
+.guide details { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+.guide summary { cursor: pointer; padding: 16px 20px; font-family: var(--font-display); font-weight: 600; font-size: 19px; list-style-position: inside; }
+.guide .body { padding: 0 20px 20px; display: grid; gap: 14px; }
+.guide p, .guide li { max-width: 74ch; }
+.guide p { margin: 0; }
+.guide ol, .guide ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+.guide h3 { margin: 6px 0 0; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.codebox { position: relative; }
+.codebox pre { margin: 0; background: var(--sunk); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; white-space: pre; line-height: 1.5; }
+.copy { position: absolute; top: 8px; right: 8px; border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 4px 10px; font-size: 12.5px; cursor: pointer; }
+
+.lightbox { position: fixed; inset: 0; z-index: 50; background: rgba(5,8,9,.92); display: grid; place-items: center; padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px)); cursor: zoom-out; }
+.lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 9px 16px; border-radius: 8px; font-size: 14px; z-index: 60; max-width: calc(100vw - 32px); }
+
+@media (max-width: 860px) {
+  .card { grid-template-columns: minmax(0, 1fr); }
+  .stage, .stage img, .stage video { max-height: 70vh; }
+  .progress { margin-left: 0; }
+}
+@media (max-width: 480px) { .grid2 { grid-template-columns: 1fr; } .edit { padding: 16px; } }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+
+<header class="top wrap">
+  <div class="eyebrow" id="cfg-eyebrow">Review before upload</div>
+  <h1 id="cfg-title">Bulk Draft Review</h1>
+  <p class="lede" id="cfg-intro">Claude grouped the files and wrote a first draft for each record. Fix anything that's wrong, then mark each one Approved. Changes save as you type. Nothing is sent to the destination system until it's approved and Claude pushes it.</p>
+</header>
+
+<div class="bar">
+  <div class="wrap">
+    <div class="filters" role="group" aria-label="Show">
+      <button class="chipbtn" data-f="all" aria-pressed="true">All <span class="n" id="n-all">–</span></button>
+      <button class="chipbtn" data-f="todo" aria-pressed="false">To review <span class="n" id="n-todo">–</span></button>
+      <button class="chipbtn" data-f="approved" aria-pressed="false">Approved <span class="n" id="n-approved">–</span></button>
+      <button class="chipbtn" data-f="skip" aria-pressed="false">Left out <span class="n" id="n-skip">–</span></button>
+      <button class="chipbtn" data-f="unsent" aria-pressed="false">Approved, not sent <span class="n" id="n-unsent">–</span></button>
+    </div>
+    <div class="progress"><span id="prog-text">Loading…</span><span class="meter" aria-hidden="true"><i class="m-ok" id="m-ok" style="width:0"></i><i class="m-skip" id="m-skip" style="width:0"></i></span></div>
+  </div>
+</div>
+
+<div class="wrap"><nav class="groups" id="groups" aria-label="Jump to group"></nav></div>
+
+<main class="wrap" id="list">
+  <div class="notice" id="state-note">
+    <h2>Loading the drafts</h2>
+    <p>The drafts and every change made to them are kept with this page. They'll appear here in a moment.</p>
+  </div>
+</main>
+
+<section class="wrap guide" aria-labelledby="guide-h">
+  <details id="guide">
+    <summary id="guide-h">Using this page with Claude</summary>
+    <div class="body">
+      <p>This page is a review board with its own database. Claude loads drafts into it, people edit and approve them here, and Claude reads the approved ones back and pushes them to the destination system through that system's MCP tools. Copy the instructions below into the Claude session that owns this page.</p>
+      <h3>Who can edit</h3>
+      <ul>
+        <li>Reviewers need to be signed in to claude.ai and invited from the Share menu as <strong>Editors</strong>. While the page also has a public link, outside editors can't save.</li>
+        <li>Viewers can read the drafts but can't change them.</li>
+      </ul>
+      <h3>Instructions for Claude</h3>
+      <div class="codebox">
+        <button class="copy" type="button" data-copy="claude-brief">Copy</button>
+<pre id="claude-brief">This artifact is a bulk review board. Its database holds:
+  collection "records"  one document per draft record
+  doc "config/page"     optional page settings
+
+SET UP (once)
+  Publish this HTML file with the Artifact tool, declaring capabilities
+  {"db": {}, "user": {"scopes": ["profile"]}}. Share it from the Share menu
+  with each reviewer as an Editor. Every read and write below goes through
+  ArtifactData with that artifact's url. Load the destination's MCP tools
+  and read its docs before pushing anything.
+
+LOAD DRAFTS
+1. Publish each record's media with this page (Artifact publish, `files`):
+   images at img/&lt;fileId&gt;.jpg, video posters at img/&lt;fileId&gt;.jpg,
+   playable video at vid/&lt;fileId&gt;.mp4 (H.264, 1280px max). The page can
+   only show files published with it or data: URLs; outside image hosts
+   are blocked.
+2. Write one document per record to "records" with ArtifactData "batch"
+   (up to 50 per call). Doc id: a short slug, e.g. "2021-05-31-caboose".
+3. Optionally write "config/page" to rename the page and its fields.
+
+RECORD SCHEMA (records/&lt;id&gt;)
+  order       string   sort key, e.g. "2021-05-31 11:21"; "1000-01" sorts early
+  group       string   label for the jump strip, e.g. "2021" or "Old prints"
+                       (default: first 4 characters of order)
+  title       string
+  body        string   the main text
+  date        string   free text, e.g. "Summer 1985?"
+  place       string   town/landmark level; never a street address
+  people      string   comma list of who appears
+  visibility  string   one of config.visibilityOptions values (default PUBLIC)
+  notes       string   reviewer notes for whoever pushes
+  questions   string[] things the reviewer should confirm
+  why         string   why these files were grouped
+  items       array of {
+                id, file, type: "photo"|"video"|"file",
+                local: "YYYY-MM-DD HH:MM" or null, caption,
+                src: "img/&lt;id&gt;.jpg", poster?, video?: "vid/&lt;id&gt;.mp4",
+                duration?, excluded: false }
+  status      "draft" | "approved" | "revisit" | "skip"
+  original    {title, body, date, place, visibility}  your first draft, for "put back"
+  sync        {state: "sent"|"error", remoteId, at, message}  written by Claude only
+The page writes: updatedAt, updatedBy, statusAt, statusBy (viewer ids).
+
+CONFIG (config/page, all optional)
+  eyebrow, title, intro      header text
+  labels {title, body, date, place, people, visibility, notes}
+  hide   ["people", "visibility", ...]   fields to hide
+  visibilityOptions [{value, label}]     default PUBLIC / FAMILY / PRIVATE
+
+PUSH APPROVED RECORDS
+1. List "records" (ArtifactData list, out_dir) and take status == "approved"
+   whose sync.state is not "sent". Never push draft, revisit or skip.
+2. For each: create it in the destination with that system's MCP tools,
+   attach every item where excluded is false (original files, not the
+   resized copies), then apply the approval/consent step the destination
+   requires, only as the account owner has authorised.
+3. Update the record: sync = {state:"sent", remoteId, at:&lt;ISO time&gt;}, pinned
+   with if_version. On failure: {state:"error", message}. A record with a
+   remoteId is updated in the destination, never created twice.
+4. Report counts: sent, failed, still waiting for review.</pre>
+      </div>
+    </div>
+  </details>
+</section>
+
+<script>
+(() => {
+  const DEFAULT_CFG = {
+    eyebrow: "Review before upload", title: "Bulk Draft Review",
+    intro: "Claude grouped the files and wrote a first draft for each record. Fix anything that's wrong, then mark each one Approved. Changes save as you type. Nothing is sent to the destination system until it's approved and Claude pushes it.",
+    labels: { title: "Title", body: "Text", date: "When", place: "Where", people: "Who's in it", visibility: "Who can see it", notes: "Notes for whoever pushes" },
+    hide: [],
+    visibilityOptions: [{ value: "PUBLIC", label: "Everyone (public)" }, { value: "FAMILY", label: "Members only" }, { value: "PRIVATE", label: "Private" }]
+  };
+  let CFG = DEFAULT_CFG;
+  const STATUS_LABEL = { draft: "Draft", approved: "Approved", revisit: "Needs another look", skip: "Left out" };
+  const S = { db: null, user: null, myId: null, writable: true, docs: new Map(), cards: new Map(), filter: "all",
+              pending: new Map(), timers: new Map(), chains: new Map(), sel: new Map(), itemsKey: new Map(), loaded: false };
+  const list = document.getElementById("list");
+
+  function el(tag, props = {}, ...kids) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (v == null) continue;
+      if (k === "class") n.className = v; else if (k === "text") n.textContent = v;
+      else if (k.startsWith("on")) n.addEventListener(k.slice(2), v); else n.setAttribute(k, v);
+    }
+    for (const k of kids) if (k != null) n.append(k);
+    return n;
+  }
+  function toast(msg) { const t = el("div", { class: "toast", role: "status", text: msg }); document.body.append(t); setTimeout(() => t.remove(), 3800); }
+  function note(title, body, steps) {
+    let n = document.getElementById("state-note");
+    if (!n) { n = el("div", { class: "notice", id: "state-note" }); list.prepend(n); }
+    n.replaceChildren(el("h2", { text: title }), el("p", { text: body }), steps ? el("ol", {}, ...steps.map(s => el("li", { text: s }))) : null);
+  }
+  function fmtLocal(s) {
+    if (!s) return "No date in the file";
+    const [d, t] = s.split(" "); const [y, m, dd] = d.split("-").map(Number); const dt = new Date(y, m - 1, dd);
+    if (isNaN(dt)) return s;
+    let out = dt.toLocaleDateString(undefined, { weekday: "short", year: "numeric", month: "short", day: "numeric" });
+    if (t) { const [hh, mm] = t.split(":").map(Number); const h12 = ((hh + 11) % 12) + 1; out += ` · ${h12}:${String(mm).padStart(2, "0")} ${hh < 12 ? "AM" : "PM"}`; }
+    return out;
+  }
+  const groupOf = d => d.group ? d.group : (d.order && /^\d{4}/.test(d.order) && !d.order.startsWith("999")) ? d.order.slice(0, 4) : "Undated";
+  const liveItems = d => (d.items || []).filter(i => !i.excluded);
+  const effStatus = d => (d.items || []).length === 0 && !d.body && !d.title ? "empty" : (d.status || "draft");
+  const isSent = d => d.sync && d.sync.state === "sent";
+  const hidden = k => (CFG.hide || []).includes(k);
+  const L = k => (CFG.labels && CFG.labels[k]) || DEFAULT_CFG.labels[k];
+
+  // ---------- writes ----------
+  function queueWrite(id, patch, immediate) {
+    const p = Object.assign(S.pending.get(id) || {}, patch); S.pending.set(id, p);
+    clearTimeout(S.timers.get(id));
+    S.timers.set(id, setTimeout(() => flush(id), immediate ? 0 : 700));
+    setSaved(id, "Saving…");
+  }
+  function flush(id) {
+    const patch = S.pending.get(id); if (!patch) return; S.pending.delete(id);
+    patch.updatedAt = new Date().toISOString(); if (S.myId) patch.updatedBy = S.myId;
+    const prev = S.chains.get(id) || Promise.resolve();
+    const next = prev.then(() => S.db.doc("records/" + id).update(patch)).then(
+      () => { if (!S.pending.has(id)) setSaved(id, "Saved"); },
+      e => {
+        if (e && e.code === "invalid_argument" && S.writable) setReadOnly(true);
+        else if (e && e.code === "unavailable") setTimeout(() => queueWrite(id, patch, true), 600 + Math.random() * 900);
+        setSaved(id, "Not saved — " + (e && e.code === "invalid_argument" ? "you don't have edit access" : "will retry"), true);
+      });
+    S.chains.set(id, next);
+  }
+  function setSaved(id, txt, err) { const c = S.cards.get(id); if (!c) return; c.saved.textContent = txt; c.saved.classList.toggle("err", !!err); }
+  function setReadOnly(on) {
+    S.writable = !on; document.body.classList.toggle("ro", on);
+    if (on && !document.getElementById("ro-banner")) list.prepend(el("div", { class: "banner", id: "ro-banner", text: "You can look through these drafts but not change them. Ask the page's owner to share it with you as an Editor." }));
+  }
+
+  // ---------- card ----------
+  function field(key, input) { const f = el("label", { class: "f" }, L(key), input); f.dataset.field = key; if (hidden(key)) f.hidden = true; return f; }
+  function buildCard(id) {
+    const c = { id };
+    c.root = el("article", { class: "card", id: "r-" + id });
+    c.stage = el("div", { class: "stage" });
+    c.thumbs = el("div", { class: "thumbs", role: "group", "aria-label": "Files in this record" });
+    c.pmeta = el("div", { class: "photo-meta" });
+    c.cap = el("textarea", { class: "in", id: "cap-" + id, rows: "2", "aria-label": "Caption for this file" });
+    c.move = el("select", { class: "in", id: "mv-" + id, "aria-label": "Move this file to another record" });
+    c.excl = el("input", { type: "checkbox", id: "ex-" + id });
+    c.photoPanel = el("div", { class: "photo-panel" }, c.pmeta,
+      el("label", { class: "f" }, "Caption for this file", c.cap),
+      el("div", { class: "photo-row" }, c.move, el("label", { for: "ex-" + id, style: "display:flex;gap:6px;align-items:center" }, c.excl, "Leave this one out")));
+    c.media = el("div", { class: "media" }, c.stage, c.thumbs, c.photoPanel);
+
+    c.pill = el("span", { class: "pill" }); c.sync = el("span", { class: "sync", hidden: "" }); c.count = el("span", { class: "count" }); c.saved = el("span", { class: "saved", "aria-live": "polite" });
+    c.title = el("input", { class: "in title", id: "ti-" + id });
+    c.body = el("textarea", { class: "in", id: "bo-" + id, rows: "6" });
+    c.date = el("input", { class: "in", id: "da-" + id });
+    c.place = el("input", { class: "in", id: "pl-" + id });
+    c.people = el("input", { class: "in", id: "pe-" + id, placeholder: "Names, separated by commas" });
+    c.vis = el("select", { class: "in", id: "vi-" + id }, ...(CFG.visibilityOptions || DEFAULT_CFG.visibilityOptions).map(o => el("option", { value: o.value, text: o.label })));
+    c.qs = el("div", { class: "qs" });
+    c.why = el("div", { class: "why" });
+    c.syncMsg = el("div", { class: "syncmsg", hidden: "" });
+    c.notes = el("textarea", { class: "in small", id: "no-" + id, rows: "2" });
+    c.restore = el("button", { class: "linkbtn", type: "button", text: "Put back Claude's original draft" });
+    c.bApprove = el("button", { class: "act approve", type: "button", "aria-pressed": "false" });
+    c.bRevisit = el("button", { class: "act revisit", type: "button", "aria-pressed": "false", text: "Needs another look" });
+    c.bSkip = el("button", { class: "act skip", type: "button", "aria-pressed": "false", text: "Leave out" });
+    c.byline = el("div", { class: "byline" });
+    const row = (...fs) => { const r = el("div", { class: "grid2" }, ...fs); if (fs.every(f => f.hidden)) r.hidden = true; return r; };
+    c.edit = el("div", { class: "edit" },
+      el("div", { class: "edit-head" }, c.pill, c.sync, c.count, c.saved),
+      field("title", c.title), field("body", c.body), c.restore,
+      row(field("date", c.date), field("place", c.place)),
+      row(field("people", c.people), field("visibility", c.vis)),
+      c.qs, field("notes", c.notes),
+      el("div", { class: "actions" }, c.bApprove, c.bRevisit, c.bSkip),
+      c.byline, c.syncMsg, c.why);
+    c.emptyMsg = el("div", { class: "empty-card", hidden: "" }, "Every file in this record was moved to another one, so nothing will be sent for it.");
+    c.root.append(c.media, c.edit, c.emptyMsg);
+
+    const bind = (input, key) => input.addEventListener("input", () => { if (S.writable) queueWrite(id, { [key]: input.value }); });
+    bind(c.title, "title"); bind(c.body, "body"); bind(c.date, "date"); bind(c.place, "place"); bind(c.people, "people"); bind(c.notes, "notes");
+    c.vis.addEventListener("change", () => queueWrite(id, { visibility: c.vis.value }, true));
+    c.cap.addEventListener("input", () => editItem(id, it => { it.caption = c.cap.value; }));
+    c.excl.addEventListener("change", () => { editItem(id, it => { it.excluded = c.excl.checked; }, true); renderMedia(id); });
+    c.move.addEventListener("change", () => { const to = c.move.value; c.move.value = ""; if (to) moveItem(id, to); });
+    const setStatus = st => { const d = S.docs.get(id); const cur = (d && d.status) || "draft"; const next = cur === st ? "draft" : st;
+      d.status = next; patchStatus(id); queueWrite(id, { status: next, statusAt: new Date().toISOString(), statusBy: S.myId || null }, true); counts(); applyFilter(); };
+    c.bApprove.addEventListener("click", () => setStatus("approved"));
+    c.bRevisit.addEventListener("click", () => setStatus("revisit"));
+    c.bSkip.addEventListener("click", () => setStatus("skip"));
+    c.restore.addEventListener("click", () => { const d = S.docs.get(id); const o = d && d.original; if (!o) return;
+      c.title.value = o.title || ""; c.body.value = o.body || ""; c.date.value = o.date || ""; c.place.value = o.place || "";
+      queueWrite(id, { title: c.title.value, body: c.body.value, date: c.date.value, place: c.place.value }, true); toast("Original draft put back"); });
+    S.cards.set(id, c);
+    return c;
+  }
+
+  function editItem(id, fn, immediate) {
+    const d = S.docs.get(id); if (!d || !S.writable) return;
+    const items = (d.items || []).map(x => ({ ...x })); const i = S.sel.get(id) || 0; if (!items[i]) return;
+    fn(items[i]); d.items = items; S.itemsKey.set(id, JSON.stringify(items.map(x => x.id + (x.excluded ? "x" : ""))));
+    queueWrite(id, { items }, immediate);
+  }
+
+  async function moveItem(fromId, to) {
+    const from = S.docs.get(fromId); if (!from || !S.writable) return;
+    const i = S.sel.get(fromId) || 0; const items = (from.items || []).map(x => ({ ...x })); const [it] = items.splice(i, 1); if (!it) return;
+    if (S.pending.has(fromId)) flush(fromId);
+    try {
+      if (to === "__new") {
+        const nid = "new-" + Date.now().toString(36);
+        await S.db.doc("records/" + nid).set({ order: it.local || "9999", title: "", body: "", date: it.local ? it.local.slice(0, 10) : "", place: "", people: "",
+          visibility: (CFG.visibilityOptions || DEFAULT_CFG.visibilityOptions)[0].value, notes: "", questions: [], items: [it], status: "draft",
+          createdAt: new Date().toISOString(), createdBy: S.myId || null, original: { title: "", body: "", date: "", place: "" }, why: "Split out by hand." });
+        toast("Moved to a new record");
+      } else {
+        const dest = S.docs.get(to); if (!dest) return;
+        const dItems = [...(dest.items || []).map(x => ({ ...x })), it].sort((a, b) => (a.local || "9999").localeCompare(b.local || "9999"));
+        await (S.chains.get(to) || Promise.resolve());
+        await S.db.doc("records/" + to).update({ items: dItems, updatedAt: new Date().toISOString(), updatedBy: S.myId || null });
+        toast("Moved to “" + (dest.title || "another record") + "”");
+      }
+      from.items = items; S.sel.set(fromId, 0);
+      await (S.chains.get(fromId) || Promise.resolve());
+      await S.db.doc("records/" + fromId).update({ items, updatedAt: new Date().toISOString(), updatedBy: S.myId || null });
+    } catch (e) { toast("That move didn't save. Try again in a moment."); if (e && e.code === "invalid_argument") setReadOnly(true); }
+  }
+
+  function renderMedia(id) {
+    const c = S.cards.get(id), d = S.docs.get(id); if (!c || !d) return;
+    const items = d.items || [];
+    c.media.hidden = items.length === 0 && effStatus(d) !== "empty";
+    let i = S.sel.get(id) || 0; if (i >= items.length) i = 0; S.sel.set(id, i);
+    c.thumbs.replaceChildren(...items.map((it, k) => {
+      const thumbSrc = it.poster || it.src;
+      const b = el("button", { class: "thumb" + (it.excluded ? " out" : ""), type: "button", "aria-pressed": String(k === i), "aria-label": `Show file ${k + 1}` },
+        thumbSrc ? el("img", { src: thumbSrc, alt: "", loading: "lazy" }) : el("span", { text: (it.file || "file").slice(0, 10) }),
+        it.type === "video" ? el("span", { class: "play", text: "▶ " + Math.round(it.duration || 0) + "s" }) : null);
+      b.addEventListener("click", () => { S.sel.set(id, k); renderMedia(id); });
+      return b;
+    }));
+    c.thumbs.hidden = items.length < 2;
+    const it = items[i];
+    if (!it) { c.stage.replaceChildren(); return; }
+    let media;
+    if (it.type === "video" && it.video) media = el("video", { src: it.video, poster: it.poster || null, controls: "", preload: "none", playsinline: "" });
+    else if (it.src) { media = el("img", { src: it.src, alt: it.caption || "File" }); media.addEventListener("click", () => openLightbox(it.src, it.caption)); }
+    else media = el("div", { class: "nofile" }, el("span", { text: "No preview published for this file" }), el("code", { text: it.file || it.id }));
+    const tagText = items.length > 1 ? `${i + 1} of ${items.length}${it.excluded ? " · left out" : ""}` : (it.excluded ? "left out" : null);
+    c.stage.replaceChildren(...[media, tagText ? el("span", { class: "tag", text: tagText }) : null].filter(Boolean));
+    c.pmeta.replaceChildren(el("span", { text: fmtLocal(it.local) }), it.file ? el("code", { text: it.file }) : null);
+    if (document.activeElement !== c.cap) c.cap.value = it.caption || "";
+    c.excl.checked = !!it.excluded;
+    fillMove(id);
+  }
+  function fillMove(id) {
+    const c = S.cards.get(id); if (!c) return;
+    const opts = [el("option", { value: "", text: "Move this file to…" }), el("option", { value: "__new", text: "A new record of its own" })];
+    for (const [oid, od] of sortedDocs()) if (oid !== id && (od.items || []).length) opts.push(el("option", { value: oid, text: `${groupOf(od)} · ${od.title || "Untitled"}` }));
+    c.move.replaceChildren(...opts); c.move.value = "";
+  }
+  function patchStatus(id) {
+    const c = S.cards.get(id), d = S.docs.get(id); if (!c || !d) return;
+    const st = effStatus(d);
+    c.root.dataset.status = st;
+    c.pill.className = "pill p-" + st; c.pill.textContent = st === "empty" ? "Empty" : STATUS_LABEL[st];
+    c.bApprove.textContent = st === "approved" ? "Approved ✓" : "Approve";
+    c.bApprove.setAttribute("aria-pressed", String(st === "approved"));
+    c.bRevisit.setAttribute("aria-pressed", String(st === "revisit"));
+    c.bSkip.setAttribute("aria-pressed", String(st === "skip"));
+    c.edit.hidden = st === "empty"; c.emptyMsg.hidden = st !== "empty";
+    if (st === "empty") c.media.hidden = true;
+    const sy = d.sync || {};
+    c.sync.hidden = !sy.state;
+    c.sync.className = "sync y-" + (sy.state || "none");
+    c.sync.textContent = sy.state === "sent" ? "Sent ✓" : sy.state === "error" ? "Send failed" : "";
+    c.sync.title = sy.remoteId ? "Destination id: " + sy.remoteId : "";
+    c.syncMsg.hidden = !(sy.state === "error" && sy.message); c.syncMsg.textContent = sy.message ? "Last send failed: " + sy.message : "";
+    byline(id);
+  }
+  async function byline(id) {
+    const c = S.cards.get(id), d = S.docs.get(id); if (!c || !d) return;
+    const parts = [];
+    if (d.statusAt && (d.status || "draft") !== "draft") {
+      let who = "";
+      if (d.statusBy && S.user) { try { const ps = await S.user.profiles([d.statusBy]); who = (ps[d.statusBy] && ps[d.statusBy].name) || ""; } catch (_) {} }
+      parts.push(`${STATUS_LABEL[d.status]}${who ? " by " + who : ""} · ${new Date(d.statusAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`);
+    }
+    if (d.sync && d.sync.state === "sent" && d.sync.at) parts.push("Sent " + new Date(d.sync.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }));
+    c.byline.textContent = parts.join(" · ");
+  }
+  function patchCard(id) {
+    const c = S.cards.get(id), d = S.docs.get(id); if (!c || !d) return;
+    const pend = S.pending.get(id) || {};
+    const setv = (input, key) => { if (document.activeElement !== input && !(key in pend)) input.value = d[key] ?? ""; };
+    setv(c.title, "title"); setv(c.body, "body"); setv(c.date, "date"); setv(c.place, "place"); setv(c.people, "people"); setv(c.notes, "notes");
+    if (!("visibility" in pend)) c.vis.value = d.visibility || (CFG.visibilityOptions || DEFAULT_CFG.visibilityOptions)[0].value;
+    const live = liveItems(d), n = live.length, vids = live.filter(x => x.type === "video").length, others = n - vids;
+    c.count.textContent = n ? [others ? others + (others === 1 ? " file" : " files") : "", vids ? vids + (vids === 1 ? " video" : " videos") : ""].filter(Boolean).join(" + ") : "";
+    const qs = d.questions || [];
+    c.qs.hidden = !qs.length;
+    c.qs.replaceChildren(el("b", { text: "Claude wasn't sure about" }), el("ul", {}, ...qs.map(q => el("li", { text: q }))));
+    c.why.textContent = d.why ? "Why these are together: " + d.why : "";
+    c.restore.hidden = !d.original;
+    const key = JSON.stringify((d.items || []).map(x => x.id + (x.excluded ? "x" : "")));
+    if (S.itemsKey.get(id) !== key || !c.stage.firstChild) { S.itemsKey.set(id, key); if (document.activeElement !== c.cap) renderMedia(id); }
+    patchStatus(id);
+  }
+
+  function sortedDocs() { return [...S.docs.entries()].sort((a, b) => (a[1].order || "9999").localeCompare(b[1].order || "9999") || a[0].localeCompare(b[0])); }
+  function counts() {
+    const all = sortedDocs().filter(([, d]) => effStatus(d) !== "empty");
+    const by = s => all.filter(([, d]) => effStatus(d) === s).length;
+    const ok = by("approved"), skip = by("skip"), todo = all.length - ok - skip;
+    const unsent = all.filter(([, d]) => effStatus(d) === "approved" && !isSent(d)).length;
+    const sent = all.filter(([, d]) => isSent(d)).length;
+    document.getElementById("n-all").textContent = all.length; document.getElementById("n-todo").textContent = todo;
+    document.getElementById("n-approved").textContent = ok; document.getElementById("n-skip").textContent = skip;
+    document.getElementById("n-unsent").textContent = unsent;
+    document.getElementById("prog-text").textContent = all.length ? `${ok} of ${all.length} approved · ${sent} sent` : "No drafts yet";
+    document.getElementById("m-ok").style.width = all.length ? (ok / all.length * 140) + "px" : "0";
+    document.getElementById("m-skip").style.width = all.length ? (skip / all.length * 140) + "px" : "0";
+    const groups = new Map(); for (const [id, d] of all) { const g = groupOf(d); if (!groups.has(g)) groups.set(g, []); groups.get(g).push([id, effStatus(d)]); }
+    const nav = document.getElementById("groups");
+    nav.replaceChildren(...[...groups.entries()].map(([g, arr]) => {
+      const b = el("button", { class: "yr", type: "button", title: `${arr.length} ${arr.length === 1 ? "record" : "records"}` },
+        el("span", { class: "dots" }, ...arr.map(([, s]) => el("b", { class: "s-" + s }))), el("span", { text: g }));
+      b.addEventListener("click", () => { setFilter("all"); const t = document.getElementById("r-" + arr[0][0]); if (t) t.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); });
+      return b;
+    }));
+  }
+  function applyFilter() {
+    for (const [id, c] of S.cards) {
+      const d = S.docs.get(id); const st = d ? effStatus(d) : "draft";
+      const show = S.filter === "all" ? true : S.filter === "todo" ? (st === "draft" || st === "revisit")
+        : S.filter === "unsent" ? (st === "approved" && !isSent(d)) : st === S.filter;
+      c.root.hidden = !show;
+    }
+  }
+  function setFilter(f) { S.filter = f; document.querySelectorAll(".chipbtn").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.f === f))); applyFilter(); }
+  document.querySelectorAll(".chipbtn").forEach(b => b.addEventListener("click", () => setFilter(b.dataset.f)));
+
+  document.querySelectorAll("[data-copy]").forEach(b => b.addEventListener("click", async () => {
+    const src = document.getElementById(b.dataset.copy); const text = src.textContent;
+    try { await navigator.clipboard.writeText(text); b.textContent = "Copied"; setTimeout(() => (b.textContent = "Copy"), 1600); }
+    catch (_) { const r = document.createRange(); r.selectNodeContents(src); const s = getSelection(); s.removeAllRanges(); s.addRange(r); b.textContent = "Selected — press Ctrl/Cmd+C"; }
+  }));
+
+  function openLightbox(src, alt) {
+    const lb = el("div", { class: "lightbox", role: "dialog", "aria-label": "File preview", tabindex: "-1" }, el("img", { src, alt: alt || "" }));
+    const close = () => { lb.remove(); document.removeEventListener("keydown", onKey); };
+    const onKey = e => { if (e.key === "Escape") close(); };
+    lb.addEventListener("click", close); document.addEventListener("keydown", onKey); document.body.append(lb); lb.focus();
+  }
+
+  function applyConfig(cfg) {
+    CFG = Object.assign({}, DEFAULT_CFG, cfg || {}, { labels: Object.assign({}, DEFAULT_CFG.labels, (cfg && cfg.labels) || {}) });
+    document.getElementById("cfg-eyebrow").textContent = CFG.eyebrow;
+    document.getElementById("cfg-title").textContent = CFG.title;
+    document.getElementById("cfg-intro").textContent = CFG.intro;
+  }
+
+  function onSnap(snap) {
+    S.loaded = true; clearTimeout(S.loadTimer);
+    const seen = new Set();
+    for (const docSnap of snap.docs) {
+      const id = docSnap.id; seen.add(id);
+      const data = docSnap.data(); const local = S.docs.get(id);
+      const merged = { ...data }; if (local && S.pending.get(id) && S.pending.get(id).items) merged.items = local.items;
+      S.docs.set(id, merged);
+      if (!S.cards.has(id)) buildCard(id);
+      patchCard(id);
+    }
+    for (const id of [...S.cards.keys()]) if (!seen.has(id)) { S.cards.get(id).root.remove(); S.cards.delete(id); S.docs.delete(id); }
+    const n = document.getElementById("state-note");
+    if (!snap.size) {
+      note("No drafts yet", "This review board is empty. Ask Claude to load drafts into it; the full instructions are at the bottom of the page under “Using this page with Claude”.", [
+        "Claude publishes the files with this page and writes one record per draft.",
+        "Reviewers edit the text, fix captions, move files between records and mark each one Approved.",
+        "Claude reads the approved records back, pushes them to the destination system and marks each one Sent."]);
+      document.getElementById("guide").open = true;
+    } else if (n) n.remove();
+    const order = sortedDocs().map(([id]) => S.cards.get(id).root);
+    const current = [...list.querySelectorAll(":scope > article.card")];
+    if (order.some((r, k) => current[k] !== r)) order.forEach(r => list.append(r));
+    for (const id of S.cards.keys()) fillMove(id);
+    counts(); applyFilter();
+  }
+
+  (async () => {
+    if (!window.claude || !window.claude.use) { note("Open this in claude.ai", "The drafts are stored with this page on claude.ai. Open the shared link while signed in to see them."); return; }
+    const [db, user] = await Promise.all([window.claude.use("db"), window.claude.use("user")]);
+    if (!db) { note("Sign in to see the drafts", "The drafts are kept with this page on claude.ai, so you need to be signed in."); document.getElementById("prog-text").textContent = ""; return; }
+    S.db = db; S.user = user;
+    if (user) { try { S.myId = await user.id(); } catch (_) {} try { const can = await user.can("data.write"); if (can === false) setReadOnly(true); } catch (_) {} }
+    S.loadTimer = setTimeout(() => { if (!S.loaded) note("Still loading", "The drafts can't be reached yet. Check your connection; they'll show up here by themselves."); }, 10000);
+    db.doc("config/page").onSnapshot(s => { if (s.exists) { applyConfig(s.data()); for (const id of S.cards.keys()) { const c = S.cards.get(id); c.root.remove(); S.cards.delete(id); } S.itemsKey.clear(); for (const id of S.docs.keys()) { buildCard(id); patchCard(id); list.append(S.cards.get(id).root); } counts(); applyFilter(); } }, () => {});
+    db.collection("records").onSnapshot(onSnap, e => { clearTimeout(S.loadTimer); if (e && e.code !== "revoked") note("The drafts stopped updating", "Reload the page to reconnect."); });
+  })();
+})();
+</script>
