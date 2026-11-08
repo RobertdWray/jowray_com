@@ -7,6 +7,7 @@ import "./globals.css";
 import { SiteAnalytics } from "./_components/analytics-client";
 import { SiteHeader } from "./_components/site-header";
 import { SiteFooter } from "./_components/site-footer";
+import { getPublicMemoriesEnv } from "@/server/config/env";
 
 export const metadata: Metadata = {
   title: "Jo Wray — Leave a memory",
@@ -18,7 +19,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className="h-full antialiased">
       <body className="min-h-full flex flex-col">
-        <SiteHeader />
+        {/* The See memories link follows the launch flag (plan 2026-11-08 D9, D15); a flag change is a redeploy, so build time is enough. */}
+        <SiteHeader showMemories={getPublicMemoriesEnv().PUBLIC_MEMORIES_ENABLED} />
         {children}
         <SiteFooter />
         <SiteAnalytics />

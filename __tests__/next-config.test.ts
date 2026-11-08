@@ -27,4 +27,12 @@ describe("next.config headers", () => {
     expect(all?.headers).toContainEqual({ key: "Document-Policy", value: "js-profiling" });
     expect(all?.headers.map((header) => header.key)).not.toContain("Content-Security-Policy");
   });
+
+  it("keeps See memories and its files out of search engines at launch (plan 2026-11-08 D19)", async () => {
+    const rules = (await nextConfig.headers!()) as HeaderRule[];
+    for (const source of ["/memories/:path*", "/api/public-media/:path*"]) {
+      const rule = rules.find((candidate) => candidate.source === source);
+      expect(rule?.headers, source).toEqual([{ key: "X-Robots-Tag", value: "noindex, nofollow" }]);
+    }
+  });
 });

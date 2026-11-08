@@ -125,6 +125,24 @@
   background-position: 0 0, 16px 16px;
 }
 
+/* The same patchwork at half scale: card photo frames and thumbnails on See memories (plan 2026-11-08, C28). */
+@utility patchwork-sm {
+  background-color: var(--color-jo-red);
+  background-image:
+    linear-gradient(45deg, #5b7db1 25%, transparent 25%, transparent 75%, #5b7db1 75%),
+    linear-gradient(45deg, #e8a317 25%, transparent 25%, transparent 75%, #e8a317 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+}
+
+/* Horizontally scrolling rows of pills and chips on phones keep scrolling by touch and keyboard, without a bar. */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 /* Sentry's "Report a problem" button and form (plan 2026-11-04 §9.4): the SDK injects
    a <div id="sentry-feedback"> and reads its look from these variables. */
 #sentry-feedback {

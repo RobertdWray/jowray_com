@@ -49,6 +49,17 @@ const nextConfig: NextConfig = {
         ],
       },
       {
+        // See memories (plan 2026-11-08 D19): not indexed at launch; revisit after (follow-up F7). `:path*` is zero or
+        // more segments, so `/memories` itself matches. The pages also carry `robots` metadata.
+        source: "/memories/:path*",
+        headers: [{ key: "X-Robots-Tag", value: "noindex, nofollow" }],
+      },
+      {
+        // The files behind See memories: redirects to short-lived blob URLs, never to be indexed (D19).
+        source: "/api/public-media/:path*",
+        headers: [{ key: "X-Robots-Tag", value: "noindex, nofollow" }],
+      },
+      {
         // The README diagrams on /how-it-was-built (public/diagrams/*.svg, made by scripts/make-readme-diagrams.ts).
         // "Open … full size" opens one as a document, so lock it down even though every file passes findUnsafeSvg:
         // no script, no fetches; only its own <style> and the WOFF2 fonts it carries as data: URLs (findUnsafeSvg

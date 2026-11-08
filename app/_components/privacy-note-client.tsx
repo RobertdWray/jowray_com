@@ -88,7 +88,8 @@ export function PrivacyNote() {
           </h2>
           <p className="text-body leading-[1.6]">
             This website was vibe coded. We track everything to fix bugs. If you use the website, you accept that
-            we record the screen, the logs and what you click and type, to make the site better.
+            we record the screen, the logs and what you click and type, to make the site better. If you browse the
+            memories, the same recording applies to you.
           </p>
           <p className="text-body leading-[1.6]">
             This is just for family and friends, so I&apos;m not doing a big nutso legal disclaimer that you have
