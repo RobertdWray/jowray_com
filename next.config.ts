@@ -1,6 +1,13 @@
 import { withSentryConfig } from "@sentry/nextjs/config";
 import type { NextConfig } from "next";
 
+// The binary with its license and readme (GPLv3; docs/dependencies.md).
+const ffmpegTraceFiles = [
+  "./node_modules/ffmpeg-static/ffmpeg",
+  "./node_modules/ffmpeg-static/ffmpeg.LICENSE",
+  "./node_modules/ffmpeg-static/ffmpeg.README",
+];
+
 const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
@@ -10,12 +17,21 @@ const nextConfig: NextConfig = {
   // The HEIC decoder is libheif compiled to WebAssembly (embedded in a JS
   // bundle); it uses Node features and runs inside a worker thread, so it is
   // required from node_modules instead of being bundled. `sharp` is already on
-  // Next's built-in external list.
-  serverExternalPackages: ["heic-decode", "libheif-js"],
-  // The decoder is only ever loaded by name from inside the worker thread, so
-  // nothing in the bundle references it and file tracing would drop it.
+  // Next's built-in external list. `ffmpeg-static` builds the binary's path
+  // from its own `__dirname`, which bundling would break.
+  serverExternalPackages: ["heic-decode", "libheif-js", "ffmpeg-static"],
   outputFileTracingIncludes: {
+    // The decoder is only ever loaded by name from inside the worker thread, so
+    // nothing in the bundle references it and file tracing would drop it.
     "/**": ["./node_modules/heic-decode/**", "./node_modules/libheif-js/**"],
+    // The video poster ffmpeg binary (about 80 MB on Linux) is spawned by path,
+    // so tracing cannot see it. Only the three routes that make posters carry
+    // it (plan D1); `scripts/check-traces.ts` fails the build if it is missing
+    // from one of them or reaches any other function. Keys have no `/app`
+    // prefix so they match under both webpack and Turbopack.
+    "/api/upload": ffmpegTraceFiles,
+    "/api/mcp": ffmpegTraceFiles,
+    "/api/cron/reconcile-uploads": ffmpegTraceFiles,
   },
   turbopack: {
     rules: {
