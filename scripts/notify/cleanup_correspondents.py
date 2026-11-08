@@ -45,11 +45,13 @@ import argparse
 import collections
 import concurrent.futures
 import contextlib
+import email.errors
 import email.parser
 import email.policy
 import hashlib
 import html.parser
 import json
+import logging
 import math
 import os
 import random
@@ -719,6 +721,12 @@ def html_to_text(markup: str) -> str:
     return "".join(parser.parts)
 
 
+# What a malformed message can raise while its body is parsed or decoded. AttributeError
+# is on the list because the email package's get_body() and get_content() raise it on
+# some broken MIME structures.
+BODY_ERRORS = (LookupError, UnicodeError, ValueError, TypeError, AttributeError, email.errors.MessageError)
+
+
 def body_text(message_bytes: bytes) -> str:
     """The plain-text body, or the HTML body as text [plan C8]."""
     message = email.parser.BytesParser(policy=email.policy.default).parsebytes(message_bytes)
@@ -727,7 +735,7 @@ def body_text(message_bytes: bytes) -> str:
         return ""
     try:
         text = part.get_content()
-    except (LookupError, UnicodeError, ValueError):
+    except BODY_ERRORS:
         payload = part.get_payload(decode=True) or b""
         text = payload.decode("utf-8", "replace")
     if not isinstance(text, str):
@@ -836,7 +844,7 @@ class AgentTools:
     def __init__(self, cluster: dict, paths: Paths, people_index: list):
         self.addresses = set(cluster_addresses(cluster))
         self.paths, self.people_index = paths, people_index
-        self.used_chars = self.reads = 0
+        self.used_chars = self.reads = self.errors = 0
         self.calls: collections.Counter = collections.Counter()
         self._mail = self._offsets = None
 
@@ -876,11 +884,18 @@ class AgentTools:
                 for p in tool_params()]
 
     def run(self, name, method, *args) -> str:
+        """Every tool call goes through here. It never raises: the SDK's tool runner would
+        log an escaping exception's traceback to the console and send its text (which can
+        quote mail) to the model, so an unexpected failure becomes a sanitized error."""
         self.calls[name] += 1
         if self.used_chars >= TOOL_TOTAL_CHARS:
             return canonical_json({"error": "the tool output budget for this review is used up; "
                                             "give your final answer now"})
-        result = method(*args)
+        try:
+            result = method(*args)
+        except Exception as exc:  # any failure, reported by its type only
+            self.errors += 1
+            result = {"error": f"internal tool error ({type(exc).__name__})"}
         text = self.fit(result)
         if self.used_chars + len(text) > TOOL_TOTAL_CHARS:
             self.used_chars = TOOL_TOTAL_CHARS
@@ -995,7 +1010,7 @@ class AgentTools:
             return {"error": "the mail file changed since it was indexed; the operator must rerun index"}
         try:
             greeting, snippet = make_snippet(body_text(data))
-        except (LookupError, UnicodeError, ValueError, TypeError):
+        except BODY_ERRORS:
             return {"error": "that message's text could not be decoded"}
         return {"message_id": mid, "date": (date or "")[:10],
                 "direction": self.direction(is_self, sender, self.addresses),
@@ -1389,8 +1404,20 @@ class Sdk:
     version: str
 
 
+def quiet_sdk_logging() -> None:
+    """The SDK logs through the "anthropic" logger (for example a tool exception's
+    traceback). With no handler, Python's last-resort handler prints those records to
+    stderr; a NullHandler that does not propagate keeps the console counts-only."""
+    logger = logging.getLogger("anthropic")
+    if not any(isinstance(h, logging.NullHandler) for h in logger.handlers):
+        logger.addHandler(logging.NullHandler())
+    logger.propagate = False
+
+
 def real_sdk() -> Sdk:
     import anthropic  # only the API path needs the SDK
+
+    quiet_sdk_logging()
 
     def wrap(spec: ToolSpec):
         return anthropic.beta_tool(spec.fn, name=spec.name, description=spec.description,
@@ -1501,6 +1528,9 @@ class Reviewer:
             tools.close()
             entry["cost_usd"] = round(hold.cost, 8)
             entry["tool_calls"] = dict(tools.calls)
+            entry["tool_errors"] = tools.errors
+            if tools.errors:
+                self.count("tool calls that failed internally", tools.errors)
         self.finish(entry)
         return entry
 

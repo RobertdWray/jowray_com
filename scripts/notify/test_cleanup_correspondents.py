@@ -426,6 +426,36 @@ class ToolTests(CleanupCase):
         self.assertIn("budget", self.call(specs, "names_used", address=ALICE)["error"])
         self.assertIn("budget", self.call(specs, "names_used", address=ALICE)["error"])
 
+    def test_a_raising_tool_returns_a_sanitized_error_and_prints_nothing(self):
+        self.build()
+        tools, specs = self.tools([ALICE])
+        secret = AttributeError("Alice Example <alice@example.com> wrote secret things")
+        with mock.patch.object(cc.AgentTools, "names_used", side_effect=secret):
+            result = self.call(specs, "names_used", address=ALICE)
+        self.assertEqual(result, {"error": "internal tool error (AttributeError)"})
+        self.assertEqual(tools.errors, 1)
+        with mock.patch.object(cc, "body_text", side_effect=AttributeError("broken MIME")):
+            mid = self.call(specs, "list_messages", address=ALICE, direction="them_to_household",
+                            limit=1)["items"][0]["message_id"]
+            self.assertEqual(self.call(specs, "read_message", message_id=mid),
+                             {"error": "that message's text could not be decoded"})
+        self.assertEqual(tools.errors, 1)
+        self.assertEqual(self.stderr.getvalue(), "")
+        self.assert_private_console()
+
+    def test_sdk_log_records_never_reach_the_console(self):
+        logger = cc.logging.getLogger("anthropic")
+        saved = (list(logger.handlers), logger.propagate)
+        self.addCleanup(lambda: (setattr(logger, "handlers", saved[0]), setattr(logger, "propagate", saved[1])))
+        cc.quiet_sdk_logging()
+        cc.quiet_sdk_logging()  # idempotent
+        self.assertEqual(sum(isinstance(h, cc.logging.NullHandler) for h in logger.handlers), 1)
+        try:
+            raise ValueError("Alice Example secret")
+        except ValueError:
+            cc.logging.getLogger("anthropic.lib.tools._beta_runner").exception("Error calling tool")
+        self.assertEqual(self.stderr.getvalue(), "")
+
     def test_results_fit_the_per_result_cap(self):
         big = {"items": [{"subject": "x" * 300} for _ in range(20)]}
         text = cc.AgentTools.fit(big)
@@ -734,6 +764,17 @@ class ReviewTests(CleanupCase):
         self.assertIn("5 runs refused by the cap", self.stdout.getvalue())
         code, client = self.review(default_script, phase="haiku")
         self.assertEqual(len(client.calls), 5)  # budget refusals are not cached
+
+    def test_internal_tool_errors_are_counted_in_the_decision(self):
+        self.build()
+        with mock.patch.object(cc.AgentTools, "names_used", side_effect=KeyError("Alice secret")):
+            code, _ = self.review(default_script, phase="haiku")
+        self.assertEqual(code, 0)
+        entries = cc.read_jsonl(self.paths.decisions, repair=False)[0]
+        alice = next(e for e in entries if e["ranks"] == [self.rank(ALICE)])
+        self.assertEqual((alice["status"], alice["tool_errors"]), ("ok", 1))
+        self.assertIn("tool calls that failed internally: 1", self.stdout.getvalue())
+        self.assert_private_console()
 
     def test_overrun_stops_the_run_between_turns(self):
         self.build()
