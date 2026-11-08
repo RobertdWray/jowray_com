@@ -2,7 +2,7 @@
 
 See memories lets visitors browse the family's approved public memories by place, year, patch (tag) or kind, then open a memory to read it, see its photos or play its recording. It lives at `/memories` and its Map, Timeline, Tags and individual-memory pages.
 
-**Status:** implemented and tested on branch `see-memories` as of 2026-11-08; **not merged, not deployed, not live**. The pages ship dark behind `PUBLIC_MEMORIES_ENABLED`. [Issue #89](https://github.com/RobertdWray/jowray_com/issues/89) tracks the work; the [plan and ledger](../plans/2026-11-08-see-memories.md#ledger) record delivery. Rob's inventory sign-off, Production flag change and redeploy remain L15.
+**Status:** implemented and tested in [PR #93](https://github.com/RobertdWray/jowray_com/pull/93) (2026-11-08). The pages ship dark behind `PUBLIC_MEMORIES_ENABLED`: until Rob sets it in Production and redeploys, nothing is public. [Issue #89](https://github.com/RobertdWray/jowray_com/issues/89) tracks the work; the [plan and ledger](../plans/2026-11-08-see-memories.md#ledger) record delivery. Rob's inventory sign-off, Production flag change and redeploy remain L15.
 
 ## What we built
 

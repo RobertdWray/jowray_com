@@ -312,7 +312,7 @@ below), and a closing primary "Leave a memory of Jo".
     second layer.
 
 ### 5.12 See memories (`/memories`, added 2026-11-08)
-Implemented on branch `see-memories`, not merged or deployed; the launch flag
+Built in PR #93 (2026-11-08); the launch flag `PUBLIC_MEMORIES_ENABLED`
 keeps the pages dark until Rob's inventory sign-off. Explore (`/memories`),
 Map (`/memories/map`), Timeline (`/memories/timeline`), Tags (`/memories/tags`)
 and one memory (`/memories/<id>`) use the shared header, footer, hearts and
