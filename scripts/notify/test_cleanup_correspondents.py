@@ -958,6 +958,40 @@ class ReviewTests(CleanupCase):
         self.assertEqual(events[1], ("end", events[0][1]))
         self.assertEqual(len(events), 10)
 
+    def test_a_pilot_never_joins_a_cluster_outside_it(self):
+        self.build()
+        alice = self.rank(ALICE)
+
+        def script(payload, params):
+            if payload["task"] == "review_cluster" and payload["cluster"]["rows"][0]["addresses"] == ["carol@example.com"]:
+                return [final(answer(person(["carol@example.com"], first="Carol", last="Fiction", claims=[alice])))]
+            return default_script(payload, params)
+
+        outside = (ALICE, "frontdesk@residence.example.org")
+        pilot = [c for c in cc.load_clusters(self.paths) if not set(outside) & set(cc.cluster_addresses(c))]
+        with mock.patch.object(cc, "select_clusters", return_value=pilot):
+            code, client = self.review(script, sample="pilot")
+        self.assertEqual([c[0] for c in client.calls], ["review_cluster"] * len(pilot))  # no joint or judge
+        self.assertEqual(self.apply(), 0)
+        _, changes = self.read(self.paths.changes)
+        claim = next(c for c in changes if c["reason"] == "possible duplicate of a cluster not reviewed yet")
+        self.assertIn(str(alice), claim["ranks"].split(";"))
+        # The full run reviews the rest first; only then are the two joined.
+        code, client = self.review(script)
+        tasks = [c[0] for c in client.calls]
+        self.assertEqual((tasks.count("review_cluster"), tasks.count("joint_review")), (2, 1))
+
+    def test_a_pilot_judges_only_its_own_escalations(self):
+        self.build()
+        self.review(default_script, phase="haiku")  # every first answer is cached
+        pilot = [c for c in cc.load_clusters(self.paths)
+                 if "frontdesk@residence.example.org" not in cc.cluster_addresses(c)]
+        with mock.patch.object(cc, "select_clusters", return_value=pilot):
+            code, client = self.review(default_script, sample="pilot")
+        self.assertEqual((code, client.calls), (0, []))  # the front desk escalation is outside it
+        code, client = self.review(default_script)
+        self.assertEqual([c[0] for c in client.calls], ["second_review"])
+
     def test_pilot_selection_is_matched_plus_stratified_and_stable(self):
         clusters = [{"cluster_id": "%03d" % i, "ranks": [i], "rows": [row(i, addresses=[f"p{i}@example.com"],
                                                                            score=str(1000 - i))]}

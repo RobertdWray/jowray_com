@@ -1341,19 +1341,25 @@ class Unit:
         return escalation_reasons(self.cluster, self.entry["status"], self.entry.get("decision"), self.disagree)
 
 
-def joint_clusters(clusters: list, haiku: dict):
-    """Union the clusters linked by a high-confidence possible_duplicate_ranks claim."""
+def joint_clusters(clusters: list, haiku: dict, selected_ids=None):
+    """Union the clusters linked by a high-confidence possible_duplicate_ranks claim.
+
+    Only clusters with an ok first answer under the current manifest, in the current
+    selection (all clusters when None), are joined. A claim on any other cluster is
+    left as a needs_rob note at apply, so a pilot never buys a joint or judge review
+    for a cluster outside it, which the full run would only buy again.
+    """
     by_id = {c["cluster_id"]: c for c in clusters}
     rank_to_cluster = {r: c["cluster_id"] for c in clusters for r in c["ranks"]}
+    eligible = {cid for cid, entry in haiku.items()
+                if entry.get("status") == "ok" and (selected_ids is None or cid in selected_ids)}
     uf = UnionFind(by_id)
-    for cid, entry in haiku.items():
-        if entry.get("status") != "ok":
-            continue
-        for person in entry["decision"]["people"]:
+    for cid in sorted(eligible):
+        for person in haiku[cid]["decision"]["people"]:
             if person["confidence"] == "high":
                 for rank in person["possible_duplicate_ranks"]:
                     other = rank_to_cluster.get(rank)
-                    if other and other != cid:
+                    if other in eligible and other != cid:
                         uf.union(cid, other)
     joints, oversize = [], []
     for group in uf.groups():
@@ -1418,7 +1424,7 @@ def base_unit(cluster: dict, entry, entries: dict, manifest_hash: str) -> Unit:
                         entries, manifest_hash)
 
 
-def plan_units(clusters: list, entries: dict, manifest_hash: str):
+def plan_units(clusters: list, entries: dict, manifest_hash: str, selected_ids=None):
     """(units, base haiku entries, joints, oversize groups) for the current state.
 
     Every base cluster belongs to exactly one unit: its joint cluster when a
@@ -1430,7 +1436,7 @@ def plan_units(clusters: list, entries: dict, manifest_hash: str):
         key = decision_key(manifest_hash, "haiku", payload_for("haiku", cluster))
         if key in entries:
             haiku[cluster["cluster_id"]] = entries[key]
-    joints, oversize = joint_clusters(clusters, haiku)
+    joints, oversize = joint_clusters(clusters, haiku, selected_ids)
     units, joined = [], set()
     for joint in joints:
         earlier = [answer_summary(haiku.get(m)) for m in joint["members"]]
@@ -1895,8 +1901,13 @@ def select_clusters(clusters: list, sample: str, match) -> list:
     return [c for c in clusters if c["cluster_id"] in chosen]
 
 
+def in_selection(unit: Unit, selected_ids: set) -> bool:
+    return all(m in selected_ids for m in (unit.members or [unit.cluster["cluster_id"]]))
+
+
 def phase_jobs(phase: str, units: list, selected_ids: set, clusters: list, entries: dict, manifest_hash: str):
-    """(jobs, cached) for one phase. Cached outcomes are never bought again."""
+    """(jobs, cached) for one phase. Cached outcomes are never bought again, and joint
+    and judge jobs come only from units inside the selection."""
     jobs, cached = [], 0
     if phase == "haiku":
         for cluster in clusters:
@@ -1909,7 +1920,7 @@ def phase_jobs(phase: str, units: list, selected_ids: set, clusters: list, entri
             else:
                 jobs.append((cluster, payload, key))
         return jobs, cached
-    for unit in units:
+    for unit in (u for u in units if in_selection(u, selected_ids)):
         if phase == "joint" and unit.phase == "joint":
             if unit.entry and unit.entry.get("status") in CACHED_STATUSES:
                 cached += 1
@@ -2030,13 +2041,13 @@ def run_review(paths: Paths, options: ReviewOptions, sdk: Sdk | None = None, hea
     write_json(paths.manifest, manifest)
     for phase in phases:
         entries = latest_entries(decisions.entries, manifest_hash)
-        units = plan_units(clusters, entries, manifest_hash)[0]
+        units = plan_units(clusters, entries, manifest_hash, selected_ids)[0]
         jobs, cached = phase_jobs(phase, units, selected_ids, clusters, entries, manifest_hash)
         print(f"{phase}: {rc.quantity(len(jobs), 'cluster')} to review, {cached:,} cached.", flush=True)
         reviewer.run_jobs(phase, jobs, options.judge_concurrency if phase == "judge" else options.concurrency)
     entries = latest_entries(decisions.entries, manifest_hash)
-    units = plan_units(clusters, entries, manifest_hash)[0]
-    escalations = sum(1 for u in units if u.judge_key)
+    units = plan_units(clusters, entries, manifest_hash, selected_ids)[0]
+    escalations = sum(1 for u in units if u.judge_key and in_selection(u, selected_ids))
     for name, count in sorted(reviewer.counts.items()):
         print(f"  {name}: {count:,}")
     print(f"{rc.quantity(escalations, 'escalation')} in total.")
@@ -2055,7 +2066,7 @@ def run_review(paths: Paths, options: ReviewOptions, sdk: Sdk | None = None, hea
 
 def dry_run_report(reviewer: Reviewer, phases, selected_ids, clusters, decisions, manifest_hash, budgets) -> int:
     entries = latest_entries(decisions.entries, manifest_hash)
-    units = plan_units(clusters, entries, manifest_hash)[0]
+    units = plan_units(clusters, entries, manifest_hash, selected_ids)[0]
     total = 0.0
     for phase in phases:
         jobs, cached = phase_jobs(phase, units, selected_ids, clusters, entries, manifest_hash)
@@ -2197,7 +2208,7 @@ def deciding_units(clusters, entries, manifest_hash):
             if note.startswith("needs_rob:"):
                 notes.append(change("needs_rob", cluster["ranks"], reason=note.split(":", 1)[1].strip(),
                                     status="needs_rob"))
-    return deciding, notes
+    return deciding, notes, haiku
 
 
 def unit_outcome(unit: Unit):
@@ -2223,7 +2234,8 @@ def unit_outcome(unit: Unit):
 def apply_decisions(rows, clusters, entries, manifest_hash, overrides, excl, household) -> ApplyResult:
     """Partition every source address into kept people and removals (or refuse)."""
     rank_of = {a: r["rank"] for r in rows for a in r["addresses"]}
-    deciding, changes = deciding_units(clusters, entries, manifest_hash or "none")
+    deciding, changes, haiku = deciding_units(clusters, entries, manifest_hash or "none")
+    reviewed = {r for c in clusters if (haiku.get(c["cluster_id"]) or {}).get("status") == "ok" for r in c["ranks"]}
     people, removals, counts = [], [], collections.Counter()
     for unit in deciding:
         decision, phase, source, reason = unit_outcome(unit)
@@ -2249,8 +2261,10 @@ def apply_decisions(rows, clusters, entries, manifest_hash, overrides, excl, hou
                                   status="needs_rob", question=questions[0] if questions else ""))
         for p in (decision or {}).get("people", []):
             if p["possible_duplicate_ranks"]:
+                waiting = any(r not in reviewed for r in p["possible_duplicate_ranks"])
                 changes.append(change("needs_rob", unit.cluster["ranks"] + p["possible_duplicate_ranks"],
-                                      reason=f"possible duplicate ({p['confidence']} confidence)",
+                                      reason="possible duplicate of a cluster not reviewed yet" if waiting
+                                      else f"possible duplicate ({p['confidence']} confidence)",
                                       phase=phase, status="needs_rob",
                                       question="Is this the same person as the other ranks?"))
     if overrides:
