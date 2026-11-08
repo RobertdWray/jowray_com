@@ -628,6 +628,27 @@ describe("Next RSC response transport segments (B1)", () => {
       return { segment, payload: wrap(segment), expected: wrap(segmentToTransportSegment([name, FILTERED, "d", null])) };
     }
 
+    it("resyncs after an unclosed segment and a Flight T row with an unmatched quote", () => {
+      const value = "SENTRYTEST_abcdefghij";
+      const note = `She was 5' 2" tall`;
+      const segment = segmentToTransportSegment([name, value, "d", null]);
+      const text = `1:{"n":"${name}","t":"d"\n3:T20,${note}\n4:${JSON.stringify(segment)}`;
+      expect(text).toContain(value);
+
+      const result = scrubString(text);
+      expect(result).not.toContain(value);
+      expect(result).toContain(note);
+      expect(result).toBe(text.replace(value, FILTERED));
+    });
+
+    it("keeps k when a token parameter name is the value of x instead of n", () => {
+      const value = { x: name, k: "keep-this-value" };
+      const text = `1:${JSON.stringify(value)}`;
+      expect(scrubString(text)).toBe(text);
+      expect(scrubString(JSON.stringify(value))).toBe(JSON.stringify(value));
+      expect(scrubSecrets(value)).toEqual(value);
+    });
+
     describe.each(["plain", "escaped"])("resync after raw text (%s, S1)", (quoting) => {
       it.each([
         ["a Flight T row", "1:Ta,5' 2\" tall\n"],
