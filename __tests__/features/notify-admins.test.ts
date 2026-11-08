@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type * as AdminPreviewsModule from "@/features/memories/admin-previews";
+import type * as LoggerModule from "@/lib/logger";
 import { resetEnvCache } from "@/server/config/env";
 import type * as EmailModule from "@/services/email";
 
@@ -50,6 +51,19 @@ vi.mock("@/features/memories/admin-previews", async (importOriginal) => ({
   waitForAdminPreviews: (arg: { memoryId: string; until: number }) => waitMock(arg),
   loadAdminPreviews: (media: unknown, signal: AbortSignal) => loadMock(media, signal),
 }));
+
+// Every logger keeps its real behaviour; `info` lines are also recorded.
+const logInfo = vi.fn();
+vi.mock("@/lib/logger", async (importOriginal) => {
+  const actual = await importOriginal<typeof LoggerModule>();
+  return {
+    ...actual,
+    createLogger: (context: Record<string, unknown>) => {
+      const real = actual.createLogger(context);
+      return Object.assign(Object.create(real) as typeof real, { info: (...args: unknown[]) => { logInfo(...args); } });
+    },
+  };
+});
 
 import { PREVIEW_COPIES, PREVIEW_READ_TIMEOUT_MS } from "@/features/memories/admin-previews";
 import { notifyAdminsOfMemory } from "@/features/memories/notify-admins";
@@ -233,19 +247,62 @@ describe("admin alert previews (video posters T14)", () => {
     ]);
   });
 
-  it("selects each file's READY THUMBNAIL and POSTER rows for the loader, and gives every read one 5 s budget", async () => {
-    const timeout = vi.spyOn(AbortSignal, "timeout");
-    try {
-      await notifyAdminsOfMemory({ memoryId: "mem_1" });
-      const query = dbStub.memory.findUnique.mock.calls[0]![0] as { include: { media: { select: Record<string, unknown> } } };
-      expect(query.include.media.select.derivatives).toEqual(PREVIEW_COPIES);
-      expect(query.include.media.select.id).toBe(true);
-      expect(timeout).toHaveBeenCalledWith(PREVIEW_READ_TIMEOUT_MS);
-      expect(PREVIEW_READ_TIMEOUT_MS).toBe(5_000);
-      expect(loadMock.mock.calls[0]![1]).toBe(timeout.mock.results[0]!.value);
-    } finally {
-      timeout.mockRestore();
+  it("selects each file's READY THUMBNAIL and POSTER rows for the loader", async () => {
+    await notifyAdminsOfMemory({ memoryId: "mem_1" });
+    const query = dbStub.memory.findUnique.mock.calls[0]![0] as { include: { media: { select: Record<string, unknown> } } };
+    expect(query.include.media.select.derivatives).toEqual(PREVIEW_COPIES);
+    expect(query.include.media.select.id).toBe(true);
+  });
+
+  describe("the read budget (R18)", () => {
+    const T0 = new Date("2026-11-08T12:00:00Z").getTime();
+    /** A load whose reads stall until the signal it was given aborts; records when that happened. */
+    function stallLoad() {
+      const abortedAt: number[] = [];
+      loadMock.mockImplementationOnce((_media, signal) => new Promise((resolve) => {
+        signal.addEventListener("abort", () => { abortedAt.push(Date.now()); resolve(new Map()); }, { once: true });
+      }));
+      return abortedAt;
     }
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      vi.setSystemTime(T0);
+      logInfo.mockClear();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("without a read deadline (the finalize alert after its wait, the cron), the reads get PREVIEW_READ_TIMEOUT_MS of their own", async () => {
+      expect(PREVIEW_READ_TIMEOUT_MS).toBe(5_000);
+      const abortedAt = stallLoad();
+      const done = notifyAdminsOfMemory({ memoryId: "mem_1" });
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(abortedAt).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(abortedAt).toEqual([T0 + 5_000]);
+      expect((await done).sent).toBe(true);
+    });
+
+    it("with a read deadline, the reads stop at it, and the timer is cleared once they finish", async () => {
+      const abortedAt = stallLoad();
+      const done = notifyAdminsOfMemory({ memoryId: "mem_1", previewsReadUntil: T0 + 2_000 });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(abortedAt).toEqual([T0 + 2_000]);
+      await done;
+      // A quick load leaves no timer behind.
+      loadMock.mockResolvedValueOnce(new Map());
+      await notifyAdminsOfMemory({ memoryId: "mem_1", previewsReadUntil: T0 + 60_000 });
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("a spent read deadline loads nothing: logged at info with the memoryId, then sent without previews", async () => {
+      expect((await notifyAdminsOfMemory({ memoryId: "mem_1", previewsReadUntil: T0 })).sent).toBe(true);
+      expect(loadMock).not.toHaveBeenCalled();
+      expect(logInfo).toHaveBeenCalledWith(expect.objectContaining({ action: "admin_alert_previews_skipped", memoryId: "mem_1", reason: "read_budget_spent" }), expect.any(String));
+      expect(sentMedia()[0]!.preview).toBeNull();
+    });
   });
 
   it("with previewsUntil, waits for the copies first, then re-reads the memory and its copies, then loads and sends", async () => {

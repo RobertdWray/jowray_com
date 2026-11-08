@@ -470,7 +470,7 @@ export async function confirmQuietly(memoryId: string, claimToken: string): Prom
 }
 
 /** Same contract for the family-admin alert: reported, never thrown, left to the cron on failure. */
-export async function notifyAdminsQuietly(memoryId: string, options: { settleNow?: boolean; previewsUntil?: number } = {}): Promise<boolean> {
+export async function notifyAdminsQuietly(memoryId: string, options: { settleNow?: boolean; previewsUntil?: number; previewsReadUntil?: number } = {}): Promise<boolean> {
   try {
     return (await notifyAdminsOfMemory({ memoryId, ...options })).sent;
   } catch (error) {

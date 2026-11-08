@@ -63,6 +63,28 @@ function readiness(memory: AlertMemory | null, settleNow: boolean): { memory: Al
   return { memory };
 }
 
+/**
+ * The previews, read before `readUntil` (epoch ms). A send of several memories shares one such deadline (R18), so a
+ * memory reached after it reads nothing: that is logged and the alert goes without pictures. The deadline is a timer
+ * of our own, cleared as soon as the reads finish (as `deriveMedia` does), rather than `AbortSignal.timeout`.
+ */
+async function loadPreviewsBy(memoryId: string, media: AlertMemory["media"], readUntil: number, waited: boolean): Promise<Map<string, MediaPreview>> {
+  const budgetMs = readUntil - Date.now();
+  if (budgetMs <= 0) {
+    log.info({ action: "admin_alert_previews_skipped", memoryId, reason: "read_budget_spent", waited }, "admin alert sent without previews: the read budget is spent");
+    return new Map();
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new DOMException("the admin alert's preview read budget is spent", "TimeoutError")), budgetMs);
+  try {
+    const previews = await loadAdminPreviews(media, controller.signal);
+    log.info({ action: "admin_alert_previews", memoryId, previews: previews.size, waited }, "admin alert previews loaded");
+    return previews;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Advisory, outside the outbound lock: the alert already went, is going, or never will, so no picture would be used. */
 async function alertClosed(memoryId: string): Promise<boolean> {
   const row = await getDb().emailLog.findUnique({
@@ -83,7 +105,9 @@ async function alertClosed(memoryId: string): Promise<boolean> {
  * video's POSTER, at most four, that the producers have published. With
  * `previewsUntil` (the request paths, after the response) it first waits for
  * the copies still being made, then re-reads the memory and checks it again;
- * without it (the cron) it loads what is there. An alert the EmailLog shows
+ * without it (the cron) it loads what is there. The reads stop at
+ * `previewsReadUntil` (a send's shared budget, R18), or else
+ * `PREVIEW_READ_TIMEOUT_MS` after they start. An alert the EmailLog shows
  * as already sent, being sent or terminally skipped skips both: the email
  * service answers it as before.
  *
@@ -94,12 +118,15 @@ export async function notifyAdminsOfMemory({
   memoryId,
   settleNow = false,
   previewsUntil,
+  previewsReadUntil,
 }: {
   memoryId: string;
   /** The contributor closed the submission: alert with what is READY now, whatever is still in flight. */
   settleNow?: boolean;
   /** Epoch ms: wait for missing previews until then (never past it). Omitted, nothing waits. */
   previewsUntil?: number;
+  /** Epoch ms: every preview read stops then; a memory reached later goes without previews. Omitted, the reads get `PREVIEW_READ_TIMEOUT_MS`. */
+  previewsReadUntil?: number;
 }): Promise<NotifyAdminsResult> {
   let ready = readiness(await loadMemory(memoryId), settleNow);
   if ("skipped" in ready) {
@@ -116,8 +143,7 @@ export async function notifyAdminsOfMemory({
         return { sent: false, skipped: ready.skipped };
       }
     }
-    previews = await loadAdminPreviews(ready.memory.media, AbortSignal.timeout(PREVIEW_READ_TIMEOUT_MS));
-    log.info({ action: "admin_alert_previews", memoryId, previews: previews.size, waited }, "admin alert previews loaded");
+    previews = await loadPreviewsBy(memoryId, ready.memory.media, previewsReadUntil ?? Date.now() + PREVIEW_READ_TIMEOUT_MS, waited);
   }
 
   const { memory } = ready;

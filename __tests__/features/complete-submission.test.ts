@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { hashClaimToken } from "@/lib/claim-token";
 import { resetEnvCache } from "@/server/config/env";
+import type * as EmailModule from "@/services/email";
 
 const T = (n: number) => String.fromCharCode(97 + n).repeat(43);
-interface Derivative { kind: "WEB_IMAGE" | "THUMBNAIL"; status: "PENDING" | "READY" | "FAILED"; storageKey: string; width: number | null; height: number | null }
+interface Derivative { kind: "WEB_IMAGE" | "THUMBNAIL" | "POSTER"; status: "PENDING" | "READY" | "FAILED"; storageKey: string; width: number | null; height: number | null; mimeType?: string; sizeBytes?: number }
 interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; mimeType: string; originalFilename: string | null; durationSeconds: number | null; deletedAt: Date | null; sortOrder: number; createdAt: Date; storageKey: string; derivatives: Derivative[] }
 interface MemoryRow { id: string; submissionId: string | null; submissionIndex: number | null; uploadLeaseUntil: Date | null; deletedAt: Date | null; claimTokenHash: string; type: string; contributorNote: string | null; approxDateText: string | null; place: string | null; createdAt: Date; contributor: { name: string | null; email: string | null; relationship: string | null } | null }
 let memories: MemoryRow[] = [];
@@ -12,14 +13,15 @@ let media: MediaRow[] = [];
 const transactions: unknown[] = [];
 
 function withIncludes(row: MemoryRow, include: Record<string, unknown> | undefined) {
-  type DerivativeFilter = { derivatives?: { where?: { kind?: string; status?: string } } };
+  type DerivativeFilter = { derivatives?: { where?: { kind?: string | { in: string[] }; status?: string } } };
   const inc = include as { media?: { include?: DerivativeFilter; select?: DerivativeFilter } } | undefined;
   const rows = media
     .filter((m) => m.memoryId === row.id && m.deletedAt === null)
     .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.getTime() - b.createdAt.getTime())
     .map((m) => {
       const dw = (inc?.media?.include ?? inc?.media?.select)?.derivatives?.where;
-      return { ...m, derivatives: m.derivatives.filter((d) => (!dw?.kind || d.kind === dw.kind) && (!dw?.status || d.status === dw.status)) };
+      const kindMatches = (kind: string) => !dw?.kind || (typeof dw.kind === "string" ? kind === dw.kind : dw.kind.in.includes(kind));
+      return { ...m, derivatives: m.derivatives.filter((d) => kindMatches(d.kind) && (!dw?.status || d.status === dw.status)) };
     });
   return { ...row, media: rows };
 }
@@ -51,7 +53,11 @@ const dbStub = {
     }),
   },
   media: {
-    findMany: vi.fn(async ({ where }: { where: { memory: { submissionId: string }; deletedAt: null; status: "READY"; mimeType: { startsWith: string } } }) => {
+    findMany: vi.fn(async ({ where }: { where: { memoryId?: string; memory: { submissionId: string }; deletedAt: null; status: "READY"; mimeType: { startsWith: string } } }) => {
+      // The admin alert's preview wait (admin-previews): one memory's live READY files with their THUMBNAIL/POSTER rows.
+      if (where.memoryId !== undefined) {
+        return media.filter((m) => m.memoryId === where.memoryId && m.deletedAt === null && m.status === where.status).map((m) => ({ ...m, derivatives: m.derivatives.filter((d) => d.kind !== "WEB_IMAGE") }));
+      }
       const ids = new Set(memories.filter((m) => m.submissionId === where.memory.submissionId && m.deletedAt === null).map((m) => m.id));
       return media.filter((m) => ids.has(m.memoryId) && m.deletedAt === null && m.status === "READY" && m.mimeType.startsWith(where.mimeType.startsWith)).map((m) => ({ ...m, derivatives: m.derivatives.filter((d) => d.kind === "THUMBNAIL") }));
     }),
@@ -61,7 +67,14 @@ vi.mock("@/server/db/client", () => ({ getDb: () => dbStub }));
 
 const sendMock = vi.fn(async (_arg: unknown): Promise<{ sent: boolean; messageId?: string; skipped?: string }> => ({ sent: true, messageId: "m1" }));
 const skipMock = vi.fn(async (_arg: unknown) => ({ sent: false as const, skipped: "nothing_to_send" as const }));
-vi.mock("@/services/email", () => ({ sendSubmissionConfirmation: (arg: unknown) => sendMock(arg), skipDelivery: (arg: unknown) => skipMock(arg) }));
+const adminSendMock = vi.fn(async (_arg: unknown) => ({ sent: true as const, messageId: "a1" }));
+// The real EmailLog rules (the admin alert's advisory read); every send is stubbed.
+vi.mock("@/services/email", async (importOriginal) => ({
+  ...(await importOriginal<typeof EmailModule>()),
+  sendSubmissionConfirmation: (arg: unknown) => sendMock(arg),
+  skipDelivery: (arg: unknown) => skipMock(arg),
+  sendAdminNewMemory: (arg: unknown) => adminSendMock(arg),
+}));
 
 const recordMediaAsIs = async ({ mediaId }: { mediaId: string }) => { const row = media.find((m) => m.id === mediaId)!; return { status: row.status, mediaId, memoryId: row.memoryId, sizeBytes: 1 }; };
 const recordMediaMock = vi.fn(recordMediaAsIs);
@@ -71,7 +84,8 @@ vi.mock("@/features/memories/ingest-upload", () => ({
   notifyAdminsQuietly: (id: string, options?: { settleNow?: boolean; previewsUntil?: number }) => notifyMock(id, options),
 }));
 
-const storageGetMock = vi.fn(async (pathname: string) => ({ stream: new Blob([Buffer.from(`bytes-of-${pathname}`)]).stream(), contentType: "image/jpeg", contentLength: 10 }));
+const storedBytes = async (pathname: string, _options?: { signal?: AbortSignal }) => ({ stream: new Blob([Buffer.from(`bytes-of-${pathname}`)]).stream(), contentType: "image/jpeg", contentLength: 10 });
+const storageGetMock = vi.fn(storedBytes);
 vi.mock("@/services/storage", () => ({ createStorageService: () => ({ get: storageGetMock, head: vi.fn(), del: vi.fn(), put: vi.fn(), presignGet: vi.fn() }) }));
 
 const afterCalls: Array<() => Promise<void>> = [];
@@ -83,6 +97,7 @@ const metricsMock = vi.hoisted(() => ({ memoryCreated: vi.fn(), uploadFinalized:
 vi.mock("@/lib/sentry/metrics", () => metricsMock);
 
 import { completeSubmission, COMPLETION_GRACE_MS, confirmSubmission } from "@/features/memories/complete-submission";
+import { notifyAdminsOfMemory } from "@/features/memories/notify-admins";
 
 const contributor = { name: "Kay", email: "kay@example.com", relationship: "former student" };
 function mem(i: number, over: Partial<MemoryRow> = {}): MemoryRow {
@@ -228,6 +243,8 @@ describe("completeSubmission (request path)", () => {
     afterEach(() => {
       vi.useRealTimers();
       notifyMock.mockImplementation(async () => true);
+      storageGetMock.mockImplementation(storedBytes);
+      adminSendMock.mockClear();
     });
 
     it("gives every alert of the send ONE deadline, 15 s from the start of the after() task, so N memories wait at most 15 s in total", async () => {
@@ -240,10 +257,48 @@ describe("completeSubmission (request path)", () => {
       notifyMock.mockImplementation(async () => { vi.setSystemTime(Date.now() + 6_000); return true; });
       for (const cb of afterCalls) { await cb(); }
       expect(notifyMock.mock.calls).toEqual([
-        ["mem_0", { settleNow: true, previewsUntil: T0 + 18_000 }],
-        ["mem_1", { settleNow: true, previewsUntil: T0 + 18_000 }],
-        ["mem_2", { settleNow: true, previewsUntil: T0 + 18_000 }],
+        ["mem_0", { settleNow: true, previewsUntil: T0 + 18_000, previewsReadUntil: T0 + 23_000 }],
+        ["mem_1", { settleNow: true, previewsUntil: T0 + 18_000, previewsReadUntil: T0 + 23_000 }],
+        ["mem_2", { settleNow: true, previewsUntil: T0 + 18_000, previewsReadUntil: T0 + 23_000 }],
       ]);
+    });
+
+    it("R18: shares ONE read budget too: with stalled reads, the send's picture work ends 20 s after the task starts, and later memories go without previews", async () => {
+      const T0 = new Date("2026-11-08T12:00:00Z").getTime();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      vi.setSystemTime(T0);
+      const readyThumb = (id: string): Derivative => ({ kind: "THUMBNAIL", status: "READY", storageKey: `dev/derived/${id}-thumb.jpg`, width: 520, height: 390, mimeType: "image/jpeg", sizeBytes: 1_000 });
+      media = [
+        // Memory 1: a video whose poster never comes (the wait runs to its end) and a photo whose read stalls.
+        photo("v0", "mem_0", { mimeType: "video/quicktime" }),
+        photo("p0", "mem_0", { derivatives: [readyThumb("p0")] }),
+        // Memories 2 and 3: photos whose thumbnails are READY and would read at once.
+        photo("p1", "mem_1", { derivatives: [readyThumb("p1")] }),
+        photo("p2", "mem_2", { derivatives: [readyThumb("p2")] }),
+      ];
+      // Every read stalls until its signal aborts.
+      storageGetMock.mockImplementation((_pathname, options) => new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+      }));
+      // The real alert (notify-admins, admin-previews) behind the quiet wrapper.
+      notifyMock.mockImplementation(async (id, options) => (await notifyAdminsOfMemory({ memoryId: id, ...options })).sent);
+      const sentAt: Array<[string, number, unknown[]]> = [];
+      adminSendMock.mockImplementation(async (arg) => {
+        const { memoryId, media: files } = arg as { memoryId: string; media: Array<{ preview: unknown }> };
+        sentAt.push([memoryId, Date.now(), files.map((f) => f.preview)]);
+        return { sent: true as const, messageId: "a1" };
+      });
+
+      await completeSubmission({ claimTokens: [T(0), T(1), T(2)] });
+      const task = Promise.all(afterCalls.map((cb) => cb()));
+      await vi.advanceTimersByTimeAsync(60_000);
+      await task;
+
+      // 15 s of waiting for memory 1's poster, then its stalled read until the shared read deadline; nothing after.
+      expect(sentAt.map(([id, at]) => [id, at - T0])).toEqual([["mem_0", 20_000], ["mem_1", 20_000], ["mem_2", 20_000]]);
+      expect(sentAt.map(([, , previews]) => previews)).toEqual([[null, null], [null], [null]]);
+      // Memories 2 and 3 were reached after the budget: their copies were never read.
+      expect(storageGetMock.mock.calls.map(([pathname]) => pathname)).toEqual(["dev/derived/p0-thumb.jpg"]);
     });
   });
 });
