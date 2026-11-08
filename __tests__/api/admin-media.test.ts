@@ -15,7 +15,7 @@ interface MediaRow {
   originalFilename: string | null;
   deletedAt: Date | null;
   purgedAt?: Date | null;
-  derivatives?: Array<{ kind: "WEB_IMAGE" | "THUMBNAIL" | "POSTER"; status: "PENDING" | "READY" | "FAILED"; storageKey: string; mimeType: string | null }>;
+  derivatives?: Array<{ kind: "WEB_IMAGE" | "THUMBNAIL" | "POSTER"; status: "PENDING" | "READY" | "FAILED"; storageKey: string; mimeType: string | null; sizeBytes?: number | null }>;
   memory: { claimTokenHash: string; deletedAt: Date | null };
 }
 let media: MediaRow[] = [];
@@ -93,6 +93,23 @@ describe("GET /admin/media/[id] (V13)", () => {
     expect(strings.join("?")).toMatch(/INSERT INTO "EgressCounter"/);
     expect(strings.join("?")).not.toMatch(/<=/);
     expect(scope).toBe("global");
+  });
+
+  it("serves a video's v=thumb as its poster, never the video, and counts the poster's bytes", async () => {
+    media.push({ id: "med_video", sizeBytes: 300 * 1024 * 1024, status: "READY", mimeType: "video/mp4", storageKey: "originals/mem_1/v.mp4", originalFilename: null, deletedAt: null, derivatives: [{ kind: "POSTER", status: "READY", storageKey: "derived/mem_1/poster.jpg", mimeType: "image/jpeg", sizeBytes: 120_000 }], memory: { claimTokenHash: "h".repeat(64), deletedAt: null } });
+    const cookie = mintAdminCookie();
+    executeRawMock.mockClear();
+    const res = await request("med_video", "?v=thumb", cookie);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("https://blob.test/derived/mem_1/poster.jpg?signed=1");
+    expect(executeRawMock).toHaveBeenCalledTimes(1);
+    const [, scope, , bytes] = executeRawMock.mock.calls[0] as unknown as [TemplateStringsArray, string, string, bigint];
+    expect(scope).toBe("global");
+    expect(bytes).toBe(BigInt(120_000));
+    media.find((m) => m.id === "med_video")!.derivatives = [];
+    presignMock.mockClear();
+    expect((await request("med_video", "?v=thumb", cookie)).status).toBe(404);
+    expect(presignMock).not.toHaveBeenCalled();
   });
 
   it("serves a deleted memory's media (the page where Restore is decided), but never a removed or purged row", async () => {

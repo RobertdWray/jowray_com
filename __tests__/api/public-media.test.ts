@@ -29,7 +29,7 @@ interface MediaRow {
   longitude: number | null;
   gpsCheckedAt: Date | null;
   gpsScanComplete: boolean | null;
-  derivatives: Array<{ kind: "WEB_IMAGE" | "THUMBNAIL"; status: "READY" | "PENDING" | "FAILED"; storageKey: string; mimeType: string; sizeBytes: number | null }>;
+  derivatives: Array<{ kind: "WEB_IMAGE" | "THUMBNAIL" | "POSTER"; status: "READY" | "PENDING" | "FAILED"; storageKey: string; mimeType: string; sizeBytes: number | null }>;
   memory: { claimTokenHash: string; deletedAt: Date | null; status: Status; visibility: Visibility };
 }
 let media: MediaRow[] = [];
@@ -234,6 +234,44 @@ describe("GET /api/public-media/[id]: videos and recordings play as recorded (D1
     expect(res.headers.get("location")).not.toContain("download=1");
     expect(res.headers.get("content-disposition")).toBeNull();
     expect(getMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/public-media/[id]: a video's v=thumb is its POSTER or nothing (D7)", () => {
+  const posterRow = (over: Partial<MediaRow["derivatives"][number]> = {}): MediaRow["derivatives"][number] => ({ kind: "POSTER", status: "READY", storageKey: "derived/mem_1/poster.jpg", mimeType: "image/jpeg", sizeBytes: 120_000, ...over });
+
+  it("redirects to the poster, touching only public: scopes and charging the poster's bytes", async () => {
+    media = [{ ...recording("med_mov_clean", "video/quicktime", { latitude: null, longitude: null, gpsCheckedAt: CHECKED, gpsScanComplete: true }), derivatives: [posterRow()] }];
+    const res = await request("med_mov_clean", "?v=thumb");
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("https://blob.test/derived/mem_1/poster.jpg?signed=1");
+    const touched = scopesTouched();
+    expect(touched).toContain(`public:${mediaViewerScope("med_mov_clean", "thumb", "203.0.113.7")}`);
+    for (const scope of touched) {
+      expect(scope.startsWith("public:"), scope).toBe(true);
+    }
+    expect(counters.get(`public:${GLOBAL_EGRESS_SCOPE}|${[...counters.keys()][0]!.split("|")[1]}`)).toBe(BigInt(120_000));
+  });
+
+  it("serves the poster for ?v=thumb&download=1 too (the public route ignores download)", async () => {
+    media = [{ ...recording("med_mov_clean", "video/quicktime", { latitude: null, longitude: null, gpsCheckedAt: CHECKED, gpsScanComplete: true }), derivatives: [posterRow()] }];
+    const res = await request("med_mov_clean", "?v=thumb&download=1");
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("https://blob.test/derived/mem_1/poster.jpg?signed=1");
+  });
+
+  it("404s without a READY poster, never sending the video, and without a presign", async () => {
+    // The default fixtures have no derivatives at all.
+    expect((await request("med_mov_clean", "?v=thumb")).status).toBe(404);
+    media = [{ ...recording("med_mov_clean", "video/quicktime", { latitude: null, longitude: null, gpsCheckedAt: CHECKED, gpsScanComplete: true }), derivatives: [posterRow({ status: "PENDING" })] }];
+    expect((await request("med_mov_clean", "?v=thumb")).status).toBe(404);
+    expect(presignMock).not.toHaveBeenCalled();
+  });
+
+  it("404s the poster of a memory that is not public", async () => {
+    media = [{ ...recording("med_mov_clean", "video/quicktime", { latitude: null, longitude: null, gpsCheckedAt: CHECKED, gpsScanComplete: true }), derivatives: [posterRow()], memory: { ...PUBLIC_MEMORY, visibility: "FAMILY" } }];
+    expect((await request("med_mov_clean", "?v=thumb")).status).toBe(404);
+    expect(presignMock).not.toHaveBeenCalled();
   });
 });
 

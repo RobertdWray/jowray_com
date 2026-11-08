@@ -218,6 +218,48 @@ describe("variants", () => {
     expect(getMock).not.toHaveBeenCalled();
   });
 
+  describe("a video's v=thumb is its POSTER or nothing (D7)", () => {
+    const POSTER_BYTES = 120_000;
+    const VIDEO_BYTES = 300 * MB;
+    const poster = (over: Partial<NonNullable<MediaRow["derivatives"]>[number]> = {}) => ({ kind: "POSTER" as const, status: "READY" as const, storageKey: "derived/mem_1/poster.jpg", mimeType: "image/jpeg", sizeBytes: POSTER_BYTES, ...over });
+    beforeEach(() => {
+      media.push({ ...media[0]!, id: "med_video", sizeBytes: VIDEO_BYTES, mimeType: "video/mp4", storageKey: "originals/mem_1/v.mp4", originalFilename: "v.mp4", derivatives: [poster()] });
+    });
+
+    it("redirects to the poster and charges the poster's bytes to the thumb copy", async () => {
+      const res = await request("med_video", `?t=${TOKEN}&v=thumb`, from("203.0.113.20"));
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("https://blob.test/derived/mem_1/poster.jpg?signed=1");
+      expect(counterOf(mediaViewerScope("med_video", "thumb", "203.0.113.20"))).toBe(BigInt(1));
+      expect(counterOf("media:med_video")).toBe(BigInt(POSTER_BYTES));
+      expect(counterOf("global")).toBe(BigInt(POSTER_BYTES));
+      expect(presignMock).not.toHaveBeenCalledWith(expect.objectContaining({ pathname: "originals/mem_1/v.mp4" }));
+    });
+
+    it("404s without a READY poster and never presigns the original", async () => {
+      for (const derivatives of [[], [poster({ status: "PENDING" })], [poster({ status: "FAILED" })]]) {
+        media.find((m) => m.id === "med_video")!.derivatives = derivatives;
+        expect((await request("med_video", `?t=${TOKEN}&v=thumb`)).status).toBe(404);
+      }
+      expect(presignMock).not.toHaveBeenCalled();
+      expect(counterOf("global")).toBe(BigInt(0));
+    });
+
+    it("404s a poster that points at a browser-staged key", async () => {
+      media.find((m) => m.id === "med_video")!.derivatives = [poster({ storageKey: "derived/mem_1/x.upload.jpg" })];
+      expect((await request("med_video", `?t=${TOKEN}&v=thumb`)).status).toBe(404);
+      expect(presignMock).not.toHaveBeenCalled();
+    });
+
+    it("leaves v=web and no v on the original, and download=1 with v=thumb on the original download", async () => {
+      expect((await request("med_video", `?t=${TOKEN}&v=web`)).headers.get("location")).toBe("https://blob.test/originals/mem_1/v.mp4?signed=1");
+      expect((await request("med_video", `?t=${TOKEN}`)).headers.get("location")).toBe("https://blob.test/originals/mem_1/v.mp4?signed=1");
+      const download = await request("med_video", `?t=${TOKEN}&v=thumb&download=1`);
+      expect(download.status).toBe(302);
+      expect(download.headers.get("location")).toBe("https://blob.test/originals/mem_1/v.mp4?signed=1&download=1");
+    });
+  });
+
   it("keeps serving audio and video originals inline", async () => {
     media.push({ ...media[0]!, id: "med_audio", mimeType: "audio/mp4", storageKey: "originals/mem_1/v.m4a", derivatives: [] });
     expect((await request("med_audio", `?t=${TOKEN}`)).headers.get("location")).toBe("https://blob.test/originals/mem_1/v.m4a?signed=1");
