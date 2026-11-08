@@ -35,7 +35,7 @@ This is the local checklist for issue #59 §5.1–§5.6, §5.9 and §5.10, using
 | Both accounts | Configure `<PRIMARY_HOTMAIL>` and `<SECOND_HOTMAIL>`. Identify each account's local folder in Account Settings; do not infer the address from the server-folder suffix. |
 | Offline mail | Under Account Settings → Synchronization & Storage, enable **“Keep messages for this account on this computer”** for both accounts [C2]. Include Inbox, Sent and Archive; wait for downloads to finish, then quit Thunderbird before harvesting. An `.msf` index alone is not downloaded mail. |
 | Profile | Find the active profile, not an old one. macOS uses `~/Library/Thunderbird/Profiles/*/ImapMail/`; the plan records `outlook.office365.com` and `outlook.office365-1.com` beneath it. Mozilla names “~/Library/Thunderbird/ for Mac OS X.” [C1]. |
-| Python | **Python 3.9+**; the harvester uses only the standard library and reads mail files without changing them. |
+| Python | **Python 3.9+**; the harvester uses only the standard library and reads mail files without changing them. The `python-notify` CI job runs the `scripts/notify` tests on Python 3.9 and 3.12 with synthetic data. The optional cleanup (§3.1a) runs through **`uv`**, which installs its pinned `anthropic` SDK; its tests need neither. |
 | Importer | **Node 26**, installed dependencies and PR-2's `scripts/import-invites.ts`. If `node -v` is not v26, put `/opt/homebrew/bin` first on `PATH`. |
 | Addresses and exclusions | `<REHEARSAL_TO>` is an operator-controlled address other than Gmail. Put the operator's addresses, already-notified people and other exclusions in the private exclusion file. It accepts one address or domain per line and `#` comments. |
 | Delivery evidence | Access to both Microsoft accounts, their recovery methods and `<ROB_GMAIL>`; Gmail inbox placement of the Cc is part of the rehearsal gate. |
@@ -70,7 +70,7 @@ Run the following blocks **in Bash, from the repo root**. Source only the truste
 
 ## 3. Data flow
 
-`rank` → family review → `send-list` → `import-invites` and its ledger → **go-day only** `schedule` → Mail Merge. None of the command-line tools sends email. `schedule` creates files; Mail Merge creates the scheduled drafts.
+`rank` → optional cleanup and `rescore` (§3.1a) → family review → `send-list` → `import-invites` and its ledger → **go-day only** `schedule` → Mail Merge. None of the command-line tools sends email. `schedule` creates files; Mail Merge creates the scheduled drafts.
 
 ### 3.1 Harvest (D3)
 
@@ -109,9 +109,88 @@ The household-name file records observed display names and their counts. Review 
 
 The tool refuses no messages, invalid options, invalid household addresses, inaccessible inputs and outputs inside git. Correct the path, sync or permissions; keep output outside git. **Warnings about indexed but undownloaded folders, no household-sent mail or unlisted senders need investigation even when exit status is 0.** Check Sent downloads and the account mapping before accepting the ranking. Default console output is aggregate, not a per-account folder mapping; verify that mapping privately in Thunderbird and the local database.
 
-Missing mail path arguments refuse the harvest before any mail is read. Unreadable mail files or subdirectories also refuse it, reporting only the count, before replacing prior outputs. All three commands refuse symlinked output paths, including `mail.sqlite` sidecars, `evidence/` and its household-name file, send lists and `schedule.log`; correct the output location before retrying.
+Missing mail path arguments refuse the harvest before any mail is read. Unreadable mail files or subdirectories also refuse it, reporting only the count, before replacing prior outputs. `rank`, `send-list`, `schedule` and `rescore` refuse symlinked output paths, including `mail.sqlite` sidecars, `evidence/` and its household-name file, send lists, `schedule.log` and `correspondents_cleaned.csv`; correct the output location before retrying. `--exclude` can be repeated.
 
 When the harvest reports messages in outgoing folders whose sender is not a `--self` address ("check --self"), inspect those senders privately, for example with `sqlite3` on `mail.sqlite`, never in chat; if one is a household alias, record it privately and resolve it before family review.
+
+### 3.1a Clean up the list (optional, before family review)
+
+The harvested list still holds staff of the place the parents lived, businesses, lists, look-alike spam and people split across rows. `scripts/notify/cleanup_correspondents.py` reviews each row, or each small group of rows that might be one person, with Claude Haiku 5.5 and read-only tools over the local mail; hard cases go to a Claude Opus 5.5 judge. `rank_correspondents.py rescore` then re-scores the cleaned people. The family still decides: `notify` stays blank.
+
+**Privacy (ruling R10).** During `review` only, names, addresses, subjects and message snippets of at most 1,500 characters go to the Anthropic API. Snippets are never stored; decisions keep evidence notes of at most 120 characters in the private `cleanup/decisions.jsonl`. The console prints counts, tokens and dollars only. The repo holds the generic script and prompt (`scripts/notify/cleanup_system_prompt.md`, fictional examples only); the family guidance, the overrides and every output stay in `~/jo-mail-review`, 0600 in 0700 folders, and the script refuses an `--out` inside git.
+
+Private inputs, written by the operator:
+
+| File | Purpose |
+|---|---|
+| `cleanup-guidance.md` | Family context appended to the system prompt: where the parents lived, the rulings as worked examples, and a `domains:` line (comma-separated, or `- domain` bullets under it) whose domains become hints. Editing it makes earlier decisions stale. |
+| `cleanup-overrides.csv` | Columns `match` (an address, or `@domain` for `remove` and `keep`), `action` (`remove`, `keep`, `merge_with`, `set_name`, `set_primary`), `value` and `note`. `set_name` takes `First\|Last` or `First Last`; `merge_with` takes the other address. Every override must match an address of the list. Overrides always win. |
+| `cleanup-pilot.txt` | Addresses or `@domains`, one per line, that the pilot must include. |
+
+Run in Bash from the repo root. Quit Thunderbird before `index`. Only `review` calls the API and needs `ANTHROPIC_API_KEY` in the shell (never print it); `index`, `prepare`, `review --dry-run`, `apply`, `spend` and `rescore` make no API call.
+
+```bash
+( set -a; . ~/jo-mail-review/notify.env; set +a
+  set -e
+  umask 077
+  : "${TB_PROFILE:?}"
+  uv run scripts/notify/cleanup_correspondents.py index \
+    "$TB_PROFILE/ImapMail/outlook.office365.com" \
+    "$TB_PROFILE/ImapMail/outlook.office365-1.com"
+  uv run scripts/notify/cleanup_correspondents.py prepare
+  uv run scripts/notify/cleanup_correspondents.py review --dry-run
+)
+```
+
+`index` records where each message sits in the mail files (`cleanup/offsets.sqlite`) and reports how many `mail.sqlite` messages it could not find. `prepare` groups rows into `cleanup/clusters.jsonl`: rows with the same first and last name always share a group (ruling R5; blank or one-word names never do), and rows linked by evidence (the same surname with a compatible first name or nickname, a bare address containing a surname and initial, or a name the household typed) share one as candidates the reviewer must confirm. Groups hold at most 8 rows. `review --dry-run` prints what a review would buy, what is cached or stale, and the worst-case reservation, without calling the API.
+
+The pilot is pre-approved within the caps; the full run needs the operator's go after the pilot report:
+
+```bash
+( set -a; . ~/jo-mail-review/notify.env; set +a
+  set -e
+  uv run scripts/notify/cleanup_correspondents.py review --sample pilot \
+    --match ~/jo-mail-review/cleanup-pilot.txt
+  uv run scripts/notify/cleanup_correspondents.py apply --no-overrides
+  uv run scripts/notify/cleanup_correspondents.py spend
+)
+```
+
+```bash
+( set -a; . ~/jo-mail-review/notify.env; set +a
+  set -e
+  umask 077
+  : "${PRIMARY_HOTMAIL:?}" "${SECOND_HOTMAIL:?}" "${EXCLUDE_FILE:?}"
+  uv run scripts/notify/cleanup_correspondents.py review
+  uv run scripts/notify/cleanup_correspondents.py apply --exclude "$EXCLUDE_FILE"
+  python3 scripts/notify/rank_correspondents.py rescore \
+    --db ~/jo-mail-review/mail.sqlite \
+    --self "$PRIMARY_HOTMAIL" --self "$SECOND_HOTMAIL" \
+    --identities ~/jo-mail-review/identities.csv \
+    --removed ~/jo-mail-review/correspondents_removed.csv \
+    --source ~/jo-mail-review/correspondents.csv \
+    --exclude "$EXCLUDE_FILE" --out ~/jo-mail-review
+)
+```
+
+The pilot is the matched clusters plus 30 random ones stratified by score, chosen with a fixed seed so a rerun picks the same set. Pass `rescore` the same `--self` order, `--exclude` and `--contacts` as the harvest.
+
+**How it decides.** Haiku answers each group with one entry per real person: keep or remove, greeting names, a relationship label, a likely / maybe / unlikely hint and a confidence. When it believes someone in another group is the same person, a joint review looks at those groups together and supersedes the first answers. The Opus judge reviews every first answer below high confidence, every refusal or invalid answer, every answer that splits a harvested row or a same-name group, every removal of someone the household wrote to directly five or more times, and joint groups whose first answers disagree; its answer is final. **Only high-confidence answers are applied.** Everything else keeps the harvested row with a `cleanup_note` starting `review:` and a `needs_rob` row in `cleanup/changes.csv`. The model never picks the address to write to: a `set_primary` override wins, else the address the household most recently wrote to, else the most recently seen one, non-automated addresses first.
+
+Outputs (0600 under `~/jo-mail-review`):
+
+| File | Written by | Contents |
+|---|---|---|
+| `cleanup/offsets.sqlite`, `cleanup/clusters.jsonl` | `index`, `prepare` | Message locations; candidate groups. |
+| `cleanup/manifest.json`, `cleanup/decisions.jsonl`, `cleanup/spend.jsonl` | `review` | The run's fingerprint; every decision; every priced attempt. |
+| `identities.csv` | `apply` | One row per kept address: `person_id`, names, `primary` (only from `set_primary`), `relationship`, `suggested_notify`, `cleanup_note`. |
+| `correspondents_removed.csv` | `apply` | Each removed row with `removed_addresses`, `removed_reason`, `removed_source` (`model`, `judge` or `override`), `confidence` and `why`, highest score first. |
+| `cleanup/changes.csv` | `apply` | Every merge, rename, removal, split, override and `needs_rob` item, with the question for the family. |
+| `correspondents_cleaned.csv` | `rescore` | The cleaned people, re-scored, for family review (§3.2). |
+
+`apply` writes its three files together and refuses, changing nothing, unless every address of every row ends up in exactly one kept person or one removal, every override matches an address, and no kept address is excluded (`--exclude`, by default `exclude.txt` in `--out` when present) or a household address. `rescore` reads `mail.sqlite` read-only and refuses unless every address of `correspondents.csv` is accounted for in the same way; it counts each message once per person, so merged aliases are not double-counted. `mail.sqlite`'s `people` table keeps the original ranking; use `correspondents_cleaned.csv`.
+
+**Spend caps and resume.** Haiku and the joint review share a **$15** cap (`--haiku-budget-usd`); the judge has **$40** (`--judge-budget-usd`). Do not raise either without the operator's approval. Every run reserves its worst case (all turns at their token limits, the judge at the highest fallback price) before it starts, so the caps are hard ceilings; a run the cap refuses is left for the family (`needs_rob`, reason budget) and is retried by a later `review`. Spend persists in `cleanup/spend.jsonl`; `cleanup_correspondents.py spend` prints the totals. `review` resumes from `cleanup/decisions.jsonl` and never buys a cached decision again. Editing the guidance, the prompt, an input file or the pinned SDK changes the manifest: `review --dry-run` then reports how many decisions are stale, and the next `review` buys them again. The dry run estimates tokens from text size (UTF-8 bytes ÷ 2 + 1,000); a real run measures them with the free token-counting endpoint.
 
 ### 3.2 Family review (D4)
 
@@ -121,7 +200,7 @@ When the harvest reports messages in outgoing folders whose sender is not a `--s
 )
 ```
 
-Use Numbers instead if preferred. Mark `notify`, correct first and last names, confirm the email and sending account, remove businesses and lists, and add people the family knows are missing. Save a **copy** as `~/jo-mail-review/correspondents_reviewed.csv`, choosing **CSV UTF-8**. Preserve the header names. After saving, set its mode with `chmod 600 ~/jo-mail-review/correspondents_reviewed.csv`. Opening the sheet prints no counts; the app writes the reviewed file. Do not use the workbook format or legacy CSV export as input.
+If the cleanup ran (§3.1a), open `~/jo-mail-review/correspondents_cleaned.csv` instead: it has the same columns plus `relationship`, `suggested_notify` and `cleanup_note`, and the removed rows are listed in `correspondents_removed.csv` for a glance. Use Numbers instead if preferred. Mark `notify`, correct first and last names, confirm the email and sending account, remove businesses and lists, and add people the family knows are missing. Save a **copy** as `~/jo-mail-review/correspondents_reviewed.csv`, choosing **CSV UTF-8**. Preserve the header names. After saving, set its mode with `chmod 600 ~/jo-mail-review/correspondents_reviewed.csv`. Opening the sheet prints no counts; the app writes the reviewed file. Do not use the workbook format or legacy CSV export as input.
 
 | Column | How to use it |
 |---|---|
@@ -136,7 +215,8 @@ Use Numbers instead if preferred. Mark `notify`, correct first and last names, c
 | `first_year`, `last_year`, `years_active` | Earliest and latest observed year, and distinct years with activity. |
 | `other_addresses`, `names_seen` | Possible aliases and observed name variants. Shared full names are grouped, so check that distinct people have not been combined. |
 | `recent_subjects` | Header-only context for identifying a relationship. Read privately; never copy subjects into this repo. |
-| `flags` | `two-way`, `in her address book`, `address book only`, `mailing list: one email reaches the group`, or `looks automated`. Inspect flags; they are hints, not approvals. |
+| `flags` | `two-way`, `in her address book`, `address book only`, `mailing list: one email reaches the group`, `looks automated`, or `look-alike address`. Inspect flags; they are hints, not approvals. |
+| `relationship`, `suggested_notify`, `cleanup_note` | Cleaned list only (§3.1a): the reviewer's label, a likely / maybe / unlikely hint and its reason or open question. `notify` stays blank; it is the family's decision. A note starting `review:` marks a row the cleanup left for the family. |
 
 Accepted positive marks, ignoring case and surrounding whitespace: **`y`, `yes`, `x`, `1`, `true`, `✓`, `✔`, `✅`, `☑`**. Blank, `n`, `no`, `0`, `false` and `-` mean no. Other marks cause a refusal. Blank trailing rows are ignored. The reader removes a BOM and a leading apostrophe only when it guards `=`, `+`, `-`, `@`, their full-width forms, tab, CR or LF. A genuine leading apostrophe in a name survives. It does not silently approve a comment in `notify`.
 
