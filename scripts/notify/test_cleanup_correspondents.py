@@ -517,6 +517,7 @@ class ValidatorTests(unittest.TestCase):
             (answer(person(ALL, first="Alice"), person([ALICE], first="Alice")), "more than one person"),
             (answer(person(ALL)), "without a first_name"),
             (answer(person(ALL, first="Alice", relationship="pen_pal")), "invalid relationship"),
+            (answer(person(ALL, first="Alice"), person([], first="Nobody")), "person 2 owns no address"),
             ({"people": []}, "non-empty"),
             ("not an object", "non-empty"),
         ]
@@ -1488,6 +1489,33 @@ with cc.command_lock(cc.Paths(Path(sys.argv[2]))):
         with self.assertRaises(SystemExit):
             cc.main(["prepare", "--out", str(self.out)])
         self.assertEqual(target.read_bytes(), b"outside\n")
+
+
+class JudgeEscalateTests(CleanupCase):
+    def test_a_judge_that_escalates_is_left_for_the_family_with_its_reason_and_question(self):
+        self.build()
+
+        def script(payload, params):
+            addresses = {a for r in payload["cluster"]["rows"] for a in r["addresses"]}
+            if payload["task"] == "second_review" and addresses == {"frontdesk@residence.example.org"}:
+                return [final(answer(person(sorted(addresses), keep=False, relationship="staff_where_they_lived",
+                                            notify="unlikely", question="Staff or a resident?"), escalate=True),
+                              cc.JUDGE_MODEL)]
+            return default_script(payload, params)
+
+        code, _ = self.review(script)
+        self.assertEqual(code, 0)
+        self.assertEqual(cc.main(["apply", "--out", str(self.out)]), 0)
+        _, identities = self.read(self.paths.identities)
+        desk = next(r for r in identities if r["address"] == "frontdesk@residence.example.org")
+        self.assertEqual(desk["cleanup_note"], "review: the second review asked the family to decide: synthetic"
+                                               " | Staff or a resident?")
+        _, removed = self.read(self.paths.removed)
+        self.assertNotIn("frontdesk@residence.example.org", {r["email"] for r in removed})  # not applied
+        _, changes = self.read(self.paths.changes)
+        note = next(c for c in changes if c["reason"].startswith("the second review asked the family"))
+        self.assertEqual((note["kind"], note["status"], note["phase"], note["question"]),
+                         ("needs_rob", "needs_rob", "judge", "Staff or a resident?"))
 
 
 class JudgeRefusalTests(CleanupCase):

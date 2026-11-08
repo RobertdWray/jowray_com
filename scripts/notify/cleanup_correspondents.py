@@ -1206,6 +1206,8 @@ def validate_answer(answer, cluster: dict):
             errors.append(f"person {i} is not an object")
             continue
         addresses = []
+        if not person.get("addresses"):
+            errors.append(f"person {i} owns no address; every person needs at least one")
         for value in person.get("addresses") or []:
             address = rc.canon(str(value))
             if address not in expected:
@@ -2218,6 +2220,10 @@ def unit_outcome(unit: Unit):
         judge = unit.judge_entry
         if judge and judge.get("status") == "ok":
             decision = judge["decision"]
+            if decision["escalate"]:  # the judge prompt reserves escalate for "the family must decide"
+                why = decision.get("escalate_reason")
+                return decision, "judge", "judge", "the second review asked the family to decide" + (
+                    f": {why}" if why else "")
             return decision, "judge", "judge", "" if all_high(decision) else "the second review was not confident"
         if judge and judge.get("status") == "refused":
             return unit.entry.get("decision"), unit.phase, "model", "judge refused"
@@ -2250,7 +2256,11 @@ def apply_decisions(rows, clusters, entries, manifest_hash, overrides, excl, hou
             suggested = {tuple(sorted(p["addresses"])): p for p in (decision or {}).get("people", [])}
             questions = [p["question_for_family"] for p in (decision or {}).get("people", [])
                          if p["question_for_family"]]
-            note = ("review: " + (questions[0] if questions else reason))[:300]
+            if source == "judge" and (decision or {}).get("escalate"):
+                note = "review: " + " | ".join([reason] + questions[:1])  # the judge's reason and question
+            else:
+                note = "review: " + (questions[0] if questions else reason)
+            note = note[:300]
             for row in unit.cluster["rows"]:
                 person = harvested_person(row, note=note)
                 hint = suggested.get(tuple(sorted(row["addresses"])))
