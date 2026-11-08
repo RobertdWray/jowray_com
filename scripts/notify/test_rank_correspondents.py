@@ -2005,7 +2005,7 @@ class IterMboxTests(TempTestCase):
         self.assertEqual([(h, e) for h, e, _, _ in found], list(rank_correspondents.read_mbox(path)))
         self.assertEqual(found[0][2], 0)
         self.assertEqual(found[-1][3], len(data))
-        for (header, env, start, end), following in zip(found, found[1:] + [None]):
+        for (header, _env, start, end), following in zip(found, found[1:] + [None]):
             self.assertTrue(data[start:end].startswith(b"From "))
             self.assertIn(header, data[start:end])
             if following is not None:
