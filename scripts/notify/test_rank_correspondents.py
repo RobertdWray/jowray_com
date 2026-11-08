@@ -134,7 +134,7 @@ class TextTests(QuietTestCase):
         self.assertEqual(rank_correspondents.first_name_of("Alice Example, Jr."), "Alice")
 
     def test_csv_formula_guard(self):
-        for prefix in ("=", "+", "@", "\t", "\r"):
+        for prefix in ("=", "+", "@", "\t", "\r", "\n", "＝", "＋", "－", "＠"):
             with self.subTest(prefix=prefix):
                 self.assertEqual(rank_correspondents.csv_cell(prefix + "Example"),
                                  "'" + prefix + "Example")
@@ -365,7 +365,8 @@ class SourceTests(TempTestCase):
         self.assertEqual(rank_correspondents.sniff(eml), "eml")
         self.assertEqual(rank_correspondents.sniff(empty), "empty")
         self.assertIsNone(rank_correspondents.sniff(not_mail))
-        self.assertIsNone(rank_correspondents.sniff(source / "missing"))
+        with self.assertRaises(OSError):
+            rank_correspondents.sniff(source / "missing")
         indexed = []
         self.assertEqual(list(rank_correspondents.discover([str(source)], indexed)),
                          [("mbox", box, "Inbox"), ("eml", eml, "Archive")])
@@ -625,6 +626,16 @@ class PeopleTests(TempTestCase):
         self.assertEqual(people[0]["first_name"], "")
         self.assertEqual(people[0]["flags"], "mailing list: one email reaches the group")
 
+    def test_contacts_preserve_multiline_and_unicode_separators(self):
+        for separator in ("\r\n", "\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e",
+                          "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=repr(separator)):
+                text = ('Display Name,E-mail Address\r\n"Alice' + separator
+                        + 'Example",alice@example.com\r\nBob Sample,bob@example.com\r\n')
+                path = self.write("contacts.csv", text.encode("utf-8"))
+                self.assertEqual(rank_correspondents.load_contacts(str(path)),
+                                 {ALICE: "Alice" + separator + "Example", BOB: "Bob Sample"})
+
     def test_min_received_threshold_and_sent_exception(self):
         stats = {ALICE: self.stats(ALICE, "Alice Example", received=1),
                  BOB: self.stats(BOB, "Bob Sample", received=2),
@@ -865,6 +876,16 @@ class PipelineTestCase(TempTestCase):
         for secret in ("@", "Alice", "Bob", "Owner", "Sample", "Example", "Fiction",
                        "Picnic", "Tomorrow", "Seashell", "RemoteOnly", "SecretArchive", "PrivateNotes"):
             self.assertNotIn(secret.casefold(), output)
+        self.assertNotIn(str(self.root).casefold(), output)
+        self.assertNotIn(self.root.name.casefold(), output)
+
+    def assert_private_refusal(self, command):
+        self.clear_console()
+        with self.assertRaises(SystemExit) as error:
+            command()
+        self.assertEqual(error.exception.code, 2)
+        self.assert_quiet()
+        self.assertNotIn("/", self.stdout.getvalue() + self.stderr.getvalue())
 
     def clear_console(self):
         for stream in (self.stdout, self.stderr):
@@ -1033,7 +1054,7 @@ class AccountTests(PipelineTestCase):
         for count in ("1 duplicate copy", "1 deleted copy", "1 junk message", "1 draft message", "1 unreadable message"):
             self.assertIn(count, self.stdout.getvalue())
 
-    def test_rank_secures_output_but_preserves_parent_and_existing_evidence_modes(self):
+    def test_rank_secures_output_and_existing_evidence_but_preserves_parent_mode(self):
         box = self.mbox("mail/Inbox", [headers()])
         parent = self.root / "existing"
         parent.mkdir()
@@ -1046,7 +1067,7 @@ class AccountTests(PipelineTestCase):
         self.rank([box], output="existing/out")
         self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE(parent.stat().st_mode), 0o751)
-        self.assertEqual(stat.S_IMODE(evidence.stat().st_mode), 0o750)
+        self.assertEqual(stat.S_IMODE(evidence.stat().st_mode), 0o700)
 
     def test_person_account_weighting_basis_and_ordered_tie(self):
         # One direct outgoing message outweighs two received messages; same-name aliases merge.
@@ -1087,8 +1108,9 @@ class AccountTests(PipelineTestCase):
     def test_rank_errors_and_warnings_never_print_data(self):
         box = self.mbox("mail/Inbox", [headers()])
         exclusion = self.write("Alice@example.com.txt", b"bad@@example.com\n")
-        out, _ = self.rank([box, self.root / "Bob@example.com"],
-                           extra=("--exclude", str(exclusion)))
+        out, _ = self.rank([box], extra=("--exclude", str(exclusion)))
+        self.assert_private_refusal(lambda: rank_correspondents.rank_main(
+            [str(box), str(self.root / "Bob@example.com"), "--out", str(out), "--self", OWNER]))
         for extra in (("--self", "Alice@example.com invalid"), ("--half-life", "Alice@example.com"),
                       ("--exclude", str(self.root / "Alice@example.com-missing")),
                       ("--contacts", str(self.root / "Bob@example.com-missing"))):
@@ -1140,13 +1162,87 @@ class SendListTests(PipelineTestCase):
         self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(destination.parent.stat().st_mode), 0o700)
         self.assertEqual((source.read_bytes(), source.stat().st_mtime_ns), original)
+        self.assertIn("1 duplicate row dropped", self.stdout.getvalue())
 
-    def test_every_mark_bom_guard_strip_all_cells_and_legacy_header(self):
+    def test_canonical_dedupe_keeps_first_ranked_written_address(self):
+        source = self.reviewed([
+            self.row(rank="3", email="alice@alias.example.com", account=SECOND),
+            self.row(rank="1", email=" A.li.ce+picnic@EXAMPLE.COM "),
+            self.row(rank="2", email="alice@example.com"),
+            self.row(rank="4", email=BOB, first_name="Bob")])
+        # Reserve example.com fixtures while exercising both Gmail provider aliases.
+        with mock.patch.object(rank_correspondents, "GMAIL_DOMAINS",
+                               {"example.com", "alias.example.com"}):
+            _, _, rows = self.send(source)
+        self.assertEqual([r["email"] for r in rows], ["a.li.ce+picnic@example.com", BOB])
+        self.assertEqual(rows[0]["first_name"], "Alice")
+        self.assertIn("2 duplicate rows dropped", self.stdout.getvalue())
+
+    def test_household_recipient_alias_is_refused_by_rank(self):
+        source = self.reviewed([self.row(rank="7", email="o.wner+picnic@alias.example.com")])
+        previous = self.write("out/send_list.csv", b"previous complete output\n")
+        with mock.patch.object(rank_correspondents, "GMAIL_DOMAINS",
+                               {"example.com", "alias.example.com"}):
+            self.assert_private_refusal(lambda: rank_correspondents.send_list_main(
+                [str(source), "--out", str(previous.parent), "--self", OWNER]))
+        self.assertIn("household recipient at ranks 7", self.stderr.getvalue())
+        self.assertEqual(previous.read_bytes(), b"previous complete output\n")
+
+    def test_control_characters_in_every_send_field_are_refused(self):
+        for character in ("\r", "\n", "\t", "\x00", "\x1f", "\x7f", "\x85", "\u2028", "\u2029"):
+            for field in SEND_FIELDS:
+                with self.subTest(character=repr(character), field=field):
+                    # A trailing control must be refused before whitespace trimming too.
+                    source = self.reviewed([self.row(rank="7", **{field: self.row()[field] + character})])
+                    dst = self.write("out/send_list.csv", b"previous complete output\n")
+                    self.assert_private_refusal(lambda: rank_correspondents.send_list_main(
+                        [str(source), "--out", str(dst.parent), "--self", OWNER]))
+                    self.assertIn("control characters at ranks 7", self.stderr.getvalue())
+                    self.assertEqual(dst.read_bytes(), b"previous complete output\n")
+                    self.assertEqual({p.name for p in dst.parent.iterdir()}, {"send_list.csv"})
+
+    def test_send_list_schedule_round_trip_preserves_names_and_ledger_join(self):
+        reviewed = self.reviewed([
+            self.row(name="'Alice Example", first_name="'Alice", last_name="'=Example"),
+            self.row(rank="2", email=BOB, first_name="Bob", last_name="Sample, Synthetic",
+                     name="Bob Sample", account=SECOND)])
+        source, _, rows = self.send(reviewed)
+        self.assertEqual(rows[0]["first_name"], "'Alice")
+        self.assertEqual(rows[0]["name"], "'Alice Example")
+        self.assertEqual(rows[0]["last_name"], "=Example")
+        self.assertNotIn("duplicate", self.stdout.getvalue())
+        ledger = self.csv_file("invites.csv", ["email", "share_url"], [
+            {"email": " ALICE@EXAMPLE.COM ", "share_url": TARGET + "/s/SYNTHETIC000"},
+            {"email": BOB, "share_url": TARGET + "/s/SYNTHETIC001"}])
+        ledger.write_bytes(("# target=" + TARGET + " memorial=synthetic\n").encode() + ledger.read_bytes())
+        out = self.root / "scheduled"
+        self.assertEqual(rank_correspondents.schedule_main([str(source), "--ledger", str(ledger),
+            "--self", OWNER, "--self", SECOND, "--start", "2025-01-15 09:00", "--out", str(out)]), 0)
+        for index, label in enumerate(("primary", "second")):
+            exported = self.read_csv(out / ("send_list_" + label + ".csv"))[1]
+            self.assertEqual(len(exported), 1)
+            self.assertEqual({k: exported[0][k] for k in SEND_FIELDS}, rows[index])
+            self.assertEqual(exported[0]["share_url"], TARGET + "/s/SYNTHETIC00" + str(index))
+        self.assert_quiet()
+
+    def test_nul_in_unselected_row_preserves_selected_backslashes(self):
+        # Python 3.9 needs a reversible NUL transport through its CSV parser.
+        # Literal escape-like text in a different, selected row must stay literal.
+        name = 'Alice \\0 \\\\0 "Example, Synthetic"'
+        source = self.reviewed([self.row(name=name),
+                                self.row(rank="2", notify="no", email=BOB, name="Bob\0Sample")])
+        _, _, rows = self.send(source)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["name"], name)
+
+    def test_every_mark_bom_formula_guards_and_legacy_header(self):
         for legacy in (False, True):
             marks = ("y", "YES", "X", "1", "True", "✓", "✔", "✔️", "✓︎", "✅", "☑", "☑️")
             rows = [self.row(rank=str(i + 1), notify=mark, email="person{}@example.com".format(i))
                     for i, mark in enumerate(marks)]
-            guarded = [{k: "'" + v for k, v in row.items()} for row in rows]
+            rows[0].update(name="=Alice Example", last_name="＠Example")
+            guarded = [{k: "'" + v if v.startswith(("=", "＠")) else v
+                        for k, v in row.items()} for row in rows]
             source = self.reviewed(guarded + [{}], legacy=legacy)
             _, fields, result = self.send(source)
             self.assertEqual(fields, SEND_FIELDS)
@@ -1227,10 +1323,11 @@ class SendListTests(PipelineTestCase):
         for note in ("", "Alice Example private note"):
             self.clear_console()
             source = self.reviewed()
-            lines = source.read_text(encoding="utf-8-sig").splitlines()
-            lines[0] += ",,"
-            lines[1] += "," + note + ","
-            source.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+            cells = list(csv.reader(io.StringIO(source.read_text(encoding="utf-8-sig"), newline="")))
+            cells[0] += ["", ""]
+            cells[1] += [note, ""]
+            with source.open("w", encoding="utf-8-sig", newline="") as stream:
+                csv.writer(stream).writerows(cells)
             _, fields, exported = self.send(source)
             self.assertEqual(fields, SEND_FIELDS)
             self.assertEqual(exported, [{k: self.row()[k] for k in SEND_FIELDS}])
@@ -1239,10 +1336,11 @@ class SendListTests(PipelineTestCase):
 
     def test_duplicate_nonblank_headers_are_still_refused(self):
         source = self.reviewed()
-        lines = source.read_text(encoding="utf-8-sig").splitlines()
-        lines[0] += ",email,"
-        lines[1] += ",bob@example.com,"
-        source.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+        cells = list(csv.reader(io.StringIO(source.read_text(encoding="utf-8-sig"), newline="")))
+        cells[0] += ["email", ""]
+        cells[1] += [BOB, ""]
+        with source.open("w", encoding="utf-8-sig", newline="") as stream:
+            csv.writer(stream).writerows(cells)
         with self.assertRaises(SystemExit):
             self.send(source)
         self.assertIn("duplicate column names", self.stderr.getvalue())
@@ -1290,11 +1388,11 @@ class SendListTests(PipelineTestCase):
             self.assertIn("use `schedule`", self.stderr.getvalue())
             self.assert_quiet()
 
-    def test_blank_rank_falls_after_numeric_ranks_and_strips_only_one_guard(self):
+    def test_blank_rank_falls_after_numeric_ranks_and_preserves_literal_apostrophes(self):
         source = self.reviewed([self.row(rank="", email=BOB, first_name="''Bob"), self.row(rank="2")])
         _, _, rows = self.send(source)
         self.assertEqual([r["email"] for r in rows], [ALICE, BOB])
-        self.assertEqual(rows[1]["first_name"], "'Bob")
+        self.assertEqual(rows[1]["first_name"], "''Bob")
 
     def test_empty_selection_is_rejected_without_output(self):
         with self.assertRaises(SystemExit):
@@ -1473,6 +1571,21 @@ class ScheduleTests(PipelineTestCase):
         self.assertNotIn("ranks", self.stderr.getvalue())
         self.assert_quiet()
 
+    def test_control_characters_are_refused_by_row_before_schedule_writes(self):
+        for character in ("\r", "\n", "\u2028"):
+            with self.subTest(character=repr(character)):
+                source = self.source(count=2)
+                ledger = self.ledger(source)
+                rows = self.read_csv(source)[1]
+                rows[1]["name"] = "Bob" + character + "Sample"
+                source = self.csv_file("send_list.csv", SEND_FIELDS, rows)
+                out = self.root / "out"
+                self.assert_private_refusal(lambda: rank_correspondents.schedule_main([
+                    str(source), "--ledger", str(ledger), "--self", OWNER, "--self", SECOND,
+                    "--start", "2025-01-15 09:00", "--out", str(out)]))
+                self.assertIn("control characters at rows 2", self.stderr.getvalue())
+                self.assertFalse(out.exists())
+
     def test_schedule_secures_output_preserves_parent_and_uses_singular_row(self):
         parent = self.root / "existing"
         parent.mkdir()
@@ -1615,6 +1728,203 @@ class ScheduleTests(PipelineTestCase):
             self.schedule(collision, ledger=ledger, output="collision")
         self.assertEqual(collision.read_bytes(), original)
         self.assert_quiet()
+
+
+class OutputSafetyTests(PipelineTestCase):
+    def setUp(self):
+        super().setUp()
+        self.box = self.mbox("mail/Sent", [headers(sender="Owner Example <owner@example.com>",
+            to="＠Alice Example <alice@example.com>", subject="＝Picnic")])
+        rows = [{"rank": str(i + 1), "notify": "y", "email": address,
+                 "first_name": first, "last_name": last, "name": first + " " + last,
+                 "account": account}
+                for i, (address, first, last, account) in enumerate(
+                    ((ALICE, "Alice", "Example", OWNER), (BOB, "Bob", "Sample", SECOND)))]
+        self.reviewed = self.csv_file("reviewed.csv", ["rank", "notify"] + SEND_FIELDS, rows)
+        self.source = self.csv_file("send_list.csv", SEND_FIELDS,
+                                    [{k: r[k] for k in SEND_FIELDS} for r in rows])
+        self.ledger = self.csv_file("invites.csv", ["email", "share_url"], [
+            {"email": address, "share_url": TARGET + "/s/SYNTHETIC00" + str(i)}
+            for i, address in enumerate((ALICE, BOB))])
+        self.ledger.write_bytes(("# target=" + TARGET + " memorial=synthetic\n").encode()
+                               + self.ledger.read_bytes())
+
+    def command(self, command, out, paths=None):
+        args = ["--out", str(out), "--self", OWNER, "--self", SECOND]
+        if command == "rank":
+            args = [str(p) for p in (paths or [self.box])] + args
+        elif command == "send-list":
+            args = [command, str(self.reviewed)] + args
+        else:
+            args = [command, str(self.source), "--ledger", str(self.ledger),
+                    "--start", "2025-01-15 09:00"] + args
+        return rank_correspondents.main(args)
+
+    def seed_outputs(self, command, out):
+        names = {"rank": ("correspondents.csv", "mail.sqlite", "evidence/household-names.txt"),
+                 "send-list": ("send_list.csv",),
+                 "schedule": ("send_list_primary.csv", "send_list_second.csv", "schedule.log")}[command]
+        for name in names:
+            self.write(str((out / name).relative_to(self.root)), ("previous " + name + "\n").encode())
+        return self.snapshot(out)
+
+    def snapshot(self, out):
+        return {str(p.relative_to(out)): p.read_bytes() for p in out.rglob("*") if p.is_file()}
+
+    def test_exported_full_width_name_and_subject_are_guarded(self):
+        out = self.root / "out"
+        self.assertEqual(self.command("rank", out), 0)
+        rows = self.read_csv(out / "correspondents.csv")[1]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["name"], "'＠Alice Example")
+        self.assertEqual(rows[0]["names_seen"], "'＠Alice Example")
+        self.assertEqual(rows[0]["recent_subjects"], "'＝Picnic")
+        self.assert_quiet()
+
+    def test_all_commands_refuse_symlinked_outputs_before_any_write(self):
+        names = ("correspondents.csv", "mail.sqlite", "mail.sqlite-journal", "mail.sqlite-wal",
+                 "mail.sqlite-shm", "evidence", "evidence/household-names.txt", "send_list.csv",
+                 "send_list_primary.csv", "send_list_second.csv", "send_list_account3.csv", "schedule.log")
+        for command in ("rank", "send-list", "schedule"):
+            for index, name in enumerate(names):
+                with self.subTest(command=command, name=name):
+                    out = self.root / (command + str(index))
+                    out.mkdir()
+                    outside = self.root / "outside-repo"
+                    outside.mkdir(exist_ok=True)
+                    (outside / ".git").mkdir(exist_ok=True)
+                    if name == "evidence":
+                        target = outside / "directory"
+                        target.mkdir(exist_ok=True)
+                        (target / "household-names.txt").write_bytes(b"outside evidence\n")
+                        target.chmod(0o751)
+                    else:
+                        target = self.write("outside-repo/target", b"outside content\n")
+                        target.chmod(0o640)
+                    link = out / name
+                    link.parent.mkdir(parents=True, exist_ok=True)
+                    link.symlink_to(target, target_is_directory=name == "evidence")
+                    before = self.snapshot(outside)
+                    mode = target.stat().st_mode
+                    entries = {str(p.relative_to(out)) for p in out.rglob("*")}
+                    self.assert_private_refusal(lambda: self.command(command, out))
+                    self.assertEqual(self.snapshot(outside), before)
+                    self.assertEqual(target.stat().st_mode, mode)
+                    self.assertTrue(link.is_symlink())
+                    self.assertEqual({str(p.relative_to(out)) for p in out.rglob("*")}, entries)
+
+    def test_dangling_output_symlink_is_refused(self):
+        for command, name in (("rank", "mail.sqlite"), ("send-list", "send_list.csv"),
+                              ("schedule", "schedule.log")):
+            with self.subTest(command=command):
+                out = self.root / command
+                out.mkdir()
+                target = self.root / (command + "-missing")
+                (out / name).symlink_to(target)
+                self.assert_private_refusal(lambda: self.command(command, out))
+                self.assertFalse(target.exists())
+                self.assertTrue((out / name).is_symlink())
+
+    def test_private_helpers_refuse_symlinks_without_changing_target(self):
+        target = self.write("outside-file", b"outside content\n")
+        target.chmod(0o640)
+        link = self.root / "link"
+        link.symlink_to(target)
+        with self.assertRaises(OSError):
+            with rank_correspondents.open_private(link):
+                pass
+        self.assertEqual(target.read_bytes(), b"outside content\n")
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
+        directory = self.root / "outside-directory"
+        directory.mkdir(mode=0o751)
+        link.unlink()
+        link.symlink_to(directory, target_is_directory=True)
+        with self.assertRaises(OSError):
+            rank_correspondents.private_directory(link, secure_existing=True)
+        self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o751)
+        self.assert_quiet()
+
+    def test_missing_sources_refuse_before_reading_any_mail(self):
+        out = self.root / "out"
+        before = self.seed_outputs("rank", out)
+        with mock.patch.object(rank_correspondents, "read_source", side_effect=AssertionError("mail read")):
+            self.assert_private_refusal(lambda: self.command("rank", out,
+                [self.box, self.root / "missing-one", self.root / "missing-two"]))
+        self.assertIn("2 mail sources could not be read", self.stderr.getvalue())
+        self.assertEqual(self.snapshot(out), before)
+
+    def test_unreadable_mail_sources_refuse_and_preserve_previous_outputs(self):
+        for kind in ("mbox", "directory", "eml", "both"):
+            with self.subTest(kind=kind):
+                out = self.root / ("out-" + kind)
+                before = self.seed_outputs("rank", out)
+                bad_box = self.mbox("blocked-" + kind + "/Unreadable", [headers()])
+                bad_dir = self.root / ("blocked-" + kind) / "subdirectory"
+                bad_dir.mkdir()
+                self.mbox(str(bad_dir.relative_to(self.root) / "Inbox"), [headers()])
+                eml = self.write("blocked-" + kind + "/message.eml", headers())
+                blocked = [bad_box, bad_dir] if kind == "both" else [
+                    {"mbox": bad_box, "directory": bad_dir, "eml": eml}[kind]]
+                modes = {path: stat.S_IMODE(path.stat().st_mode) for path in blocked}
+                try:
+                    for path in blocked:
+                        path.chmod(0)
+                    self.assert_private_refusal(lambda: self.command("rank", out, [self.box, bad_box.parent]))
+                finally:
+                    for path, mode in modes.items():
+                        path.chmod(mode)
+                count = "2 mail sources" if kind == "both" else "1 mail source"
+                self.assertIn(count + " could not be read", self.stderr.getvalue())
+                self.assertEqual(self.snapshot(out), before)
+
+    def test_rank_partial_csv_write_preserves_all_previous_outputs(self):
+        out = self.root / "out"
+        before = self.seed_outputs("rank", out)
+        original = csv.writer
+
+        def failing_writer(stream, *args, **kwargs):
+            writer = original(stream, *args, **kwargs)
+
+            class PartialWriter:
+                def writerow(self, row):
+                    writer.writerow(row)
+                    if row != rank_correspondents.CSV_COLUMNS:
+                        raise csv.Error("Alice@example.com partial write")
+
+            return PartialWriter()
+
+        with mock.patch.object(rank_correspondents.csv, "writer", side_effect=failing_writer):
+            self.assert_private_refusal(lambda: self.command("rank", out))
+        self.assertEqual(self.snapshot(out), before)
+
+    def test_send_list_partial_write_preserves_previous_output(self):
+        out = self.root / "out"
+        before = self.seed_outputs("send-list", out)
+
+        def fail_after_row(writer, rows):
+            writer.writerow(next(iter(rows)))
+            raise csv.Error("Alice@example.com partial write")
+
+        with mock.patch.object(csv.DictWriter, "writerows", fail_after_row):
+            self.assert_private_refusal(lambda: self.command("send-list", out))
+        self.assertEqual(self.snapshot(out), before)
+
+    def test_second_account_partial_write_preserves_both_files_and_log(self):
+        out = self.root / "out"
+        before = self.seed_outputs("schedule", out)
+        original = csv.DictWriter.writerows
+        writes = []
+
+        def fail_second(writer, rows):
+            writes.append(1)
+            if len(writes) == 2:
+                writer.writerow(next(iter(rows)))
+                raise csv.Error("Bob@example.com partial write")
+            return original(writer, rows)
+
+        with mock.patch.object(csv.DictWriter, "writerows", fail_second):
+            self.assert_private_refusal(lambda: self.command("schedule", out))
+        self.assertEqual(self.snapshot(out), before)
 
 
 if __name__ == "__main__":

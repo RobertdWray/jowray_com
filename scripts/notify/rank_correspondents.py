@@ -77,6 +77,7 @@ import email.header
 import email.parser
 import email.policy
 import email.utils
+import errno
 import functools
 import hashlib
 import io
@@ -86,10 +87,11 @@ import random
 import re
 import secrets
 import sqlite3
+import stat
 import sys
 import time
 import unicodedata
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -180,6 +182,7 @@ CSV_COLUMNS = [
 ]
 SEND_COLUMNS = ["email", "first_name", "last_name", "name", "account"]
 ACCOUNT_BASES = ("from", "to", "cc", "delivered", "folder")
+GUARDED_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n", "＝", "＋", "－", "＠")
 
 
 class PrivateArgumentParser(argparse.ArgumentParser):
@@ -414,13 +417,10 @@ def sniff(p: Path) -> str | None:
         return None
     if p.suffix.lower() == ".eml":
         return "eml"
-    try:
-        if p.stat().st_size == 0:
-            return "empty"
-        with open(p, "rb") as f:
-            head = f.read(5)
-    except OSError:
-        return None
+    if p.stat().st_size == 0:
+        return "empty"
+    with open(p, "rb") as f:
+        head = f.read(5)
     return "mbox" if head == b"From " else None
 
 
@@ -456,21 +456,45 @@ def folder_kind(label: str) -> str:
     return "other"
 
 
-def discover(paths: list[str], empty_indexed: list[str]):
+def refuse_source_errors(count: int) -> None:
+    if count:
+        die(f"{quantity(count, 'mail source')} could not be read (missing or permission denied); "
+            "fix access and re-run")
+
+
+def check_source_paths(paths: list[str]) -> None:
+    """Check every argument before reading mail, including later account paths."""
+    errors = 0
+    for arg in paths:
+        try:
+            Path(arg).expanduser().stat()
+        except OSError:
+            errors += 1
+    refuse_source_errors(errors)
+
+
+def discover(paths: list[str], empty_indexed: list[str], counts=None):
     """Yield (kind, path, folder label) for every mail source under the given paths."""
+    counts = collections.Counter() if counts is None else counts
+
+    def onerror(_error):
+        counts["source errors"] += 1
+
     for arg in paths:
         root = Path(arg).expanduser()
-        if not root.exists():
-            warn("1 source not found, skipping")
+        try:
+            is_file = stat.S_ISREG(root.stat().st_mode)
+            kind = sniff(root) if is_file else None
+        except OSError as exc:
+            onerror(exc)
             continue
-        if root.is_file():
-            kind = sniff(root)
+        if is_file:
             if kind in ("mbox", "eml"):
                 yield kind, root, folder_label(root.parent, root)
             else:
                 warn("1 source is not an mbox or .eml file, skipping")
             continue
-        for dirpath, dirnames, filenames in os.walk(root):
+        for dirpath, dirnames, filenames in os.walk(root, onerror=onerror):
             d = Path(dirpath)
             dirnames.sort()
             if (d / "cur").is_dir() and (d / "new").is_dir():
@@ -479,13 +503,16 @@ def discover(paths: list[str], empty_indexed: list[str]):
                 continue  # files at a Maildir's top level are bookkeeping, not mail
             for fn in sorted(filenames):
                 p = d / fn
-                kind = sniff(p)
-                if kind == "empty":
-                    msf = p.with_name(p.name + ".msf")
-                    if msf.is_file() and msf.stat().st_size > 4096:
-                        empty_indexed.append(folder_label(root, p))
-                elif kind:
-                    yield kind, p, folder_label(root, p)
+                try:
+                    kind = sniff(p)
+                    if kind == "empty":
+                        msf = p.with_name(p.name + ".msf")
+                        if msf.is_file() and msf.stat().st_size > 4096:
+                            empty_indexed.append(folder_label(root, p))
+                    elif kind:
+                        yield kind, p, folder_label(root, p)
+                except OSError as exc:
+                    onerror(exc)
 
 
 def read_header_file(p: Path) -> bytes:
@@ -682,6 +709,7 @@ CREATE VIEW received_personal AS
 
 
 def load_sources(conn: sqlite3.Connection, paths: list[str]):
+    check_source_paths(paths)
     counts: collections.Counter = collections.Counter()
     folders: collections.Counter = collections.Counter()
     empty_indexed: list[str] = []
@@ -697,11 +725,17 @@ def load_sources(conn: sqlite3.Connection, paths: list[str]):
         msg_rows.clear()
         part_rows.clear()
 
+    def readable_headers(kind, path):
+        try:
+            yield from read_source(kind, path)
+        except OSError:
+            counts["source errors"] += 1
+
     sources = ((root, source) for root, arg in enumerate(paths)
-               for source in discover([arg], empty_indexed))
+               for source in discover([arg], empty_indexed, counts))
     for root, (kind, path, label) in sources:
         default_kind = folder_kind(label)
-        for header_bytes, env in read_source(kind, path):
+        for header_bytes, env in readable_headers(kind, path):
             counts["read"] += 1
             if counts["read"] % 20000 == 0:
                 print(f"  ... {counts['read']:,} messages read", file=sys.stderr)
@@ -728,6 +762,7 @@ def load_sources(conn: sqlite3.Connection, paths: list[str]):
             part_rows.extend((mid, "delivered", addr, addr, "") for addr in m.delivered)
             if len(msg_rows) >= 5000:
                 flush()
+    refuse_source_errors(counts["source errors"])
     flush()
     conn.commit()
     return counts, folders, empty_indexed
@@ -944,7 +979,7 @@ def load_contacts(path: str | None) -> dict[str, str]:
     p = Path(path).expanduser()
     if not p.is_file():
         die("--contacts file not found")
-    reader = csv.DictReader(read_text_any(p).splitlines())
+    reader = csv.DictReader(io.StringIO(read_text_any(p), newline=""))
     headers = reader.fieldnames or []
     email_cols = [c for c in headers if re.search(r"e-?mail", c, re.I)
                   and not re.search(r"type|display", c, re.I)]
@@ -1092,13 +1127,13 @@ def guard_git(out_dir: Path, allow: bool) -> None:
 
 
 def csv_cell(v):
-    if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r"):
+    if isinstance(v, str) and v[:1] in GUARDED_PREFIXES:
         return "'" + v  # keep spreadsheet apps from treating text as a formula
     return v
 
 
-def write_outputs(conn, people, out_dir: Path) -> Path:
-    csv_path = out_dir / "correspondents.csv"
+def write_outputs(conn, people, out_dir: Path, csv_path: Path | None = None) -> Path:
+    csv_path = csv_path if csv_path is not None else out_dir / "correspondents.csv"
     with open_private(csv_path, encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(CSV_COLUMNS)
@@ -1116,10 +1151,16 @@ def write_outputs(conn, people, out_dir: Path) -> Path:
 
 
 def private(p: Path) -> None:
-    os.chmod(p, 0o600)  # failure must stop the command, never leave personal data public
+    fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        os.fchmod(fd, 0o600)  # failure must stop the command
+    finally:
+        os.close(fd)
 
 
 def private_directory(p: Path, secure_existing: bool = False) -> None:
+    if p.is_symlink():
+        raise OSError(errno.ELOOP, "symlinked output directory")
     missing_parents, parent = [], p.parent
     while not parent.exists():
         missing_parents.append(parent)
@@ -1133,11 +1174,17 @@ def private_directory(p: Path, secure_existing: bool = False) -> None:
             raise
         if not secure_existing:
             return
-    os.chmod(p, 0o700)
+    fd = os.open(p, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fchmod(fd, 0o700)
+    finally:
+        os.close(fd)
 
 
 def output_directory(value: str) -> Path:
     out = Path(value).expanduser()
+    if out.is_symlink():
+        die("1 symlinked output refused")
     if out.suffix.lower() == ".csv":
         die("--out is a folder; send_list.csv is written inside it")
     out = out.resolve()
@@ -1146,14 +1193,78 @@ def output_directory(value: str) -> Path:
     return out
 
 
-def open_private(p: Path, encoding="utf-8", append=False):
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else os.O_TRUNC), 0o600)
+def open_private(p: Path, encoding="utf-8", append=False, exclusive=False):
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
+    flags |= os.O_EXCL if exclusive else os.O_APPEND if append else os.O_TRUNC
+    fd = os.open(p, flags, 0o600)
     try:
         os.fchmod(fd, 0o600)
         return os.fdopen(fd, "a" if append else "w", newline="", encoding=encoding)
     except BaseException:
         os.close(fd)
+        if exclusive:
+            p.unlink()
         raise
+
+
+def guard_output_symlinks(out: Path) -> None:
+    """Check named outputs without following links, including dangling links."""
+    paths = [out / name for name in (
+        "correspondents.csv", "mail.sqlite", "mail.sqlite-journal", "mail.sqlite-wal",
+        "mail.sqlite-shm", "evidence", "send_list.csv", "schedule.log")]
+    paths.extend(out.glob("send_list_*.csv"))
+    count = sum(p.is_symlink() for p in paths)
+    # Do not inspect a child through a symlinked evidence directory.
+    if not (out / "evidence").is_symlink():
+        count += (out / "evidence/household-names.txt").is_symlink()
+    if count:
+        die(f"{quantity(count, 'symlinked output')} refused")
+
+
+@contextmanager
+def atomic_outputs(destinations):
+    """Prepare all files before publishing; each replacement is atomic.
+
+    Callers close their writers (and SQLite) before leaving the context. No final
+    file changes if preparation fails. Multiple renames are not a transaction.
+    """
+    staged = {}
+    try:
+        for dst in destinations:
+            if dst.is_symlink():
+                die("1 symlinked output refused")
+            temp = dst.with_name(f".{dst.name}.{secrets.token_hex(16)}.tmp")
+            with open_private(temp, exclusive=True):
+                staged[dst] = temp
+        yield staged
+        # Closing the writers flushes Python buffers; sync every completed file
+        # before the first rename, including the closed SQLite database.
+        for temp in staged.values():
+            fd = os.open(temp, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        for dst in staged:
+            if dst.is_symlink():
+                die("1 symlinked output refused")
+        for dst, temp in staged.items():
+            os.replace(temp, dst)
+        for directory in dict.fromkeys(dst.parent for dst in staged):
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                try:
+                    os.fsync(fd)
+                except OSError as exc:
+                    # Some filesystems cannot fsync directories; other I/O errors
+                    # must still fail the command and reach private_errors.
+                    if exc.errno not in (errno.EINVAL, errno.ENOTSUP):
+                        raise
+            finally:
+                os.close(fd)
+    finally:
+        for temp in staged.values():
+            temp.unlink(missing_ok=True)
 
 
 @private_errors
@@ -1185,58 +1296,59 @@ def rank_main(argv: list[str]) -> int:
 
     out_dir = output_directory(args.out)
     guard_git(out_dir, args.allow_inside_git)
+    guard_output_symlinks(out_dir)
+    check_source_paths(args.paths)
     private_directory(out_dir, secure_existing=True)
+    evidence = out_dir / "evidence"
+    private_directory(evidence, secure_existing=True)
     db_path = out_dir / "mail.sqlite"
-    if db_path.exists():
-        db_path.unlink()
-    with open_private(db_path):
-        pass
-    with closing(sqlite3.connect(db_path)) as conn:
-        conn.execute("PRAGMA temp_store=MEMORY")
-        conn.executescript(SCHEMA)
+    csv_path = out_dir / "correspondents.csv"
+    evidence_path = evidence / "household-names.txt"
+    with atomic_outputs([db_path, csv_path, evidence_path]) as staged:
+        with closing(sqlite3.connect(staged[db_path])) as conn:
+            conn.execute("PRAGMA temp_store=MEMORY")
+            conn.execute("PRAGMA journal_mode=MEMORY")  # Disposable staged database; no disk sidecars.
+            conn.executescript(SCHEMA)
 
-        started = time.time()
-        counts, folders, empty_indexed = load_sources(conn, args.paths)
-        total = sum(folders.values())
-        if not total:
-            die("no messages found. Point this at the folder that holds the mail files "
-                "(for Thunderbird, ImapMail/<server> inside the profile).")
+            started = time.time()
+            counts, folders, empty_indexed = load_sources(conn, args.paths)
+            total = sum(folders.values())
+            if not total:
+                die("no messages found. Point this at the folder that holds the mail files "
+                    "(for Thunderbird, ImapMail/<server> inside the profile).")
 
-        conn.executescript(VIEWS)  # Build participant indexes before the attribution join.
-        self_addrs, how = resolve_self(conn, args.self_addrs)
-        conn.executemany("INSERT INTO self_addresses VALUES (?)", [(a,) for a in self_addrs])
-        conn.execute(f"UPDATE messages SET is_from_self = 1 WHERE from_addr IN "
-                     f"({','.join('?' * len(self_addrs))})", self_addrs)
-        assign_accounts(conn, self_addrs)
-        conn.commit()
-        n_self = conn.execute("SELECT COUNT(*) FROM messages WHERE is_from_self = 1").fetchone()[0]
-        n_missed_alias = conn.execute("SELECT COUNT(*) FROM messages WHERE folder_kind = 'sent' "
-            "AND is_from_self = 0 AND from_addr IS NOT NULL").fetchone()[0] if args.self_addrs else None
-        own_keys = {name_key(n) for (n,) in conn.execute(
-            "SELECT DISTINCT from_name FROM messages WHERE is_from_self = 1 AND from_name <> ''")}
-        given_keys = [name_key(n) for n in args.household_name]
-        ignored_household_names = given_keys.count(None)
-        own_keys.update(given_keys)
-        own_keys.discard(None)
-        household_names = conn.execute("SELECT from_name, COUNT(*) FROM messages "
-            "WHERE is_from_self = 1 AND from_name <> '' GROUP BY from_name ORDER BY 2 DESC, from_name").fetchall()
-        evidence = out_dir / "evidence"
-        private_directory(evidence)
-        with open_private(evidence / "household-names.txt") as f:
-            for name, count in household_names:
-                f.write(f"{count}\t{name}\n")
-        list_addrs = {a for (a,) in conn.execute(
-            "SELECT DISTINCT list_post FROM messages WHERE list_post IS NOT NULL")}
-        ref_ts = conn.execute("SELECT MAX(ts) FROM messages").fetchone()[0] or NOW
-        y0, y1 = conn.execute("SELECT MIN(year), MAX(year) FROM messages").fetchone()
+            conn.executescript(VIEWS)  # Build participant indexes before the attribution join.
+            self_addrs, how = resolve_self(conn, args.self_addrs)
+            conn.executemany("INSERT INTO self_addresses VALUES (?)", [(a,) for a in self_addrs])
+            conn.execute(f"UPDATE messages SET is_from_self = 1 WHERE from_addr IN "
+                         f"({','.join('?' * len(self_addrs))})", self_addrs)
+            assign_accounts(conn, self_addrs)
+            conn.commit()
+            n_self = conn.execute("SELECT COUNT(*) FROM messages WHERE is_from_self = 1").fetchone()[0]
+            n_missed_alias = conn.execute("SELECT COUNT(*) FROM messages WHERE folder_kind = 'sent' "
+                "AND is_from_self = 0 AND from_addr IS NOT NULL").fetchone()[0] if args.self_addrs else None
+            own_keys = {name_key(n) for (n,) in conn.execute(
+                "SELECT DISTINCT from_name FROM messages WHERE is_from_self = 1 AND from_name <> ''")}
+            given_keys = [name_key(n) for n in args.household_name]
+            ignored_household_names = given_keys.count(None)
+            own_keys.update(given_keys)
+            own_keys.discard(None)
+            household_names = conn.execute("SELECT from_name, COUNT(*) FROM messages "
+                "WHERE is_from_self = 1 AND from_name <> '' GROUP BY from_name ORDER BY 2 DESC, from_name").fetchall()
+            with open_private(staged[evidence_path]) as f:
+                for name, count in household_names:
+                    f.write(f"{count}\t{name}\n")
+            list_addrs = {a for (a,) in conn.execute(
+                "SELECT DISTINCT list_post FROM messages WHERE list_post IS NOT NULL")}
+            ref_ts = conn.execute("SELECT MAX(ts) FROM messages").fetchone()[0] or NOW
+            y0, y1 = conn.execute("SELECT MIN(year), MAX(year) FROM messages").fetchone()
 
-        stats, ignored = score_addresses(conn, self_addrs, args.half_life, ref_ts)
-        book = load_contacts(args.contacts)
-        excl = load_exclusions(args.exclude)
-        people, dropped, own_other = build_people(stats, book, excl, self_addrs, own_keys,
-                                                  list_addrs, args.min_received)
-        write_outputs(conn, people, out_dir)
-    private(db_path)
+            stats, ignored = score_addresses(conn, self_addrs, args.half_life, ref_ts)
+            book = load_contacts(args.contacts)
+            excl = load_exclusions(args.exclude)
+            people, dropped, own_other = build_people(stats, book, excl, self_addrs, own_keys,
+                                                      list_addrs, args.min_received)
+            write_outputs(conn, people, out_dir, csv_path=staged[csv_path])
 
     skip_labels = {"duplicates": ("duplicate copy", "duplicate copies"),
                    "deleted copies": ("deleted copy", "deleted copies"),
@@ -1330,13 +1442,26 @@ def make_schedule(n: int, start: dt.datetime, lo: int, hi: int, opens: dt.time,
 
 def unguard_cell(value: str | None) -> str:
     value = value or ""
-    return value[1:] if value.startswith("'") else value
+    return value[1:] if value.startswith("'") and value[1:2] in GUARDED_PREFIXES else value
 
 
 def reviewed_rows(src: Path, marked_only: bool):
     """Read spreadsheet exports without losing quoted embedded newlines."""
-    reader = csv.DictReader(io.StringIO(read_text_any(src), newline=""), strict=True)
-    fields = [unguard_cell(c).strip() for c in (reader.fieldnames or [])]
+    text = read_text_any(src)
+    has_nul = "\0" in text
+    if has_nul:
+        # Python 3.9's CSV parser rejects NUL before exposing the row's rank.
+        # Reversibly escape it (and backslashes) for parsing only, then restore
+        # every cell so validation rejects the original control character.
+        text = text.replace("\\", "\\\\").replace("\0", "\\0")
+
+    def restore_cell(value):
+        if has_nul and value is not None:
+            return re.sub(r"\\([\\0])", lambda m: "\0" if m[1] == "0" else "\\", value)
+        return value
+
+    reader = csv.DictReader(io.StringIO(text, newline=""), strict=True)
+    fields = [unguard_cell(restore_cell(c)).strip() for c in (reader.fieldnames or [])]
     named_fields = [c for c in fields if c]
     if len(named_fields) != len(set(named_fields)):
         die("CSV header contains duplicate column names")
@@ -1348,6 +1473,7 @@ def reviewed_rows(src: Path, marked_only: bool):
     for i, raw in enumerate(reader, 1):
         if None in raw:
             die(f"malformed CSV at row {i}")
+        raw = {k: restore_cell(v) for k, v in raw.items()}
         # A send list already had its guard removed; preserve its literal apostrophes.
         row = {k: unguard_cell(v) if marked_only else (v or "") for k, v in raw.items() if k}
         if not any(v.strip() for v in row.values()):
@@ -1372,10 +1498,15 @@ def reviewed_rows(src: Path, marked_only: bool):
 def validated_send_rows(selected, self_addrs, row_label="ranks"):
     """Validate all selected rows before deduplication or any output write."""
     rows, seen = [], set()
-    errors = {"first_name": [], "address": [], "account": []}
+    errors = {"first_name": [], "address": [], "account": [], "control characters": [],
+              "household recipient": []}
     for _, _, number, source in selected:
+        if any(unicodedata.category(char) in ("Cc", "Zl", "Zp")
+               for column in SEND_COLUMNS for char in source.get(column, "")):
+            errors["control characters"].append(str(number))
         row = {c: source.get(c, "").strip() for c in SEND_COLUMNS}
         row["email"] = row["email"].lower()
+        recipient = canon(row["email"])
         account = canon(row["account"])
         if not row["first_name"]:
             errors["first_name"].append(str(number))
@@ -1383,9 +1514,11 @@ def validated_send_rows(selected, self_addrs, row_label="ranks"):
             errors["address"].append(str(number))
         if account not in self_addrs:
             errors["account"].append(str(number))
+        if recipient in self_addrs:
+            errors["household recipient"].append(str(number))
         row["account"] = account
-        if row["email"] not in seen:
-            seen.add(row["email"])
+        if recipient not in seen:
+            seen.add(recipient)
             rows.append((number, row))
     problems = [f"invalid {field} at {row_label} {', '.join(numbers)}"
                 for field, numbers in errors.items() if numbers]
@@ -1430,12 +1563,18 @@ def send_list_main(argv: list[str]) -> int:
     src = Path(args.reviewed_csv).expanduser().resolve()
     dst = out / "send_list.csv"
     guard_git(out, args.allow_inside_git)
+    guard_output_symlinks(out)
     guard_inputs([dst], [src])
-    rows = validated_send_rows(reviewed_rows(src, marked_only=True), self_addrs)
+    selected = reviewed_rows(src, marked_only=True)
+    rows = validated_send_rows(selected, self_addrs)
     if not rows:
         die("no rows are marked y in the notify column")
     private_directory(out, secure_existing=True)
-    write_send_csv(dst, [row for _, row in rows], SEND_COLUMNS)
+    with atomic_outputs([dst]) as staged:
+        write_send_csv(staged[dst], [row for _, row in rows], SEND_COLUMNS)
+    duplicates = len(selected) - len(rows)
+    if duplicates:
+        print(f"{quantity(duplicates, 'duplicate row')} dropped")
     print(f"{quantity(len(rows), 'person', 'people')} marked to notify -> <out>/send_list.csv")
     return 0
 
@@ -1508,6 +1647,7 @@ def schedule_main(argv: list[str]) -> int:
     ledger = Path(args.ledger).expanduser().resolve()
     out = output_directory(args.out)
     guard_git(out, args.allow_inside_git)
+    guard_output_symlinks(out)
     destinations = [out / f"send_list_{account_label(i)}.csv" for i in range(len(self_addrs))]
     log = out / "schedule.log"
     guard_inputs(destinations + [log], [src, ledger])
@@ -1530,17 +1670,26 @@ def schedule_main(argv: list[str]) -> int:
             row["send_at"] = timestamp.strftime("%Y-%m-%d %H:%M")
     # Validation and schedule computation finish before creating or changing output files.
     private_directory(out, secure_existing=True)
-    for dst, account in zip(destinations, self_addrs):
-        write_send_csv(dst, by_account[account], SEND_COLUMNS + ["share_url", "send_at"])
-    timezone = dt.datetime.now().astimezone().tzname()
-    with open_private(log, append=True) as f:
-        f.write(f"# timezone={timezone} seed={seed} start={start:%Y-%m-%d %H:%M} "
-                f"gap={lo}-{hi} hours={opens:%H:%M}-{closes:%H:%M} pace={args.pace}\n")
-        for i, account in enumerate(self_addrs):
-            group = by_account[account]
-            first = group[0]["send_at"] if group else "-"
-            last = group[-1]["send_at"] if group else "-"
-            f.write(f"{account_label(i)} count={len(group)} first={first} last={last}\n")
+    with atomic_outputs(destinations + [log]) as staged:
+        for dst, account in zip(destinations, self_addrs):
+            write_send_csv(staged[dst], by_account[account], SEND_COLUMNS + ["share_url", "send_at"])
+        timezone = dt.datetime.now().astimezone().tzname()
+        with open_private(staged[log]) as f:
+            try:
+                fd = os.open(log, os.O_RDONLY | os.O_NOFOLLOW)
+            except FileNotFoundError:
+                pass  # The first schedule has no log yet.
+            else:
+                with os.fdopen(fd, encoding="utf-8", newline="") as previous:
+                    for block in iter(lambda: previous.read(65536), ""):
+                        f.write(block)
+            f.write(f"# timezone={timezone} seed={seed} start={start:%Y-%m-%d %H:%M} "
+                    f"gap={lo}-{hi} hours={opens:%H:%M}-{closes:%H:%M} pace={args.pace}\n")
+            for i, account in enumerate(self_addrs):
+                group = by_account[account]
+                first = group[0]["send_at"] if group else "-"
+                last = group[-1]["send_at"] if group else "-"
+                f.write(f"{account_label(i)} count={len(group)} first={first} last={last}\n")
     for i, account in enumerate(self_addrs):
         print(f"{quantity(len(by_account[account]), 'row')} -> <out>/send_list_{account_label(i)}.csv")
     if args.allow_missing_share_url:

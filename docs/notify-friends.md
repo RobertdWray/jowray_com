@@ -101,13 +101,15 @@ notify_harvest_pid=$!
 wait "$notify_harvest_pid"
 ```
 
-It writes `correspondents.csv` (UTF-8 **with BOM** for Excel), `mail.sqlite` and `evidence/household-names.txt`, all 0600. It rebuilds the database and original ranking on each run; keep the reviewed copy separate. The 0600 `evidence/harvest.log` contains aggregate counts, year range, elapsed time, neutral output labels and warnings, not per-person lines. `--top` prints personal rows only with `--verbose`; do not use that option for this workflow.
+It writes `correspondents.csv` (UTF-8 **with BOM** for Excel), `mail.sqlite` and `evidence/household-names.txt`, all 0600. It rebuilds the database and original ranking on each run; keep the reviewed copy separate. All three are prepared in private temporary files before any final file is replaced atomically; a failed read or write leaves the previous complete files in place. `evidence/` is always secured to 0700, including when it already exists; parents of `--out` are never chmodded. The 0600 `evidence/harvest.log` contains aggregate counts, year range, elapsed time, neutral output labels and warnings, not per-person lines. `--top` prints personal rows only with `--verbose`; do not use that option for this workflow.
 
 If `correspondents_reviewed.csv` already exists, a later harvest rerun rewrites `correspondents.csv` but never the reviewed copy; the operator or orchestrator carries decisions forward privately by matching email and merging `notify` marks and edited names into the new file, never by row position.
 
 The household-name file records observed display names and their counts. Review it privately, add missing full household names to `HOUSEHOLD_NAMES`, then rerun before family review. One-word or otherwise unusable name keys are ignored and counted. `--household-name` prevents household aliases under those names appearing as correspondents. Optionally add `--contacts` with a private address-book CSV for better names and address-book flags.
 
 The tool refuses no messages, invalid options, invalid household addresses, inaccessible inputs and outputs inside git. Correct the path, sync or permissions; keep output outside git. **Warnings about indexed but undownloaded folders, no household-sent mail or unlisted senders need investigation even when exit status is 0.** Check Sent downloads and the account mapping before accepting the ranking. Default console output is aggregate, not a per-account folder mapping; verify that mapping privately in Thunderbird and the local database.
+
+Missing mail path arguments refuse the harvest before any mail is read. Unreadable mail files or subdirectories also refuse it, reporting only the count, before replacing prior outputs. All three commands refuse symlinked output paths, including `mail.sqlite` sidecars, `evidence/` and its household-name file, send lists and `schedule.log`; correct the output location before retrying.
 
 When the harvest reports messages in outgoing folders whose sender is not a `--self` address ("check --self"), inspect those senders privately, for example with `sqlite3` on `mail.sqlite`, never in chat; if one is a household alias, record it privately and resolve it before family review.
 
@@ -136,7 +138,7 @@ Use Numbers instead if preferred. Mark `notify`, correct first and last names, c
 | `recent_subjects` | Header-only context for identifying a relationship. Read privately; never copy subjects into this repo. |
 | `flags` | `two-way`, `in her address book`, `address book only`, `mailing list: one email reaches the group`, or `looks automated`. Inspect flags; they are hints, not approvals. |
 
-Accepted positive marks, ignoring case and surrounding whitespace: **`y`, `yes`, `x`, `1`, `true`, `✓`, `✔`, `✅`, `☑`**. Blank, `n`, `no`, `0`, `false` and `-` mean no. Other marks cause a refusal. Blank trailing rows are ignored. The reader removes a BOM and the ranking's leading apostrophe formula guards. It does not silently approve a comment in `notify`.
+Accepted positive marks, ignoring case and surrounding whitespace: **`y`, `yes`, `x`, `1`, `true`, `✓`, `✔`, `✅`, `☑`**. Blank, `n`, `no`, `0`, `false` and `-` mean no. Other marks cause a refusal. Blank trailing rows are ignored. The reader removes a BOM and a leading apostrophe only when it guards `=`, `+`, `-`, `@`, their full-width forms, tab, CR or LF. A genuine leading apostrophe in a name survives. It does not silently approve a comment in `notify`.
 
 **Account attribution (D24):** each message uses household From first, then household To, then Cc, then `Delivered-To` / `X-Original-To`, then the source folder. Ties use `--self` order. Folder attribution is inferred from other headers in that source root; without evidence it falls back to the primary account. The person's `account` is the higher weighted account score, with the same tie rule; `account_basis` is its strongest basis (`from`, `to`, `cc`, `delivered`, `folder`). Address-book-only rows can have `none`. Privately review **every `folder` and `none` row** and correct `account` to the address the recipient knew. It must be one of the two configured accounts.
 
@@ -153,9 +155,9 @@ Added people need `notify`, `first_name`, `email` and `account`; surname is opti
 )
 ```
 
-It prints the selected, deduplicated count and a neutral filename. It writes `send_list.csv` (0600, UTF-8 **without BOM**), with `email,first_name,last_name,name,account`, in rank order. Addresses are trimmed and lower-cased. Repeated recipient emails collapse to the first ranked row, even if accounts differ; reconcile the count with the family's selections. The reviewed input is unchanged, so this step is safe to rerun before scheduling.
+It prints the selected, deduplicated count and a neutral filename, plus the dropped-duplicate count only when duplicates were dropped. It writes `send_list.csv` (0600, UTF-8 **without BOM**), with `email,first_name,last_name,name,account`, in rank order. Addresses are trimmed and lower-cased. Repeated recipients, including Gmail dots, `+tags` and `googlemail.com` spellings of one inbox, collapse to the first ranked row, even if accounts differ. The emitted address keeps that row's trimmed, lower-cased spelling for the importer and ledger join; reconcile the count with the family's selections. A private temporary file is written and synced before atomically replacing the send list, so a failed write leaves the previous complete file. The reviewed input is unchanged, so this step is safe to rerun before scheduling.
 
-It refuses missing/duplicate headers, malformed CSV, unknown approval marks, no selected rows, invalid email, empty first name, unknown account, input/output collisions and an output folder inside git. Diagnostics identify ranks or row numbers, not people. Correct the reviewed copy and export again. `--out` is a **directory**, not a CSV path. `--gap`, `--hours` and `--start` here fail with **“use `schedule`”**; leave timing until go-day.
+It refuses missing/duplicate headers, malformed CSV, unknown approval marks, no selected rows, invalid email, empty first name, unknown account, household (`--self`) recipients including canonical aliases, control or line-separator characters in any output field (including CR, LF, tab, U+0085, U+2028 and U+2029), symlinked outputs, input/output collisions and an output folder inside git. Diagnostics identify ranks or row numbers, not people. Correct the reviewed copy and export again. `--out` is a **directory**, not a CSV path. `--gap`, `--hours` and `--start` here fail with **“use `schedule`”**; leave timing until go-day.
 
 ### 3.4 Import invite links (D6)
 
@@ -210,7 +212,9 @@ Do not run this on the correspondent list during readiness. Immediately before e
 )
 ```
 
-It prints row counts per neutral file and a log-write count. It writes `send_list_primary.csv` and `send_list_second.csv` (0600, UTF-8 without BOM), including a header-only file for an empty account. Columns are the plain send-list columns plus `share_url` and `send_at`. Times use local `YYYY-MM-DD HH:MM`. `schedule.log` (0600, appended) records the timezone name, seed, start, hours, pace and per-account counts/time ranges. Inputs are unchanged; existing schedule files are overwritten.
+It prints row counts per neutral file and a log-write count. It writes `send_list_primary.csv` and `send_list_second.csv` (0600, UTF-8 without BOM), including a header-only file for an empty account. Columns are the plain send-list columns plus `share_url` and `send_at`. Times use local `YYYY-MM-DD HH:MM`. `schedule.log` (0600, logically appended) records the timezone name, seed, start, hours, pace and per-account counts/time ranges. Both account files and the old log plus new lines are prepared and synced in private temporary files before any final file is replaced atomically. A failed preparation leaves both previous account files and the log byte-identical. Inputs are unchanged.
+
+Each file replacement is atomic; the set of replacements is not a filesystem transaction. An interruption during replacement can leave complete files from different runs. After any failed or interrupted run, reconcile and rerun successfully before using the files; never treat preserved old schedules as authorization to merge.
 
 | Option | Choice for this campaign |
 |---|---|
@@ -220,7 +224,7 @@ It prints row counts per neutral file and a log-write count. It writes `send_lis
 | `--seed` | Optional reproducible timing; otherwise the generated seed is recorded privately. It does not track delivery. |
 | `--target` | `https://www.jowray.com`, exactly matching the ledger origin. |
 
-It refuses **any start in the past**, missing ledger entries, a bad/mismatched origin, malformed ledger/CSV, invalid selected rows, output/input collisions and output inside git. Fix the cause; refresh the start immediately before merging. Do not use `--allow-missing-share-url` or a git-guard override for this workflow. A failed run is not permission to use old schedule files.
+It refuses **any start in the past**, missing ledger entries, a bad/mismatched origin, malformed ledger/CSV, invalid selected rows (including control characters and household recipients), symlinked outputs or log, output/input collisions and output inside git. Fix the cause; refresh the start immediately before merging. Do not use `--allow-missing-share-url` or a git-guard override for this workflow. A failed run is not permission to use old schedule files.
 
 The scheduler requires a memorial field in the ledger header but **does not compare it with `MEMORIAL_SLUG`**; it checks the target and link prefix. Preserve the importer-validated ledger and privately confirm `<MEMORIAL_SLUG>` before scheduling. It also deduplicates recipient emails. It has no knowledge of sent or already queued mail: never re-merge a file just because it was regenerated. Reconcile first ([F9/F10](#7-emergency-stop-and-overdue-mail)).
 
@@ -233,7 +237,7 @@ The scheduler requires a memorial field in the ledger header but **does not comp
 
 Record installed versions privately. If they differ, verify their behavior before proceeding; the following mode choice was checked against the 11.6.1 package.
 
-1. In Send Later preferences, set **“Check every # minutes” = 0**. This is the hold. The docs say it “won't deliver scheduled drafts when their time comes” [C52]. Keep it on throughout setup.
+1. In Send Later preferences, set **“Check every # minutes” = 0**. This is the hold. The docs say it “won't deliver scheduled drafts when their time comes” [C52]. Keep it on throughout setup. Open the preferences and read back **“Check every # minutes” = 0 immediately before every merge, after any Thunderbird restart and after any add-on update**. If the setting did not hold, **stop: do not merge; resolve it first**.
 2. Enable **“Don't deliver messages more than 60 minutes late”** [C53].
 3. Turn **off** the option that sends unsent Outbox mail. Record its **exact installed label** privately during installation; PR-3 adds the verified label here. Do not guess the label or proceed until that behavior is disabled.
 4. For **each account**, go to Account Settings → Copies & Folders and put drafts in **Local Folders → Drafts**. This avoids Exchange IMAP stripping the scheduling headers.
@@ -243,12 +247,14 @@ Record installed versions privately. If they differ, verify their behavior befor
 | Template field | Value |
 |---|---|
 | From | That template's account: `<PRIMARY_HOTMAIL>` or `<SECOND_HOTMAIL>`. |
-| To | `{{email}}` |
+| To | Must stay exactly `{{email}}`, the bare reviewed address. Do not add a display name such as `{{name}} <{{email}}>`. |
 | Cc | `<ROB_GMAIL>` |
 | Subject | `{{first_name}} - …`, followed by the operator's privately approved words. No real subject belongs in this runbook. |
 | Body | Plain text in the operator's words. At most two full `https://www.jowray.com/` links: the obituary and `{{share_url}}`. |
 
-At rehearsal or go-day, open the matching saved template and set the Mail Merge dialog explicitly:
+The open [Send Later issue #798, "MacOS 14.8.3 TB 153.0.3 (aarch64) Settings not held, not functional"](https://github.com/Extended-Thunder/send-later/issues/798) is a reason to re-check the hold. The title alone does not establish behavior on this installation.
+
+At rehearsal or go-day, read back the hold, open the matching saved template and set the Mail Merge dialog explicitly:
 
 | Mail Merge field | Required value |
 |---|---|
@@ -268,7 +274,7 @@ That recommendation concerns reviewing **unscheduled Outbox mail**. In Mail Merg
 
 ## 5. Post-merge gate — every merge
 
-Keep **Check every = 0** until all checks pass:
+Open Send Later's preferences and read back **“Check every # minutes” = 0 immediately before every merge, after any Thunderbird restart and after any add-on update**. If the setting did not hold, **stop: do not merge; resolve it first** (see issue #798 in [setup](#4-thunderbird-setup-d7-design-calls-d10d19)). After the merge, confirm the hold still reads 0 and keep it there until all checks pass:
 
 1. Send Later's scheduled count equals the rows merged, excluding CSV headers. Start from an empty list for the rehearsal and initial go-day merges. With an existing verified batch, reconcile its count and the added rows separately.
 2. In **View → Message Source**, a sample from each account has **`X-Send-Later-At`**, with the intended time and account. Inspect recipient, Cc, greeting and links privately too. No merged row may be left as an ordinary unscheduled draft; a count mismatch stops the gate.
@@ -324,7 +330,7 @@ To revoke an invite, have the operator approve a SQL change setting that Invite'
 2. Send a **fresh OAuth test from each account to `<ROB_GMAIL>`** and confirm Gmail inbox arrival. Resolve authentication or recovery access problems before continuing.
 3. Reconcile Send Later, Outbox and Sent. The initial campaign starts with no correspondent draft queued. Check the Mac's local timezone and clock.
 4. Set a future `SEND_START` and rerun [schedule](#35-schedule-files--go-day-only) **right before each merge**. If the morning start has passed, choose a new future time; the command refuses past starts. Use the freshly generated file for the account being merged. Do not merge the other account's file twice when rerunning regenerates both files.
-5. Merge each account with **Save As Draft**, Send Later on, **At = `{{send_at}}`**. Keep the hold on while merging and run the post-merge gate after each merge. Reconcile the combined scheduled count before release.
+5. Open Send Later's preferences and read back **“Check every # minutes” = 0 immediately before every merge, after any Thunderbird restart and after any add-on update**. If the setting did not hold, **stop: do not merge; resolve it first**. Merge each account with **Save As Draft**, Send Later on, **At = `{{send_at}}`**. Keep the hold on while merging and run the post-merge gate after each merge. Reconcile the combined scheduled count before release.
 6. With every gate passed, keep a main Thunderbird window open and `caffeinate -is` running, then set **Check every = 1**. Monitor Cc copies, bounces and replies; use the emergency stop when needed.
 
 ## Dress rehearsal (D8)
@@ -354,7 +360,7 @@ Do this before D9. Schedule **exactly two messages**, both To `<REHEARSAL_TO>` w
 ```
 
 3. The primary pass writes one populated `rehearsal-primary/send_list_primary.csv`; the second pass writes one populated `rehearsal-second/send_list_second.csv`. Each pass also writes a header-only file for the other account and a private `schedule.log`. Merge **only the two populated files**, using their matching templates. Each directory is 0700; files are 0600. The console reports counts only.
-4. Use **Save As Draft**, Send Later on and **At = `{{send_at}}`**. Run the gate after each merge; the final scheduled count must be **two**, both account samples must have `X-Send-Later-At`, and **Outbox must be 0**.
+4. Open Send Later's preferences and read back **“Check every # minutes” = 0 immediately before every merge, after any Thunderbird restart and after any add-on update**. If the setting did not hold, **stop: do not merge; resolve it first**. Use **Save As Draft**, Send Later on and **At = `{{send_at}}`**. Run the gate after each merge; the final scheduled count must be **two**, both account samples must have `X-Send-Later-At`, and **Outbox must be 0**.
 5. Keep a main window open and `caffeinate -is` running. Set **Check every = 1**. Verify both messages arrive at `<REHEARSAL_TO>` and both Cc copies reach the Gmail **inbox**. Check the privately approved subject, greeting, From account, obituary link and working `/s/` prefill in each message.
 6. **Set Check every = 0 again.** Confirm Send Later's scheduled list **and Outbox are empty** and no test draft remains. Reconcile Sent before retrying any uncertain delivery. Save screenshots and settings privately, with files 0600. Record the outcome in `evidence/ready.md`; then stop at R1.
 
