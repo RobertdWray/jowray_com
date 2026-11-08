@@ -81,7 +81,7 @@ D20 keeps 100% Sentry traces and unmasked Session Replay for public visitors, in
 Use the [environment key reference](../environment.md#phase-1-application-keys) and the [plan's launch gates and rollback](../plans/2026-11-08-see-memories.md#launch-gates-and-rollback). `PUBLIC_MEMORIES_ENABLED` is a strict boolean, default false; unset/blank/false is dark and invalid values fail validation.
 
 1. Merge and deploy with the flag absent. The additive tags migration accompanies the code; this task does not perform either step.
-2. **Rob, L15:** review `list_memories(status: "APPROVED")`, including visibility, and change anything that must not be public to FAMILY. Both entry forms default to PUBLIC, so approval alone is not sufficient inventory sign-off. Confirm the design's life-story copy too (D14).
+2. **Rob, L15:** review `list_memories(status: "APPROVED")`, including visibility, and change anything that must not be public to FAMILY. Check every memory's place for a street address and edit it to the town: place text is published as written. Both entry forms default to PUBLIC, so approval alone is not sufficient inventory sign-off. Confirm the design's life-story copy too (D14).
 3. **Rob, L15:** set `PUBLIC_MEMORIES_ENABLED=true` in Vercel Production and redeploy on or before 2026-11-10. Changing the variable alone does not change the running deployment. Leave Preview dark unless intentionally enabled.
 4. Check header navigation, all five page types, non-public not-found behaviour, media refusals/playback and noindex headers against [L13 verification](../plans/2026-11-08-see-memories.md#verification-l13-results-recorded-under-docsplansevidence2026-11-08-see-memories).
 
