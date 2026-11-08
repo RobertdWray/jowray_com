@@ -3,7 +3,7 @@ import "server-only";
 import * as Sentry from "@sentry/nextjs";
 
 import { createLogger } from "@/lib/logger";
-import { hasLocationReader } from "@/lib/media-location";
+import { hasLocationReader, isMp4Container } from "@/lib/media-location";
 import { type GpsRead, jpegMetadataComplete, readGpsFromBytes } from "@/lib/photo-gps";
 import { storagePrefix } from "@/lib/site-url";
 import { readVideoLocation } from "@/lib/video-gps";
@@ -141,7 +141,7 @@ export async function extractPhotoGps({ mediaId, deadlineMs = GPS_READ_DEADLINE_
 async function readGps(storageKey: string, mimeType: string, deadlineMs: number): Promise<MediaGpsRead> {
   const signal = AbortSignal.timeout(deadlineMs);
   const storage = createStorageService();
-  if (mimeType === "video/quicktime" || mimeType === "video/mp4") {
+  if (isMp4Container(mimeType)) {
     const head = await storage.head(storageKey, { signal });
     if (head === null) {
       throw new OriginalMissingError();

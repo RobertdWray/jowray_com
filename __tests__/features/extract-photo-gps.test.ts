@@ -265,7 +265,8 @@ describe("extractPhotoGps: eligibility, the claim and the cap", () => {
     { name: "a PENDING row", rows: [photo({ status: "PENDING" })] },
     { name: "a FAILED row", rows: [photo({ status: "FAILED" })] },
     { name: "a WebM video", rows: [photo({ mimeType: "video/webm" })] },
-    { name: "a voice note", rows: [photo({ mimeType: "audio/mp4" })] },
+    // An M4A voice note is an MP4 container and is scanned (plan 2026-11-08 D16); a browser recording has no location reader.
+    { name: "a browser voice recording", rows: [photo({ mimeType: "audio/webm" })] },
     { name: "a removed file", rows: [photo({ deletedAt: new Date() })] },
     { name: "a file of a deleted memory", rows: [photo({ memory: { deletedAt: new Date() } })] },
     { name: "an already decided row", rows: [photo({ gpsCheckedAt: new Date() })] },
@@ -369,7 +370,10 @@ describe("extractPhotoGps: video location (A20-A22)", () => {
   it.each([
     { fixture: "location-mdta.mov", mimeType: "video/quicktime" },
     { fixture: "location-xyz.mp4", mimeType: "video/mp4" },
-  ])("finds $fixture with bounded ranges under the head request's deadline", async ({ fixture, mimeType }) => {
+    // M4A voice notes share the MP4 container, so the same reader finds a location in them (plan 2026-11-08 D16).
+    { fixture: "location-xyz.mp4", mimeType: "audio/mp4" },
+    { fixture: "location-mdta.mov", mimeType: "audio/x-m4a" },
+  ])("finds $fixture as $mimeType with bounded ranges under the head request's deadline", async ({ fixture, mimeType }) => {
     media[0]!.mimeType = mimeType;
     blobs.set(key, videoFixture(fixture));
     expect(await extractPhotoGps({ mediaId: "med_1" })).toBe("found");
