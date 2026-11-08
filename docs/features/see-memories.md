@@ -23,7 +23,7 @@ These are summaries of the [Decision status table](../plans/2026-11-08-see-memor
 | Decision | Source |
 |---|---|
 | Public requires APPROVED + PUBLIC + not deleted; launch waits for inventory sign-off and an explicit flag change. Approved by Rob on 2026-11-08. | D1, D15; [launch gates](../plans/2026-11-08-see-memories.md#launch-gates-and-rollback) |
-| URL-driven server rendering; derived photos only, no download mode; recordings subject to the location gate; separate public budgets. Approved by Rob on 2026-11-08. | D5, D6, D16, D18 |
+| URL-driven server rendering; derived photos only, no download mode; videos and recordings play as recorded, location included (D16 as amended by Rob later on 2026-11-08); separate public budgets. Approved by Rob on 2026-11-08. | D5, D6, D16, D18 |
 | Claim-link content changes return approved memories to PENDING; streamed not-found pages are accepted. Approved by Rob on 2026-11-08. | D13, D17 |
 | Launch with noindex and keep the existing full Sentry collection for public visitors. Approved by Rob on 2026-11-08. | D19, D20 |
 | Kind comes from `Memory.type`; omit people chips/transcripts; put See memories first in the header; use 12 Explore cards and adjacent-memory navigation. These are agent calls marked approved in the plan, not separately quoted Rob rulings. | D7–D10, D12 |
@@ -53,10 +53,9 @@ Chips are links with `aria-current`; changing a filter resets `n`. Search uses a
 
 | Request or file | Result |
 |---|---|
-| Flag off, non-public/deleted memory, missing/removed/purged/not-READY file, unavailable copy or failed location gate | Uniform 404; flag-off refusal happens before a database read. |
+| Flag off, non-public/deleted memory, missing/removed/purged/not-READY file, unavailable photo copy or a type the site does not accept | Uniform 404; flag-off refusal happens before a database read. |
 | Photo | READY server-made `WEB_IMAGE`, or `THUMBNAIL` for `v=thumb` with web-copy fallback; staged keys are refused. Never the original. |
-| MOV/MP4 video or MP4-family audio, including M4A | Original plays only when `gpsCheckedAt` is set, `gpsScanComplete` is true (the reader parsed the whole movie box) and both coordinates are null. Located, unscanned, given-up and pre-flag files wait for the family's copy. |
-| WebM audio/video, Ogg, WAV or MP3 | Allowed by the shared playability rule without a location scan; other types wait. |
+| Any accepted video or recording (MOV, MP4, WebM, M4A, MP3, Ogg, WAV) | The original plays as recorded, including any location a phone saved in it. Rob, 2026-11-08: no open-source tool hides it at serve time without a second copy or a processing step, so "we'll just publish the videos with GPS locations" (videos and voice notes). The location scan still runs, for place suggestions only. |
 | `v=original` or `download` | Original maps to the web view; download is ignored. There is no public download mode. Eligible audio/video still uses its original bytes for inline playback. |
 | Allowed / allowance exhausted | 302 to a presigned URL valid for 60 seconds / 429 with `Retry-After`. |
 
@@ -126,7 +125,7 @@ Documentation-task checks on 2026-11-08 (UTC), base `c15d03e` plus the A8 docume
 
 Open items from the [plan's parking lot](../plans/2026-11-08-see-memories.md#follow-ups-parking-lot-for-after-the-merge):
 
-- **F1 — high:** stripped `WEB_VIDEO`/`WEB_AUDIO` copies remain to build; location-bearing recordings cannot play publicly until then.
+- **F1 — closed, won't do (Rob, 2026-11-08):** no stripped `WEB_VIDEO`/`WEB_AUDIO` copies; videos and recordings play as recorded instead.
 - **F2 — high:** the posted-memory email and `notifyWhenPosted` delivery are absent. [Issue #59](https://github.com/RobertdWray/jowray_com/issues/59) and the 2026-11-10 email promise need follow-through; enabling the flag sends no such email.
 - **F3 — medium, Rob:** write the public-visitor telemetry policy and fuller privacy note. Public visitors currently inherit unmasked alpha collection.
 - **F4 — medium:** send exactly one family/admin alert when a claim edit reopens an approved memory; currently only the contributor is told.
@@ -143,7 +142,7 @@ Additional branch findings supplied with this task; severities below are the doc
 - **No-JavaScript streaming — medium:** with JavaScript off, streamed content never replaces “Loading…” on any dynamic page of the site; Suspense needs its inline script. The plan's “every decade shows without JavaScript” holds only once that content is in the document, despite the accordion's `noscript` style. This browser finding was not rerun for this document.
 - **XL design fidelity — low:** the 1920px+ three-pane Explore approximates Main-XL: extra space remains under search, and decade bars are columns instead of the board's horizontal rows. The code also retains the shared header/view pills and omits the XL inset. See [DESIGN §5.12](../../design/DESIGN.md#512-see-memories-memories-added-2026-11-08).
 - **Large-photo fallback — fixed in TCR round 1 (B2-1):** the memory page's main photo and thumbnails sit over placeholder tiles and use `FallbackImage`, like the cards.
-- **Location scan ambiguity — fixed in TCR round 1 (B1-1):** `readVideoLocation` now says whether an absence comes from a complete parse (`complete: true`) or a give-up (a limit, a malformed or unsupported box, a location value it could not use); `extractPhotoGps` stores that as `Media.gpsScanComplete` for MP4-family files, and D16 plays only `true`. Rows decided before the column have `null` and wait until a rescan (follow-up). The reader still does not parse track-level metadata, XMP `uuid` boxes, 3GPP `loci` or iTunes `mdir` `©xyz` (issue #83); stripped copies (F1) remain the real fix.
+- **Location scan ambiguity — fixed in TCR round 1 (B1-1):** `readVideoLocation` now says whether an absence comes from a complete parse (`complete: true`) or a give-up (a limit, a malformed or unsupported box, a location value it could not use); `extractPhotoGps` stores that as `Media.gpsScanComplete` for MP4-family files. Since D16 was amended (Rob, 2026-11-08) the flag no longer decides public playback; it marks the files the reader gave up on. The reader still does not parse track-level metadata, XMP `uuid` boxes, 3GPP `loci` or iTunes `mdir` `©xyz` (issue #83), which now matters only for place suggestions.
 - **Shared contributor edits — fixed in TCR round 1 (B1-2):** a name or relationship change through one claim link now reopens every other APPROVED memory of that contributor, so none shows an unreviewed name.
 - **M4A place suggestions — informational:** M4A voice notes now use the MP4 location reader and feed place suggestions too; this extends behaviour beyond photos/video.
 

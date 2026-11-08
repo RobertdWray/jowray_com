@@ -14,7 +14,7 @@ import {
 import { isStagingKey } from "@/lib/derived-keys";
 import { attachmentDisposition, extensionFor, isAllowedMime } from "@/lib/media-types";
 import { createLogger, logError } from "@/lib/logger";
-import { type LocationFacts, originalPlayablePublicly } from "@/lib/memories/playability";
+import { originalPlayablePublicly } from "@/lib/memories/playability";
 import { isPublicMemory, type PublicRuleFacts } from "@/lib/memories/public-rule";
 import { getMediaServingEnv, type MediaServingEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
@@ -116,10 +116,9 @@ export interface ServeMediaOptions {
  * the same 404, unless the memory is APPROVED, PUBLIC and not deleted (D1,
  * checked here as well as by the route's `authorize`, and regardless of
  * `allowDeletedMemory`). It never gets an original photo or a download: `original` becomes the web
- * copy and `download` is ignored. A recording or video plays only when its
- * original cannot carry a location or a complete scan found none (D16). Its
- * allowance is counted in `public:` scopes against the `MEDIA_PUBLIC_*`
- * limits (D18).
+ * copy and `download` is ignored. A recording or video plays as recorded,
+ * location included (D16 as amended by Rob on 2026-11-08). Its allowance is
+ * counted in `public:` scopes against the `MEDIA_PUBLIC_*` limits (D18).
  */
 export async function serveMedia({ id, variant: askedVariant, download: askedDownload, caller, viewerKey = "unknown", allowDeletedMemory, authorize, now = () => new Date() }: ServeMediaOptions): Promise<Response> {
   const isPublic = caller === "public";
@@ -206,15 +205,15 @@ export async function serveMedia({ id, variant: askedVariant, download: askedDow
 }
 
 /**
- * The public caller's own gate (D1, D16): the memory is APPROVED, PUBLIC and not deleted, and a non-photo original
- * cannot carry a location or a complete scan found none. Photos are judged by the derived-copy branch, which never serves
- * their original.
+ * The public caller's own gate (D1, D16 as amended by Rob on 2026-11-08): the memory is APPROVED, PUBLIC and not
+ * deleted, and the file is a photo or a video or recording the public may play as recorded. Photos are judged by the
+ * derived-copy branch, which never serves their original.
  */
-function isPublicFile(media: LocationFacts & { memory: PublicRuleFacts }): boolean {
+function isPublicFile(media: { mimeType: string; memory: PublicRuleFacts }): boolean {
   if (!isPublicMemory(media.memory)) {
     return false;
   }
-  return media.mimeType.startsWith("image/") || originalPlayablePublicly(media);
+  return media.mimeType.startsWith("image/") || originalPlayablePublicly(media.mimeType);
 }
 
 /**

@@ -99,8 +99,10 @@ describe("listPublicMemories", () => {
     const media = select.media as { where: unknown; select: Record<string, unknown> };
     expect(media.where).toEqual({ deletedAt: null, purgedAt: null, status: "READY" });
     expect(media.select).not.toHaveProperty("storageKey");
-    // D16 needs the scan's completeness, not just its stamp (TCR round 1, B1-1).
-    expect(media.select).toMatchObject({ gpsCheckedAt: true, gpsScanComplete: true, latitude: true, longitude: true });
+    // Playability no longer depends on where a file was recorded (D16 as amended, Rob 2026-11-08), so the public read never selects it.
+    for (const column of ["latitude", "longitude", "gpsCheckedAt", "gpsScanComplete"]) {
+      expect(media.select, column).not.toHaveProperty(column);
+    }
     expect(media.select.derivatives).toEqual({ where: { status: "READY" }, select: { kind: true, width: true, height: true, storageKey: true } });
   });
 
@@ -159,17 +161,18 @@ describe("listPublicMemories", () => {
   });
 
   it.each([
-    ["a recording a browser made", { mimeType: "audio/webm", gpsCheckedAt: null, gpsScanComplete: null, latitude: null, longitude: null }, "yes"],
-    ["an M4A scanned clean", { mimeType: "audio/x-m4a", gpsCheckedAt: CHECKED, gpsScanComplete: true, latitude: null, longitude: null }, "yes"],
-    ["an M4A not scanned yet", { mimeType: "audio/mp4", gpsCheckedAt: null, gpsScanComplete: null, latitude: null, longitude: null }, "waiting"],
-    ["a MOV with a location", { mimeType: "video/quicktime", gpsCheckedAt: CHECKED, gpsScanComplete: true, latitude: 40.68, longitude: -74.04 }, "waiting"],
-    ["a MOV scanned clean", { mimeType: "video/quicktime", gpsCheckedAt: CHECKED, gpsScanComplete: true, latitude: null, longitude: null }, "yes"],
-    ["a MOV whose scan gave up", { mimeType: "video/quicktime", gpsCheckedAt: CHECKED, gpsScanComplete: false, latitude: null, longitude: null }, "waiting"],
-    ["an MP4 decided before the completeness flag", { mimeType: "video/mp4", gpsCheckedAt: CHECKED, gpsScanComplete: null, latitude: null, longitude: null }, "waiting"],
-  ])("marks %s as playable %s (D16) and takes its duration", async (_name, location, playable) => {
+    ["a recording a browser made", { mimeType: "audio/webm", gpsCheckedAt: null, gpsScanComplete: null, latitude: null, longitude: null }],
+    ["an M4A scanned clean", { mimeType: "audio/x-m4a", gpsCheckedAt: CHECKED, gpsScanComplete: true, latitude: null, longitude: null }],
+    ["an M4A not scanned yet", { mimeType: "audio/mp4", gpsCheckedAt: null, gpsScanComplete: null, latitude: null, longitude: null }],
+    ["an M4A with a location", { mimeType: "audio/x-m4a", gpsCheckedAt: CHECKED, gpsScanComplete: true, latitude: 40.68, longitude: -74.04 }],
+    ["a MOV with a location", { mimeType: "video/quicktime", gpsCheckedAt: CHECKED, gpsScanComplete: true, latitude: 40.68, longitude: -74.04 }],
+    ["a MOV scanned clean", { mimeType: "video/quicktime", gpsCheckedAt: CHECKED, gpsScanComplete: true, latitude: null, longitude: null }],
+    ["a MOV whose scan gave up", { mimeType: "video/quicktime", gpsCheckedAt: CHECKED, gpsScanComplete: false, latitude: null, longitude: null }],
+    ["an MP4 decided before the completeness flag", { mimeType: "video/mp4", gpsCheckedAt: CHECKED, gpsScanComplete: null, latitude: null, longitude: null }],
+  ])("marks %s as playable (D16 as amended, Rob 2026-11-08) and takes its duration", async (_name, location) => {
     rows = [memoryRow({ type: location.mimeType.startsWith("video/") ? "VIDEO" : "VOICE", media: [mediaRow({ ...location, durationSeconds: 47, derivatives: [] })] })];
     const [memory] = await listPublicMemories();
-    expect(memory).toMatchObject({ playable, durationSeconds: 47, photos: [] });
+    expect(memory).toMatchObject({ playable: "yes", durationSeconds: 47, photos: [] });
   });
 
   it("is playable when there is nothing to play (a written memory)", async () => {
@@ -187,7 +190,7 @@ describe("getPublicMemory", () => {
     expect(args.where).toEqual({ id: "00000000-0000-4000-8000-000000000001", ...PUBLIC_MEMORY_WHERE });
     expect(memory?.media).toEqual([
       { id: "00000000-0000-4000-8000-0000000000m1", kind: "PHOTO", mimeType: "image/heic", caption: "At the county fair", durationSeconds: null, width: 2048, height: 1536, hasThumb: true, playable: "yes" },
-      { id: "00000000-0000-4000-8000-0000000000m5", kind: "VIDEO", mimeType: "video/quicktime", caption: "At the county fair", durationSeconds: 30, width: 4032, height: 3024, hasThumb: false, playable: "waiting" },
+      { id: "00000000-0000-4000-8000-0000000000m5", kind: "VIDEO", mimeType: "video/quicktime", caption: "At the county fair", durationSeconds: 30, width: 4032, height: 3024, hasThumb: false, playable: "yes" },
     ]);
     const json = JSON.stringify(memory);
     for (const secret of [SECRET_EMAIL, SECRET_HASH, SECRET_KEY, SECRET_URL, "40.68", "-74.04", String(EXACT_LAT)]) {
