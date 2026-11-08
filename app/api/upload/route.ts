@@ -3,6 +3,7 @@ import { type NextRequest, NextResponse } from "next/server";
 
 import { extractPhotoGps } from "@/features/media/extract-photo-gps";
 import { deriveMedia } from "@/features/memories/derive-media";
+import { derivePoster } from "@/features/memories/derive-poster";
 import { recordMedia } from "@/features/memories/ingest-upload";
 import { createLogger, logError } from "@/lib/logger";
 import { hasLocationReader } from "@/lib/media-location";
@@ -19,6 +20,8 @@ export const maxDuration = 60;
 const EVENT_MAX_ATTEMPTS = 3;
 /** Budget for the derived copies made from the callback (the route has 60 s). */
 const DERIVE_DEADLINE_CALLBACK_MS = 15_000;
+/** Budget for a video's poster made from the callback, in its own task beside the copies (the route has 60 s). */
+const POSTER_DEADLINE_CALLBACK_MS = 15_000;
 
 const log = createLogger({ category: "upload" });
 
@@ -113,6 +116,19 @@ export async function POST(request: NextRequest): Promise<Response> {
               if (hasLocationReader(blob.contentType)) {
                 afterWithFlush("upload.callback.photo_gps", async () => {
                   await extractPhotoGps({ mediaId });
+                });
+              }
+              // A video's poster (video-posters plan T7, D1): this callback is the browser-upload producer, since the
+              // contributor pages that finalize never import the poster code (ffmpeg is traced into this route, the MCP
+              // route and the cron only). Its own task, like the GPS read. derivePoster rechecks the stored row, and its
+              // claim row makes a second worker harmless; a deferral or a retryable failure is cron (g2)'s.
+              if (blob.contentType.startsWith("video/")) {
+                afterWithFlush("upload.callback.poster", async () => {
+                  try {
+                    await derivePoster({ mediaId, deadlineMs: POSTER_DEADLINE_CALLBACK_MS });
+                  } catch (error) {
+                    logError("video poster failed after the upload callback", error, { category: "upload", mediaId });
+                  }
                 });
               }
               // Closed-tab backstop for the derived copies; finalize normally gets there first and the

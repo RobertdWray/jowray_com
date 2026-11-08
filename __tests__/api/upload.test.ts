@@ -24,6 +24,8 @@ const deriveMock = vi.fn(async (_arg: unknown) => ({ WEB_IMAGE: "derived", THUMB
 vi.mock("@/features/memories/derive-media", () => ({ deriveMedia: (arg: unknown) => deriveMock(arg) }));
 const extractGpsMock = vi.fn(async (_arg: unknown) => "found");
 vi.mock("@/features/media/extract-photo-gps", () => ({ extractPhotoGps: (arg: unknown) => extractGpsMock(arg) }));
+const derivePosterMock = vi.fn(async (_arg: unknown) => "derived");
+vi.mock("@/features/memories/derive-poster", () => ({ derivePoster: (arg: unknown) => derivePosterMock(arg) }));
 const afterCalls: Array<() => Promise<void>> = [];
 /** The task name of each scheduled callback, index for index with afterCalls. */
 const afterNames: string[] = [];
@@ -63,7 +65,7 @@ function tokenRequest(ticketOverride?: Record<string, unknown>, pathname = claim
 
 beforeEach(() => {
   media = [{ id: "med_1", status: "PENDING", deletedAt: null, memory: { deletedAt: null } }];
-  events.length = 0; afterCalls.length = 0; afterNames.length = 0; recordMediaMock.mockClear(); deriveMock.mockClear(); extractGpsMock.mockClear();
+  events.length = 0; afterCalls.length = 0; afterNames.length = 0; recordMediaMock.mockClear(); deriveMock.mockClear(); extractGpsMock.mockClear(); derivePosterMock.mockClear();
   process.env.BLOB_READ_WRITE_TOKEN = RW_TOKEN;
   process.env.UPLOAD_TICKET_SECRET = "s".repeat(32);
   process.env.NEXT_PUBLIC_SITE_URL = "https://www.jowray.com";
@@ -169,17 +171,22 @@ describe("POST /api/upload (upload completed callback)", () => {
     await completed(contentType);
     expect(extractGpsMock).not.toHaveBeenCalled();
     await afterCalls[0]!();
-    expect(afterNames).toEqual(["upload.callback", "upload.callback.photo_gps"]);
+    // A video also gets its poster task (video-posters plan T7); the GPS task is still the first one scheduled.
+    expect(afterNames).toEqual(["upload.callback", "upload.callback.photo_gps", "upload.callback.poster"]);
     expect(extractGpsMock).not.toHaveBeenCalled();
     await afterCalls[1]!();
     expect(extractGpsMock).toHaveBeenCalledExactlyOnceWith({ mediaId: "med_1" });
   });
 
   // audio/mp4 is an MP4 container with a location reader now (plan 2026-11-08 D16); browser WebM recordings are not.
-  it.each(["audio/webm", "video/webm"])("schedules no photo GPS step for a blob of type %s (final review, item 4)", async (contentType) => {
+  // A WebM video still gets its poster task (video-posters plan T7), never a GPS one.
+  it.each([
+    { contentType: "audio/webm", names: ["upload.callback"] },
+    { contentType: "video/webm", names: ["upload.callback", "upload.callback.poster"] },
+  ])("schedules no photo GPS step for a blob of type $contentType (final review, item 4)", async ({ contentType, names }) => {
     await completed(contentType);
     await afterCalls[0]!();
-    expect(afterNames).toEqual(["upload.callback"]);
+    expect(afterNames).toEqual(names);
     expect(extractGpsMock).not.toHaveBeenCalled();
     expect(deriveMock).toHaveBeenCalledTimes(1);
   });
@@ -217,6 +224,47 @@ describe("POST /api/upload (upload completed callback)", () => {
     await POST(new NextRequest("http://localhost:3000/api/upload", { method: "POST", body: body2, headers: { "content-type": "application/json", "x-vercel-signature": sig2 } }));
     const update2 = dbStub.webhookEvent.update.mock.calls.at(-1)?.[0] as unknown as { data: { attempts: number } };
     expect(update2.data.attempts).toBeGreaterThanOrEqual(3);
+  });
+
+  describe("video poster (video-posters plan T7, D1: the browser-upload producer)", () => {
+    it.each(["video/quicktime", "video/mp4", "video/webm"])("schedules its own poster task for a READY %s, which runs derivePoster with 15 000 ms", async (contentType) => {
+      await completed(contentType);
+      expect(derivePosterMock).not.toHaveBeenCalled(); // nothing runs before the response
+      await afterCalls[0]!();
+      // The callback task only schedules it: the poster never waits on the copies or the GPS read, nor holds them up.
+      expect(derivePosterMock).not.toHaveBeenCalled();
+      expect(afterNames.filter((name) => name === "upload.callback.poster")).toHaveLength(1);
+      const update = dbStub.webhookEvent.update.mock.calls.at(-1)?.[0] as unknown as { data: { processedAt?: Date } };
+      expect(update.data.processedAt).toBeInstanceOf(Date);
+      await afterCalls[afterNames.indexOf("upload.callback.poster")]!();
+      expect(derivePosterMock).toHaveBeenCalledExactlyOnceWith({ mediaId: "med_1", deadlineMs: 15_000 });
+    });
+
+    it.each(["image/jpeg", "image/heic", "audio/mp4", "audio/webm"])("schedules no poster task for a %s", async (contentType) => {
+      await completed(contentType);
+      await afterCalls[0]!();
+      expect(afterNames).not.toContain("upload.callback.poster");
+      for (const task of afterCalls.slice(1)) { await task(); }
+      expect(derivePosterMock).not.toHaveBeenCalled();
+    });
+
+    it.each(["PENDING", "FAILED", "NOT_FOUND"] as const)("schedules no poster task while the video's outcome is %s", async (status) => {
+      recordMediaMock.mockResolvedValueOnce({ status, mediaId: "med_1", memoryId: "mem_1" } as never);
+      await completed("video/mp4");
+      await afterCalls[0]!();
+      expect(afterNames).toEqual(["upload.callback"]);
+      expect(derivePosterMock).not.toHaveBeenCalled();
+    });
+
+    it("a poster task that throws (derivePoster never should) is logged in its own task, never a callback failure", async () => {
+      derivePosterMock.mockRejectedValueOnce(new Error("unexpected"));
+      await completed("video/mp4");
+      await afterCalls[0]!();
+      const update = dbStub.webhookEvent.update.mock.calls.at(-1)?.[0] as unknown as { data: { processedAt?: Date; error?: string | null } };
+      expect(update.data).toMatchObject({ processedAt: expect.any(Date), error: null });
+      await expect(afterCalls[afterNames.indexOf("upload.callback.poster")]!()).resolves.toBeUndefined();
+      expect(derivePosterMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("rejects an unsigned callback", async () => {

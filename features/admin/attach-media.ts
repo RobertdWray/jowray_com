@@ -2,6 +2,7 @@ import "server-only";
 
 import { extractPhotoGps } from "@/features/media/extract-photo-gps";
 import { reservePendingMedia, resolveFile, TX_OPTIONS } from "@/features/memories/create-memory";
+import { derivePoster } from "@/features/memories/derive-poster";
 import { recordMedia, scheduleReadyFollowUps, type FailedReason } from "@/features/memories/ingest-upload";
 import { renewPendingReservation } from "@/features/memories/issue-upload-ticket";
 import { BudgetBusyError, lockMemory, type Tx } from "@/features/memories/lock";
@@ -11,6 +12,7 @@ import type { Memory } from "@/generated/prisma/client";
 import { createLogger } from "@/lib/logger";
 import { hasLocationReader } from "@/lib/media-location";
 import { memoryTypeFor } from "@/lib/media-types";
+import { afterWithFlush } from "@/lib/sentry/after-flush";
 import { tagIds } from "@/lib/sentry/user";
 import { BLOB_TOKEN_LIFETIME_MS, TICKET_TTL_MS } from "@/lib/upload-ticket";
 import { adminFinalizeUploadSchema, adminRequestUploadSchema } from "@/lib/validations/admin";
@@ -184,6 +186,15 @@ export async function finalizeUploadAsAdmin(raw: unknown): Promise<FinalizeAdmin
   // Repeated finalize calls only report the durable result; cron backfills any missed follow-ups.
   if (row.status !== "READY") {
     scheduleReadyFollowUps({ mediaId, mimeType: ready.mimeType, sizeBytes: outcome.sizeBytes, deadlineAt });
+    // A video's poster, scheduled here and never in scheduleReadyFollowUps: the contributor pages import that, and the
+    // ffmpeg binary must stay out of them (video-posters plan D1, ruling R2). Only `/api/mcp` imports this module. The
+    // task gets what is left of this call's deadline when it runs, after the hash and the inline GPS read; derivePoster
+    // defers below its own floor, and cron (g2) backstops a deferral or a retryable failure.
+    if (ready.mimeType.startsWith("video/")) {
+      afterWithFlush("mcp.finalize.poster", async () => {
+        await derivePoster({ mediaId, deadlineMs: deadlineAt - Date.now() });
+      });
+    }
   }
   return { ok: true, status: "READY", mediaId, memoryType: ready.memory.type, gps };
 }
