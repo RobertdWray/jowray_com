@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 
 import { mediaNotFound, mediaVariantFrom, serveMedia, viewerKeyFrom } from "@/features/media/serve-media";
+import { isPublicMemory } from "@/lib/memories/public-rule";
 import { getPublicMemoriesEnv } from "@/server/config/env";
 
 // Inline views are 60-second presigned redirects; nothing streams through this function, but keep the media routes' budget.
@@ -28,6 +29,6 @@ export async function GET(request: NextRequest, context: RouteContext<"/api/publ
     caller: "public",
     viewerKey,
     allowDeletedMemory: false,
-    authorize: (memory) => memory.status === "APPROVED" && memory.visibility === "PUBLIC",
+    authorize: isPublicMemory,
   });
 }

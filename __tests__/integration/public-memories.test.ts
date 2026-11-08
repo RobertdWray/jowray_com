@@ -15,8 +15,10 @@
 import { PrismaPg } from "@prisma/adapter-pg";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
-import { getPublicMemory, listPublicMemories } from "@/features/memories/public";
+import { getPublicMemory, listPublicMemories, PUBLIC_MEMORY_WHERE } from "@/features/memories/public";
 import { PrismaClient } from "@/generated/prisma/client";
+import { MemoryStatus, Visibility } from "@/generated/prisma/enums";
+import { isPublicMemory } from "@/lib/memories/public-rule";
 
 const url = process.env.TEST_DATABASE_URL;
 if (process.env.CI && !url) {
@@ -114,5 +116,27 @@ describe.skipIf(!client)("listPublicMemories and getPublicMemory (real Postgres,
     }
     expect(ids.one).toMatchObject({ id: ids.shown, tags: [{ name: "quilting", slug: "quilting" }, { name: "Café", slug: "cafe" }], point: { lat: 39.5, lon: -76.65 }, year: 1985, place: { label: "Towson, MD", slug: "towson-md" }, note: "Jo and the calico", media: [] });
     expect(ids.hidden).toEqual([null, null, null]);
+  });
+});
+
+describe.skipIf(!client)("PUBLIC_MEMORY_WHERE and isPublicMemory agree on real Postgres (D1, TCR round 1 B2-2)", () => {
+  it("select exactly the same rows out of every status × visibility × deleted combination", async () => {
+    const { rows, matched } = await inRolledBackTx(async (tx, memorialId) => {
+      const created: Array<{ id: string; status: string; visibility: string; deletedAt: Date | null }> = [];
+      for (const status of Object.values(MemoryStatus)) {
+        for (const visibility of Object.values(Visibility)) {
+          for (const deletedAt of [null, new Date("2026-11-08T12:00:00Z")]) {
+            // Only a DRAFT may lack the consent stamp (Memory_consent_when_not_draft).
+            const consentedAt = status === "DRAFT" ? null : new Date("2026-11-07T12:00:00Z");
+            created.push(await tx.memory.create({ data: { ...draft(memorialId), status, visibility, deletedAt, consentedAt }, select: { id: true, status: true, visibility: true, deletedAt: true } }));
+          }
+        }
+      }
+      const found = await tx.memory.findMany({ where: { memorialId, ...PUBLIC_MEMORY_WHERE }, select: { id: true } });
+      return { rows: created, matched: found.map((row) => row.id).sort() };
+    });
+    expect(rows).toHaveLength(Object.values(MemoryStatus).length * Object.values(Visibility).length * 2);
+    expect(matched).toEqual(rows.filter(isPublicMemory).map((row) => row.id).sort());
+    expect(matched).toHaveLength(1);
   });
 });

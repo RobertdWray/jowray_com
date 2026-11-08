@@ -9,18 +9,20 @@ import { memoryTypeFor } from "@/lib/media-types";
 import { displayYear } from "@/lib/memories/approx-year";
 import { roundPoint, toPublicPlace } from "@/lib/memories/places";
 import { publicPlayability } from "@/lib/memories/playability";
+import { PUBLIC_MEMORY_RULE } from "@/lib/memories/public-rule";
 import { toPublicTags } from "@/lib/memories/tags";
 import type { Playable, PublicMediaItem, PublicMemory, PublicMemoryDetail, PublicPhoto } from "@/lib/memories/types";
 import { parseMemoryId } from "@/lib/validations/public-memories";
 import { getDb } from "@/server/db/client";
 
 /**
- * What "public" means on See memories (plan docs/plans/2026-11-08-see-memories.md, D1), as one constant so no
- * reader can drift (debt catalogue rule M-E-14): the family approved it, the contributor chose "Everyone", and it is
- * not deleted. DRAFT, PENDING, HIDDEN, FAMILY, PRIVATE and deleted rows never match. This module is its only reader;
- * the media route checks the same three facts itself (`features/media/serve-media.ts`, caller `public`).
+ * What "public" means on See memories (plan docs/plans/2026-11-08-see-memories.md, D1), as the Prisma `where` built
+ * from the one rule in `lib/memories/public-rule.ts` (debt catalogue rule M-E-14): the family approved it, the
+ * contributor chose "Everyone", and it is not deleted. DRAFT, PENDING, HIDDEN, FAMILY, PRIVATE and deleted rows never
+ * match. This module is its only reader; the media route checks a loaded row with the same rule's `isPublicMemory`
+ * (`features/media/serve-media.ts`, caller `public`).
  */
-export const PUBLIC_MEMORY_WHERE = { status: "APPROVED", visibility: "PUBLIC", deletedAt: null } as const satisfies Prisma.MemoryWhereInput;
+export const PUBLIC_MEMORY_WHERE = PUBLIC_MEMORY_RULE satisfies Prisma.MemoryWhereInput;
 
 const FRIEND = "A friend of Jo's";
 

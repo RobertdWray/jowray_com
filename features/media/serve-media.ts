@@ -15,6 +15,7 @@ import { isStagingKey } from "@/lib/derived-keys";
 import { attachmentDisposition, extensionFor, isAllowedMime } from "@/lib/media-types";
 import { createLogger, logError } from "@/lib/logger";
 import { type LocationFacts, originalPlayablePublicly } from "@/lib/memories/playability";
+import { isPublicMemory, type PublicRuleFacts } from "@/lib/memories/public-rule";
 import { getMediaServingEnv, type MediaServingEnv } from "@/server/config/env";
 import { getDb } from "@/server/db/client";
 import { createStorageService } from "@/services/storage";
@@ -71,6 +72,7 @@ export interface ServableMemory {
   claimTokenHash: string;
   status: "DRAFT" | "PENDING" | "APPROVED" | "HIDDEN";
   visibility: "PUBLIC" | "FAMILY" | "PRIVATE";
+  deletedAt: Date | null;
 }
 
 /** Counter scopes of public visitors start with this, so they never share a row with the claim-link or admin counters (D18). */
@@ -208,8 +210,8 @@ export async function serveMedia({ id, variant: askedVariant, download: askedDow
  * cannot carry a location or a complete scan found none. Photos are judged by the derived-copy branch, which never serves
  * their original.
  */
-function isPublicFile(media: LocationFacts & { memory: { status: string; visibility: string; deletedAt: Date | null } }): boolean {
-  if (media.memory.status !== "APPROVED" || media.memory.visibility !== "PUBLIC" || media.memory.deletedAt !== null) {
+function isPublicFile(media: LocationFacts & { memory: PublicRuleFacts }): boolean {
+  if (!isPublicMemory(media.memory)) {
     return false;
   }
   return media.mimeType.startsWith("image/") || originalPlayablePublicly(media);
