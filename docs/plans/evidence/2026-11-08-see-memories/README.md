@@ -10,6 +10,8 @@ Plan: [`docs/plans/2026-11-08-see-memories.md`](../../2026-11-08-see-memories.md
 
 ## Results
 
+> **Later change (PR #94, 2026-11-08):** Rob amended D16, so a public MOV with a location now answers 302 to its original instead of 404, and there is no stripped video copy (F1 closed). The rows below are the results recorded at `c15d03e`; re-running them gives 302 on the "scan found a location" row.
+
 | Check | Result |
 |---|---|
 | `npm run validate` | pass (exit 0) at every ledger row; last at `c15d03e` |

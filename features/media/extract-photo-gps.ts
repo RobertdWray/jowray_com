@@ -123,8 +123,8 @@ export async function extractPhotoGps({ mediaId, deadlineMs = GPS_READ_DEADLINE_
       return failed(mediaId, attempt, read.error);
     }
     // The decision clears the claim. A file removed (or whose memory was deleted) while it was read keeps no point.
-    // An MP4-family decision also records whether the scan was complete: only a complete one with no location lets the
-    // original play on See memories (plan 2026-11-08 D16, TCR round 1 B1-1). Photos never stream their original.
+    // An MP4-family decision also records whether the scan was complete (TCR round 1 B1-1). Since Rob amended plan
+    // 2026-11-08 D16 it no longer decides public playback; it marks the files the reader gave up on (issue #83).
     const scan = isMp4Container(row.mimeType) ? { gpsScanComplete: read.status === "found" || read.complete === true } : {};
     const decided = await db.media.updateMany({
       where: { id: mediaId, gpsCheckedAt: null, deletedAt: null, memory: { deletedAt: null } },

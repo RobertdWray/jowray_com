@@ -1,10 +1,10 @@
 /**
- * GET /api/public-media/[id] (plan docs/plans/2026-11-08-see-memories.md, D6, D15, D16, D18).
+ * GET /api/public-media/[id] (plan docs/plans/2026-11-08-see-memories.md, D6, D15, D16 as amended, D18).
  *
  * The public route serves a file of a memory that is APPROVED, visibility
  * PUBLIC and not deleted, to anyone, only while the launch flag is on. Photos
- * only ever leave as the server-made copies; videos and MP4-family recordings
- * only when their location scan found nothing. Public visitors are counted in
+ * only ever leave as the server-made copies; videos and recordings leave as
+ * recorded, location included (Rob, 2026-11-08). Public visitors are counted in
  * their own `public:` scopes and limits, never in the claim-link ones. Every
  * refusal is the same 404 (no oracle).
  */
@@ -207,21 +207,12 @@ describe("GET /api/public-media/[id]: who may see", () => {
   });
 });
 
-describe("GET /api/public-media/[id]: location (D16)", () => {
-  it.each(["med_mov_located", "med_mov_unscanned", "med_m4a_unscanned", "med_mov_gave_up", "med_mp4_legacy", "med_m4a_gave_up"])("404s %s: a video or M4A whose scan found a location, has not decided, gave up or predates the completeness flag", async (id) => {
-    expect((await request(id)).status).toBe(404);
-    expect(presignMock).not.toHaveBeenCalled();
-    expect(getMock).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["med_mov_clean", "originals/mem_1/med_mov_clean"],
-    ["med_m4a_clean", "originals/mem_1/med_m4a_clean"],
-    ["med_webm", "originals/mem_1/med_webm"],
-  ])("redirects %s: scanned clean, or a format with no location", async (id, pathname) => {
+describe("GET /api/public-media/[id]: videos and recordings play as recorded (D16 as amended, Rob 2026-11-08)", () => {
+  it.each(["med_mov_located", "med_mov_unscanned", "med_mov_clean", "med_mov_gave_up", "med_mp4_legacy", "med_m4a_unscanned", "med_m4a_clean", "med_m4a_gave_up", "med_webm"])("redirects %s to its original, whatever its location scan found", async (id) => {
     const res = await request(id);
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe(`https://blob.test/${pathname}?signed=1`);
+    expect(res.headers.get("location")).toBe(`https://blob.test/originals/mem_1/${id}?signed=1`);
+    expect(getMock).not.toHaveBeenCalled();
   });
 
   it("never sends a photo's original, whatever `v` or `download` asks for", async () => {
@@ -295,8 +286,18 @@ describe("serveMedia with caller public (defence in depth)", () => {
     expect(res.status).toBe(404);
   });
 
-  it("refuses a located video for the public caller even when the caller's authorize says yes", async () => {
-    const res = await serveMedia({ id: "med_mov_located", variant: "web", download: true, caller: "public", viewerKey: "x", allowDeletedMemory: false, authorize: () => true });
+  it("refuses a located video in a memory that is not APPROVED + PUBLIC even when the caller's authorize says yes", async () => {
+    media.find((m) => m.id === "med_mov_located")!.memory = { ...PUBLIC_MEMORY, visibility: "FAMILY" };
+    const res = await serveMedia({ id: "med_mov_located", variant: "web", download: false, caller: "public", viewerKey: "x", allowDeletedMemory: false, authorize: () => true });
     expect(res.status).toBe(404);
+    expect(presignMock).not.toHaveBeenCalled();
+  });
+
+  it("gives the public caller a located video only as an inline redirect, never a download, even when asked through serveMedia", async () => {
+    const res = await serveMedia({ id: "med_mov_located", variant: "original", download: true, caller: "public", viewerKey: "x", allowDeletedMemory: false, authorize: () => true });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("https://blob.test/originals/mem_1/med_mov_located?signed=1");
+    expect(res.headers.get("content-disposition")).toBeNull();
+    expect(getMock).not.toHaveBeenCalled();
   });
 });

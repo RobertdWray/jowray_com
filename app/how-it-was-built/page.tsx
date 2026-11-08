@@ -236,7 +236,11 @@ export default function HowItWasBuiltPage() {
               a scrambled fingerprint of the link, never the link itself. Jo&apos;s family can also make
               corrections from their private page.
             </li>
-            <li>Files sit in private storage. Photos are shown from a copy with the location data removed.</li>
+            <li>
+              Files sit in private storage. Photos are shown from a copy with the location data removed. Videos and
+              voice recordings are shared as they were recorded, so anyone who saves one can see what the phone
+              stored with it, which can include where and when it was recorded and which phone made it.
+            </li>
             <li>The family reads every memory before it appears on See memories.</li>
             {/* Alpha telemetry (AGENTS.md § Sentry). When the alpha settings end, UPDATE this line in the same
                 commit; do not delete it: replays continue at 10% after the alpha (telemetry plan §13, plan §12 F3).

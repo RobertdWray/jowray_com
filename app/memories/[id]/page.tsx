@@ -6,7 +6,7 @@ import { Suspense } from "react";
 
 import { getPublicMemory, listPublicMemories } from "@/features/memories/public";
 import { FAMILY_CONTACT_EMAIL } from "@/lib/contact";
-import { durationText, fakeBars, KIND_TEXT } from "@/lib/memories/format";
+import { fakeBars, KIND_TEXT } from "@/lib/memories/format";
 import { nearby, photoPill, placeCount, prevNext, threadOrder } from "@/lib/memories/related";
 import type { PublicMediaItem, PublicMemory, PublicMemoryDetail } from "@/lib/memories/types";
 import { tagIds } from "@/lib/sentry/user";
@@ -18,9 +18,10 @@ import { AudioPlayer } from "../_components/audio-player-client";
 import { OpeningSoon } from "../_components/bands";
 import { bandClass, cardGridClass, eyebrowClass, h2Class, innerClass, paperBandClass } from "../_components/chips";
 import { exploreHref, mapHref, memoryHref, publicMediaHref, shareHref, tagsHref } from "../_components/hrefs";
-import { CompactCard, PlayBadge } from "../_components/memory-card";
+import { CompactCard } from "../_components/memory-card";
 import { PhotoFigure } from "../_components/photo-figure-client";
 import { townOf } from "../_components/us-map";
+import { VideoPlayer } from "../_components/video-player";
 
 const NOINDEX = { index: false, follow: false } as const;
 
@@ -144,24 +145,11 @@ function Player({ item, memory }: { item: PublicMediaItem; memory: PublicMemoryD
   if (item.playable !== "yes") {
     return <Waiting kind={item.kind} />;
   }
-  const src = publicMediaHref(item.id, "web");
+  // Both players use `preload="none"` (plan D6 as amended, C34): nothing loads until the visitor presses play.
   if (item.kind === "VOICE") {
-    return <AudioPlayer src={src} mimeType={item.mimeType} durationSeconds={item.durationSeconds} bars={fakeBars(`${memory.id}:${item.id}`, 40, 56, 10)} />;
+    return <AudioPlayer src={publicMediaHref(item.id, "web")} durationSeconds={item.durationSeconds} bars={fakeBars(`${memory.id}:${item.id}`, 40, 56, 10)} />;
   }
-  // A native player (plan D6, C34): nothing loads but the metadata until the visitor presses play.
-  return (
-    <figure className="flex flex-col gap-3">
-      <div className="overflow-hidden rounded-[16px] border-[3px] border-dashed border-wood bg-wood-light p-2">
-        <video controls preload="metadata" playsInline className="aspect-video w-full rounded-[10px] bg-walnut">
-          <source src={src} type={item.mimeType} />
-        </video>
-      </div>
-      <figcaption className="flex items-center gap-2 text-small text-walnut-soft">
-        <PlayBadge size={24} />
-        {[item.caption, durationText(item.durationSeconds)].filter(Boolean).join(" · ") || "Nothing plays until you press it."}
-      </figcaption>
-    </figure>
-  );
+  return <VideoPlayer item={item} />;
 }
 
 function MediaColumn({ memory }: { memory: PublicMemoryDetail }) {

@@ -151,12 +151,12 @@ async function main(): Promise<void> {
           derived.push({ id: randomUUID(), mediaId: id, kind: "THUMBNAIL", status: "READY", storageKey: `dev/derived/sample/${id}-thumb.jpg`, mimeType: "image/jpeg", width: 1000, height: 750, sizeBytes: 90_000 });
         }
       } else if (sample.type === "VOICE") {
-        // Alternate a browser recording (always playable) and an M4A not scanned yet (waiting, D16).
+        // Alternate a browser recording and an M4A not scanned yet; both play (D16 as amended by Rob, 2026-11-08).
         addFile(index % 2 === 0 ? "audio/webm" : "audio/mp4", { durationSeconds: sample.durationSeconds });
       } else if (sample.type === "VIDEO") {
-        // Alternate a MOV scanned clean (playable) and one whose scan found a location (waiting, D16).
+        // Alternate a MOV scanned clean and one whose scan found a location; both play (D16 as amended by Rob, 2026-11-08).
         const located = index % 2 === 1;
-        // A complete scan, as extractPhotoGps records it, so the clean ones play (D16, TCR round 1 B1-1).
+        // A complete scan, as extractPhotoGps records it (TCR round 1 B1-1).
         addFile("video/quicktime", { durationSeconds: sample.durationSeconds, gpsCheckedAt: now, gpsScanComplete: true, latitude: located ? 40.6892 : null, longitude: located ? -74.0445 : null });
       }
     });
