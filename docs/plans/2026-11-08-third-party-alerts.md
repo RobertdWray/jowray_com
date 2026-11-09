@@ -135,6 +135,7 @@ In `docs/features/sentry-telemetry.md`:
 | 2026-11-08 | S6 | PR #100 (draft); `ci`, python-notify, Vercel preview all pass. The CI build log shows `check-sentry-app-key: OK (... 26 of 32 client chunks, including our Sentry init ...)` | PR checks |
 | 2026-11-08 | S7 | Preview `98c0c61`, headless Chrome over CDP, with the bypass sent as a CDP network header (never in a URL, never printed). V1: the inline-script error arrived as JOWRAY_COM-F, environment `preview`, `third_party_code = True`. V2: the wrapped-timer error grouped into JOWRAY_COM-4 (same stack shape as its 2026-11-04 event, which contains mode tagged `True`) and arrived with **no** `third_party_code` tag. Tunnel answered 200 throughout | `sentry api organizations/med3ai/issues/7836372216/events/latest/`; `.../issues/7829382036/events/?statsPeriod=24h` |
 | 2026-11-08 | S8 | Independent subagent review, round 1: four findings; R1-1, R1-3 and R1-4 fixed, R1-2 answered by S7 (§9). `validate` clean; 18 tests in the two new files; full suite 3687 passed, 68 skipped; `CI=1 build:offline` passed both gates | §9 |
+| 2026-11-08 | S7b | Preview re-check on `168f1f5` (with the `beforeSend` untag step; the preview took about 150 s to update after `ci`). Injected-script error arrived as JOWRAY_COM-G, `third_party_code = True`; wrapped-timer error grouped into JOWRAY_COM-4, no tag. Tunnel 200 throughout | `sentry api organizations/med3ai/events/?query="round 1b"&field=third_party_code` |
 
 ## 9. Review round 1 (2026-11-08, independent subagent)
 
