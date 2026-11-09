@@ -92,6 +92,27 @@ describe("setMediaDeletedAsAdmin: remove", () => {
     expect(fake.revisions).toHaveLength(0);
   });
 
+  it("removes a READY file the cron already claimed when another file is the only live READY one (TCR #1: a claimed file is not live, so no last_file)", async () => {
+    file(A).status = "FAILED";
+    file(B).status = "READY";
+    file(B).purgedAt = EARLIER; // claimed by cron (f): its bytes are gone or going
+    expect(await call()).toMatchObject({ ok: true, changed: true });
+    expect(file(B).deletedAt).toEqual(NOW);
+  });
+
+  it("gives no grace to a READY file the cron already claimed: purgeAfter stays null, no restorableUntil (TCR #1)", async () => {
+    memory().contributorNote = "We sat on the dock.";
+    file(B).purgedAt = EARLIER;
+    const result = await call();
+    expect(result).toMatchObject({ ok: true, changed: true });
+    expect(result).not.toHaveProperty("restorableUntil");
+    expect(file(B)).toMatchObject({ deletedAt: NOW, purgeAfter: null });
+    expect(fake.revisions[0]).toMatchObject({ after: { removedMediaId: B, purgeAfter: null } });
+    if (result.ok) {
+      expect(result.current.removedMedia).toEqual([]);
+    }
+  });
+
   it("removes the last READY file when the memory has words", async () => {
     memory().contributorNote = "We sat on the dock.";
     file(A).status = "FAILED";

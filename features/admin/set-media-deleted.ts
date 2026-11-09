@@ -22,10 +22,11 @@ export type AdminMediaDeletedResult =
  * MCP `set_media_deleted` (plan 2026-11-08-mcp-media-tools §3.3). Under the memory lock: re-read; `stale` when
  * `memoryVersion` moved (before the file, D11); the target is a file of this memory that is not a pending replacement.
  *
- * Remove: a READY file keeps its bytes until `purgeAfter` (now + 30 days) and can be restored; a PENDING or FAILED
- * file is a cancellation with today's purge (D6: cron steps (a) and (f2) act on PENDING rows without reading
- * `purgeAfter`). The last READY file of a memory without words stays (`last_file`, as on the claim page). A
- * replacement still uploading for the target is cancelled with it (`deletedAt` only).
+ * Remove: a live READY file (not yet claimed by the cron) keeps its bytes until `purgeAfter` (now + 30 days) and can
+ * be restored; a PENDING or FAILED file, or one the cron has claimed, is a cancellation with today's purge (D6: cron
+ * steps (a) and (f2) act on PENDING rows without reading `purgeAfter`). The last live READY file of a memory without
+ * words stays (`last_file`, as on the claim page). A replacement still uploading for the target is cancelled with it
+ * (`deletedAt` only).
  *
  * Restore: only a READY file removed here whose bytes the cron has not claimed (D7), within the file cap. It keeps
  * its old slot (D9). Both directions recompute the memory's type, append one ADMIN revision and move the version
@@ -55,9 +56,12 @@ export async function setMediaDeletedAsAdmin(raw: unknown): Promise<AdminMediaDe
     if (!target) {
       return { code: "not_found" as const };
     }
+    // A file the cron has claimed (`purgedAt`) is gone or going, whatever its status still says: it neither holds the
+    // memory up nor has bytes to keep (TCR round 1, #1).
+    const liveReady = target.status === "READY" && target.purgedAt === null;
     if ((target.deletedAt !== null) === deleted) {
       // Already removed through MCP and still restorable: repeat when it may be purged, as the removal answered (George G9).
-      const restorable = deleted && target.status === "READY" && target.purgedAt === null ? target.purgeAfter : null;
+      const restorable = deleted && liveReady ? target.purgeAfter : null;
       return { code: "ok" as const, changed: false, current: await currentMediaView(tx, memoryId), restorableUntil: restorable ?? undefined };
     }
     const now = new Date();
@@ -66,14 +70,14 @@ export async function setMediaDeletedAsAdmin(raw: unknown): Promise<AdminMediaDe
     let restorableUntil: Date | undefined;
 
     if (deleted) {
-      if (target.status === "READY" && !hasWords(memory.contributorNote)) {
-        // A file marked for purge is gone or going, whatever its status still says: it cannot hold the memory up.
+      if (liveReady && !hasWords(memory.contributorNote)) {
+        // The same rule for the others: a file marked for purge cannot hold the memory up.
         const readyFiles = await tx.media.count({ where: { memoryId, deletedAt: null, status: "READY", purgedAt: null } });
         if (readyFiles <= 1) {
           return { code: "last_file" as const };
         }
       }
-      const purgeAfter = target.status === "READY" ? new Date(now.getTime() + REMOVED_MEDIA_GRACE_MS) : null;
+      const purgeAfter = liveReady ? new Date(now.getTime() + REMOVED_MEDIA_GRACE_MS) : null;
       await tx.media.update({ where: { id: target.id }, data: { deletedAt: now, purgeAfter } });
       const replacements = await tx.media.findMany({ where: { memoryId, replacesMediaId: target.id, deletedAt: null, status: "PENDING" }, select: { id: true }, orderBy: { id: "asc" } });
       if (replacements.length > 0) {
