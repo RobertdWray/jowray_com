@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { sourceInputSchema } from "@/lib/source-input";
-import { adminCoordinatesSchema, adminFinalizeUploadSchema, adminRequestUploadSchema, adminDeletedSchema, adminMemoryChangesSchema, adminMemoryIdSchema, adminShareDraftObjectSchema, adminStatusObjectSchema, MEMORY_STATUSES, withApprovalRule } from "@/lib/validations/admin";
+import { adminCoordinatesSchema, adminFinalizeUploadSchema, adminRequestUploadSchema, adminDeletedSchema, adminMediaDeletedSchema, adminMediaOrderSchema, adminMediaWordsSchema, adminMemoryChangesSchema, adminMemoryIdSchema, adminShareDraftObjectSchema, adminStatusObjectSchema, MEMORY_STATUSES, withApprovalRule } from "@/lib/validations/admin";
 import { draftMemoryObjectSchema } from "@/lib/validations/memory";
 
 /**
@@ -65,6 +65,15 @@ export const mcpShareDraftSchema = withApprovalRule(adminShareDraftObjectSchema.
 
 /** `set_deleted`. */
 export const mcpDeletedSchema = adminDeletedSchema.strict();
+
+/** `update_media` (`changes` is already strict). */
+export const mcpMediaWordsSchema = adminMediaWordsSchema.strict();
+
+/** `set_media_deleted`. */
+export const mcpMediaDeletedSchema = adminMediaDeletedSchema.strict();
+
+/** `reorder_media`. */
+export const mcpMediaOrderSchema = adminMediaOrderSchema.strict();
 
 /** `request_upload`: strict at both levels so misplaced metadata is refused. */
 export const mcpRequestUploadSchema = adminRequestUploadSchema

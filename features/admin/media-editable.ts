@@ -72,6 +72,18 @@ export async function removedMediaOf(db: MediaReader, memoryId: string): Promise
   );
 }
 
+/**
+ * `current` inside a photo tool's transaction, which holds the memory's lock: memory rows are never hard-deleted, so
+ * a missing row here is a broken invariant and throws (the MCP boundary reports it to Sentry).
+ */
+export async function currentMediaView(tx: Tx, memoryId: string): Promise<AdminMediaEditableView> {
+  const view = await mediaEditableView(tx, memoryId);
+  if (!view) {
+    throw new Error(`memory ${memoryId} vanished while locked`);
+  }
+  return view;
+}
+
 /** The memory's editable files and restorable removed files; null when the memory row does not exist. */
 export async function mediaEditableView(db: MediaReader, memoryId: string): Promise<AdminMediaEditableView | null> {
   const memory = await db.memory.findUnique({ where: { id: memoryId }, select: { updatedAt: true, status: true, visibility: true } });
