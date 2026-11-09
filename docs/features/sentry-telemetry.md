@@ -85,13 +85,26 @@ Contributor fields (email, recipient email, name, phone, words, relationship, pl
 
 R12 amended kept the project's Data Scrubber and Default Scrubbers on until PR-2 was live and its token checks passed. On 2026-11-08, after Rob's go-ahead, both flags were switched off and read back. A synthetic event (environment `s1-check`, not a production Server Function) whose story contained "author" arrived as `[Filtered]` before the switch and verbatim after it. That event was sent about 2.5 minutes after the switch, inside Relay's usual cache window, and was already unfiltered. The token checks after the window still passed: the token appeared only in the replay's Meta-event `href` (residual R5), and 0 times in production spans ([evidence](../plans/evidence/2026-11-notify/post-merge.md)). The **SDK scrubber is now the only token control.** This fixes `[Filtered]` ordinary event data, not starred replay attributes; D20 fixes those separately. [Plan §8.10](../plans/2026-11-07-notify-correspondents.md) owns the procedure. Rollback sets both project flags back to `true`.
 
+### Third-party errors and alerts (2026-11-08)
+
+Some browser errors come from code we never shipped: browser extensions, and the scripts that in-app browsers (Facebook, Instagram) inject into the page. JOWRAY_COM-D is the worked example. Facebook's iPhone browser threw `undefined is not an object (evaluating 'window.webkit.messageHandlers')`, which is its injected script calling the bridge to the Facebook app when the bridge was not there. Its three frames read `app:///`: that is the page's own URL after the SDK rewrites the origin, not one of our `/_next/` files. The visitor's page was unaffected.
+
+The build marks every browser module with the `jowray_com` application key (`next.config.ts`); only the `noModule` polyfills and the Turbopack runtime stay unmarked. `thirdPartyErrorFilterIntegration` with `THIRD_PARTY_FILTER_OPTIONS` (`lib/sentry/third-party-filter.ts`) tags an error `third_party_code: True` only when **none** of its frames carries the key. Nothing is dropped (Rob, 2026-11-04). Until 2026-11-08 the filter tagged an error when **any** frame lacked the key. That also caught our own errors whenever an extension frame was on the stack, so the tag could not be used to route alerts. `scripts/check-sentry-app-key.ts` runs after every build and fails it if the chunk holding our Sentry init lost the key, because then every browser error would look third-party.
+
+Alerts (Rob sets them in Sentry; [plan](../plans/2026-11-08-third-party-alerts.md) Part B):
+
+- **High-priority new issues (not third-party)**, on "A new issue is created". Block 1 emails when the issue priority is high and `third_party_code` is not set. Block 2 emails a `ChunkLoadError`: the Turbopack runtime throws it from its own unmarked chunk, so it is tagged even though it is ours. Sentry applies tag filters only to the new-issue and event triggers, which is why escalation is a separate alert.
+- **High-priority issue escalates**, on "An issue escalates": emails any high-priority issue that escalates, third-party or not. A surge could mean an in-app browser is breaking the page.
+
+To hide third-party issues in the issue stream, search `!third_party_code:True`. Residuals: errors raised only inside the Turbopack runtime, other than `ChunkLoadError`, are tagged and do not email as new issues (escalation still does). Third-party code that runs through a Sentry-wrapped timer or event listener has one marked frame (the SDK's wrapper), so it is not tagged and can still email.
+
 ## Key files
 
 | Path | Role |
 |---|---|
 | **app** | |
 | `instrumentation.ts` | Server init inside `register()`, Node only: 100 % traces, `prismaIntegration`, `pinoIntegration`, `onRequestError` |
-| `instrumentation-client.ts` | Browser init: unmasked replay, feedback widget, browser profiling, third-party filter in tag mode, console logs, the §2a quote |
+| `instrumentation-client.ts` | Browser init: unmasked replay, feedback widget, browser profiling, the third-party filter (tags only errors with no frame of ours), console logs, the §2a quote |
 | `app/sentry-tunnel/route.ts` | One line re-exporting the SDK's `POST` |
 | `app/global-error.tsx` | Root error boundary with its own `<html>`, `captureException` and `showReportDialog` |
 | `app/globals.css` | `#sentry-feedback` variables (site red, body font) |
@@ -104,6 +117,8 @@ R12 amended kept the project's Data Scrubber and Default Scrubbers on until PR-2
 | `app/api/upload/route.ts` | Blob callback: tags and `afterWithFlush("upload.callback")`; `400 invalid_json` on a malformed body |
 | **lib + server** | |
 | `lib/sentry/replay-options.ts` | Tested unmasking options, including `maskAttributes: []` |
+| `lib/sentry/third-party-filter.ts` | Tested third-party filter options: tag, never drop, and only when no frame comes from our bundles |
+| `scripts/check-sentry-app-key.ts` | Build gate after `next build`: the chunk with our Sentry init must carry the `jowray_com` application key |
 | `lib/sentry/data-collection.ts` | The one `DATA_COLLECTION` policy, with Rob's authorization |
 | `lib/sentry/secrets.ts` | Secret field keys, key fragments (`token`, `ticket`), denied headers |
 | `lib/sentry/scrub.ts` | Scrubber v2: `scrubUrl`, `scrubSecrets`, `scrubEvent`, `scrubSpan`, `scrubLog`, `scrubBreadcrumb`, `scrubReplayEvent`, `scrubRecordingEvent`; the linear member scanner and `MAX_SCRUB_TEXT_LENGTH` |
@@ -115,6 +130,7 @@ R12 amended kept the project's Data Scrubber and Default Scrubbers on until PR-2
 | `__tests__/lib/sentry-scrub-differential.test.ts`, `__tests__/fixtures/scrub-regex-main-73609cf.ts` | The old regex scanner kept as a fixture; byte-for-byte equality over a seeded corpus |
 | `__tests__/lib/sentry-scrub-timing.test.ts`, `__tests__/api/upload.test.ts` | Linear-time budget and the oversized cap; `invalid_json` |
 | `__tests__/next-config.test.ts`, `__tests__/api/reconcile.test.ts` | `Document-Policy` header; cron check-in status mapping |
+| `__tests__/lib/third-party-filter.test.ts`, `__tests__/scripts/check-sentry-app-key.test.ts` | Third-party tagging on the real SDK; the build gate |
 | **Prisma** | none; Sentry adds no tables |
 
 ## Tests and evidence
@@ -126,6 +142,7 @@ R12 amended kept the project's Data Scrubber and Default Scrubbers on until PR-2
 - `sentry-scrub-differential.test.ts` keeps `main`'s regex scanner (commit `73609cf`) as a test fixture and asserts that the linear scanner's output is byte-for-byte equal over a seeded 1,400-case corpus (consistent, escaped and mixed quoting, attacker text beside real secrets, Flight prefixes, truncation), that it never leaves a secret the old one filtered, and that it is idempotent.
 - `sentry-scrub-timing.test.ts` runs seven 200,000-character adversarial shapes with their exact expected output against a 200 ms budget (fastest of three runs; the old regex took 3,162 ms and 5,257 ms on the two worst, the new scanner 0 to 9 ms), plus the oversized marker at any depth, no secret through oversized text, and the largest legitimate payload left alone.
 - `reconcile.test.ts` pins `ok` and `error` check-ins and that previews never check in.
+- `third-party-filter.test.ts` runs the real `thirdPartyErrorFilterIntegration` (the `@sentry/core` copy `@sentry/nextjs` loads) with our options: the JOWRAY_COM-D shape is tagged; an error with one of our frames and one extension frame is not, while the pre-2026-11-08 options tag it; a Turbopack-runtime `ChunkLoadError` is tagged; an error without a stack is not. `check-sentry-app-key.test.ts` covers a marked build, a lost key, no init chunk and missing output.
 - There is no `docs/plans/evidence/` directory for this feature. The evidence is the plan's §16 ledger: on PR #34's preview the tunnel answered 200 behind Deployment Protection, a forced `/api/upload` error arrived scrubbed (JOWRAY_COM-5), a browser error arrived with replay, profile and React contexts (JOWRAY_COM-4), the header was on `/share`, the feedback button was injected. Recorded test counts: 925, 978 and 979 on the three PR tips.
 - Recorded on 2026-11-08 ([evidence](../plans/evidence/2026-11-notify/post-merge.md)): the D20 replay comparison (production before: placeholders starred; preview and production after: unmasked), the PR-2 production token checks and S1. Local and E2E checks are in [Invite links](./invite-links.md#tests-and-evidence).
 - Not run: the §11.2 submission and identity checks, the feedback-form submission, the `/m/*` replay, the §10 sentry.io checklist and the §11.4 production smoke. Phase 1's Task 4 step 6 checks (an event with no query string or cookies) are superseded by the policy flip.
