@@ -65,7 +65,10 @@ export async function setMediaDeletedAsAdmin(raw: unknown): Promise<AdminMediaDe
       return { code: "ok" as const, changed: false, current: await currentMediaView(tx, memoryId), restorableUntil: restorable ?? undefined };
     }
     const now = new Date();
-    const before = { mediaIds: await visibleMediaIds(tx, memoryId), type: memory.type };
+    // Each branch reads the visible list for its revision only after its refusals, so a refusal reads nothing it
+    // does not answer with (TCR round 1, #1 side point).
+    const snapshot = async () => ({ mediaIds: await visibleMediaIds(tx, memoryId), type: memory.type });
+    let before: Awaited<ReturnType<typeof snapshot>>;
     let after: Record<string, unknown>;
     let restorableUntil: Date | undefined;
 
@@ -77,6 +80,7 @@ export async function setMediaDeletedAsAdmin(raw: unknown): Promise<AdminMediaDe
           return { code: "last_file" as const };
         }
       }
+      before = await snapshot();
       const purgeAfter = liveReady ? new Date(now.getTime() + REMOVED_MEDIA_GRACE_MS) : null;
       await tx.media.update({ where: { id: target.id }, data: { deletedAt: now, purgeAfter } });
       const replacements = await tx.media.findMany({ where: { memoryId, replacesMediaId: target.id, deletedAt: null, status: "PENDING" }, select: { id: true }, orderBy: { id: "asc" } });
@@ -100,6 +104,7 @@ export async function setMediaDeletedAsAdmin(raw: unknown): Promise<AdminMediaDe
       if (liveFiles >= MAX_FILES_PER_MEMORY) {
         return { code: "too_many_files" as const };
       }
+      before = await snapshot();
       await tx.media.update({ where: { id: target.id }, data: { deletedAt: null, purgeAfter: null } });
       const type = (await recomputeMemoryType(tx, memoryId, memory.contributorNote)) ?? memory.type;
       after = { mediaIds: await visibleMediaIds(tx, memoryId), type, restoredMediaId: target.id };

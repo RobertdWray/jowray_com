@@ -90,6 +90,8 @@ describe("setMediaDeletedAsAdmin: remove", () => {
     expect(await call()).toEqual({ ok: false, code: "last_file" });
     expect(writes()).toEqual([]);
     expect(fake.revisions).toHaveLength(0);
+    // A refusal reads no file list it does not answer with (TCR round 1, #1 side point).
+    expect(fake.db.media.findMany).not.toHaveBeenCalled();
   });
 
   it("removes a READY file the cron already claimed when another file is the only live READY one (TCR #1: a claimed file is not live, so no last_file)", async () => {
@@ -176,6 +178,7 @@ describe("setMediaDeletedAsAdmin: restore", () => {
     arrange();
     expect(await call({ deleted: false })).toEqual({ ok: false, code: "not_restorable" });
     expect(writes()).toEqual([]);
+    expect(fake.db.media.findMany).not.toHaveBeenCalled();
   });
 
   it("refuses when the memory already holds MAX_FILES_PER_MEMORY live files (too_many_files)", async () => {
@@ -184,6 +187,7 @@ describe("setMediaDeletedAsAdmin: restore", () => {
     }
     expect(await call({ deleted: false })).toEqual({ ok: false, code: "too_many_files" });
     expect(writes()).toEqual([]);
+    expect(fake.db.media.findMany).not.toHaveBeenCalled();
   });
 });
 
