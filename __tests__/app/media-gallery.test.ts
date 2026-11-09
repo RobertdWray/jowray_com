@@ -10,7 +10,7 @@ const VIDEO_ID = "00000000-0000-4000-8000-0000000000e1";
 function video(over: Partial<AdminMediaView> = {}): AdminMediaView {
   return {
     id: VIDEO_ID, status: "READY", mimeType: "video/mp4", originalFilename: "clip.mp4", durationSeconds: 30, width: 1920, height: 1080,
-    caption: null, approxDateText: null, place: null, sortOrder: 0, webReady: false, thumbReady: false, posterReady: true, purged: false,
+    caption: null, approxDateText: null, place: null, sortOrder: 0, replacesMediaId: null, webReady: false, thumbReady: false, posterReady: true, purged: false,
     ...over,
   };
 }

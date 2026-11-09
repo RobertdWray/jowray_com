@@ -1,5 +1,6 @@
 import "server-only";
 
+import { removedMediaOf, type AdminRemovedMedia } from "@/features/admin/media-editable";
 import { reviewVersionOf } from "@/features/admin/review-version";
 import { LIVE_MEDIA_ORDER } from "@/features/memories/media-state";
 import { isStagingKey } from "@/lib/derived-keys";
@@ -22,6 +23,11 @@ export interface AdminMediaView {
   approxDateText: string | null;
   place: string | null;
   sortOrder: number;
+  /**
+   * Set on a replacement still uploading (it takes this file's place when it lands); null on an ordinary file. The
+   * photo tools act on files where it is null (plan 2026-11-08-mcp-media-tools §3.6, Oscar O8).
+   */
+  replacesMediaId: string | null;
   webReady: boolean;
   thumbReady: boolean;
   /** A video's server-made POSTER is READY: what `?v=thumb` serves for a video (D7), shown by the gallery's player. */
@@ -79,6 +85,8 @@ export interface AdminMemoryView {
   reviewVersion: string;
   contributor: AdminContributorView | null;
   media: AdminMediaView[];
+  /** READY files removed through MCP whose bytes are still kept: `set_media_deleted` can restore them (plan 2026-11-08-mcp-media-tools D7). */
+  removedMedia: AdminRemovedMedia[];
   revisions: AdminRevisionView[];
   emails: Array<{ emailType: string; status: string; sentAt: Date | null; attempts: number; createdAt: Date }>;
   /** Present only when asked for (`includeCoordinates`, the MCP tools); the admin page never sees it. */
@@ -173,6 +181,7 @@ export async function getMemoryForAdmin(id: string, options: AdminViewOptions = 
           approxDateText: true,
           place: true,
           sortOrder: true,
+          replacesMediaId: true,
           purgedAt: true,
           latitude: true,
           longitude: true,
@@ -188,6 +197,8 @@ export async function getMemoryForAdmin(id: string, options: AdminViewOptions = 
   if (!memory) {
     return null;
   }
+  // A query of its own: the `media` include above stays exactly what `reviewVersionOf` hashes (§3.6).
+  const removedMedia = await removedMediaOf(getDb(), id);
   const revisions: AdminRevisionView[] = memory.revisions.map((r) => ({ id: r.id, changedVia: r.changedVia, before: r.before, after: r.after, createdAt: r.createdAt }));
   return {
     id: memory.id,
@@ -236,12 +247,14 @@ export async function getMemoryForAdmin(id: string, options: AdminViewOptions = 
       approxDateText: m.approxDateText,
       place: m.place,
       sortOrder: m.sortOrder,
+      replacesMediaId: m.replacesMediaId,
       webReady: servable(m.derivatives, "WEB_IMAGE"),
       thumbReady: servable(m.derivatives, "THUMBNAIL"),
       posterReady: servable(m.derivatives, "POSTER"),
       purged: m.purgedAt !== null,
       ...(options.includeCoordinates && { coordinates: coordinatesOf(m) }),
     })),
+    removedMedia,
     revisions: options.includeCoordinates ? revisions : revisionsWithoutCoordinates(revisions),
     emails: memory.emails.map((e) => ({ emailType: e.emailType, status: e.status, sentAt: e.sentAt, attempts: e.attempts, createdAt: e.createdAt })),
     ...(options.includeCoordinates && { coordinates: coordinatesOf(memory) }),
