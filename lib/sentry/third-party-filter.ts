@@ -17,6 +17,8 @@ import type { Event, thirdPartyErrorFilterIntegration } from "@sentry/nextjs";
  * wrapper frame, which here would tag one of our errors.
  *
  * scripts/check-sentry-app-key.ts fails the build if the chunk holding these options loses the application key.
+ * Keep `applicationKeyExcludeDependencies` off in next.config.ts: with it, React and Next.js code is left unmarked,
+ * so an error raised only inside React (a hydration failure) would be tagged, and that gate would not notice.
  */
 export const THIRD_PARTY_FILTER_OPTIONS = {
   filterKeys: ["jowray_com"],

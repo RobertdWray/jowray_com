@@ -96,7 +96,7 @@ Alerts (Rob sets them in Sentry; [plan](../plans/2026-11-08-third-party-alerts.m
 - **High-priority new issues (not third-party)**, on "A new issue is created". Block 1 emails when the issue priority is high and `third_party_code` is not set. Block 2 emails a `ChunkLoadError`: the Turbopack runtime throws it from its own unmarked chunk, so it is tagged even though it is ours. Sentry applies tag filters only to the new-issue and event triggers, which is why escalation is a separate alert.
 - **High-priority issue escalates**, on "An issue escalates": emails any high-priority issue that escalates, third-party or not. A surge could mean an in-app browser is breaking the page.
 
-To hide third-party issues in the issue stream, search `!third_party_code:True`. Residuals: errors raised only inside the Turbopack runtime, other than `ChunkLoadError`, are tagged and do not email as new issues (escalation still does). Third-party code that runs through a Sentry-wrapped timer or event listener has one marked frame (the SDK's wrapper), so it is not tagged and can still email.
+To hide third-party issues in the issue stream, search `!third_party_code:True`. Keep `applicationKeyExcludeDependencies` off in `next.config.ts`: it leaves React and Next.js code unmarked, so an error raised only inside React (a hydration failure) would be tagged, and the build gate would not notice. Residuals: errors raised only inside the Turbopack runtime, other than `ChunkLoadError`, are tagged and do not email as new issues (escalation still does). Third-party code that runs through a Sentry-wrapped timer or event listener has one marked frame (the SDK's wrapper), so it is not tagged and can still email.
 
 ## Key files
 
