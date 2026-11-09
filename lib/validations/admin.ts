@@ -187,7 +187,8 @@ export const adminMediaWordsSchema = z.object({
   changes: z
     .object(mediaWordsFields)
     .strict()
-    .refine((changes) => Object.keys(changes).length > 0, { message: "Send at least one of caption, approxDateText, place" })
+    // A key present with the value undefined changes nothing, so it does not count (TCR round 1, #3).
+    .refine((changes) => Object.values(changes).some((value) => value !== undefined), { message: "Send at least one of caption, approxDateText, place" })
     .describe("Only the words to change: `caption`, `approxDateText` (the file's rough date), `place`; null clears one"),
 });
 export type AdminMediaWordsInput = z.infer<typeof adminMediaWordsSchema>;

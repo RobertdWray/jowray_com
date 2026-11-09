@@ -119,6 +119,7 @@ describe("updateMediaAsAdmin", () => {
   it.each([
     ["no changes object", { changes: undefined }],
     ["an empty changes object", { changes: {} }],
+    ["a changes object whose only key is undefined (TCR round 1, #3)", { changes: { caption: undefined } }],
     ["an unknown key inside changes", { changes: { caption: "x", sortOrder: 2 } }],
     ["a caption over 2000 characters", { changes: { caption: "x".repeat(2001) } }],
     ["a mediaId that is not a uuid", { mediaId: "b7ba9311" }],
