@@ -18,6 +18,7 @@ const A = "00000000-0000-4000-8000-0000000000a1";
 const B = "00000000-0000-4000-8000-0000000000b1";
 const C = "00000000-0000-4000-8000-0000000000c1";
 const REPL = "00000000-0000-4000-8000-0000000000d1";
+const REPL2 = "00000000-0000-4000-8000-0000000000d2";
 const GONE = "00000000-0000-4000-8000-0000000000e1";
 const V0 = "2026-11-08T14:36:08.673Z";
 const NOW = new Date("2026-11-08T20:00:00.000Z");
@@ -58,6 +59,30 @@ describe("reorderMediaAsAdmin", () => {
       expect(result.current.media.map((m) => m.id)).toEqual([C, A, B]);
       expect(result.current.memoryVersion).toBe(NOW.toISOString());
     }
+  });
+
+  it("writes only the rows whose slot changes, reads the pending replacements once and never runs an updateMany per id (TCR round 1, #2/#5)", async () => {
+    fake.media.push(
+      fakeMedia({ id: REPL, memoryId: MEM, status: "PENDING", sortOrder: 0, replacesMediaId: A }), // its target keeps slot 0
+      fakeMedia({ id: REPL2, memoryId: MEM, status: "PENDING", sortOrder: 2, replacesMediaId: C }), // its target moves 2 -> 1
+    );
+    const result = await call({ mediaIds: [A, C, B] });
+
+    expect(result).toMatchObject({ ok: true, changed: true });
+    expect([file(A).sortOrder, file(C).sortOrder, file(B).sortOrder]).toEqual([0, 1, 2]);
+    expect(file(REPL).sortOrder).toBe(0);
+    expect(file(REPL2).sortOrder).toBe(1);
+    // A and REPL keep their slots: not written. No updateMany at all, so the statements grow with what moved, not with the list.
+    expect(writes()).toEqual([`media.update:${C}:sortOrder`, `media.update:${B}:sortOrder`, `media.update:${REPL2}:sortOrder`, `memory.update:${MEM}:updatedAt`]);
+    const replacementReads = fake.db.media.findMany.mock.calls.filter(([args]) => typeof args.where.replacesMediaId === "object" && args.where.replacesMediaId !== null);
+    expect(replacementReads).toHaveLength(1);
+  });
+
+  it("moves a replacement whose own slot is out of step even when its target keeps its slot", async () => {
+    fake.media.push(fakeMedia({ id: REPL, memoryId: MEM, status: "PENDING", sortOrder: 7, replacesMediaId: A }));
+    expect(await call({ mediaIds: [A, C, B] })).toMatchObject({ ok: true, changed: true });
+    expect(file(REPL).sortOrder).toBe(0);
+    expect(writes()).toContain(`media.update:${REPL}:sortOrder`);
   });
 
   it("is a no-op when the id order is unchanged, even with gaps in the slots after a removal (George G3)", async () => {

@@ -51,13 +51,26 @@ export async function reorderMediaAsAdmin(raw: unknown): Promise<AdminMediaOrder
     if (snapshotsEqual({ mediaIds: visibleIds }, { mediaIds })) {
       return { code: "ok" as const, changed: false, current: await currentMediaView(tx, memoryId) };
     }
+    // Write only the rows whose slot changes, so the statements inside the lock grow with what moved, not with the
+    // list (up to MAX_REORDER_IDS; TCR round 1, #2/#5).
     const slotOf = new Map(visible.map((row) => [row.id, row.sortOrder]));
+    const indexOf = new Map(mediaIds.map((id, index) => [id, index]));
     for (const [index, id] of mediaIds.entries()) {
       if (slotOf.get(id) !== index) {
         await tx.media.update({ where: { id }, data: { sortOrder: index } });
       }
-      // A replacement still uploading takes its target's slot when it lands; keep it in step.
-      await tx.media.updateMany({ where: { memoryId, replacesMediaId: id, status: "PENDING", deletedAt: null, NOT: { sortOrder: index } }, data: { sortOrder: index } });
+    }
+    // A replacement still uploading takes its target's slot when it lands; keep it in step. One read for all of them.
+    const replacements = await tx.media.findMany({
+      where: { memoryId, replacesMediaId: { in: mediaIds }, status: "PENDING", deletedAt: null },
+      select: { id: true, replacesMediaId: true, sortOrder: true },
+      orderBy: { id: "asc" },
+    });
+    for (const replacement of replacements) {
+      const index = replacement.replacesMediaId === null ? undefined : indexOf.get(replacement.replacesMediaId);
+      if (index !== undefined && replacement.sortOrder !== index) {
+        await tx.media.update({ where: { id: replacement.id }, data: { sortOrder: index } });
+      }
     }
     await appendRevision(tx, { memoryId, changedVia: "ADMIN", before: { mediaIds: visibleIds }, after: { mediaIds }, consentVersion: memory.consentVersion });
     await touchMemory(tx, memoryId, memory.updatedAt);

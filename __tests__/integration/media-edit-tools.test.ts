@@ -20,8 +20,10 @@ import { reorderMediaAsAdmin } from "@/features/admin/reorder-media";
 import { setMediaDeletedAsAdmin } from "@/features/admin/set-media-deleted";
 import { setMemoryStatusAsAdmin } from "@/features/admin/set-status";
 import { updateMediaAsAdmin } from "@/features/admin/update-media";
+import { TX_OPTIONS } from "@/features/memories/create-memory";
 import { recordMedia } from "@/features/memories/ingest-upload";
 import { PrismaClient } from "@/generated/prisma/client";
+import { MAX_REORDER_IDS } from "@/lib/validations/admin";
 import { resetEnvCache } from "@/server/config/env";
 
 import { SIGNATURE_SAMPLES } from "../fixtures/signatures";
@@ -34,6 +36,8 @@ if (process.env.CI && !url) {
 const client = url ? new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 8 }) }) : null;
 /** Runs once, right after the next locked memory read inside a photo tool (its `select` names `consentVersion`). */
 let afterLockedRead: (() => Promise<void>) | undefined;
+/** `media.update` and `media.updateMany` calls through the tools' client: one statement each. */
+let mediaWrites = 0;
 const observed = client?.$extends({
   query: {
     memory: {
@@ -46,6 +50,10 @@ const observed = client?.$extends({
         }
         return result;
       },
+    },
+    media: {
+      async update({ args, query }) { mediaWrites += 1; return query(args); },
+      async updateMany({ args, query }) { mediaWrites += 1; return query(args); },
     },
   },
 });
@@ -168,6 +176,38 @@ describe.skipIf(!client)("MCP photo tools (real Postgres)", () => {
     const versions = new Set([version, one.current.memoryVersion, two.current.memoryVersion, three.ok ? three.current.memoryVersion : ""]);
     expect(versions.size).toBe(4);
     expect((await db.memory.findUniqueOrThrow({ where: { id: memoryId } })).updatedAt.toISOString()).toBe(three.ok ? three.current.memoryVersion : "");
+  });
+
+  it("reorders 100 visible files (10 READY, 90 FAILED) in reverse in one call: one write per moved row, well within TX_OPTIONS (TCR round 1, #2/#5)", async () => {
+    const { memoryId, ids } = await memoryWithPhotos();
+    const rows = Array.from({ length: MAX_REORDER_IDS - ids.length }, (_, i) => ({
+      id: randomUUID(), memoryId, storageKey: `dev/originals/${memoryId}/${randomUUID()}.jpg`, status: i < 7 ? ("READY" as const) : ("FAILED" as const),
+      mimeType: "image/jpeg", maxBytes: JPEG.length, sortOrder: ids.length + i,
+    }));
+    await db.media.createMany({ data: rows });
+    const all = [...ids, ...rows.map((r) => r.id)];
+    // A replacement still uploading for the first file: it must follow its target to the last slot.
+    const replacement = await db.media.create({ data: {
+      memoryId, storageKey: `dev/originals/${memoryId}/${randomUUID()}.jpg`, status: "PENDING", mimeType: "image/jpeg", maxBytes: JPEG.length,
+      sortOrder: 0, replacesMediaId: ids[0], reservedUntil: new Date(Date.now() + 60 * 60 * 1000),
+    } });
+    const version = (await db.memory.findUniqueOrThrow({ where: { id: memoryId } })).updatedAt.toISOString();
+    const reversed = [...all].reverse();
+
+    mediaWrites = 0;
+    const started = performance.now();
+    const result = await reorderMediaAsAdmin({ memoryId, memoryVersion: version, mediaIds: reversed });
+    const elapsed = performance.now() - started;
+
+    expect(result).toMatchObject({ ok: true, changed: true });
+    if (result.ok) {
+      expect(result.current.media.map((m) => m.id)).toEqual(reversed);
+    }
+    // Every visible row moved (no slot is its own mirror in 0..99), plus the replacement: 101 statements, not one per id twice.
+    expect(mediaWrites).toBe(MAX_REORDER_IDS + 1);
+    expect((await db.media.findUniqueOrThrow({ where: { id: replacement.id } })).sortOrder).toBe(MAX_REORDER_IDS - 1);
+    // Prisma would have aborted at TX_OPTIONS.timeout; half of it leaves room for a slow CI database.
+    expect(elapsed).toBeLessThan(TX_OPTIONS.timeout / 2);
   });
 
   it("a real reorder, then a new upload: the new file sorts last", async () => {
