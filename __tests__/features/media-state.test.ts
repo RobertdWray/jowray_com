@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { appendClaimRevision, appendRevision, MAX_REVISIONS_PER_MEMORY, snapshotsEqual } from "@/features/memories/media-state";
+import { appendClaimRevision, appendRevision, LIVE_MEDIA_ORDER, MAX_REVISIONS_PER_MEMORY, snapshotsEqual, touchMemory } from "@/features/memories/media-state";
 
 interface Rev { id: string; memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown>; createdAt: Date }
 const revisions: Rev[] = [];
@@ -56,5 +56,56 @@ describe("snapshotsEqual", () => {
     expect(snapshotsEqual({ ids: ["x", "y"] }, { ids: ["y", "x"] })).toBe(false);
     expect(snapshotsEqual({ when }, { when: new Date(when.getTime() + 1) })).toBe(false);
     expect(snapshotsEqual({ note: null }, { note: undefined })).toBe(false);
+  });
+});
+
+describe("touchMemory (plan 2026-11-08-mcp-media-tools D2)", () => {
+  // Its own fake: the Memory row honours an explicit `updatedAt` as Prisma does.
+  const memory = { id: "mem_1", updatedAt: new Date(0) };
+  const touchTx = {
+    memory: {
+      update: vi.fn(async ({ data }: { data: { updatedAt?: Date } }) => {
+        if (data.updatedAt) { memory.updatedAt = data.updatedAt; }
+        return { id: memory.id };
+      }),
+    },
+  } as unknown as Parameters<typeof touchMemory>[0];
+  const NOW = new Date("2026-11-08T20:00:00.000Z");
+
+  beforeEach(() => { vi.useFakeTimers({ now: NOW }); memory.updatedAt = new Date(0); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("writes the clock's now when the previous version is older, and supplies it explicitly", async () => {
+    const written = await touchMemory(touchTx, "mem_1", new Date(NOW.getTime() - 60_000));
+    expect(written.toISOString()).toBe(NOW.toISOString());
+    expect(memory.updatedAt.toISOString()).toBe(NOW.toISOString());
+    expect(touchTx.memory.update).toHaveBeenLastCalledWith(expect.objectContaining({ where: { id: "mem_1" }, data: { updatedAt: written } }));
+  });
+
+  it("gives two touches in the same millisecond two different, increasing versions", async () => {
+    const first = await touchMemory(touchTx, "mem_1", new Date(NOW.getTime() - 1));
+    const second = await touchMemory(touchTx, "mem_1", first);
+    expect(first.getTime()).toBe(NOW.getTime());
+    expect(second.getTime()).toBe(NOW.getTime() + 1);
+  });
+
+  it("moves forward from a previous version ahead of this clock (another instance's skew or an earlier +1 ms)", async () => {
+    const ahead = new Date(NOW.getTime() + 1_000);
+    const written = await touchMemory(touchTx, "mem_1", ahead);
+    expect(written.getTime()).toBe(ahead.getTime() + 1);
+  });
+
+  it("keeps the floor when a write with Prisma's automatic timestamp ran in between (recompute → touch)", async () => {
+    const previous = new Date(NOW.getTime() + 5);
+    memory.updatedAt = new Date(NOW.getTime()); // recomputeMemoryType's own write moved the row back to the clock's now
+    const written = await touchMemory(touchTx, "mem_1", previous);
+    expect(written.getTime()).toBe(previous.getTime() + 1);
+    expect(memory.updatedAt.getTime()).toBe(previous.getTime() + 1);
+  });
+});
+
+describe("LIVE_MEDIA_ORDER (plan 2026-11-08-mcp-media-tools D9)", () => {
+  it("ends with the id, so equal slots and equal creation times still have one order", () => {
+    expect(LIVE_MEDIA_ORDER).toEqual([{ sortOrder: "asc" }, { createdAt: "asc" }, { id: "asc" }]);
   });
 });
