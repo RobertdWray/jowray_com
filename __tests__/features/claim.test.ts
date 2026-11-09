@@ -84,7 +84,7 @@ beforeEach(() => {
     { id: "med_other", memoryId: "mem_2", status: "READY", mimeType: "image/jpeg", originalFilename: "x.jpg", sortOrder: 0, deletedAt: null, replacesMediaId: null, createdAt: new Date("2026-11-03T10:00:03Z"), durationSeconds: null },
   );
   memory = {
-    id: "mem_1", type: "PHOTO", status: "PENDING", deletedAt: null, claimTokenHash: hashClaimToken(TOKEN), consentVersion: "2026-11-v1", consentedAt: new Date("2026-11-03T10:00:00Z"), submissionId: null, submissionIndex: null,
+    id: "mem_1", type: "PHOTO", status: "PENDING", deletedAt: null, updatedAt: new Date("2026-11-03T12:00:00.000Z"), claimTokenHash: hashClaimToken(TOKEN), consentVersion: "2026-11-v1", consentedAt: new Date("2026-11-03T10:00:00Z"), submissionId: null, submissionIndex: null,
     approxDateText: "Summer 1998", place: null, contributorNote: "old note", visibility: "FAMILY", notifyWhenPosted: true,
     contributor: { id: "con_1", name: "Jo", relationship: "friend", email: "jo@example.com", contactOptIn: true },
     media: [{ id: "med_1", status: "READY", mimeType: "image/heic", originalFilename: "a.heic", durationSeconds: 24 }, { id: "med_2", status: "PENDING", mimeType: "video/mp4", originalFilename: null, durationSeconds: null }],
@@ -637,5 +637,44 @@ describe("a name or relationship edit reopens every APPROVED memory of that cont
     memory!.contributor = null;
     await updateMemoryFromClaim({ claimToken: TOKEN, changes: { note: "new words" } });
     expect(lockCalls).toEqual([expect.stringMatching(/FROM "Memory" WHERE "id" = \? FOR UPDATE\|mem_1$/)]);
+  });
+});
+
+describe("claim-page file writes move memoryVersion (plan 2026-11-08-mcp-media-tools D2)", () => {
+  const ID = "00000000-0000-4000-8000-000000000001";
+  const V0 = new Date("2026-11-03T12:00:00.000Z");
+  const memoryWrites = () => tx.memory.update.mock.calls.map((c) => Object.keys(c[0].data).sort().join(","));
+  beforeEach(() => { mediaRows[0]!.id = ID; mediaRows[0]!.caption = "old words"; tx.memory.update.mockClear(); });
+
+  it("a file-words edit moves the version with an explicit timestamp, so an MCP caller holding the old one is refused stale", async () => {
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "new words" } })).toEqual({ ok: true, reopened: false });
+    expect((memory!.updatedAt as Date).getTime()).toBeGreaterThan(V0.getTime());
+    expect(memoryWrites()).toEqual(["updatedAt"]);
+  });
+
+  it("an edit that reopens an APPROVED memory writes the status first and the version last", async () => {
+    memory!.status = "APPROVED";
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "new words" } })).toEqual({ ok: true, reopened: true });
+    expect(memoryWrites()).toEqual(["status", "updatedAt"]);
+  });
+
+  it("an identical edit leaves the version alone", async () => {
+    expect(await updateMediaFromClaim({ claimToken: TOKEN, mediaId: ID, changes: { caption: "old words" } })).toEqual({ ok: true, reopened: false });
+    expect(tx.memory.update).not.toHaveBeenCalled();
+    expect(memory!.updatedAt).toEqual(V0);
+  });
+
+  it("removing a file moves the version as the last memory write, after the type and any reopen", async () => {
+    memory!.contributorNote = "some words";
+    memory!.status = "APPROVED";
+    expect(await removeMediaFromClaim({ claimToken: TOKEN, mediaId: ID })).toEqual({ ok: true, reopened: true });
+    expect(memoryWrites()).toEqual(["type", "status", "updatedAt"]);
+    expect((memory!.updatedAt as Date).getTime()).toBeGreaterThan(V0.getTime());
+  });
+
+  it("cancelling a reservation moves the version too (the visible list changed)", async () => {
+    mediaRows[1]!.id = "00000000-0000-4000-8000-000000000002";
+    expect(await cancelReservation({ claimToken: TOKEN, mediaId: "00000000-0000-4000-8000-000000000002" })).toEqual({ ok: true, reopened: false });
+    expect(memoryWrites().at(-1)).toBe("updatedAt");
   });
 });
