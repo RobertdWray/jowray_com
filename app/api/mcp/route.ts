@@ -34,7 +34,7 @@ function reportHandlerEvent(event: McpHandlerEvent): void {
 }
 
 /**
- * The jowray MCP server (plan 2026-11-06): ten admin tools for the Claude
+ * The jowray MCP server (plan 2026-11-06): fifteen admin tools for the Claude
  * connector at https://www.jowray.com/api/mcp, configured with "No sign-in"
  * and the request header `authorization: Bearer <MCP_API_SECRET>`.
  *
