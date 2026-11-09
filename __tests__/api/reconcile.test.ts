@@ -7,7 +7,7 @@ const SECRET = "c".repeat(40);
 const HOUR = 60 * 60 * 1000;
 
 interface DerivedRow { kind: string; status: string; error: string | null; attempts: number; claimedAt: Date | null; storageKey: string }
-interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; purgedAt?: Date | null; reservedUntil?: Date | null; declaredSha256?: string | null; addedVia?: "ADMIN" | null; mimeType?: string; derivatives?: DerivedRow[]; gpsCheckedAt?: Date | null; gpsAttempts?: number; gpsClaimedAt?: Date | null; latitude?: number | null; longitude?: number | null; memory: { deletedAt: Date | null } }
+interface MediaRow { id: string; memoryId: string; status: "PENDING" | "READY" | "FAILED"; checksumSha256: string | null; createdAt: Date; storageKey: string; blobUrl: string | null; deletedAt: Date | null; purgedAt?: Date | null; purgeAfter?: Date | null; reservedUntil?: Date | null; declaredSha256?: string | null; addedVia?: "ADMIN" | null; mimeType?: string; derivatives?: DerivedRow[]; gpsCheckedAt?: Date | null; gpsAttempts?: number; gpsClaimedAt?: Date | null; latitude?: number | null; longitude?: number | null; memory: { deletedAt: Date | null } }
 interface EventRow { id: string; processedAt: Date | null; attempts: number; error: string | null; payload: { tokenPayload: string | null } }
 type EmailType = "MEMORY_CONFIRMATION" | "ADMIN_NEW_MEMORY" | "SUBMISSION_CONFIRMATION";
 interface EmailRow { errorMessage?: string | null; id: string; memoryId: string; emailType: EmailType; status: "PENDING" | "SENT" | "FAILED" | "SKIPPED"; attempts: number; nextAttemptAt: Date | null; createdAt: Date; memory?: { deletedAt: Date | null; uploadLeaseUntil?: Date | null } }
@@ -70,7 +70,7 @@ let onLock: ((memoryId: string) => void) | null = null;
 const lockCalls: string[] = [];
 const dbStub = {
   // Prisma always returns `derivatives` as an array when it is included, and every scalar; fixtures may omit `derivatives` and `purgedAt`.
-  media: { updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Partial<MediaRow> }) => { const rows = media.filter((m) => matches({ purgedAt: null, reservedUntil: null, ...m } as unknown as Record<string, unknown>, where)); for (const r of rows) { Object.assign(r, data); } return { count: rows.length }; }), findMany: vi.fn(async (args: { where: Record<string, unknown>; orderBy?: Record<string, "asc" | "desc">; take?: number }) => (await finder(() => media.map((m) => ({ purgedAt: null, reservedUntil: null, gpsCheckedAt: null, gpsAttempts: 0, gpsClaimedAt: null, ...m })) as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }), findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { const m = media.find((x) => x.id === where.id); if (!m) { throw new Error("not found"); } return { purgedAt: null, reservedUntil: null, latitude: null, longitude: null, gpsClaimedAt: null, ...m }; }) },
+  media: { updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Partial<MediaRow> }) => { const rows = media.filter((m) => matches({ purgedAt: null, purgeAfter: null, reservedUntil: null, ...m } as unknown as Record<string, unknown>, where)); for (const r of rows) { Object.assign(r, data); } return { count: rows.length }; }), findMany: vi.fn(async (args: { where: Record<string, unknown>; orderBy?: Record<string, "asc" | "desc">; take?: number }) => (await finder(() => media.map((m) => ({ purgedAt: null, purgeAfter: null, reservedUntil: null, gpsCheckedAt: null, gpsAttempts: 0, gpsClaimedAt: null, ...m })) as unknown as Record<string, unknown>[])(args)).map((r) => ({ derivatives: [], mimeType: "image/jpeg", ...r }))), update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<MediaRow> }) => { Object.assign(media.find((m) => m.id === where.id)!, data); }), findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => { const m = media.find((x) => x.id === where.id); if (!m) { throw new Error("not found"); } return { purgedAt: null, purgeAfter: null, reservedUntil: null, latitude: null, longitude: null, gpsClaimedAt: null, ...m }; }) },
   $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => { lockCalls.push(String(values[0])); onLock?.(String(values[0])); return [{ id: values[0] }]; }),
   $transaction: vi.fn(async (fn: (t: typeof dbStub) => Promise<unknown>) => { inTransaction = true; try { return await fn(dbStub); } finally { inTransaction = false; } }),
   derivedMedia: { deleteMany: vi.fn(async ({ where }: { where: { mediaId: string; storageKey?: { in: string[] } } }) => { derivedDeletes.push(where); const m = media.find((x) => x.id === where.mediaId); if (m?.derivatives) { m.derivatives = m.derivatives.filter((d) => where.storageKey ? !where.storageKey.in.includes(d.storageKey) : false); } return { count: 1 }; }) },
@@ -1197,5 +1197,76 @@ describe("(e3) and deleted anchors (C6)", () => {
     );
     await run(`Bearer ${SECRET}`);
     expect(confirmSubmissionMock).toHaveBeenCalledWith({ anchorId: "mem_delanchor0" });
+  });
+});
+
+describe("purge (f): the MCP removal grace (plan 2026-11-08-mcp-media-tools §3.5, D6)", () => {
+  const old = new Date(Date.now() - 2 * HOUR);
+  const inGrace = () => new Date(Date.now() + 29 * 24 * HOUR);
+  const graceOver = () => new Date(Date.now() - HOUR);
+  /** A READY photo removed through set_media_deleted two hours ago; its upload window closed long ago. */
+  function removedRow(over: Partial<MediaRow> = {}): MediaRow {
+    return { id: "med_g", memoryId: "mem_g", status: "READY", checksumSha256: "a".repeat(64), createdAt: old, reservedUntil: old, storageKey: "dev/originals/mem_g/g.jpg", blobUrl: "u", deletedAt: old, purgeAfter: inGrace(), purgedAt: null, mimeType: "image/jpeg", derivatives: [], memory: { deletedAt: null }, ...over };
+  }
+  const deleted = async () => ((await (await run(`Bearer ${SECRET}`)).json()) as { data: Record<string, number> }).data.deletedBlobsRemoved;
+  beforeEach(() => { events = []; emails = []; memories = []; });
+
+  it("leaves a file inside its grace alone: never selected, so never locked, marked or deleted", async () => {
+    media = [removedRow()];
+    expect(await deleted()).toBe(0);
+    expect(lockCalls).toEqual([]);
+    expect(delMock).not.toHaveBeenCalled();
+    expect(media[0]).toMatchObject({ status: "READY", purgedAt: null, blobUrl: "u" });
+  });
+
+  it("purges it once purgeAfter has passed", async () => {
+    media = [removedRow({ purgeAfter: graceOver() })];
+    expect(await deleted()).toBe(1);
+    expect(lockCalls).toEqual(["mem_g"]);
+    expect(delMock).toHaveBeenCalledWith("dev/originals/mem_g/g.jpg");
+    expect(media[0]).toMatchObject({ status: "FAILED", purgedAt: expect.any(Date), blobUrl: null });
+  });
+
+  it("still purges a claim-page removal (purgeAfter null) as soon as its upload window has closed", async () => {
+    media = [removedRow({ purgeAfter: null })];
+    expect(await deleted()).toBe(1);
+    expect(media[0]).toMatchObject({ status: "FAILED", purgedAt: expect.any(Date) });
+  });
+
+  it("needs both the closed window AND the passed grace (the two conditions are ANDed, not one OR overwriting the other)", async () => {
+    media = [removedRow({ purgeAfter: graceOver(), reservedUntil: new Date(Date.now() + HOUR) })];
+    expect(await deleted()).toBe(0);
+    expect(delMock).not.toHaveBeenCalled();
+  });
+
+  it("applies the grace to a row without reservedUntil too (the createdAt fallback AND the grace)", async () => {
+    media = [removedRow({ reservedUntil: null, id: "med_in" }), removedRow({ reservedUntil: null, id: "med_over", purgeAfter: graceOver(), storageKey: "dev/originals/mem_g/o.jpg" })];
+    expect(await deleted()).toBe(1);
+    expect(media.find((m) => m.id === "med_in")).toMatchObject({ purgedAt: null, status: "READY" });
+    expect(media.find((m) => m.id === "med_over")).toMatchObject({ purgedAt: expect.any(Date), status: "FAILED" });
+  });
+
+  it("re-checks the grace under the lock: a row whose purgeAfter moved into the future before the claim is skipped", async () => {
+    media = [removedRow({ purgeAfter: graceOver() })];
+    onLock = (memoryId) => { if (memoryId === "mem_g") { media[0]!.purgeAfter = inGrace(); } };
+    expect(await deleted()).toBe(0);
+    expect(lockCalls).toEqual(["mem_g"]);
+    expect(delMock).not.toHaveBeenCalled();
+    expect(media[0]).toMatchObject({ status: "READY", purgedAt: null });
+  });
+
+  it("a restore that commits before the claim wins: skipped, nothing touched", async () => {
+    media = [removedRow({ purgeAfter: graceOver() })];
+    onLock = (memoryId) => { if (memoryId === "mem_g") { Object.assign(media[0]!, { deletedAt: null, purgeAfter: null }); } };
+    expect(await deleted()).toBe(0);
+    expect(delMock).not.toHaveBeenCalled();
+    expect(media[0]).toMatchObject({ status: "READY", purgedAt: null, blobUrl: "u" });
+  });
+
+  it("(f2) still purges a PENDING upload cancelled through MCP: a cancellation carries no grace", async () => {
+    media = [removedRow({ id: "med_cancel", status: "PENDING", checksumSha256: null, blobUrl: null, purgeAfter: null, storageKey: "dev/originals/mem_g/c.jpg" })];
+    expect(await deleted()).toBe(1);
+    expect(delMock).toHaveBeenCalledWith("dev/originals/mem_g/c.jpg");
+    expect(media[0]).toMatchObject({ status: "FAILED", purgedAt: expect.any(Date) });
   });
 });

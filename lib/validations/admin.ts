@@ -170,6 +170,55 @@ export const adminDeletedSchema = z.object({
   deleted: z.boolean(),
 });
 
+/*
+ * The photo tools (MCP `update_media`, `set_media_deleted`, `reorder_media`; plan 2026-11-08-mcp-media-tools §3).
+ * Each carries the `memoryVersion` the caller read: a file write moves it (D2), so a caller holding an older one is
+ * refused `stale` with the current files.
+ */
+
+/** A file's id as `get_memory` lists it in `media` (or `current.media` of a photo tool's answer). */
+const mediaIdSchema = z.uuid().describe("The file's `id` from get_memory `media` or from `current.media`");
+
+/** `update_media`: only the per-file words to change, the same limits as upload and the claim page; null clears one. */
+export const adminMediaWordsSchema = z.object({
+  memoryId: z.uuid(),
+  memoryVersion: isoDate,
+  mediaId: mediaIdSchema,
+  changes: z
+    .object(mediaWordsFields)
+    .strict()
+    // A key present with the value undefined changes nothing, so it does not count (TCR round 1, #3).
+    .refine((changes) => Object.values(changes).some((value) => value !== undefined), { message: "Send at least one of caption, approxDateText, place" })
+    .describe("Only the words to change: `caption`, `approxDateText` (the file's rough date), `place`; null clears one"),
+});
+export type AdminMediaWordsInput = z.infer<typeof adminMediaWordsSchema>;
+
+/** `set_media_deleted`: remove a file, or restore one listed in `removedMedia`. */
+export const adminMediaDeletedSchema = z.object({
+  memoryId: z.uuid(),
+  memoryVersion: isoDate,
+  mediaId: mediaIdSchema,
+  deleted: z.boolean().describe("true removes the file; false restores a file listed in `removedMedia`"),
+});
+
+/**
+ * Upper bound on `reorder_media`'s list. Not the file cap: the list is every visible file, and FAILED rows left by
+ * expired uploads count there although MAX_FILES_PER_MEMORY does not count them (plan D8).
+ */
+export const MAX_REORDER_IDS = 100;
+
+/** `reorder_media`: every visible file's id, once each, in the new display order. */
+export const adminMediaOrderSchema = z.object({
+  memoryId: z.uuid(),
+  memoryVersion: isoDate,
+  mediaIds: z
+    .array(z.uuid())
+    .min(1)
+    .max(MAX_REORDER_IDS)
+    .refine((ids) => new Set(ids).size === ids.length, { message: "Each file once" })
+    .describe("Every id in `current.media` (or get_memory `media` rows whose `replacesMediaId` is null), FAILED rows included, each once, first to last"),
+});
+
 export const adminMemoryIdSchema = z.object({ memoryId: z.uuid() });
 
 /**

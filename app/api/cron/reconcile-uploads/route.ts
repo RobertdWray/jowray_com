@@ -105,6 +105,18 @@ function uploadWindowClosedWhere(now: number): { OR: Array<{ reservedUntil: { lt
 }
 /** Step (f): a memory deleted from the admin page keeps its files this long, so a Restore within 30 days brings everything back. */
 const DELETED_MEMORY_GRACE_MS = 30 * 24 * HOUR_MS;
+/**
+ * Step (f): a READY file removed through MCP `set_media_deleted` keeps its bytes until `purgeAfter` (removal + 30 days),
+ * so it can be restored; null (claim-page removals, cancellations, replaced files) purges as soon as the upload window
+ * has closed (plan 2026-11-08-mcp-media-tools D6).
+ */
+function purgeDue(row: { purgeAfter: Date | null }, now: number): boolean {
+  return row.purgeAfter === null || row.purgeAfter.getTime() < now;
+}
+/** The same test as a `where` fragment. It owns an `OR` key, as `uploadWindowClosedWhere` does: combine the two with `AND`. */
+function purgeDueWhere(now: number): { OR: Array<{ purgeAfter: null } | { purgeAfter: { lt: Date } }> } {
+  return { OR: [{ purgeAfter: null }, { purgeAfter: { lt: new Date(now) } }] };
+}
 /** Step (g): a few photos per run, each decode bounded; the shared run deadline still applies. */
 const DERIVE_BATCH = 3;
 const DERIVE_DEADLINE_MS = 30_000;
@@ -533,8 +545,9 @@ export async function GET(request: NextRequest): Promise<Response> {
     }
 
     // (f) Purge: blobs of soft-deleted memories (after a 30-day grace, so a
-    // Restore keeps the files) and of files removed through the claim page, only
-    // those this environment uploaded (preview/dev Neon branches hold copies of
+    // Restore keeps the files), of files removed through the claim page, and of
+    // files removed through MCP once their own 30-day grace (`purgeAfter`) has
+    // passed, only those this environment uploaded (preview/dev Neon branches hold copies of
     // production rows and share the store). Only rows with outstanding work are
     // selected (a recorded blob, or derived copies that are not a fresh in-flight
     // claim), so a finished row is never re-selected and a worker is never raced
@@ -558,7 +571,8 @@ export async function GET(request: NextRequest): Promise<Response> {
           { purgedAt: { not: null } },
           { memory: { deletedAt: { lt: deletedMemoryBefore } } },
           // A cancelled file's Blob token may still be valid; wait for its window to close so the freed pathname cannot be refilled.
-          { deletedAt: { not: null }, ...uploadWindowClosedWhere(now) },
+          // A file removed through MCP also waits for its grace. Both fragments own an `OR` key, so they are ANDed, never spread.
+          { deletedAt: { not: null }, AND: [uploadWindowClosedWhere(now), purgeDueWhere(now)] },
         ],
         AND: [
           {
@@ -587,7 +601,7 @@ export async function GET(request: NextRequest): Promise<Response> {
             await lockMemory(tx, row.memoryId);
             const fresh = await tx.media.findUniqueOrThrow({
               where: { id: row.id },
-              select: { purgedAt: true, status: true, deletedAt: true, createdAt: true, reservedUntil: true, latitude: true, gpsClaimedAt: true, memory: { select: { deletedAt: true } } },
+              select: { purgedAt: true, status: true, deletedAt: true, createdAt: true, reservedUntil: true, purgeAfter: true, latitude: true, gpsClaimedAt: true, memory: { select: { deletedAt: true } } },
             });
             if (fresh.purgedAt !== null) {
               // Already claimed. A READY row with the mark must never serve again, and a purged photo keeps no point,
@@ -599,7 +613,7 @@ export async function GET(request: NextRequest): Promise<Response> {
               return true;
             }
             const memoryGone = fresh.memory.deletedAt !== null && fresh.memory.deletedAt < deletedMemoryBefore;
-            const fileRemoved = fresh.deletedAt !== null && uploadWindowClosed(fresh, now);
+            const fileRemoved = fresh.deletedAt !== null && uploadWindowClosed(fresh, now) && purgeDue(fresh, now);
             if (!memoryGone && !fileRemoved) {
               return false;
             }

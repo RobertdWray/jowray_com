@@ -6,13 +6,18 @@ import { summarizeMemoryType } from "@/lib/media-types";
 
 export type MemoryType = "VOICE" | "VIDEO" | "PHOTO" | "TEXT";
 
-/** Files the contributor sees as theirs: live rows in display order, excluding pending replacements of another row. */
-export const LIVE_MEDIA_ORDER = [{ sortOrder: "asc" }, { createdAt: "asc" }] as const;
+/**
+ * Display order of a memory's files. The id comes last so equal slots (a restored file next to one that took its
+ * place in a reorder) and equal creation times (the files of one submission) still have exactly one order
+ * (plan 2026-11-08-mcp-media-tools D9).
+ */
+export const LIVE_MEDIA_ORDER = [{ sortOrder: "asc" }, { createdAt: "asc" }, { id: "asc" }] as const;
 
 export function hasWords(note: string | null): boolean {
   return (note ?? "").trim().length > 0;
 }
 
+/** Files the contributor sees as theirs: live rows in display order, excluding pending replacements of another row. */
 export async function visibleMediaIds(tx: Tx, memoryId: string): Promise<string[]> {
   const rows = await tx.media.findMany({
     where: { memoryId, deletedAt: null, replacesMediaId: null },
@@ -51,6 +56,23 @@ export async function recomputeMemoryType(tx: Tx, memoryId: string, note: string
     await tx.memory.update({ where: { id: memoryId }, data: { type } });
   }
   return type;
+}
+
+/**
+ * Move a memory's version (`memoryVersion` is `Memory.updatedAt`) after a write that changed only its files, so a
+ * caller holding the old version is refused `stale` (plan 2026-11-08-mcp-media-tools D2). `previous` is the
+ * `updatedAt` read right after `lockMemory`; the new value is `max(now, previous + 1 ms)`, so two writes in one
+ * millisecond, or a previous version ahead of this instance's clock, still give a new version. The time is supplied
+ * explicitly because Prisma leaves `@updatedAt` alone on an empty update.
+ *
+ * Call it as the LAST write to the Memory row in the transaction: `recomputeMemoryType` or a status write after it
+ * would replace the value with Prisma's automatic timestamp and lose the floor. Must run inside a transaction that
+ * holds `lockMemory`. Returns the version written.
+ */
+export async function touchMemory(tx: Tx, memoryId: string, previous: Date): Promise<Date> {
+  const updatedAt = new Date(Math.max(Date.now(), previous.getTime() + 1));
+  await tx.memory.update({ where: { id: memoryId }, data: { updatedAt }, select: { id: true } });
+  return updatedAt;
 }
 
 export type RevisionVia = "WEB" | "SMS" | "CLAIM_LINK" | "ADMIN";

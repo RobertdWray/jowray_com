@@ -5,9 +5,12 @@ import { finalizeUploadAsAdmin, requestUploadAsAdmin } from "@/features/admin/at
 import { getMemoryForAdmin } from "@/features/admin/get-memory";
 import { adminStatusCounts, listMemoriesForAdmin } from "@/features/admin/list-memories";
 import { setMemoryCoordinatesAsAdmin } from "@/features/admin/set-coordinates";
+import { reorderMediaAsAdmin } from "@/features/admin/reorder-media";
 import { setMemoryDeletedAsAdmin } from "@/features/admin/set-deleted";
+import { setMediaDeletedAsAdmin } from "@/features/admin/set-media-deleted";
 import { setMemoryStatusAsAdmin } from "@/features/admin/set-status";
 import { shareDraftAsAdmin } from "@/features/admin/share-draft";
+import { updateMediaAsAdmin } from "@/features/admin/update-media";
 import { updateMemoryAsAdmin } from "@/features/admin/update-memory";
 import { draftMemory, reissueDraftClaimLink } from "@/features/memories/draft-memory";
 import { suggestPlacesForMemory } from "@/features/places/suggest-for-memory";
@@ -21,6 +24,9 @@ import {
   mcpFinalizeUploadSchema,
   mcpRequestUploadSchema,
   mcpListInputSchema,
+  mcpMediaDeletedSchema,
+  mcpMediaOrderSchema,
+  mcpMediaWordsSchema,
   mcpMemoryChangesSchema,
   mcpMemoryIdSchema,
   mcpShareDraftSchema,
@@ -28,8 +34,10 @@ import {
 } from "@/lib/validations/mcp";
 
 /**
- * The twelve MCP tools (plan 2026-11-06 §4.5, and `suggest_places` from plan
- * 2026-11-06-photo-gps-places B7), each a thin adapter over an admin feature. `registerTools` runs once per request (mcp-handler builds a
+ * The fifteen MCP tools (plan 2026-11-06 §4.5, `suggest_places` from plan
+ * 2026-11-06-photo-gps-places B7, and the photo tools `update_media`,
+ * `set_media_deleted` and `reorder_media` from plan 2026-11-08-mcp-media-tools),
+ * each a thin adapter over an admin feature. `registerTools` runs once per request (mcp-handler builds a
  * fresh McpServer for every request), so it only registers: the schemas and
  * the tool definitions below are module constants, and nothing here reads env
  * or touches Prisma until a tool runs.
@@ -50,6 +58,10 @@ const PLACE_RULE =
 const UPLOAD_STEPS =
   'Use original files on disk (a mounted folder in Cowork or Claude Code on Rob\'s Mac), not files pasted into chat. Compute the exact size, MIME type and `shasum -a 256` locally; call request_upload. On `alreadyAttached`, skip the upload; on `uploaded: true`, just call finalize_upload. Otherwise write the returned URL into a mode-600 curl config file (`url = "..."`), then run `curl --disable -sS --fail -X PUT -K <config> -H "content-type: <type>" -H "x-content-type: <type>" --data-binary @<file> --output /dev/null` with exactly the returned headers, delete the config file, and call finalize_upload with memoryId and mediaId. The URL is a credential: never write it into chat, a reply, a log or any other file. The upload host is vercel.com; if this session cannot reach it, run the same steps from Claude Code on Rob\'s Mac. A Live Photo is two files (the HEIC and the MOV) on the same memory; at most 10 files per memory.';
 
+/** The photo tools' version and stale rule (plan 2026-11-08-mcp-media-tools §3.1, D12), repeated in each of them. */
+const FILE_VERSION_RULE =
+  "Read `memoryVersion` from get_memory first, or take `current.memoryVersion` from the answer of your previous write. On `stale`, compare `status`, `visibility` and every file in `current.media` and `current.removedMedia` with what you read: if anything differs, show Rob what changed and ask before retrying; if nothing differs (only the version moved), retry once with `current.memoryVersion`, and stop at a second `stale`. An APPROVED memory shown on See memories changes there at once.";
+
 const TOOLS = {
   list_memories: {
     title: "List memories",
@@ -61,7 +73,7 @@ const TOOLS = {
   get_memory: {
     title: "Get a memory",
     description:
-      "One memory with its contributor, files, coordinates, revision history and emails. `memoryVersion` and `contributor.contributorVersion` are what update_memory and set_coordinates need. `reviewVersion` is what set_status (and share_draft) need to approve: it covers the memory, its contributor and its files, so approve only right after reading them. Each file's `coordinates` is where the camera was (often a home); never propose it for set_coordinates.",
+      "One memory with its contributor, files, coordinates, revision history and emails. `memoryVersion` is what update_memory, set_coordinates, update_media, set_media_deleted and reorder_media need (update_memory also takes `contributor.contributorVersion`). A file whose `replacesMediaId` is set is a replacement still uploading; the photo tools act on the files where it is null. `removedMedia` lists removed files set_media_deleted can restore. `reviewVersion` is what set_status (and share_draft) need to approve: it covers the memory, its contributor and its files, so approve only right after reading them. Each file's `coordinates` is where the camera was (often a home); never propose it for set_coordinates.",
     inputSchema: mcpMemoryIdSchema,
     annotations: { readOnlyHint: true },
   },
@@ -115,6 +127,24 @@ const TOOLS = {
     inputSchema: mcpDeletedSchema,
     annotations: { destructiveHint: true, idempotentHint: true },
   },
+  update_media: {
+    title: "Edit a file's words",
+    description: `Edits one READY file's caption, rough date (\`approxDateText\`) or place; send only the keys you change, null clears one. A file still uploading answers not_found: call request_upload again with the words instead. ${FILE_VERSION_RULE}`,
+    inputSchema: mcpMediaWordsSchema,
+    annotations: { destructiveHint: true, idempotentHint: true },
+  },
+  set_media_deleted: {
+    title: "Remove or restore a file",
+    description: `Removes one file (\`deleted: true\`) or restores one listed in get_memory \`removedMedia\` (\`deleted: false\`). A removed file leaves See memories and the sender's claim page at once. A READY file keeps its bytes until \`restorableUntil\` (30 days) and can be restored until then; a file still uploading or failed is cancelled for good. The only READY file of a memory without words is refused (\`last_file\`). A Live Photo is two files (the HEIC and the MOV): removing one leaves the other. A restored file keeps its old place: check \`current.media\` and use reorder_media if needed. ${FILE_VERSION_RULE}`,
+    inputSchema: mcpMediaDeletedSchema,
+    annotations: { destructiveHint: true, idempotentHint: true },
+  },
+  reorder_media: {
+    title: "Reorder a memory's files",
+    description: `Sets the display order of a memory's files. Pass every id in \`current.media\` (or get_memory \`media\` rows whose \`replacesMediaId\` is null), FAILED rows included, first to last; \`mismatch\` answers with the list to use. The card on See memories shows the first playable photo in this order. \`changed: false\` means the files were already in this order. ${FILE_VERSION_RULE}`,
+    inputSchema: mcpMediaOrderSchema,
+    annotations: { destructiveHint: true, idempotentHint: true },
+  },
   reissue_claim_link: {
     title: "Reissue a draft's claim link",
     description: "Mints a new claim link for a DRAFT. This revokes the link already sent; only on Rob's explicit confirmation.",
@@ -161,7 +191,7 @@ async function runTool(tool: keyof typeof TOOLS, memoryId: string | undefined, r
   }
 }
 
-/** Registers the twelve tools on a fresh server. Called by mcp-handler once per request; registration only. */
+/** Registers the fifteen tools on a fresh server. Called by mcp-handler once per request; registration only. */
 export function registerTools(server: McpServer): void {
   // Sentry MCP spans for this server (idempotent; @sentry/nextjs does not wrap McpServer on its own).
   Sentry.wrapMcpServerWithSentry(server);
@@ -266,6 +296,28 @@ export function registerTools(server: McpServer): void {
     runTool("set_deleted", args.memoryId, async () => {
       const result = await setMemoryDeletedAsAdmin(args);
       return result.ok ? toolResult({ purgedFiles: result.purgedFiles }) : refusal(result);
+    })
+  );
+
+  server.registerTool("update_media", TOOLS.update_media, (args) =>
+    runTool("update_media", args.memoryId, async () => {
+      const result = await updateMediaAsAdmin(args);
+      return result.ok ? toolResult({ written: result.written, current: result.current }) : refusal(result);
+    })
+  );
+
+  server.registerTool("set_media_deleted", TOOLS.set_media_deleted, (args) =>
+    runTool("set_media_deleted", args.memoryId, async () => {
+      const result = await setMediaDeletedAsAdmin(args);
+      if (!result.ok) { return refusal(result); }
+      return toolResult({ changed: result.changed, current: result.current, ...(result.restorableUntil !== undefined && { restorableUntil: result.restorableUntil }) });
+    })
+  );
+
+  server.registerTool("reorder_media", TOOLS.reorder_media, (args) =>
+    runTool("reorder_media", args.memoryId, async () => {
+      const result = await reorderMediaAsAdmin(args);
+      return result.ok ? toolResult({ changed: result.changed, current: result.current }) : refusal(result);
     })
   );
 

@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetEnvCache } from "@/server/config/env";
 
 /**
- * /api/mcp (plan 2026-11-06 §4.5, §4.6): the bearer gate, the twelve tools as
+ * /api/mcp (plan 2026-11-06 §4.5, §4.6): the bearer gate, the fifteen tools as
  * thin adapters over the admin features, and the single error boundary. The
  * features are mocked; the route, `_auth.ts`, the env accessor, mcp-handler
  * and the MCP SDK are real.
@@ -29,6 +29,9 @@ const features = vi.hoisted(() => ({
   requestUploadAsAdmin: vi.fn(),
   finalizeUploadAsAdmin: vi.fn(),
   setMemoryDeletedAsAdmin: vi.fn(),
+  updateMediaAsAdmin: vi.fn(),
+  setMediaDeletedAsAdmin: vi.fn(),
+  reorderMediaAsAdmin: vi.fn(),
   draftMemory: vi.fn(),
   reissueDraftClaimLink: vi.fn(),
   suggestPlacesForMemory: vi.fn(),
@@ -41,6 +44,9 @@ vi.mock("@/features/admin/attach-media", () => ({ requestUploadAsAdmin: features
 vi.mock("@/features/admin/share-draft", () => ({ shareDraftAsAdmin: features.shareDraftAsAdmin }));
 vi.mock("@/features/admin/set-status", () => ({ setMemoryStatusAsAdmin: features.setMemoryStatusAsAdmin }));
 vi.mock("@/features/admin/set-deleted", () => ({ setMemoryDeletedAsAdmin: features.setMemoryDeletedAsAdmin }));
+vi.mock("@/features/admin/update-media", () => ({ updateMediaAsAdmin: features.updateMediaAsAdmin }));
+vi.mock("@/features/admin/set-media-deleted", () => ({ setMediaDeletedAsAdmin: features.setMediaDeletedAsAdmin }));
+vi.mock("@/features/admin/reorder-media", () => ({ reorderMediaAsAdmin: features.reorderMediaAsAdmin }));
 vi.mock("@/features/memories/draft-memory", () => ({ draftMemory: features.draftMemory, reissueDraftClaimLink: features.reissueDraftClaimLink }));
 vi.mock("@/features/places/suggest-for-memory", () => ({ suggestPlacesForMemory: features.suggestPlacesForMemory }));
 
@@ -128,12 +134,12 @@ describe("the bearer gate", () => {
 });
 
 describe("tools/list", () => {
-  it("lists the twelve tools", async () => {
+  it("lists the fifteen tools", async () => {
     const response = await authed({ jsonrpc: "2.0", id: 1, method: "tools/list" });
     expect(response.status).toBe(200);
     const body = await rpcBody(response);
     const tools = (body.result?.tools ?? []) as Array<{ name: string }>;
-    expect(tools.map((t) => t.name).sort()).toEqual(["draft_memory", "finalize_upload", "get_memory", "list_memories", "reissue_claim_link", "request_upload", "set_coordinates", "set_deleted", "set_status", "share_draft", "suggest_places", "update_memory"]);
+    expect(tools.map((t) => t.name).sort()).toEqual(["draft_memory", "finalize_upload", "get_memory", "list_memories", "reissue_claim_link", "reorder_media", "request_upload", "set_coordinates", "set_deleted", "set_media_deleted", "set_status", "share_draft", "suggest_places", "update_media", "update_memory"]);
   });
 });
 
@@ -202,7 +208,7 @@ describe("tools/list contract (case 2)", () => {
           "annotations": {
             "readOnlyHint": true,
           },
-          "description": "One memory with its contributor, files, coordinates, revision history and emails. \`memoryVersion\` and \`contributor.contributorVersion\` are what update_memory and set_coordinates need. \`reviewVersion\` is what set_status (and share_draft) need to approve: it covers the memory, its contributor and its files, so approve only right after reading them. Each file's \`coordinates\` is where the camera was (often a home); never propose it for set_coordinates.",
+          "description": "One memory with its contributor, files, coordinates, revision history and emails. \`memoryVersion\` is what update_memory, set_coordinates, update_media, set_media_deleted and reorder_media need (update_memory also takes \`contributor.contributorVersion\`). A file whose \`replacesMediaId\` is set is a replacement still uploading; the photo tools act on the files where it is null. \`removedMedia\` lists removed files set_media_deleted can restore. \`reviewVersion\` is what set_status (and share_draft) need to approve: it covers the memory, its contributor and its files, so approve only right after reading them. Each file's \`coordinates\` is where the camera was (often a home); never propose it for set_coordinates.",
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
@@ -891,6 +897,165 @@ describe("tools/list contract (case 2)", () => {
         {
           "annotations": {
             "destructiveHint": true,
+            "idempotentHint": true,
+          },
+          "description": "Edits one READY file's caption, rough date (\`approxDateText\`) or place; send only the keys you change, null clears one. A file still uploading answers not_found: call request_upload again with the words instead. Read \`memoryVersion\` from get_memory first, or take \`current.memoryVersion\` from the answer of your previous write. On \`stale\`, compare \`status\`, \`visibility\` and every file in \`current.media\` and \`current.removedMedia\` with what you read: if anything differs, show Rob what changed and ask before retrying; if nothing differs (only the version moved), retry once with \`current.memoryVersion\`, and stop at a second \`stale\`. An APPROVED memory shown on See memories changes there at once.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "changes": {
+                "additionalProperties": false,
+                "description": "Only the words to change: \`caption\`, \`approxDateText\` (the file's rough date), \`place\`; null clears one",
+                "properties": {
+                  "approxDateText": {
+                    "anyOf": [
+                      {
+                        "maxLength": 120,
+                        "type": "string",
+                      },
+                      {
+                        "type": "null",
+                      },
+                    ],
+                  },
+                  "caption": {
+                    "anyOf": [
+                      {
+                        "maxLength": 2000,
+                        "type": "string",
+                      },
+                      {
+                        "type": "null",
+                      },
+                    ],
+                  },
+                  "place": {
+                    "anyOf": [
+                      {
+                        "maxLength": 200,
+                        "type": "string",
+                      },
+                      {
+                        "type": "null",
+                      },
+                    ],
+                  },
+                },
+                "type": "object",
+              },
+              "mediaId": {
+                "description": "The file's \`id\` from get_memory \`media\` or from \`current.media\`",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+              "memoryId": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+              "memoryVersion": {
+                "description": "ISO-8601 timestamp exactly as get_memory returned it",
+                "type": "string",
+              },
+            },
+            "required": [
+              "memoryId",
+              "memoryVersion",
+              "mediaId",
+              "changes",
+            ],
+            "type": "object",
+          },
+          "name": "update_media",
+          "title": "Edit a file's words",
+        },
+        {
+          "annotations": {
+            "destructiveHint": true,
+            "idempotentHint": true,
+          },
+          "description": "Removes one file (\`deleted: true\`) or restores one listed in get_memory \`removedMedia\` (\`deleted: false\`). A removed file leaves See memories and the sender's claim page at once. A READY file keeps its bytes until \`restorableUntil\` (30 days) and can be restored until then; a file still uploading or failed is cancelled for good. The only READY file of a memory without words is refused (\`last_file\`). A Live Photo is two files (the HEIC and the MOV): removing one leaves the other. A restored file keeps its old place: check \`current.media\` and use reorder_media if needed. Read \`memoryVersion\` from get_memory first, or take \`current.memoryVersion\` from the answer of your previous write. On \`stale\`, compare \`status\`, \`visibility\` and every file in \`current.media\` and \`current.removedMedia\` with what you read: if anything differs, show Rob what changed and ask before retrying; if nothing differs (only the version moved), retry once with \`current.memoryVersion\`, and stop at a second \`stale\`. An APPROVED memory shown on See memories changes there at once.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "deleted": {
+                "description": "true removes the file; false restores a file listed in \`removedMedia\`",
+                "type": "boolean",
+              },
+              "mediaId": {
+                "description": "The file's \`id\` from get_memory \`media\` or from \`current.media\`",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+              "memoryId": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+              "memoryVersion": {
+                "description": "ISO-8601 timestamp exactly as get_memory returned it",
+                "type": "string",
+              },
+            },
+            "required": [
+              "memoryId",
+              "memoryVersion",
+              "mediaId",
+              "deleted",
+            ],
+            "type": "object",
+          },
+          "name": "set_media_deleted",
+          "title": "Remove or restore a file",
+        },
+        {
+          "annotations": {
+            "destructiveHint": true,
+            "idempotentHint": true,
+          },
+          "description": "Sets the display order of a memory's files. Pass every id in \`current.media\` (or get_memory \`media\` rows whose \`replacesMediaId\` is null), FAILED rows included, first to last; \`mismatch\` answers with the list to use. The card on See memories shows the first playable photo in this order. \`changed: false\` means the files were already in this order. Read \`memoryVersion\` from get_memory first, or take \`current.memoryVersion\` from the answer of your previous write. On \`stale\`, compare \`status\`, \`visibility\` and every file in \`current.media\` and \`current.removedMedia\` with what you read: if anything differs, show Rob what changed and ask before retrying; if nothing differs (only the version moved), retry once with \`current.memoryVersion\`, and stop at a second \`stale\`. An APPROVED memory shown on See memories changes there at once.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "mediaIds": {
+                "description": "Every id in \`current.media\` (or get_memory \`media\` rows whose \`replacesMediaId\` is null), FAILED rows included, each once, first to last",
+                "items": {
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                  "type": "string",
+                },
+                "maxItems": 100,
+                "minItems": 1,
+                "type": "array",
+              },
+              "memoryId": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string",
+              },
+              "memoryVersion": {
+                "description": "ISO-8601 timestamp exactly as get_memory returned it",
+                "type": "string",
+              },
+            },
+            "required": [
+              "memoryId",
+              "memoryVersion",
+              "mediaIds",
+            ],
+            "type": "object",
+          },
+          "name": "reorder_media",
+          "title": "Reorder a memory's files",
+        },
+        {
+          "annotations": {
+            "destructiveHint": true,
             "idempotentHint": false,
           },
           "description": "Mints a new claim link for a DRAFT. This revokes the link already sent; only on Rob's explicit confirmation.",
@@ -967,6 +1132,19 @@ const draftArgs = {
   sourceInput: { kind: "gmail", messageId: "1a1a2317fba34eec" },
 };
 const editable = { name: "Joyce", relationship: "friend", approxDateText: null, place: "Broadmead", note: "words", visibility: "FAMILY", memoryVersion: VERSION, contributorVersion: VERSION };
+/** The photo tools (plan 2026-11-08-mcp-media-tools): a file id, the `current` they answer with, their arguments. */
+const MEDIA_ID = "00000000-0000-4000-8000-0000000000b1";
+const REMOVED_AT = new Date("2026-11-08T20:00:00.000Z");
+const RESTORABLE_UNTIL = new Date("2026-12-08T20:00:00.000Z");
+const mediaFile = { id: MEDIA_ID, status: "READY", mimeType: "image/jpeg", originalFilename: "2007oct6morningglory382.jpg", caption: "Morning Glory", approxDateText: "October 6, 2007", place: null, sortOrder: 0 };
+const mediaCurrent = { memoryVersion: VERSION, status: "APPROVED", visibility: "PUBLIC", media: [mediaFile], removedMedia: [] };
+/** A `current` carrying Dates, as the feature returns it, and the ISO strings the model receives. */
+const removedEntry = { id: "00000000-0000-4000-8000-0000000000c1", mimeType: "image/jpeg", originalFilename: "2017octfourflags.jpg", caption: "The four flags in October 2017.", approxDateText: "October 2017" };
+const currentWithRemoval = { ...mediaCurrent, removedMedia: [{ ...removedEntry, removedAt: REMOVED_AT, restorableUntil: RESTORABLE_UNTIL }] };
+const currentWithRemovalJson = { ...mediaCurrent, removedMedia: [{ ...removedEntry, removedAt: REMOVED_AT.toISOString(), restorableUntil: RESTORABLE_UNTIL.toISOString() }] };
+const mediaWordsArgs = { memoryId: ID, memoryVersion: VERSION, mediaId: MEDIA_ID, changes: { caption: "Morning Glory" } };
+const mediaDeletedArgs = { memoryId: ID, memoryVersion: VERSION, mediaId: MEDIA_ID, deleted: true };
+const mediaOrderArgs = { memoryId: ID, memoryVersion: VERSION, mediaIds: [MEDIA_ID] };
 /** suggest_places (plan 2026-11-06-photo-gps-places B7): a photo's point, its labels (a landmark carries the place's own point), the pending ids and the credit. */
 const PHOTO_ID = "00000000-0000-4000-8000-0000000000a1";
 const OSM = "© OpenStreetMap contributors";
@@ -1026,6 +1204,24 @@ const CONTRACT: ContractRow[] = [
   { tool: "set_deleted", args: { memoryId: ID, deleted: false }, feature: "setMemoryDeletedAsAdmin", answer: { ok: true, purgedFiles: 2 }, expected: { purgedFiles: 2 } },
   { tool: "set_deleted", args: { memoryId: ID, deleted: true }, feature: "setMemoryDeletedAsAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
   { tool: "set_deleted", args: { memoryId: ID, deleted: true }, feature: "setMemoryDeletedAsAdmin", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
+  { tool: "update_media", args: mediaWordsArgs, feature: "updateMediaAsAdmin", answer: { ok: true, written: ["caption"], current: mediaCurrent }, expected: { written: ["caption"], current: mediaCurrent } },
+  { tool: "update_media", args: mediaWordsArgs, feature: "updateMediaAsAdmin", answer: { ok: true, written: [], current: mediaCurrent }, expected: { written: [], current: mediaCurrent } },
+  { tool: "update_media", args: mediaWordsArgs, feature: "updateMediaAsAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
+  { tool: "update_media", args: mediaWordsArgs, feature: "updateMediaAsAdmin", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
+  { tool: "update_media", args: mediaWordsArgs, feature: "updateMediaAsAdmin", answer: { ok: false, code: "stale", current: mediaCurrent }, expected: { code: "stale", current: mediaCurrent }, isError: true },
+  { tool: "set_media_deleted", args: mediaDeletedArgs, feature: "setMediaDeletedAsAdmin", answer: { ok: true, changed: true, current: currentWithRemoval, restorableUntil: RESTORABLE_UNTIL }, expected: { changed: true, current: currentWithRemovalJson, restorableUntil: RESTORABLE_UNTIL.toISOString() } },
+  { tool: "set_media_deleted", args: { ...mediaDeletedArgs, deleted: false }, feature: "setMediaDeletedAsAdmin", answer: { ok: true, changed: false, current: mediaCurrent }, expected: { changed: false, current: mediaCurrent } },
+  { tool: "set_media_deleted", args: mediaDeletedArgs, feature: "setMediaDeletedAsAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
+  { tool: "set_media_deleted", args: mediaDeletedArgs, feature: "setMediaDeletedAsAdmin", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
+  { tool: "set_media_deleted", args: mediaDeletedArgs, feature: "setMediaDeletedAsAdmin", answer: { ok: false, code: "last_file" }, expected: { code: "last_file" }, isError: true },
+  { tool: "set_media_deleted", args: { ...mediaDeletedArgs, deleted: false }, feature: "setMediaDeletedAsAdmin", answer: { ok: false, code: "not_restorable" }, expected: { code: "not_restorable" }, isError: true },
+  { tool: "set_media_deleted", args: { ...mediaDeletedArgs, deleted: false }, feature: "setMediaDeletedAsAdmin", answer: { ok: false, code: "too_many_files" }, expected: { code: "too_many_files" }, isError: true },
+  { tool: "set_media_deleted", args: mediaDeletedArgs, feature: "setMediaDeletedAsAdmin", answer: { ok: false, code: "stale", current: currentWithRemoval }, expected: { code: "stale", current: currentWithRemovalJson }, isError: true },
+  { tool: "reorder_media", args: mediaOrderArgs, feature: "reorderMediaAsAdmin", answer: { ok: true, changed: true, current: mediaCurrent }, expected: { changed: true, current: mediaCurrent } },
+  { tool: "reorder_media", args: mediaOrderArgs, feature: "reorderMediaAsAdmin", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
+  { tool: "reorder_media", args: mediaOrderArgs, feature: "reorderMediaAsAdmin", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
+  { tool: "reorder_media", args: mediaOrderArgs, feature: "reorderMediaAsAdmin", answer: { ok: false, code: "mismatch", current: mediaCurrent }, expected: { code: "mismatch", current: mediaCurrent }, isError: true },
+  { tool: "reorder_media", args: mediaOrderArgs, feature: "reorderMediaAsAdmin", answer: { ok: false, code: "stale", current: mediaCurrent }, expected: { code: "stale", current: mediaCurrent }, isError: true },
   { tool: "reissue_claim_link", args: memoryArgs, feature: "reissueDraftClaimLink", answer: { ok: true, memoryId: ID, claimLink: CLAIM_LINK }, expected: { memoryId: ID, claimLink: CLAIM_LINK } },
   { tool: "reissue_claim_link", args: memoryArgs, feature: "reissueDraftClaimLink", answer: { ok: false, code: "invalid" }, expected: { code: "invalid" }, isError: true },
   { tool: "reissue_claim_link", args: memoryArgs, feature: "reissueDraftClaimLink", answer: { ok: false, code: "not_found" }, expected: { code: "not_found" }, isError: true },
@@ -1147,6 +1343,9 @@ describe("the error boundary on every tool (case 4)", () => {
     ["set_status", { memoryId: ID, status: "PENDING" }, "setMemoryStatusAsAdmin"],
     ["share_draft", shareArgs, "shareDraftAsAdmin"],
     ["set_deleted", { memoryId: ID, deleted: true }, "setMemoryDeletedAsAdmin"],
+    ["update_media", mediaWordsArgs, "updateMediaAsAdmin"],
+    ["set_media_deleted", mediaDeletedArgs, "setMediaDeletedAsAdmin"],
+    ["reorder_media", mediaOrderArgs, "reorderMediaAsAdmin"],
     ["reissue_claim_link", memoryArgs, "reissueDraftClaimLink"],
     ["suggest_places", memoryArgs, "suggestPlacesForMemory"],
   ];
@@ -1194,6 +1393,9 @@ describe("schema refusals and prepareInput refusals (case 5)", () => {
       ["get_memory", { memoryId: "mem_1" }],
       ["set_status", { memoryId: ID, status: "DRAFT" }],
       ["suggest_places", { memoryId: "mem_1" }],
+      ["update_media", { ...mediaWordsArgs, changes: {} }],
+      ["set_media_deleted", { ...mediaDeletedArgs, mediaId: "b7ba9311" }],
+      ["reorder_media", { ...mediaOrderArgs, mediaIds: [MEDIA_ID, MEDIA_ID] }],
     ] as const) {
       const { status, result } = await callTool(tool, args);
       expect(status, tool).toBe(200);
@@ -1214,6 +1416,11 @@ describe("schema refusals and prepareInput refusals (case 5)", () => {
       ["update_memory", { ...changeArgs, note: "words beside changes instead of inside it" }, "note"],
       ["set_status", { memoryId: ID, status: "APPROVED", reason: "family asked" }, "reason"],
       ["set_deleted", { memoryId: ID, deleted: true, purge: true }, "purge"],
+      ["update_media", { ...mediaWordsArgs, sortOrder: 2 }, "sortOrder"],
+      // Nested: a key the file's words do not include, inside `changes` (plan 2026-11-08-mcp-media-tools, Oscar O13).
+      ["update_media", { ...mediaWordsArgs, changes: { caption: "x", title: "Morning Glory" } }, "title"],
+      ["set_media_deleted", { ...mediaDeletedArgs, purgeNow: true }, "purgeNow"],
+      ["reorder_media", { ...mediaOrderArgs, deleted: [] }, "deleted"],
       ["reissue_claim_link", { ...memoryArgs, confirmed: true }, "confirmed"],
       ["suggest_places", { ...memoryArgs, coordinates: { latitude: 40.689247, longitude: -74.044502 } }, "coordinates"],
     ] as const) {
@@ -1270,11 +1477,11 @@ describe("the modern protocol era (case 7)", () => {
     return authed({ jsonrpc: "2.0", id: 7, method, params: { ...params, _meta: envelope } }, { "mcp-protocol-version": MODERN, "mcp-method": method, ...extraHeaders });
   }
 
-  it("lists the twelve tools", async () => {
+  it("lists the fifteen tools", async () => {
     const response = await modern("tools/list", {});
     expect(response.status).toBe(200);
     const tools = ((await rpcBody(response)).result?.tools ?? []) as Array<{ name: string }>;
-    expect(tools).toHaveLength(12);
+    expect(tools).toHaveLength(15);
   });
 
   it("calls a tool with the Mcp-Name header", async () => {

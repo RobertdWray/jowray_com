@@ -3,7 +3,7 @@ import "server-only";
 import { z } from "zod";
 
 import { lockContributorMemories, lockMemory, type Tx } from "@/features/memories/lock";
-import { appendClaimRevision, hasWords, LIVE_MEDIA_ORDER, recomputeMemoryType, snapshotsEqual, visibleMediaIds } from "@/features/memories/media-state";
+import { appendClaimRevision, hasWords, LIVE_MEDIA_ORDER, recomputeMemoryType, snapshotsEqual, touchMemory, visibleMediaIds } from "@/features/memories/media-state";
 import { hashClaimToken } from "@/lib/claim-token";
 import { createLogger } from "@/lib/logger";
 import { claimMediaRefSchema, mediaWordsRequestSchema } from "@/lib/validations/media";
@@ -382,7 +382,7 @@ async function retireMedia(raw: unknown, statuses: MediaStatus[], action: "remov
     }
     await lockMemory(tx, memory.id);
     // Re-read under the lock: a note cleared by a concurrent editor must count here.
-    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { deletedAt: true, claimTokenHash: true, contributorNote: true, type: true, consentVersion: true, status: true } });
+    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { deletedAt: true, claimTokenHash: true, contributorNote: true, type: true, consentVersion: true, status: true, updatedAt: true } });
     if (fresh.deletedAt !== null || fresh.claimTokenHash !== claimTokenHash) {
       return "not_found" as const;
     }
@@ -415,6 +415,8 @@ async function retireMedia(raw: unknown, statuses: MediaStatus[], action: "remov
       ...(reopen && { status: "PENDING" }),
     };
     await appendClaimRevision(tx, { memoryId: memory.id, before, after, consentVersion: fresh.consentVersion });
+    // The visible files changed: move memoryVersion last, so an MCP caller holding the old one is refused stale (plan 2026-11-08-mcp-media-tools D2).
+    await touchMemory(tx, memory.id, fresh.updatedAt);
     return { memoryId: memory.id, reopen };
   }, TX_OPTIONS);
 
@@ -453,7 +455,7 @@ export async function updateMediaFromClaim(raw: unknown): Promise<ClaimMediaResu
     }
     await lockMemory(tx, memory.id);
     // Re-read under the lock: a link rotated while this request waited (an admin reissue) must not act.
-    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { deletedAt: true, claimTokenHash: true, consentVersion: true, status: true } });
+    const fresh = await tx.memory.findUniqueOrThrow({ where: { id: memory.id }, select: { deletedAt: true, claimTokenHash: true, consentVersion: true, status: true, updatedAt: true } });
     if (fresh.deletedAt !== null || fresh.claimTokenHash !== claimTokenHash) {
       return "not_found" as const;
     }
@@ -489,6 +491,8 @@ export async function updateMediaFromClaim(raw: unknown): Promise<ClaimMediaResu
       after: { ...after, ...(reopen && { status: "PENDING" }) },
       consentVersion: fresh.consentVersion,
     });
+    // Only the Media row changed: move memoryVersion last, so an MCP caller holding the old one is refused stale (plan 2026-11-08-mcp-media-tools D2).
+    await touchMemory(tx, memory.id, fresh.updatedAt);
     return reopen ? ("reopened" as const) : ("ok" as const);
   }, TX_OPTIONS);
   if (result !== "ok" && result !== "reopened") {

@@ -19,7 +19,7 @@ const T1 = new Date("2026-11-04T11:00:00.000Z");
 
 type ContributorRow = { id: string; name: string | null; email: string | null; relationship: string | null; phone: string | null; contactOptIn: boolean; mailingListOptIn: boolean; updatedAt: Date }
 type MemoryRow = { id: string; memorialId: string; contributorId: string | null; type: string; source: string; sourceRef: string | null; visibility: string; approxDateText: string | null; place: string | null; contributorNote: string | null; notifyWhenPosted: boolean; consentVersion: string; consentedAt: Date | null; status: string; claimTokenHash: string; submissionId: string | null; submissionIndex: number | null; createdAt: Date; updatedAt: Date; deletedAt: Date | null; latitude: number | null; longitude: number | null; tags: string[]; approxYear: number | null; approxMonth: number | null }
-type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; durationSeconds: number | null; width: number | null; height: number | null; caption: string | null; approxDateText: string | null; place: string | null; sortOrder: number; deletedAt: Date | null; purgedAt: Date | null; createdAt: Date; updatedAt: Date; blobUrl: string | null; storageKey: string; exif: unknown; replacesMediaId: string | null; derivatives: Array<{ kind: string; status: string; storageKey: string }>; latitude: number | null; longitude: number | null }
+type MediaRow = { id: string; memoryId: string; status: string; mimeType: string; originalFilename: string | null; durationSeconds: number | null; width: number | null; height: number | null; caption: string | null; approxDateText: string | null; place: string | null; sortOrder: number; deletedAt: Date | null; purgedAt: Date | null; purgeAfter: Date | null; createdAt: Date; updatedAt: Date; blobUrl: string | null; storageKey: string; exif: unknown; replacesMediaId: string | null; derivatives: Array<{ kind: string; status: string; storageKey: string }>; latitude: number | null; longitude: number | null }
 interface Rev { memoryId: string; changedVia: string; before: Record<string, unknown>; after: Record<string, unknown>; createdAt?: Date; id?: string }
 interface EmailRow { memoryId: string; emailType: string; status: string; sentAt: Date | null; attempts: number; createdAt: Date; recipientEmail: string }
 
@@ -117,7 +117,7 @@ function memoryRow(over: Partial<MemoryRow>): MemoryRow {
   return { id: MEM, memorialId: "memorial_1", contributorId: CON, type: "PHOTO", source: "WEB_UPLOAD", sourceRef: null, visibility: "FAMILY", approxDateText: "Summer 1998", place: null, contributorNote: "old note", notifyWhenPosted: true, consentVersion: "2026-11-v2", consentedAt: T0, status: "PENDING", claimTokenHash: "h".repeat(64), submissionId: null, submissionIndex: null, createdAt: T0, updatedAt: T0, deletedAt: null, latitude: null, longitude: null, tags: [], approxYear: null, approxMonth: null, ...over };
 }
 function mediaRow(over: Partial<MediaRow>): MediaRow {
-  return { id: "med_1", memoryId: MEM, status: "READY", mimeType: "image/jpeg", originalFilename: "a.jpg", durationSeconds: null, width: 10, height: 10, caption: null, approxDateText: null, place: null, sortOrder: 0, deletedAt: null, purgedAt: null, createdAt: T0, updatedAt: T0, blobUrl: "https://blob/x", storageKey: "originals/x/a.jpg", exif: { gps: 1 }, replacesMediaId: null, derivatives: [{ kind: "WEB_IMAGE", status: "READY", storageKey: "derived/x/w.jpg" }, { kind: "THUMBNAIL", status: "READY", storageKey: "derived/x/t.jpg" }], latitude: null, longitude: null, ...over };
+  return { id: "med_1", memoryId: MEM, status: "READY", mimeType: "image/jpeg", originalFilename: "a.jpg", durationSeconds: null, width: 10, height: 10, caption: null, approxDateText: null, place: null, sortOrder: 0, deletedAt: null, purgedAt: null, purgeAfter: null, createdAt: T0, updatedAt: T0, blobUrl: "https://blob/x", storageKey: "originals/x/a.jpg", exif: { gps: 1 }, replacesMediaId: null, derivatives: [{ kind: "WEB_IMAGE", status: "READY", storageKey: "derived/x/w.jpg" }, { kind: "THUMBNAIL", status: "READY", storageKey: "derived/x/t.jpg" }], latitude: null, longitude: null, ...over };
 }
 const versions = () => ({ memoryVersion: memories.find((m) => m.id === MEM)!.updatedAt.toISOString(), contributorVersion: contributors[0]!.updatedAt.toISOString() });
 
@@ -219,6 +219,25 @@ describe("getMemoryForAdmin", () => {
     for (const secret of ["h".repeat(64), "https://blob/x", "originals/x/a.jpg", "gps", "recipientEmail"]) {
       expect(json).not.toContain(secret);
     }
+  });
+
+  it("names each file's replacesMediaId and lists the restorable removed files apart, leaving media and reviewVersion as they were (plan 2026-11-08-mcp-media-tools §3.6)", async () => {
+    const before = (await getMemoryForAdmin(MEM))!;
+    const until = new Date(T1.getTime() + 30 * 24 * 60 * 60 * 1000);
+    media.push(
+      mediaRow({ id: "med_repl", status: "PENDING", replacesMediaId: "med_1", derivatives: [] }),
+      // Removed through MCP while READY: restorable.
+      mediaRow({ id: "med_removed", caption: "The four flags in October 2017.", deletedAt: T1, purgeAfter: until }),
+      // A claim-page removal and an already-purged file: not restorable, so not listed.
+      mediaRow({ id: "med_claim_removed", deletedAt: T1 }),
+      mediaRow({ id: "med_purged", status: "FAILED", deletedAt: T1, purgeAfter: until, purgedAt: T1 }),
+    );
+    const view = (await getMemoryForAdmin(MEM))!;
+    expect(view.media.map((m) => [m.id, m.replacesMediaId])).toEqual([["med_1", null], ["med_repl", "med_1"]]);
+    expect(view.removedMedia).toEqual([{ id: "med_removed", mimeType: "image/jpeg", originalFilename: "a.jpg", caption: "The four flags in October 2017.", approxDateText: null, removedAt: T1, restorableUntil: until }]);
+    // The removed rows never reach the review version: only the live pending replacement changed it.
+    media.splice(media.findIndex((m) => m.id === "med_repl"), 1);
+    expect((await getMemoryForAdmin(MEM))!.reviewVersion).toBe(before.reviewVersion);
   });
 
   describe("coordinates (plan 2026-11-06 §4.2: set through /api/mcp and the admin draft API, read only through /api/mcp)", () => {
