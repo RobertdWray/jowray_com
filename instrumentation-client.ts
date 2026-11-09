@@ -3,7 +3,7 @@ import * as Sentry from "@sentry/nextjs";
 import { DATA_COLLECTION } from "@/lib/sentry/data-collection";
 import { REPLAY_OPTIONS } from "@/lib/sentry/replay-options";
 import { scrubBreadcrumb, scrubEvent, scrubLog, scrubRecordingEvent, scrubReplayEvent, scrubSpan } from "@/lib/sentry/scrub";
-import { THIRD_PARTY_FILTER_OPTIONS } from "@/lib/sentry/third-party-filter";
+import { THIRD_PARTY_FILTER_OPTIONS, untagErrorsWithoutLocatedFrames } from "@/lib/sentry/third-party-filter";
 
 /**
  * Browser init for the family alpha: every trace, every session replayed and
@@ -67,7 +67,8 @@ Sentry.init({
     Sentry.thirdPartyErrorFilterIntegration(THIRD_PARTY_FILTER_OPTIONS),
     Sentry.consoleLoggingIntegration({ levels: ["warn", "error"] }),
   ],
-  beforeSend: (event) => scrubEvent(event),
+  // beforeSend runs after every event processor, so the untag step sees the integration's tag.
+  beforeSend: (event) => scrubEvent(untagErrorsWithoutLocatedFrames(event)),
   // v11 streams spans: beforeSendTransaction is ignored, beforeSendSpan runs per span.
   beforeSendSpan: (span) => scrubSpan(span),
   beforeBreadcrumb: (breadcrumb) => scrubBreadcrumb(breadcrumb),

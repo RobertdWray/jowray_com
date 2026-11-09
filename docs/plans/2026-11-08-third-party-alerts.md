@@ -65,6 +65,8 @@ In `docs/features/sentry-telemetry.md`:
 
 **A6. `docs/plans/2026-11-08-third-party-alerts.md`**: this plan, committed as the record, with the ledger filled in [C8, C14].
 
+**A7 (review round 1, R1-1). `untagErrorsWithoutLocatedFrames` in `lib/sentry/third-party-filter.ts`, called first in the browser's `beforeSend`**: removes `third_party_code` when no frame has a filename plus a line, column or instruction address, the case where the SDK tags with no evidence [C20, C21]. Tests in `__tests__/lib/third-party-filter.test.ts` [C21].
+
 ### Part B — Sentry alerts (Rob in the UI: Monitors → Alerts)
 
 **B1. Edit `6280207`** (rename "High-priority new issues (not third-party)"):
@@ -130,6 +132,18 @@ In `docs/features/sentry-telemetry.md`:
 | 2026-11-08 | S3 | A1, A2, A4 in place; the two new test files and `replay-options.test.ts` pass (16 tests) | vitest |
 | 2026-11-08 | S4 | A5 docs; `AGENTS.md` and `docs/code-layout.md` received the same two replacements | diff |
 | 2026-11-08 | S5 | `npm run validate` clean; `npm run test:run` 3683 passed, 68 skipped (real-Postgres suites without `TEST_DATABASE_URL`; this change touches no database code); `CI=1 npm run build:offline` passed both gates: `check-sentry-app-key: OK (_sentryBundlerPluginAppKey:jowray_com in 26 of 32 client chunks, including our Sentry init ...)`. The 6 unmarked files hold none of our code: a Turbopack async-loader stub, the `noModule` polyfills, the Turbopack runtime and three manifests. This closes E9: an offline Turbopack build injects the key | build log |
+| 2026-11-08 | S6 | PR #100 (draft); `ci`, python-notify, Vercel preview all pass. The CI build log shows `check-sentry-app-key: OK (... 26 of 32 client chunks, including our Sentry init ...)` | PR checks |
+| 2026-11-08 | S7 | Preview `98c0c61`, headless Chrome over CDP, with the bypass sent as a CDP network header (never in a URL, never printed). V1: the inline-script error arrived as JOWRAY_COM-F, environment `preview`, `third_party_code = True`. V2: the wrapped-timer error grouped into JOWRAY_COM-4 (same stack shape as its 2026-11-04 event, which contains mode tagged `True`) and arrived with **no** `third_party_code` tag. Tunnel answered 200 throughout | `sentry api organizations/med3ai/issues/7836372216/events/latest/`; `.../issues/7829382036/events/?statsPeriod=24h` |
+| 2026-11-08 | S8 | Independent subagent review, round 1: four findings; R1-1, R1-3 and R1-4 fixed, R1-2 answered by S7 (§9). `validate` clean; 18 tests in the two new files; full suite 3687 passed, 68 skipped; `CI=1 build:offline` passed both gates | §9 |
+
+## 9. Review round 1 (2026-11-08, independent subagent)
+
+| # | Severity | Finding | Disposition |
+|---|---|---|---|
+| R1-1 | IMPORTANT | In exclusive mode an error whose stack holds only browser built-ins is tagged. Example: an unhandled `.then(JSON.parse)` rejection, whose stack is only `at JSON.parse (<anonymous>)` in Chrome or `parse@[native code]` in Safari. The SDK skips frames without a line or column, and `every` over an empty list is true; contains mode never tagged these | **Fixed.** Reproduced with the real browser stack parser and integration. `untagErrorsWithoutLocatedFrames` (`lib/sentry/third-party-filter.ts`) removes the tag when no frame has a filename plus a line, column or instruction address, the same test the SDK applies [C21]. It runs in `beforeSend`, which Sentry guarantees runs after every event processor [C20]. Tests pin both halves: the SDK alone tags these stacks, and our pipeline does not |
+| R1-2 | IMPORTANT | Nothing proves that frames from our files get the key at runtime; the unit test sets `module_metadata` itself, and the build gate checks only a string | **Already shown by S7 V2.** The wrapped-timer event's Sentry wrapper frame comes from our marked bundle. If runtime attachment had failed, both of its frames would lack the key and exclusive mode would have tagged the event; it arrived untagged on the deployed `98c0c61` build. V1 being tagged shows the integration ran. No change |
+| R1-3 | NICE-TO-HAVE | The feature doc said only the polyfills and the runtime stay unmarked; the build also leaves a Turbopack dynamic-import loader file and three manifests unmarked | **Fixed** wording |
+| R1-4 | NICE-TO-HAVE | The test comment said it loads "exactly the code the app ships"; it loads the CommonJS build resolved from `@sentry/nextjs`, while the browser reaches `@sentry/core` through `@sentry/browser` | **Fixed:** the comment now says what is loaded, and a test asserts both resolve to the same installed copy |
 
 ## Citations
 
@@ -292,3 +306,21 @@ In `docs/features/sentry-telemetry.md`:
 - **Verbatim Quote:**
   > "The current issue priority is greater than or equal to high, medium, or low."
 - **Justification:** It reproduces today's "high priority" scope under the new triggers, so medium and low issues stay quiet as they do now.
+
+### [C20] — `beforeSend` runs after every event processor
+- **Relevant File(s):** `instrumentation-client.ts` (`beforeSend`), `lib/sentry/third-party-filter.ts` (`untagErrorsWithoutLocatedFrames`)
+- **Change Summary:** Run the untag step in `beforeSend`, not as an event processor.
+- **Source URL:** https://docs.sentry.io/platforms/javascript/guides/nextjs/enriching-events/event-processors/
+- **Verbatim Quote:**
+  > "`beforeSend` and `beforeSendTransaction` are guaranteed to be run last, after all other event processors, (which means they get the final version of the event right before it's sent, hence the name). Event processors added with either of the methods below run in an undetermined order, which means changes to the event may still be made after the event processor runs."
+- **Justification:** The tag is applied by the integration's event processor. Only `beforeSend` is documented to run after it, so the correction must live there (before `scrubEvent`), not in `Sentry.addEventProcessor`, whose order the docs leave undetermined.
+
+### [C21] — The SDK skips frames without location info
+- **Relevant File(s):** `lib/sentry/third-party-filter.ts` (`untagErrorsWithoutLocatedFrames`), `__tests__/lib/third-party-filter.test.ts`
+- **Change Summary:** Untag exactly when no frame survives the SDK's location test.
+- **Source URL:** https://github.com/getsentry/sentry-javascript/blob/11.11.0/packages/core/src/integrations/third-party-errors-filter.ts#L190-L197
+- **Verbatim Quote:**
+  > "// Exclude frames without location info, since these are likely native code or built-ins.
+  > // JS frames have lineno/colno, WASM frames have instruction_addr instead.
+  > if (frame.lineno == null && frame.colno == null && frame.instruction_addr == null) {"
+- **Justification:** When this leaves no frame, `every` (C3) is vacuously true and the event is tagged without evidence. The untag step applies the same filename-plus-location test, so it removes the tag in exactly that case and nowhere else.
