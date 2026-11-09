@@ -3,6 +3,7 @@ import * as Sentry from "@sentry/nextjs";
 import { DATA_COLLECTION } from "@/lib/sentry/data-collection";
 import { REPLAY_OPTIONS } from "@/lib/sentry/replay-options";
 import { scrubBreadcrumb, scrubEvent, scrubLog, scrubRecordingEvent, scrubReplayEvent, scrubSpan } from "@/lib/sentry/scrub";
+import { THIRD_PARTY_FILTER_OPTIONS } from "@/lib/sentry/third-party-filter";
 
 /**
  * Browser init for the family alpha: every trace, every session replayed and
@@ -61,8 +62,9 @@ Sentry.init({
       // Screenshots stay on (the SDK default); Rob accepted that residual.
     }),
     Sentry.browserProfilingIntegration(),
-    // Family browsers carry extensions: errors with third-party frames are tagged, never dropped.
-    Sentry.thirdPartyErrorFilterIntegration({ filterKeys: ["jowray_com"], behaviour: "apply-tag-if-contains-third-party-frames" }),
+    // Tagged, never dropped (Rob, 2026-11-04). Only errors with no frame from our bundles are tagged, so the issue
+    // alert can skip them (extensions, in-app browser scripts) without silencing our own bugs.
+    Sentry.thirdPartyErrorFilterIntegration(THIRD_PARTY_FILTER_OPTIONS),
     Sentry.consoleLoggingIntegration({ levels: ["warn", "error"] }),
   ],
   beforeSend: (event) => scrubEvent(event),

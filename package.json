@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && next build && tsx scripts/check-traces.ts",
+    "build": "prisma generate && next build && tsx scripts/check-traces.ts && tsx scripts/check-sentry-app-key.ts",
     "build:offline": "NODE_OPTIONS=--import=./scripts/no-network.mjs NEXT_TELEMETRY_DISABLED=1 CHECKPOINT_DISABLE=1 npm run build",
     "start": "next start",
     "postinstall": "prisma generate",
