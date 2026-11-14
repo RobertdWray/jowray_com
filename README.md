@@ -4,6 +4,12 @@
 
 **A place for family and friends to leave a memory of Jo: a voice, a photo, a video, or a few words.**
 
+**What it does:** Collects memories of Jo
+
+**Why it was built:** Capture stories while still fresh
+
+See [How a memory travels](#-how-a-memory-travels) and [Architecture](#%EF%B8%8F-architecture) for how it works.
+
 [![CI](https://github.com/RobertdWray/jowray_com/actions/workflows/ci.yml/badge.svg)](https://github.com/RobertdWray/jowray_com/actions/workflows/ci.yml)
 ![Next.js 16](https://img.shields.io/badge/Next.js-16-black)
 ![React 19](https://img.shields.io/badge/React-19-149eca)
